@@ -119,6 +119,20 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _frontend_no_cache(request: Request, call_next):
+    """前端代码/样式禁用强缓存：未变走 304，改完刷新即可生效。
+
+    否则浏览器会按启发式缓存旧 ES Module，页面里还是旧类，
+    升级后可能报 ``xxx is not a function`` 这类版本错位错误。
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith(("/src/", "/assets/", "/vendor/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _log_runtime_banner() -> None:
     """打印运行环境并把「性能陷阱」直接喊出来。
 

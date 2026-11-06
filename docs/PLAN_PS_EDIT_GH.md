@@ -768,6 +768,14 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 }
 ```
 
+**已落地（`server/pipeline.py`）：** `_zero_shift_spec()` + `verify_zero_shift()`。
+
+- 仅在 `size_mode == "follow"` 生效；`custom / ratio` 自动降级为不校验（用户本就要新尺寸）。
+- 前端默认发 `{enabled:true, snap:32, resolution:0}`；`resolution != 0` 或 `snap != 模型对齐值` 直接 `PipelineError`（拒绝出图，不做"偷偷纠偏"）。
+- 出图前硬验收：画布必须是 `snap` 的倍数、输出尺寸必须等于源图，否则拒绝落盘。
+- 结果写入 `job.align.zero_shift` 与 `job.quality.zero_shift`（`verified` 表示是否走过硬验收）。
+- 单测：`tests/test_zero_shift_ps.py`（8 条）。
+
 **响应（`GET /api/jobs/{id}` 的 `quality` 追加）：**
 
 ```jsonc
@@ -1217,7 +1225,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 预处理接入 `pipeline.generate_edit` | ✅ 已接入（仅 `follow` 模式；`custom/ratio` 跳过） | `server/pipeline.py` |
 | 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
 | 任务 LoRA 预设（`LORA_TASKS` / preset 解析 / 超量警告） | ✅ 已落地 | `server/config.py`、`server/pipeline.py`、`server/main.py` |
-| zero_shift 强制 / 扩图（outpaint） | ⏳ 待做 | — |
+| zero_shift 强制（resolution/snap 校验 + 出图前硬验收） | ✅ 已落地（8 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
+| 扩图（outpaint） | ⏳ 待做 | — |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1280,9 +1289,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 **剩余（按优先级）：**
 
 6. ~~任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`~~ ✅ 已完成
-7. `zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝
+7. ~~`zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝~~ ✅ 已完成
 8. `server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）
 9. `align.robust_color_match` / `ign_dither`（低频抖动，防色带）
 10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
-11. `tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归
+11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 已有几何守卫单测（端到端待真实出图）
 

@@ -312,6 +312,45 @@ def _t2i_size(cfg: dict[str, Any], params: dict[str, Any],
     return config.snap32(width, snap), config.snap32(height, snap)
 
 
+def _zero_shift_spec(params: dict[str, Any], profile: dict[str, Any],
+                     size_mode: str) -> dict[str, Any]:
+    """解析并校验 ``zero_shift`` 契约；只在 ``follow`` 模式下生效。
+
+    严格模式（前端默认）：``resolution`` 必须为 0（画布跟随源图）、``snap`` 必须
+    等于模型对齐值。任何一条不满足都直接拒绝，避免"看起来没偏移、其实重采样过"。
+    """
+    zs = params.get("zero_shift") or {}
+    snap = int(zs.get("snap") or profile.get("snap") or 32)
+    enabled = _truthy(zs.get("enabled")) and size_mode == "follow"
+    if not enabled:
+        return {"enabled": False, "snap": snap, "resolution": 0}
+    resolution = int(zs.get("resolution") or 0)
+    if resolution != 0:
+        raise PipelineError(
+            f"零偏移要求 resolution=0（画布跟随源图），收到 resolution={resolution}")
+    expected = int(profile.get("snap") or 32)
+    if snap != expected:
+        raise PipelineError(
+            f"零偏移对齐必须是 {expected} 的倍数，收到 snap={snap}")
+    return {"enabled": True, "snap": snap, "resolution": 0}
+
+
+def verify_zero_shift(spec: dict[str, Any], plan: imaging.CanvasPlan,
+                      src_size: tuple[int, int],
+                      out_size: tuple[int, int]) -> None:
+    """零偏移几何验收：画布对齐、输出尺寸与源图一致。失败即拒绝出图。"""
+    if not spec.get("enabled"):
+        return
+    snap = int(spec.get("snap") or 32)
+    if plan.width % snap or plan.height % snap:
+        raise PipelineError(
+            f"零偏移校验失败：画布 {plan.width}×{plan.height} 不是 {snap} 的倍数")
+    if tuple(out_size) != tuple(src_size):
+        raise PipelineError(
+            f"零偏移校验失败：输出 {out_size[0]}×{out_size[1]} "
+            f"≠ 源图 {src_size[0]}×{src_size[1]}")
+
+
 def _plan_canvas_for(src: Image.Image, params: dict[str, Any],
                      multiple: int = 32) -> imaging.CanvasPlan:
     mode = str(params.get("size_mode") or "follow")
@@ -525,6 +564,7 @@ class Pipeline:
             decoded.append(imaging.decode_image(data))
         src = decoded[0]
         size_mode = str(params.get("size_mode") or "follow")
+        zs_spec = _zero_shift_spec(params, profile, size_mode)
 
         # 大图预处理：只缩不放，出图后还原。仅 follow 模式启用（custom/ratio 是
         # 用户指定新尺寸，预处理会把这条路径搅乱）。
@@ -570,6 +610,7 @@ class Pipeline:
             "applied": True,
             "plan": _plan_dict(plan),
             "preprocess": {**dataclasses.asdict(pp), "applied": bool(use_pp)},
+            "zero_shift": dict(zs_spec),
         }
 
         local = params.get("local") or {}
@@ -743,6 +784,9 @@ class Pipeline:
             expected_size = src.size
         size_match = final.size == expected_size
 
+        # 零偏移硬验收：任何几何走样都在这里拦下，不落盘。
+        verify_zero_shift(zs_spec, plan, (src.width, src.height), final.size)
+
         data = imaging.encode_png(final, compress_level=int(cfg.get("png_compress_level", 1)))
         meta = storage.save_output(data, prefix=_prefix(job.prompt, "edit", profile["id"]),
                                    image=final)
@@ -767,6 +811,7 @@ class Pipeline:
                 "work": {"w": pp.work_w, "h": pp.work_h},
                 "canvas": {"w": pp.canvas_w, "h": pp.canvas_h},
             },
+            "zero_shift": dict(zs_spec, verified=bool(zs_spec.get("enabled"))),
             "changed_ratio": diff_stats.get("changed_ratio"),
             "leak_ratio": diff_stats.get("leak_ratio"),
             "diff_threshold": diff_stats.get("threshold"),

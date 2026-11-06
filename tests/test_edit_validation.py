@@ -54,7 +54,7 @@ def test_rejects_non_object_task():
 
 def test_rejects_unknown_task_mode():
     with pytest.raises(main.ApiError, match="task.mode"):
-        main._validate_edit_params({"task": {"mode": "inpaint"}})
+        main._validate_edit_params({"task": {"mode": "zoom"}})
 
 
 def test_rejects_non_list_loras():
@@ -75,3 +75,45 @@ def test_rejects_unknown_lora_preset():
 def test_rejects_non_object_zero_shift():
     with pytest.raises(main.ApiError, match="zero_shift"):
         main._validate_edit_params({"zero_shift": True})
+
+
+def test_accepts_frontend_task_aliases():
+    """detectTask 会产出 inpaint / replace，后端必须放行。"""
+    main._validate_edit_params({"task": {"mode": "inpaint"}})
+    main._validate_edit_params({"task": {"mode": "replace"}})
+
+
+def test_rejects_non_object_outpaint():
+    with pytest.raises(main.ApiError, match="outpaint"):
+        main._validate_edit_params({"outpaint": [10, 10]})
+
+
+def test_rejects_outpaint_percent_out_of_range():
+    with pytest.raises(main.ApiError, match="outpaint.left"):
+        main._validate_edit_params({"outpaint": {"left": -1}})
+    with pytest.raises(main.ApiError, match="outpaint.right"):
+        main._validate_edit_params({"outpaint": {"right": 250}})
+
+
+def test_rejects_outpaint_non_numeric():
+    with pytest.raises(main.ApiError, match="outpaint.top"):
+        main._validate_edit_params({"outpaint": {"top": "多"}})
+
+
+def test_rejects_unknown_local_scheme():
+    with pytest.raises(main.ApiError, match="local.scheme"):
+        main._validate_edit_params({"local": {"scheme": "c"}})
+
+
+def test_rejects_local_numeric_out_of_range():
+    with pytest.raises(main.ApiError, match="local.feather"):
+        main._validate_edit_params({"local": {"feather": -4}})
+    with pytest.raises(main.ApiError, match="local.mask_expand"):
+        main._validate_edit_params({"local": {"mask_expand": "多"}})
+    with pytest.raises(main.ApiError, match="local.context_factor"):
+        main._validate_edit_params({"local": {"context_factor": 9}})
+
+
+def test_rejects_mask_wrong_type():
+    with pytest.raises(main.ApiError, match="mask"):
+        main._validate_edit_params({"mask": 123})

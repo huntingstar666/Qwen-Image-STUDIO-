@@ -137,8 +137,11 @@ class _FakeEngine:
         pass
 
 
-def _run_edit(params: dict, fake: _FakeEngine):
-    """在内存存储上跑一次 generate_edit，返回 (job, 落盘字节)。"""
+def _run_edit(params: dict, fake: _FakeEngine, *, on_loras=None):
+    """在内存存储上跑一次 generate_edit，返回 (job, 落盘字节)。
+
+    ``on_loras(params, sampling)`` 可以在挂 LoRA 前窥视归一化后的请求。
+    """
     sink: dict = {}
     old_upload = pipeline.storage.save_upload
     old_output = pipeline.storage.save_output
@@ -160,7 +163,12 @@ def _run_edit(params: dict, fake: _FakeEngine):
     pipeline._resolve_models = lambda *_a, **_kw: {
         "unet": "mem://unet", "clip": "mem://clip", "vae": "mem://vae",
     }
-    pipeline._build_loras = lambda *_a, **_kw: []
+    def _build(cfg, params, profile, *, sampling):
+        if on_loras is not None:
+            on_loras(params, sampling)
+        return []
+
+    pipeline._build_loras = _build
     try:
         job = jobs.Job(id="e2e", kind="edit", prompt="把这里换成蓝天", params=params)
         pipeline.Pipeline(engine=fake).generate_edit(job)
@@ -282,3 +290,100 @@ def test_generate_edit_remove_task_paints_green_hint_inside_mask():
     assert inside_after[1] > inside_before[1]
     # 遮罩外保持画布原样
     assert overlay.getpixel((50, 50)) == canvas.getpixel((50, 50))
+
+
+def test_generate_edit_hint_alias_green_enables_overlay():
+    """前端历史上传 hint:"green"，必须等价于 green_overlay。"""
+    src = _noise_image(1000, 700, seed=17)
+    box = (400, 250, 600, 450)
+    plan = imaging.plan_canvas(src.width, src.height, mode="follow", fit="pad")
+    canvas = imaging.compose_canvas(src, plan, pad_mode="edge")
+
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(1000, 700, box)),
+        "task": {"mode": "remove"},
+        "local": {"enabled": True, "scheme": "a", "hint": "green"},
+    }, fake)
+
+    assert job.quality["hint_mode"] == "green_overlay"
+    assert fake.seen["images"][0].getpixel((500, 350)) != canvas.getpixel((500, 350))
+
+
+def test_generate_edit_remove_without_mask_falls_back_to_edit():
+    src = _noise_image(1000, 700, seed=13)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "task": {"mode": "remove"},
+    }, fake)
+
+    quality = job.quality
+    assert quality["task_requested"] == "remove"
+    assert quality["task_mode"] == "edit"
+    assert any("元素移除" in warn for warn in quality["warnings"])
+    assert (quality["output"]["w"], quality["output"]["h"]) == (1000, 700)
+
+
+def test_generate_edit_replace_task_is_plain_edit():
+    """detectTask 产出的 replace / inpaint 不能 400，按普通编辑走。"""
+    src = _noise_image(640, 480, seed=37)
+    for mode in ("replace", "inpaint"):
+        fake = _FakeEngine()
+        job, _sink = _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "task": {"mode": mode},
+        }, fake)
+        assert job.quality["task_requested"] == mode
+        assert job.quality["task_mode"] == "edit"
+
+
+def test_generate_edit_auto_mounts_task_lora_preset():
+    """只传 task.mode、不带 loras 时，后端自动挂对应预设，API 用户也能拿到正确效果。"""
+    src = _noise_image(640, 480, seed=41)
+    seen: dict = {}
+    fake = _FakeEngine()
+    _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(640, 480, (200, 160, 400, 320))),
+        "task": {"mode": "remove"},
+    }, fake, on_loras=lambda params, _sampling: seen.update(loras=params.get("loras")))
+    assert seen["loras"] == [{"preset": "remove"}]
+
+
+def test_generate_edit_outpaint_without_pads_falls_back_to_edit():
+    src = _noise_image(1000, 700, seed=19)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "task": {"mode": "outpaint"},
+    }, fake)
+
+    quality = job.quality
+    assert quality["task_mode"] == "edit"
+    assert quality["outpaint"] is None
+    assert any("外扩比例" in warn for warn in quality["warnings"])
+    assert (quality["output"]["w"], quality["output"]["h"]) == (1000, 700)
+
+
+def test_generate_edit_outpaint_oversized_raises():
+    src = _noise_image(3000, 2000, seed=23)
+    fake = _FakeEngine()
+    with pytest.raises(pipeline.PipelineError, match="扩图参数不可用"):
+        _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "task": {"mode": "outpaint"},
+            "outpaint": {"left": 100, "right": 100},
+        }, fake)
+
+
+def test_generate_edit_empty_mask_reports_friendly_error():
+    src = _noise_image(640, 480, seed=29)
+    black = imaging.encode_png(Image.new("RGB", (640, 480), (0, 0, 0)))
+    fake = _FakeEngine()
+    with pytest.raises(pipeline.PipelineError, match="遮罩不可用"):
+        _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "mask": imaging.data_url("image/png", black),
+        }, fake)

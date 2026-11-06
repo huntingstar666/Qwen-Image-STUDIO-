@@ -993,6 +993,7 @@ def outpaint_canvas(
     top: float = 0.0,
     bottom: float = 0.0,
     multiple: int = 32,
+    max_side: int = 8192,
     fill: tuple[int, int, int] = _OUTPAINT_FILL,
 ) -> tuple[Image.Image, OutpaintInfo]:
     """按百分比外扩画布，外补区域填 ``#808080``（孤海扩图约定）。
@@ -1000,16 +1001,28 @@ def outpaint_canvas(
     ``left/right`` 是**宽度**的百分比，``top/bottom`` 是**高度**的百分比。
     画布向上取整到 ``multiple``，多出来的像素统一补到右/下，保证源图坐标仍是
     整数偏移（贴回时不需要重采样）。
+
+    ``max_side`` 是硬保护：外扩后的画布长边超过它就抛 ``ValueError``。
+    扩图不裁回也不预处理，若不设上限，几下百分比就能把显存打爆。
     """
     src = im.convert("RGBA")
     sw, sh = src.size
-    left_px = max(0, int(round(sw * float(left) / 100.0)))
-    right_px = max(0, int(round(sw * float(right) / 100.0)))
-    top_px = max(0, int(round(sh * float(top) / 100.0)))
-    bottom_px = max(0, int(round(sh * float(bottom) / 100.0)))
+    pads = [float(left), float(right), float(top), float(bottom)]
+    if any(not math.isfinite(v) for v in pads):
+        raise ValueError("扩图比例必须是有限数字")
+    left, right, top, bottom = pads
+    left_px = max(0, int(round(sw * left / 100.0)))
+    right_px = max(0, int(round(sw * right / 100.0)))
+    top_px = max(0, int(round(sh * top / 100.0)))
+    bottom_px = max(0, int(round(sh * bottom / 100.0)))
     multiple = max(1, int(multiple))
     canvas_w = _snap_up(sw + left_px + right_px, multiple)
     canvas_h = _snap_up(sh + top_px + bottom_px, multiple)
+    if max_side and max(canvas_w, canvas_h) > int(max_side):
+        raise ValueError(
+            f"扩图后画布 {canvas_w}×{canvas_h} 超过上限 {int(max_side)}"
+            "；请减小外扩比例，或先把原图缩到更小"
+        )
     right_px += canvas_w - (sw + left_px + right_px)
     bottom_px += canvas_h - (sh + top_px + bottom_px)
 

@@ -34,6 +34,16 @@ from server import align, imaging  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+def _raises(exc_type, needle, func):
+    """本文件不依赖 pytest 运行时，这里手写一个 ``pytest.raises(match=...)``。"""
+    try:
+        func()
+    except exc_type as exc:
+        assert needle in str(exc), str(exc)
+    else:
+        raise AssertionError(f"没有抛出 {exc_type.__name__}")
+
+
 def _rgba(w: int, h: int, seed: int = 0, alpha: int = 255) -> Image.Image:
     rng = np.random.default_rng(seed)
     arr = rng.integers(0, 256, (h, w, 4), dtype=np.uint8)
@@ -697,6 +707,21 @@ def test_outpaint_canvas_without_padding_is_identity():
     assert (info.left, info.top) == (0, 0)
     assert canvas.size == (320, 224)
     assert np.array_equal(np.asarray(canvas), np.asarray(src.convert("RGBA")))
+
+
+def test_outpaint_canvas_rejects_oversized_result():
+    """外扩后长边超过 max_side 必须报错，不能把显存交给运气。"""
+    src = _rgba(3000, 2000, seed=33)
+    _raises(ValueError, "上限", lambda: imaging.outpaint_canvas(src, left=100, right=100))
+    # 显式收紧上限同样生效
+    _raises(ValueError, "上限",
+            lambda: imaging.outpaint_canvas(src, left=10, right=10, max_side=2048))
+
+
+def test_outpaint_canvas_rejects_non_finite_percent():
+    src = _rgba(320, 224, seed=34)
+    _raises(ValueError, "有限",
+            lambda: imaging.outpaint_canvas(src, left=float("nan")))
 
 
 # ---------------------------------------------------------------------------

@@ -674,6 +674,8 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 - `imaging.mask_hint_overlay(im, mask, color=(0,200,80), opacity=0.4)`：只染 RGB，alpha 原样；
 - `imaging.crop_mask_for_region(crop, mask)`：把画布遮罩切到"模型输入"坐标系（含补边/缩放），保证提示图与裁切图对齐；
 - 触发规则：`local.hint` 显式给出优先；`task.mode == "remove"` 且未给/给 `auto` 时自动 `green_overlay`；非法值回落 `none`；
+- **别名归一（商用兼容）**：前端历史上传 `"green"`，旧数据可能是 `"overlay"` / `"mask"` / `"grey"`，
+  统一映射为 `green_overlay` / `gray_fill`，不要求客户端改字段；
 - 提示图**只替换参考图**（`ref_images[0]`），latent 仍来自干净画布（先按保守方案，A/B 后再定）；
 - `job.quality.hint_mode` / `task_mode` 记录实际生效值。
 
@@ -701,6 +703,15 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
   输出不裁回、`hint_mode = "gray_fill"`（灰边即提示，不再叠加绿提示）、`zero_shift` 自动关闭；
 - `job.align.outpaint` / `job.quality.outpaint` 记录几何；单测覆盖百分比/32 对齐/贴入像素/遮罩面积。
 
+**商用护栏（防止"点了没反应"和"直接把显存打爆"）：**
+
+- 四边百分比由 `/api/edit` 校验为 `0~200`，非数字/负数/超范围直接 400；
+- `outpaint_canvas(..., max_side=8192)` 硬保护：外扩后长边超限抛 `ValueError`，
+  管线转成可读的 `PipelineError`（扩图不裁回也不预处理，没有上限就会 OOM）；
+- `task.mode="outpaint"` 但四边全为 0 → **退回普通编辑**并写 `quality.warnings`，
+  绝不静默生成一张尺寸没变的图；
+- `task.mode="remove"` 但没传遮罩 → 退回普通编辑并说明原因（Remove LoRA 依赖绿色选区）。
+
 ### 5.8 API 契约（`POST /api/edit`）
 
 ```jsonc
@@ -712,7 +723,8 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
   "images": ["data:image/png;base64,...", "..."],   // 第 1 张 = 主图（图一）
   "mask":  "data:image/png;base64,...",             // 白色 + alpha，主图尺寸
 
-  "task": { "mode": "edit" },                       // edit | remove | outpaint | fuse
+  "task": { "mode": "edit" },                       // edit | remove | outpaint | inpaint | replace
+                                                    // 前端 detectTask 的 inpaint/replace 在后端归一为 edit
   "size_mode": "follow",                            // follow | custom | ratio | fixed_point
   "width": null, "height": null, "ratio": null, "megapixels": 1.0,
   "resolution": 0,
@@ -816,6 +828,11 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
   "lora": ["Qwen2.1_万物移除Remove_GH.safetensors@1.0",
            "Qwen2.1 一致性无偏移_GH_V1.0@0.48"],
   "hint_mode": "green_overlay",
+  "task_mode": "remove",             // 实际生效值（可能由 inpaint/replace 归一）
+  "task_requested": "remove",        // 前端原始请求值，便于排查
+  "warnings": [                      // 不阻断出图，只解释"为什么结果和预期不一样"
+    "未圈选区域，本次将按整图重绘"
+  ],
   "elapsed_s": 18.4
 }
 ```
@@ -1247,6 +1264,10 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 过渡带 IGN 抖动（`align.ign_dither`，默认开） | ✅ 已落地 | `server/align.py`、`server/imaging.py`、`server/pipeline.py` |
 | 扩图（灰边画板 / 外补遮罩 / 不裁回输出） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py` |
 | 端到端零偏移/零色差回归（假引擎，不占显存） | ✅ 5 条全链路（follow / 预处理 / 裁切越界 / 扩图 / 移除提示） | `tests/test_zero_shift_ps.py` |
+| 前后端契约归一（`inpaint/replace` → edit、`green` → `green_overlay`、mask/local 类型与范围） | ✅ 已落地（校验 + e2e 覆盖） | `server/pipeline.py`、`server/main.py`、`tests/` |
+| 扩图护栏（百分比 0~200 / `max_side=8192` / 空比例回退） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py`、`server/main.py` |
+| 任务 LoRA 自动挂载（只传 `task.mode` 也生效） | ✅ 已落地 | `server/pipeline.py` |
+| 质量告警 `quality.warnings`（未选区 / 近全遮罩 / 回退说明） | ✅ 已落地 | `server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1276,6 +1297,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 10. **诊断必须 try/except**：`pipeline` 里 `changed_stats` 失败只打印，不拖垮出图。
 11. **提示模式默认值必须是空字符串，不能是 `"none"`**：`local.hint` 缺省时留空，才能走到「`remove` 自动上绿提示」分支；显式传 `"none"` 才关闭。写成 `or "none"` 会让自动分支永久失效（已修，勿回退）。
 12. **端到端测试用假引擎，不加载真实权重**：`Pipeline(engine=fake)` 直接注入，`_resolve_models` / `_build_loras` / `storage.save_*` 在测试内临时替换并在 `finally` 复原。断言落盘 PNG 的遮罩外 `max_abs == 0`，而不是只看 `job.quality` 中间值。
+13. **任务名必须归一，不能按字符串白名单硬拒**：`inpaint` / `replace` 是前端 `detectTask` 的合法产出，后端映射为 `edit`；以后新增任务名只改 `_TASK_ALIASES`，不要动校验白名单逻辑。
+14. **扩图必须有上限与回退**：`outpaint_canvas` 的 `max_side` 是防 OOM 的最后一道闸；API 只做 `0~200` 范围校验；四边全 0 时退回普通编辑并写 `warnings`——既不要 400 卡住用户，也不要静默生成一张尺寸没变的图。
+15. **告警写 `quality.warnings`，不阻断出图**：用户要能在结果面板看到"为什么和预期不一样"（未选区、近全遮罩、任务回退），后端只解释、不替用户改参数。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1315,5 +1339,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 8. ~~`server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）~~ ✅ 已完成
 9. ~~`align.robust_color_match` / `ign_dither`（低频抖动，防色带）~~ ✅ `ign_dither` 已落地；`robust_color_match` 由 `anchor_affine` 取代，不再单独实现
 10. ~~扩图（outpaint）：灰边画布 → 重绘 → 裁回~~ ✅ 已完成（输出不裁回，保留外扩尺寸）
-11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 几何守卫 8 条 + 假引擎端到端 5 条（`generate_edit` 全链路；真实权重的出图回归仍由本机环境另跑）
+11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 几何守卫 8 条 + 假引擎端到端 11 条（`generate_edit` 全链路；真实权重的出图回归仍由本机环境另跑）
+12. ~~前后端契约归一：`inpaint/replace` → edit、`hint:"green"` → `green_overlay`、mask/local 类型与范围~~ ✅ 已完成（含 e2e 覆盖）
+13. ~~扩图商用护栏：`0~200` 百分比校验、`max_side=8192` 防 OOM、空比例退回普通编辑~~ ✅ 已完成
+14. ~~`quality.warnings` 告警 + 任务 LoRA 自动挂载~~ ✅ 已完成（`/api/options` 同步暴露 `task_modes` / `outpaint_percent` / `outpaint_max_side`）
 

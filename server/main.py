@@ -332,6 +332,13 @@ def api_options() -> dict[str, Any]:
             "local_edit_schemes": ["a", "b"],
             "size_modes": ["follow", "custom", "ratio", "fixed_point"],
             "fits": ["pad", "crop"],
+            "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint"],
+            "hint_modes": ["none", "green_overlay", "gray_fill"],
+            "outpaint_percent": {"min": 0, "max": 200},
+            "outpaint_max_side": 8192,
+            "preprocess_max_side": {"min": 256, "max": 8192},
+            "feather": {"min": 0, "max": 256},
+            "context_factor": {"min": 1.0, "max": 4.0},
             "ollama": _ollama_health().get("connected", False),
         },
         "turbo_sigmas_help": (
@@ -494,8 +501,53 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
     task = payload.get("task")
     if task is not None and not isinstance(task, dict):
         raise ApiError("task 必须是对象")
-    if isinstance(task, dict) and task.get("mode") not in (None, "edit", "remove", "outpaint"):
+    # inpaint / replace 是前端 detectTask 的合法产出，后端按普通编辑处理
+    if isinstance(task, dict) and task.get("mode") not in (
+            None, "edit", "remove", "outpaint", "inpaint", "replace"):
         raise ApiError(f"未知 task.mode：{task.get('mode')!r}")
+
+    outpaint = payload.get("outpaint")
+    if outpaint is not None:
+        if not isinstance(outpaint, dict):
+            raise ApiError("outpaint 必须是对象")
+        for key in ("left", "right", "top", "bottom"):
+            if outpaint.get(key) is None:
+                continue
+            try:
+                value = float(outpaint[key])
+            except (TypeError, ValueError):
+                raise ApiError(f"outpaint.{key} 必须是数字（百分比）")
+            if not 0 <= value <= 200:
+                raise ApiError(f"outpaint.{key} 必须在 0~200（百分比）")
+
+    local = payload.get("local")
+    if local is not None:
+        if not isinstance(local, dict):
+            raise ApiError("local 必须是对象")
+        scheme = local.get("scheme")
+        if scheme is not None and str(scheme) not in ("a", "b", "none", "auto"):
+            raise ApiError(f"未知 local.scheme：{scheme!r}")
+        for key, low, high in (("feather", 0, 256), ("mask_expand", 0, 256),
+                               ("blend_pixels", 0, 256), ("context_pixels", 0, 1024)):
+            if local.get(key) is None:
+                continue
+            try:
+                value = int(local[key])
+            except (TypeError, ValueError):
+                raise ApiError(f"local.{key} 必须是整数")
+            if not low <= value <= high:
+                raise ApiError(f"local.{key} 必须在 {low}~{high}")
+        if local.get("context_factor") is not None:
+            try:
+                factor = float(local["context_factor"])
+            except (TypeError, ValueError):
+                raise ApiError("local.context_factor 必须是数字")
+            if not 1.0 <= factor <= 4.0:
+                raise ApiError("local.context_factor 必须在 1~4")
+
+    mask = payload.get("mask")
+    if mask is not None and not isinstance(mask, (str, dict)):
+        raise ApiError("mask 必须是 data URL 字符串或 {data} 对象")
 
     loras = payload.get("loras")
     if loras is not None:

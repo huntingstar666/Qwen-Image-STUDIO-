@@ -53,6 +53,28 @@ def _pick_seed(value: Any) -> int:
     return seed
 
 
+#: 任务别名：前端 ``detectTask`` 会产出 inpaint/replace，它们都等价于普通编辑。
+_TASK_ALIASES = {
+    "": "edit",
+    "none": "edit",
+    "edit": "edit",
+    "inpaint": "edit",
+    "replace": "edit",
+    "remove": "remove",
+    "outpaint": "outpaint",
+}
+
+#: 提示图别名：前端历史上传 ``green``，旧数据可能传 ``overlay``。
+_HINT_ALIASES = {
+    "green": "green_overlay",
+    "overlay": "green_overlay",
+    "mask": "green_overlay",
+    "gray": "gray_fill",
+    "grey": "gray_fill",
+    "grey_fill": "gray_fill",
+}
+
+
 def _load_engine_module():
     try:
         from .backends import native as native_mod  # 延迟导入：引擎未就绪时不影响其它 API
@@ -670,26 +692,43 @@ class Pipeline:
         src = decoded[0]
         size_mode = str(params.get("size_mode") or "follow")
         local = params.get("local") or {}
-        task_mode = str((params.get("task") or {}).get("mode") or "edit")
-        if task_mode == "outpaint":
-            # 扩图输出的是"外扩后的大图"，零偏移语义不适用（尺寸本就要变）。
-            zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
-        else:
-            zs_spec = _zero_shift_spec(params, profile, size_mode)
+        warnings: list[str] = []
+
+        # 任务模式归一：前端 detectTask 会给出 replace / inpaint，它们本质都是
+        # 普通局部编辑，不能因为名字不同就 400。
+        requested_task = str((params.get("task") or {}).get("mode") or "edit").strip().lower()
+        task_mode = _TASK_ALIASES.get(requested_task, "edit")
+
+        # 元素移除靠绿色选区训练；没圈区域就退回普通编辑，并明确告诉用户原因。
+        if task_mode == "remove" and not params.get("mask"):
+            task_mode = "edit"
+            warnings.append("未圈选区域，元素移除已按普通编辑处理（Remove LoRA 依赖绿色选区）")
 
         # 扩图：先补灰边画板，模型把灰色去掉，最后保留整张外扩图。
         op_info: imaging.OutpaintInfo | None = None
         op_canvas: Image.Image | None = None
         if task_mode == "outpaint":
             op = params.get("outpaint") or {}
-            op_canvas, op_info = imaging.outpaint_canvas(
-                src,
-                left=float(op.get("left") or 0),
-                right=float(op.get("right") or 0),
-                top=float(op.get("top") or 0),
-                bottom=float(op.get("bottom") or 0),
-                multiple=int(profile.get("snap") or 32),
-            )
+            try:
+                pads = {key: float(op.get(key) or 0) for key in ("left", "right", "top", "bottom")}
+            except (TypeError, ValueError) as exc:
+                raise PipelineError(f"扩图比例必须是数字：{exc}") from exc
+            if not any(value > 0 for value in pads.values()):
+                # 只写了"扩图"却没给比例：退回普通编辑，避免生成一张尺寸没变的图
+                task_mode = "edit"
+                warnings.append("未设置外扩比例，扩图已按普通编辑处理")
+            else:
+                try:
+                    op_canvas, op_info = imaging.outpaint_canvas(
+                        src, multiple=int(profile.get("snap") or 32), **pads)
+                except ValueError as exc:
+                    raise PipelineError(f"扩图参数不可用：{exc}") from exc
+
+        if task_mode == "outpaint":
+            # 扩图输出的是"外扩后的大图"，零偏移语义不适用（尺寸本就要变）。
+            zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
+        else:
+            zs_spec = _zero_shift_spec(params, profile, size_mode)
 
         # 大图预处理：只缩不放，出图后还原。仅 follow 模式启用（custom/ratio 是
         # 用户指定新尺寸，预处理会把这条路径搅乱）；扩图自身已决定画布大小。
@@ -723,11 +762,23 @@ class Pipeline:
         mask_canvas: np.ndarray | None = None
         if params.get("mask"):
             mask_bytes = _entry_bytes(params["mask"])
-            mask_src = imaging.decode_mask(mask_bytes, src_work.width, src_work.height)
+            try:
+                mask_src = imaging.decode_mask(mask_bytes, src_work.width, src_work.height)
+            except ValueError as exc:
+                raise PipelineError(f"遮罩不可用：{exc}。请重新圈选要修改的区域") from exc
             mask_canvas = imaging.map_mask_to_canvas(mask_src, plan)
         if op_info is not None:
             op_mask = imaging.outpaint_mask(op_info)
             mask_canvas = op_mask if mask_canvas is None else np.maximum(mask_canvas, op_mask)
+
+        # 产品提示：让用户知道这次到底改了多少（不阻断，只解释）
+        if mask_canvas is not None:
+            coverage = float((mask_canvas > 0.01).mean())
+            if task_mode != "outpaint" and coverage > 0.9:
+                warnings.append(f"选区覆盖 {coverage:.0%}，接近整图重绘，遮罩外像素也会被模型重画")
+            job.meta["mask_coverage"] = round(coverage, 4)
+        elif task_mode != "outpaint":
+            warnings.append("未圈选区域，本次将按整图重绘")
 
         # 记录输入图，供历史回看
         input_urls: list[str] = []
@@ -753,6 +804,11 @@ class Pipeline:
         sampling = _sampling_plan(params, cfg, profile)
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
         model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
+        # 显式任务模式但没带 LoRA 时，按任务自动挂预设：
+        # 第三方 API 只传 task.mode 也能得到 Remove / 扩图 LoRA 的正确效果。
+        if not params.get("loras") and task_mode in ("remove", "outpaint"):
+            params = dict(params)
+            params["loras"] = [{"preset": task_mode}]
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         _apply_pose_lora(cfg, profile, params, loras, job)
         if sampling.get("turbo_lora_note"):
@@ -801,12 +857,14 @@ class Pipeline:
         # 提示图（green overlay）：移除任务默认开启，让 LoRA 看到的输入分布与训练一致。
         # 扩图不需要绿提示——灰边本身就是提示。
         # 默认留空 → 下面按任务自动决定（remove 自动上绿提示）；显式传 "none" 才关闭。
+        # 兼容前端写法（"green"）与旧数据（"overlay"）：统一归一到规范名。
         hint_mode = str(local.get("hint") or "").strip().lower()
+        hint_mode = _HINT_ALIASES.get(hint_mode, hint_mode)
         if task_mode == "outpaint":
             hint_mode = "gray_fill"
         else:
-            if hint_mode in ("", "auto") and task_mode == "remove":
-                hint_mode = "green_overlay"
+            if hint_mode in ("", "auto"):
+                hint_mode = "green_overlay" if task_mode == "remove" else "none"
             if hint_mode not in ("none", "green_overlay"):
                 hint_mode = "none"
             if hint_mode == "green_overlay" and mask_canvas is not None:
@@ -971,6 +1029,8 @@ class Pipeline:
             "color": color_report,
             "hint_mode": hint_mode,
             "task_mode": task_mode,
+            "task_requested": requested_task,
+            "warnings": warnings,
             "outpaint": dataclasses.asdict(op_info) if op_info is not None else None,
             "preprocess": {
                 "applied": bool(use_pp),

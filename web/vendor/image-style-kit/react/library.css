@@ -1,0 +1,131 @@
+@import './CreativeLibrary.css';
+@import './MjStyleLibrary.css';
+@import './imageAngle.css';
+
+/*
+ * 这些样式来自原项目，使用 --af-* 设计变量。
+ * 移植后统一映射到模块的 --mgn-* 变量，宿主只需提供 --mgn-*（或 --af-*）即可。
+ * 弹层通过 portal 挂到 body，所以映射必须写在面板根节点上。
+ */
+.af-creative-backdrop,
+.af-creative-panel,
+.af-mj-backdrop,
+.af-mj-panel,
+.af-angle-backdrop,
+.af-angle-panel,
+.af-angle-anchored,
+.mgn-mj-refs {
+  --af-text: var(--mgn-text, #e8e9ee);
+  --af-text-secondary: var(--mgn-muted, #9a9daa);
+  --af-text-muted: var(--mgn-muted, #8a8da0);
+  --af-surface: var(--mgn-bg-soft, #202127);
+  --af-surface-raised: var(--mgn-bg, #17181c);
+  --af-border: var(--mgn-border, #2c2e36);
+  --af-border-control: var(--mgn-border, #2c2e36);
+  --af-input: var(--mgn-bg-soft, #202127);
+  --af-hover: rgba(255, 255, 255, 0.06);
+  --af-focus: var(--mgn-accent, #7c5cff);
+  --af-primary: var(--mgn-accent, #7c5cff);
+  --af-on-primary: #fff;
+  --af-danger: var(--mgn-danger, #ff6b6b);
+  --af-media-text: #fff;
+  --af-overlay: rgba(0, 0, 0, 0.55);
+}
+
+/* 视角入口（原实现用 Tailwind，这里改为普通类名）。 */
+.mgn-angle-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--mgn-muted, #9a9daa);
+  font-size: 12px;
+}
+
+.mgn-angle-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--mgn-bg-soft, #202127);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mgn-angle-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* MJ 专用垫图面板。 */
+.mgn-mj-refs {
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid var(--mgn-border, #2c2e36);
+  border-radius: 8px;
+  background: var(--mgn-bg-soft, #202127);
+}
+
+.mgn-mj-refs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.mgn-mj-refs-head strong {
+  font-weight: 600;
+  color: var(--mgn-text, #e8e9ee);
+}
+
+.mgn-mj-refs-head span {
+  font-size: 10px;
+  color: var(--mgn-muted, #9a9daa);
+}
+
+.mgn-mj-refs-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mgn-mj-refs-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mgn-mj-refs-grid label > span {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--mgn-muted, #9a9daa);
+}
+
+.mgn-mj-refs-grid select {
+  width: 100%;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--mgn-border, #2c2e36);
+  border-radius: 6px;
+  background: var(--mgn-bg, #17181c);
+  color: var(--mgn-text, #e8e9ee);
+  font-size: 11px;
+  outline: none;
+}
+
+.mgn-mj-refs-grid select:disabled {
+  opacity: 0.45;
+}
+
+/* MJ 风格码状态提示。 */
+.mgn-mj-status {
+  padding: 4px 8px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--mgn-muted, #9a9daa);
+}

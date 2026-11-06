@@ -1,0 +1,47 @@
+{
+  "engine_dir": "engine",
+  "comfy_root": "<COMFY_ROOT>\\ComfyUI-aki-v3.2\\ComfyUI",
+  "model_root": "<COMFY_ROOT>\\ComfyUI-aki-v3.2\\ComfyUI\\models",
+  "model_dirs": {
+    "unet": [
+      "diffusion_models",
+      "unet"
+    ],
+    "clip": [
+      "text_encoders",
+      "clip"
+    ],
+    "vae": [
+      "vae"
+    ],
+    "lora": [
+      "loras"
+    ]
+  },
+  "unet": "diffusion_models/QwenImage2.1/qwen_image_2.1_int8_convrot.safetensors",
+  "clip": "text_encoders/Qweniamge2.1/qwen3vl_8b_int8_convrot.safetensors",
+  "vae": "vae/Qweniamge2.1/qwen_image_2.1_vae_bf16.safetensors",
+  "turbo_lora": "loras/qwen2.1加速/qwen_image_2.1_turbo_lora_hifi_T8_v001.safetensors",
+  "consistency_lora": "loras/Qwen-功能2.1/qwen-image-2.1-consistency-2000.safetensors",
+  "host": "127.0.0.1",
+  "port": 8700,
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_model": "",
+  "steps": 25,
+  "cfg": 1.0,
+  "sampler": "euler",
+  "scheduler": "simple",
+  "width": 1024,
+  "height": 1024,
+  "turbo_profile": "turbo8_official",
+  "max_batch": 4,
+  "max_side": 4096,
+  "vram_reserve": 0.15,
+  "idle_unload_minutes": 30,
+  "history_limit": 200,
+  "keep_text_encoder_resident": true,
+  "warmup_on_load": false,
+  "vae_tile_size": 1024,
+  "vae_tile_overlap": 64,
+  "tiled_decode_threshold": 600000
+}

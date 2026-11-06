@@ -1,0 +1,280 @@
+# WEB_UI —— 前端工作台说明
+
+> 归属：frontend。  
+> 技术路线：**纯浏览器原生 ES module + 原生 CSS，零构建、零 npm、零框架**。  
+> 服务端由 FastAPI 直接静态托管 `web/`，页面路径直接写 `/src/main.js`、`/assets/css/app.css`、`/vendor/image-style-kit/...`。
+
+## 1. 页面结构
+
+顶栏（所有页面共享）：
+
+| 区域 | 内容 | 数据来源 |
+| --- | --- | --- |
+| 品牌 | 「Qwen-Image 2.1 工作台」+「本地推理 · 零偏移 · 零色差」 | 静态 |
+| 引擎状态灯 | `engine.ready`（后端未提供时兼容 `engine.available`）/ `reason` / `device` / 已加载模型 | `GET /api/health`，每 5s 轮询 |
+| 显存 | 已用 = `vram_total_mb - vram_free_mb` / `vram_total_mb` | `GET /api/health` |
+| Ollama 状态灯 + 模型下拉 | `ollama.connected`、`ollama.models`；下拉选择润色模型（持久化到 localStorage） | `GET /api/health` |
+| 队列 | `queue.pending`、`queue.running`、`outputs` | `GET /api/health` |
+
+页签共三个：
+
+1. **文生图**（`#t2i`）
+2. **图像编辑**（`#edit`）
+3. **历史**（`#history`）
+
+> 旧版「风格库」独立页已按用户要求移除，改为「提示词框上方的工具条 + 弹窗选择器」。
+
+### 风格选择器（提示词框上方，文生图 / 图像编辑共用）
+
+- 工具条：`✎ 风格` / `🎨 MJ 码图` / `◐ 滤镜` / `⌖ 视角`，右侧显示 `◑ 已选 N`。
+- 选中项以 chip 显示在提示词框上方，可单独移除；角度 chip 显示「方向 · 机位 · 景别」。
+- **正文输入框永远保持用户原文**；提交时才用 vendor 的 `buildNodePrompt` 把预设 / 滤镜 / 视角合成进请求的 `prompt`。
+- 两个页面各自维护独立选择集合（localStorage 按 `t2i` / `edit` 分 key 持久化）。
+
+**风格弹窗**（约 920×620）：
+- tabs「风格 / 滤镜 / 自定义」；搜索框；分类 chips（全部 / 收藏 / 各 preset.category）；3 列缩略图卡片；底部「N 个预设 · 收藏保存在本机」。
+- 卡片点击选中 / 再点取消，选中态高亮；右上角星标收藏（本机 localStorage）。
+- 「自定义」tab：自定义前缀 + 自定义描述，保存为可移除的 chip。
+- 「滤镜」按钮复用同一弹窗，打开时默认切到「滤镜」tab。
+
+**MJ 码图馆弹窗**（黄黑配色）：
+- 标题「MJ 码图馆」，副标题「按效果挑选风格，在正文光标处插入」。
+- 搜索框；分组 pills（全部 / 角色人物 / 场景环境 / 巨物怪兽，按 `item.group` 统计）；左侧「按风格浏览」分类折叠树（来自 `mjGroups`）；2 列缩略图卡片（图 + 名称 + 码型说明）；底部分页（36 条/页）。
+- 右下角插入模式下拉：全部代码 / 风格码 / 参数 / 完整提示词 / 氛围描述（后四种来自 `/api/styles.insertModes`）。
+- 点卡片 → 把文本插入提示词 textarea 的**光标位置**，并 toast 提示「已插入 MJ 码」。
+
+**视角弹窗**：
+- azimuth 0~360 / elevation -30~60 / zoom 0~10 三个滑杆，实时显示方向 / 机位 / 景别。
+- 「应用」后变成 chip；「重置」回默认值；「清除视角」移除 chip。
+
+**预览图**：目录数据里的 `preview` / `thumbnail` 已是 `/creative-presets/...`、`/mj-styles/...` 绝对路径，直接 `<img src>` 出真实缩略图；`onerror` 时隐藏图片并显示首字占位。
+
+### 文生图页其余内容
+
+- 大提示词 / 负向提示词、字数统计、清空；
+- 比例选择：`/api/options.ratios`，按钮显示实际 `w × h` 与「32 的倍数」提示；
+- 自定义宽高（自动向上对齐 32，实时提示对齐结果）；
+- 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；
+- 采样步数预设 chips（`/api/options.steps_presets`）；
+- **Turbo 开关**：`/api/options.turbo_profiles` 选方案，展示可编辑 sigma 文本（自动去掉末尾 `0.0`，由引擎追加），显示 `turbo_sigmas_help`；开启时步数 / CFG / 采样器按方案锁定；
+- 透明背景（RGBA）开关；
+- 高级折叠区：UNET / CLIP / VAE 模型下拉 + LoRA 多选（强度 0~2）；
+- **润色提示词**：`POST /api/polish` → 原文 / 润色后对比，展示模型、耗时、`wh_ratio`、`ratio_follow`、fallback；可一键采用（可选同时切换建议比例）或回退；
+- 右侧结果区：任务进度（value/max/label）、耗时、取消、结果图、尺寸、`align.canvas`、`quality.*`、复制提示词、下载；底部实时参数摘要。
+
+### 图像编辑页其余内容
+
+- 编辑指令 + 负向提示词 + 润色（`mode=edit`）；
+- 参考图上传：拖拽 / 点选 / 键盘 Enter，1~10 张；第 1 张标「编辑目标」，其余标「参考图 N」；支持拖动排序、单张删除、清空；第 1 张同时作为遮罩底图与输出尺寸基准；
+- 尺寸模式：`follow`（跟随原图，推荐零偏移）/ `custom`（自定义，32 对齐）/ `ratio`（官方比例 + 可选百万像素）/ `fixed_point`（BlueBox 32 不动点）；
+- `fit`：`pad` 补边 / `crop` 裁切；补边模式 `edge`；
+- 局部编辑：开关、方案 A 全画布 / 方案 B 裁切，羽化、外扩、颜色匹配开关、颜色强度、上下文倍数/像素、混合像素；
+- 一致性 LoRA：开关 + LoRA 选择 + 强度；
+- 采样：步数 / CFG / denoise / 种子 / 采样器 / 调度器 / Turbo；
+- 右侧：**遮罩编辑器** + 编辑结果（进度、结果、`align.canvas`、`quality.outside_max_abs` 零色差标记、遮罩叠加开关）。
+
+### 历史页
+
+- `GET /api/history?limit=60`，缩略图网格（优先 `thumb_url`），按文生图 / 编辑筛选；
+- 点击卡片查看大图、参数摘要、提示词、`align` / `quality` 标记、时间；
+- 下载单张 / 全部、复制提示词、导出可复现请求参数 JSON（`/api/jobs/{id}/replay.json`）；
+- 清空全部历史（`DELETE /api/history`，二次确认）。后端只提供整体清空，因此不提供单条删除。
+
+任务进度（文生图与图像编辑共用）：提交后每 **700ms** 轮询 `GET /api/jobs/{id}`，显示 `progress.value / progress.max / progress.label`、耗时与取消；成功后渲染结果图、尺寸、`align.canvas`（并标注是否 32 倍数）、`quality.outside_max_abs`（0 = 零色差校验通过）、`quality.size_match`；局部编辑可切换遮罩叠加做人工对比。
+
+## 2. 文件职责
+
+```
+web/
+├─ index.html                 页面骨架（顶栏/页签/页面容器/toast/模态框挂载点）
+├─ assets/css/
+│  ├─ app.css                 设计变量、顶栏/页签/面板/表单/结果/模态框、风格选择器与 MJ 码图馆弹窗、响应式
+│  └─ mask.css                遮罩编辑器（工具栏/舞台/状态栏/全屏）
+└─ src/
+   ├─ main.js                 引导入口：DOM 就绪 → boot()，启动失败时显示中文兜底页
+   ├─ app.js                  布局与路由：顶栏渲染、健康检查 5s 轮询、options/styles 预加载、hash 路由
+   ├─ api.js                  fetch 封装（超时 / 中文错误 / ApiError）+ pollJob 轮询
+   ├─ store.js                全局状态（health/options/styles/提示词/采样参数）+ localStorage 持久化 + 事件总线
+   ├─ utils.js                DOM/格式化/剪贴板/文件读取/图片探测/32 对齐等工具
+   └─ components/
+      ├─ toast.js             顶栏右侧中文提示（info/success/warn/error）
+      ├─ modal.js             通用模态框（支持 dialogClass / hideFooter）+ 确认对话框
+      ├─ polish.js            提示词润色对比弹窗（文生图 / 图像编辑共用）
+      ├─ jobView.js           任务进度轮询 + 结果渲染（尺寸/align/质量/遮罩叠加）
+      ├─ controls.js          TurboControl / LoraPicker / ModelsField 复用控件
+      ├─ stylePicker.js       ★ 提示词上方的风格选择器（风格/滤镜/自定义/MJ/视角弹窗）
+      ├─ maskEditor.js        ★ 遮罩编辑器（Canvas 2D 自研）
+      ├─ t2i.js               「文生图」页面
+      ├─ edit.js              「图像编辑」页面
+      └─ history.js           「历史」页面
+```
+
+页面在首次进入时才创建 DOM（`app.js` 中 `pages` Map），之后切换只做显隐，状态不丢。旧的 `components/styles.js` 已删除。
+
+## 3. 与 vendor 风格库（image-style-kit）的对接
+
+**不 import `src/index.js` / `src/catalogs.js`**（后者的静态 JSON import + fetch/localStorage 在浏览器里较脆），改为按文件动态 import，全部包在 `try/catch` 里，模块级缓存供两个页面的选择器共享：
+
+| 文件 | 用到的导出 |
+| --- | --- |
+| `/vendor/image-style-kit/src/prompt.js` | `buildNodePrompt`（最终提示词合成） |
+| `/vendor/image-style-kit/src/creative.js` | `composeCreativePrompt`（保留备用） |
+| `/vendor/image-style-kit/src/imageAngle.js` | `imageAnglePrompt` / `normalizeImageAngle` / `imageAngleDescription` |
+| `/vendor/image-style-kit/src/mjStyles.js` | `mjStyleText` / `mjStylePreset` / `filterMjStyles` / `MJ_INSERT_MODES` / `mjCategoryGroups` |
+
+合成方式（与 Python 侧 `styles.compose_prompt` 语义一致）：
+
+```js
+buildNodePrompt(rawPrompt, {
+  creativePresets: { style, filter, custom },   // 预设快照
+  type: 'Image',
+  imageAngle: enabled ? { azimuth, elevation, zoom } : null,
+});
+```
+
+目录数据一律来自 `/api/styles`，不 import `catalogs.js`。vendor 未就绪时选择器仍可打开，但合成/插入会给出中文提示。
+
+## 4. 与 HTTP API 的对应关系
+
+| 前端动作 | 接口 |
+| --- | --- |
+| 顶栏状态（5s） | `GET /api/health` |
+| 启动加载参数 | `GET /api/options` |
+| 风格 / MJ 目录 | `GET /api/styles` |
+| 润色提示词 | `POST /api/polish` `{prompt, mode, model}` |
+| 文生图提交 | `POST /api/generate`（`prompt` 为合成后的最终提示词） |
+| 图像编辑提交 | `POST /api/edit`（图片为 data URL；遮罩 `{data: "data:image/png;base64,..."}`） |
+| 任务轮询（700ms） | `GET /api/jobs/{id}` |
+| 取消任务 | `POST /api/jobs/{id}/cancel` |
+| 历史列表 | `GET /api/history?limit=60` |
+| 清空历史 | `DELETE /api/history` |
+| 任务参数 JSON | `GET /api/jobs/{id}/replay.json` |
+| 结果 / 缩略图 | `GET /files/...` |
+| 风格预览图 | `GET /creative-presets/...`（静态托管） |
+| MJ 缩略图 | `GET /mj-styles/...`（静态托管） |
+| 上传（备用） | `POST /api/upload`（当前编辑页直接用 dataURL，不依赖该接口） |
+
+请求体与契约第 3 节一致；额外说明：
+
+- 文生图 / 编辑请求的 `prompt` 是「正文 + 预设 + 视角」合成后的最终文本；`meta.rawPrompt` 保留用户原文，`meta.creativePresets` / `meta.imageAngle` 保留快照，便于历史追溯；
+- `turbo.sigmas` 发送去掉末尾 0.0 的数组（后端会追加 0.0）；
+- 编辑 `local.scheme` 为 `a` / `b`，`local.enabled=false` 时后端按 `scheme=none` 处理；
+- `size_mode=follow` 时 `width/height` 传 `null`；`ratio` 模式传 `ratio` 与可选 `megapixels`；`fixed_point` 只传 `megapixels`。
+
+## 5. 遮罩编辑器的输出约定
+
+- 遮罩内部始终以**第一张参考图的原分辨率**保存在离屏 canvas；导出 PNG 的宽高与第 1 张图**完全一致**。
+- 导出像素：`R=G=B=A=覆盖度`（白 = 编辑区，黑/透明 = 不编辑）。后端 `imaging.decode_mask` 的规则是「alpha 有变化取 alpha，否则取亮度」，两种解释下都成立。
+- 工具栏：画笔（笔径 2~400、硬度 0~100%）、橡皮、矩形、椭圆、填充、撤销/重做（命令回放，最多 40 步）、清空、反相、显示/隐藏叠加、适配窗口、全屏；滚轮缩放、空格/中键平移；快捷键 B/E/R/O/F、Ctrl+Z / Ctrl+Shift+Z、Esc 退出全屏。
+- 羽化 + 外扩在编辑器内用离屏 canvas 做近似预览（外扩 = 圆周 12 方向平移叠加，羽化 = `ctx.filter: blur(px/2)`），不改变导出的原始遮罩；服务端按 `local.feather` / `local.mask_expand` 再处理。
+
+## 6. 已知边界 / 后端配合点
+
+1. **`engine.ready` 字段**：当前 `/api/health` 返回的是 `engine.available`，前端已做 `ready ?? available` 兼容。
+2. **历史单条删除**：后端 `DELETE /api/history` 只有整体清空，所以前端只提供「清空全部」。
+3. **工作流 JSON**：没有 `/api/workflow/{id}.json`，历史详情改为「任务参数 JSON」→ `/api/jobs/{id}/replay.json`。
+4. **任务进度**：`progress.max` 对 Turbo = 8、普通 = steps；`max<=0` 时显示不定进度动画。
+5. **错误展示**：所有 fetch 失败、HTTP 4xx/5xx、任务 `error` 状态都会转中文 toast / 结果面板；后端不可用时顶栏状态灯变红并提示「服务未连接」，不白屏。
+6. 预览图静态路径（`/creative-presets`、`/mj-styles`）由后端 `server/main.py` 挂载；路径 404 时前端自动隐藏图片改用首字占位。
+7. 本机沙箱禁止 Chrome 命名管道，无法做 headless 浏览器实测；前端验证以 `node --check`、模块 import 图、静态资源 200 为准，真实交互由 Lead 在浏览器验收。
+
+## 7. 自检记录（本轮改版）
+
+- `node --check`：`web/src/**/*.js`（15 个文件）全部通过。
+- stubbed Node 环境 import 全部前端模块，具名导出完整，无 missing import。
+- 静态检查：`data-ref` / `ref()` 名称对齐、HTML 模板标签配平、静态 import 路径存在。
+- 纯逻辑自测：StylePicker 的 chip 计数 / composePrompt 合成 / 光标插入 / 视角描述 / 移除状态；vendor buildNodePrompt 对 style / filter / custom / angle 快照的合成结果。
+- 静态资源：`GET /`、`/src/*.js`、`/assets/css/*.css`、`/creative-presets/style-643.webp`、`/mj-styles/char1-thumb.webp` 均 200。
+- 目录数据：`/api/styles` 返回 creative 285（style 217 / filter 17 / motion 51）、mj 493、mjGroups 6、insertModes 4。
+
+---
+
+## 8. 改版记录：浅色主题 + 图像处理台（当前版本）
+
+### 8.1 主题
+
+整体改成**浅色优雅**风格（不再有暗色主题），色板写在 `app.css` 的 `:root`：
+
+```css
+--bg: #faf8f4;  --bg-2: #f6f2eb;  --line: #e7e1d7;  --line-soft: #efeae1;
+--text: #23262b; --text-2: #5c6169;
+--accent: #2f6b62;  --accent-2: #4a7f76;  --accent-dim: rgba(47, 107, 98, 0.09);
+```
+
+标题衬线、正文系统无衬线、数字 `tabular-nums`；卡片用 1px 发丝描边 + 极淡阴影。
+`index.html` 的 `color-scheme` 改为 `light`，图标与 favicon 同步换成浅色。
+
+### 8.2 新增页签「图像处理」
+
+`src/components/imageTools.js` + `assets/css/tools.css`（三列布局：工具 300 / 画布 1fr / 结果 300）。
+
+能力：裁剪（8 手柄 + 比例 chips + 宫格切分）、旋转翻转、缩放（contain/cover/stretch + 对齐 32）、
+调色（亮度/对比/饱和/锐化/色温，CSS filter 实时预览、后端真实落盘）、格式导出（PNG / JPEG 质量）、
+扩图规划、送入图生图。
+
+依赖 vendor 的纯逻辑模块（不要自己重写）：
+
+```js
+import * as geometry from '/vendor/image-tools-kit/src/cropGeometry.js';  // cropRatios/hitCrop/createCrop/resizeCrop/gridRects…
+import * as renderer from '/vendor/image-tools-kit/src/clientRenderer.js'; // loadImage/cropToDataUrl/gridToDataUrls
+import * as promptKit from '/vendor/image-tools-kit/src/prompt.js';        // panoramaPrompt/buildOutpaintDraft/outpaintDirections
+```
+
+后端对接：`POST /api/image/process`（ops 数组：crop/grid/rotate/flip/resize/adjust/pad32/trim_alpha）、
+`POST /api/image/outpaint-plan`（返回 canvas / pad / offset）。
+
+### 8.3 显存管理 UI
+
+顶栏显示 `显存 x / y GB` + 「释放显存」按钮（`POST /api/engine/free {unload:true}`），
+旁边提示「空闲 N 分钟后自动释放显存」（N = `/api/health.config.idle_unload_minutes`，默认 10）。
+服务端看护线程会在队列空闲超时后自动 unload 模型。
+
+### 8.4 本版新增的坑（改这里前必看）
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 图像处理页画布 1×1、显示 0% | `.tool-stage` 没给确定高度，前端用 `clientHeight-64` 反算显示尺寸，高度塌陷就退化为 1×1 | `tools.css` 里 `.tool-stage { height: clamp(380px,56vh,620px) }` + `.tool-stage-inner { flex:1; min-height:0 }` |
+| 上传后「裁剪输出」显示 2×2 | `resetCrop()` 在 `currentWorkDims` 还没写入时被调用，按 1×1 算了选框 | 不要在上传流程里提前 `resetCrop()`；交给 `render()`（先写 dims 再重置） |
+| 应用裁剪后再次保存得到 1×1 | 裁剪后选框没重置，旧坐标被叠加到新尺寸上再切一刀 | 裁剪后置 `state.crop.pendingReset = true`，下一次 `render()` 在新尺寸下重排选框；并给 `pendingCropPixelRect()` 加 <16px 的退化保护 |
+| 风格/结果卡片高度塌成 2px | grid auto 行高 + flex 卡片 + `aspect-ratio` 缩略图被 Chromium 算成边框厚度 | `.pk-grid` / `.mj-pk-grid` / `.tool-results` 加 `grid-auto-rows: max-content` |
+
+### 8.5 自检（本版）
+
+- `node --check`：`web/src/**/*.js` 18 个文件全部通过。
+- 浏览器实测（Chrome via CDP）：四页签渲染、上传图片画布正确绘制（512×512 · 显示 61%）、
+  比例 1:1 → 应用裁剪 → 操作史 1 步 → 处理并保存（结果 414×414 落盘）→ 送入图生图（跳编辑页并带图）、
+  扩图规划（704×480 + 新增区域遮罩 + 按钮启用）、风格弹窗与 MJ 弹窗均正常。
+- 静态资源 200：`/`、`/src/**`、`/assets/css/{app,mask,tools}.css`、`/vendor/image-tools-kit/src/*.js`、
+  `/creative-presets/*.webp`、`/mj-styles/*.webp`。
+
+---
+
+## 9. 交互细节（本轮 UX 优化）
+
+| 优化 | 说明 |
+|---|---|
+| **操作条粘底** | 「开始生成 / 开始编辑」+ 重置 + 状态提示固定在视口底部（`position: sticky; bottom: 14px`），长表单不用滚到底找按钮；在 page 网格里 `grid-column: 1 / -1` 横跨整页 |
+| **进度就在操作条里** | 顶部 3px 进度细条 + 文案（`进行中 3/11 · 扩散采样 · 5.9s`）；运行中边框变墨绿，失败变赭红，完成显示 `已完成 · 14.5s` 并保留到下次提交 |
+| **Ctrl / Cmd + Enter** | 任意位置直接提交，条上有 `Ctrl+Enter` 提示；长表单最实用 |
+| **按钮不再"卡住"** | 任务结束/失败必定恢复 `开始生成`（`finally` 兜底），并把失败原因写进操作条 |
+| **风格库不占页** | 改成提示词框上方四个按钮 + 弹窗，选中即标签 |
+| **画布 32 对齐提示** | 尺寸输入区直接显示「输出 1024 × 1024 · 32 的倍数 ✓」，避免编辑时才被取整 |
+
+改这里要注意的两个坑：
+
+1. **操作条必须是 page 网格的直接子元素**（否则 `grid-column` 不生效，条只占左栏宽度）；
+   t2i / edit 两页的 markup 都把 `<div class="action-bar">` 放在两个 `.col` 之后。
+2. **进度条依赖 `jobView.start({ onProgress })`**：`jobView` 在每次轮询与终态都会回调，
+   `onProgress(null)` 用于重置。改 `jobView` 的轮询时别把回调弄丢。
+
+---
+
+## 10. 已修复的两个参数类 bug（别再踩）
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| **关掉 Turbo 后步数还停在 8** | `applyTurboToFields()` 只在开启时写入档位参数（8 步 / cfg 1 / euler），关闭时只把输入框解除禁用、**不还原数值**。非 Turbo 采样用 8 步会明显发糊 | 开 Turbo 时快照 `{steps,cfg,sampler}`，关闭时还原（无快照则回落到 25 步 / cfg 1 / euler）并 toast 提示；页面加载时若「Turbo 关闭且步数 < 12」自动纠正为 25 |
+| **外扩滑杆显示 `NaN px`** | 绑定的字段名写错：store 里叫 `maskExpand`，代码绑的是 `expand` → `input.value = String(undefined)`，`Math.round(undefined)` 得 NaN | 绑 `maskExpand`，`maskEditor.setPreview` 与提交载荷 `mask_expand` 统一用它 |
+
+另外提醒：`Turbo 面板 → 加速 LoRA` 是可选的（含「不挂」），换档位会自动带出该档位的默认 LoRA；
+写进 `job.meta.turbo_lora` 便于复现。

@@ -1,0 +1,33 @@
+# 运行期产物（不纳入版本管理）
+storage/
+__pycache__/
+*.pyc
+*.pyo
+tests/__pycache__/
+
+# 本地配置（含本机绝对路径）
+# config.json 建议保留可见以便用户修改，但如果你把它改成了私密路径，可取消下一行注释
+# config.json
+
+# 移植进来的引擎代码副本（体积 5.4MB；如需纳入版本管理请删除下一行）
+# engine/
+
+# 临时/试验产物
+*.log
+scripts/_*.py
+storage/*.png
+.tmp_*
+
+# 本地缓存与第三方依赖
+.cache/
+node_modules/
+.svs-home/
+.screenshots/
+
+# 与本工作台无关的独立项目（视频/素材工程，体积较大）
+ISS_Falling/
+
+# 风格库预览图（约 107MB，来自 image-style-kit 原项目 public/）
+# 需要时用 scripts/sync_style_assets.ps1 从原项目同步过来
+web/creative-presets/
+web/mj-styles/

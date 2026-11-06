@@ -1,0 +1,426 @@
+.itk-backdrop,
+.itk-dialog,
+.itk-menu,
+.itk-pano {
+  --itk-text: var(--mgn-text, #e8e9ee);
+  --itk-muted: var(--mgn-muted, #9a9daa);
+  --itk-bg: var(--mgn-bg, #17181c);
+  --itk-panel: var(--mgn-bg-soft, #202127);
+  --itk-border: var(--mgn-border, #2c2e36);
+  --itk-accent: var(--mgn-accent, #7c5cff);
+  --itk-overlay: rgba(0, 0, 0, 0.6);
+  color: var(--itk-text);
+}
+
+.itk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--itk-overlay);
+}
+
+.itk-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, 100%);
+  max-height: 90vh;
+  overflow: hidden;
+  border: 1px solid var(--itk-border);
+  border-radius: 12px;
+  background: var(--itk-bg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+
+.itk-dialog.itk-small {
+  width: 360px;
+  padding: 16px;
+}
+
+.itk-dialog.itk-generate {
+  width: min(560px, 100%);
+}
+
+.itk-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--itk-border);
+}
+
+.itk-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itk-heading strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.itk-heading span {
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.itk-tabs button,
+.itk-toolbar button,
+.itk-directions button {
+  padding: 4px 10px;
+  border: 1px solid var(--itk-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.itk-tabs button[aria-pressed='true'],
+.itk-directions button[aria-pressed='true'] {
+  border-color: var(--itk-accent);
+  background: color-mix(in srgb, var(--itk-accent) 18%, transparent);
+  color: var(--itk-text);
+}
+
+.itk-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-icon {
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--itk-muted);
+  cursor: pointer;
+}
+
+.itk-icon:hover {
+  color: var(--itk-text);
+}
+
+.itk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--itk-border);
+  background: var(--itk-panel);
+}
+
+.itk-toolbar label,
+.itk-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-toolbar input[type='number'],
+.itk-toolbar select,
+.itk-field select,
+.itk-field textarea {
+  padding: 4px 8px;
+  border: 1px solid var(--itk-border);
+  border-radius: 6px;
+  background: var(--itk-bg);
+  color: var(--itk-text);
+  font: inherit;
+}
+
+.itk-toolbar input[type='number'] {
+  width: 64px;
+}
+
+.itk-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-stage-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.03) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.03) 75%);
+  background-position: 0 0, 8px 8px;
+  background-size: 16px 16px;
+}
+
+.itk-stage {
+  position: relative;
+  max-width: 100%;
+  max-height: 62vh;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.itk-canvas {
+  position: relative;
+}
+
+.itk-canvas img {
+  display: block;
+  border-radius: 4px;
+}
+
+.itk-rect {
+  position: absolute;
+  border: 1px solid var(--itk-accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  cursor: move;
+}
+
+.itk-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 2px;
+  background: var(--itk-accent);
+}
+
+.itk-handle.itk-tl,
+.itk-handle.itk-tr,
+.itk-handle.itk-bl,
+.itk-handle.itk-br {
+  cursor: nwse-resize;
+}
+
+.itk-handle.itk-tc,
+.itk-handle.itk-bc {
+  cursor: ns-resize;
+}
+
+.itk-handle.itk-ml,
+.itk-handle.itk-mr {
+  cursor: ew-resize;
+}
+
+.itk-cut {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+
+.itk-cut-row {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.itk-cut-col {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.itk-loading {
+  padding: 80px;
+  color: var(--itk-muted);
+}
+
+.itk-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--itk-border);
+  background: var(--itk-panel);
+}
+
+.itk-footer > span {
+  flex: 1;
+  min-width: 160px;
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-footer > div {
+  display: flex;
+  gap: 8px;
+}
+
+.itk-footer button {
+  padding: 6px 14px;
+  border: 1px solid var(--itk-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.itk-footer button.itk-primary {
+  border-color: var(--itk-accent);
+  background: var(--itk-accent);
+  color: #fff;
+}
+
+.itk-footer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.itk-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.itk-source {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--itk-panel);
+}
+
+.itk-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.itk-field textarea,
+.itk-field select {
+  width: 100%;
+}
+
+.itk-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-directions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.itk-menu {
+  width: min(720px, 100%);
+}
+
+.itk-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.itk-menu-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--itk-border);
+  border-radius: 10px;
+  background: var(--itk-panel);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.itk-menu-card:hover:not(:disabled) {
+  border-color: var(--itk-accent);
+}
+
+.itk-menu-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.itk-menu-card span {
+  font-size: 11px;
+  color: var(--itk-muted);
+}
+
+.itk-annotate-stage {
+  position: relative;
+  max-width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.itk-annotate-stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.itk-annotate-hit {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.itk-pano-view {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #000;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.itk-pano-view img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 260%;
+  height: 100%;
+  object-fit: cover;
+  transform-origin: center;
+}
+
+.itk-pano-badge {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+}
+
+.itk-pano-reset {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+}

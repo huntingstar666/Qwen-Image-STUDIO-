@@ -1,0 +1,35 @@
+# Qwen-Image 2.1 工作台 —— 运行期依赖
+#
+# 本机没有 PyPI 网络（安装会失败），所以这里只作为「清单/校验」用途。
+# 本机实测可用的现成环境：<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe
+#   fastapi 0.129.0 / uvicorn 0.40.0 / pydantic 2.12.5 / starlette 1.2.1
+#   Pillow 11.3.0 / numpy 2.3.5 / torch 2.13.0+cu130 / transformers 4.57.6
+#   scipy 1.17.0 / safetensors 0.8.0 / einops 0.8.1 / requests 2.34.2
+#
+# 换机器时按需 pip install（需要能联网的环境）：
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+python-multipart>=0.0.9
+Pillow>=10.0
+numpy>=1.26
+requests>=2.31
+torch>=2.8   # 性能关键：CUDA 必须是 13.x（cu130），否则 int8 原生算子不可用，采样慢 3 倍
+safetensors>=0.4
+transformers>=4.50
+scipy>=1.11
+einops>=0.7
+
+# 可选（Turbo/加速相关，缺失不影响基本出图）
+# torchvision
+# triton
+# sentencepiece
+
+# 说明：
+# - 不需要 diffusers：Qwen-Image 2.1 的模型实现来自 engine/（移植自 ComfyUI）。
+# - 不需要安装 pytest：项目根目录有 pytest.py 兼容运行器。
+# - 启动必须带 -s：python -s -m uvicorn server.main:app。
+#   原因：系统 user site-packages 里可能装了另一份 cu128 的 torch，会盖掉 python 自带的
+#   cu130；cu128 下 comfy_kitchen 禁用 int8 原生算子，采样从 4.3s 掉到 12.4s。
+# - 引擎需要的是「ComfyUI 的模型库代码」而不是 ComfyUI 服务，
+#   运行一次 scripts/port_engine.ps1 即可移植进项目。

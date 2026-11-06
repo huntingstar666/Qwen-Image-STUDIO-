@@ -1,0 +1,25 @@
+{
+  "name": "image-tools-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "图片节点的裁切、宫格裁切、画笔标注、全景、扩图（React UI + 纯逻辑 + sharp 后端）",
+  "exports": {
+    ".": "./src/index.js",
+    "./react": "./react/index.js",
+    "./react.css": "./react/styles.css",
+    "./server": "./server/core.js",
+    "./server/handler": "./server/handler.js",
+    "./server/express": "./server/express.js"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "optionalDependencies": {
+    "sharp": ">=0.33"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

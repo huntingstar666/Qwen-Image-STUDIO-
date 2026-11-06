@@ -1,0 +1,21 @@
+{
+  "name": "image-style-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "图片节点的风格库、滤镜库、MJ 码图馆、视角与 MJ 专用垫图（React + 纯逻辑，无第三方依赖）",
+  "exports": {
+    ".": "./src/index.js",
+    "./react": "./react/index.js",
+    "./react.css": "./react/library.css",
+    "./data/creativeCatalog.json": "./data/creativeCatalog.json",
+    "./data/mjStyleCatalog.json": "./data/mjStyleCatalog.json"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "scripts": {
+    "sync-assets": "pwsh -File scripts/sync-assets.ps1"
+  }
+}

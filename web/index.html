@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Qwen-Image 2.1 工作台</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23faf8f4'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%232f6b62' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23b87340'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/assets/css/app.css" />
+    <link rel="stylesheet" href="/assets/css/mask.css" />
+    <link rel="stylesheet" href="/assets/css/tools.css" />
+  </head>
+  <body>
+    <noscript>
+      <div class="noscript">本工作台需要启用 JavaScript 才能运行。</div>
+    </noscript>
+
+    <!-- 顶栏：品牌 + 引擎/Ollama/队列状态，由 app.js 渲染 -->
+    <header id="topbar" class="topbar"></header>
+
+    <!-- 页签导航，由 app.js 渲染 -->
+    <nav id="tabbar" class="tabbar" aria-label="工作台页面"></nav>
+
+    <!-- 页面容器：各页面 DOM 在首次进入时挂载到这里 -->
+    <main id="viewport" class="viewport" aria-live="polite"></main>
+
+    <!-- 全局中文提示 -->
+    <div id="toast-root" class="toast-root" role="status" aria-live="assertive"></div>
+
+    <!-- 模态框挂载点（提示词润色对比 / 历史详情等） -->
+    <div id="modal-root"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

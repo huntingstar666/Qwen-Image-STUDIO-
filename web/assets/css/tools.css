@@ -1,0 +1,442 @@
+/* =============================================================
+ * 图像处理台（image-tools-kit 接入）
+ *
+ * 与 app.css 同一套浅色变量。之所以单独一份：
+ * 1) 这个页面是后加的，独立文件便于维护；
+ * 2) `.tool-stage` 必须给出**确定高度** —— 前端用
+ *    `stage.clientHeight - 64` 反算画布显示尺寸，高度塌陷会让画布退化成 1×1。
+ * ============================================================= */
+
+.page-tools {
+  padding-bottom: 28px;
+}
+
+.tools-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.tools-side,
+.tools-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------- 源图 */
+
+.tools-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 118px;
+  padding: 18px 14px;
+  text-align: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.tools-drop:hover,
+.tools-drop:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text);
+  outline: none;
+}
+
+.tools-drop.is-over {
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--accent-dim);
+}
+
+.tools-drop .glyph {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.tools-drop small {
+  color: var(--text-2);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.source-meta {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.source-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.source-dims {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------- 工具折叠区 */
+
+.tool-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-fold {
+  border-top: 1px solid var(--line-soft);
+  padding: 10px 0 4px;
+}
+
+.tool-fold:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.tool-fold > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.tool-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-fold > summary::before {
+  content: '▸';
+  color: var(--text-2);
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+.tool-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tool-fold .fold-body {
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tool-ratios {
+  gap: 5px;
+}
+
+.tool-ratios .chip {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.size-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.size-summary .mono {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 调色滑杆 */
+.adjust-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.adjust-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 46px;
+  align-items: center;
+  gap: 8px;
+}
+
+.adjust-label {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.adjust-value {
+  font-size: 11px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.adjust-row .range {
+  width: 100%;
+}
+
+/* ------------------------------------------------------------- 画布 */
+
+/* 关键：确定高度。前端用 clientHeight-64 反算画布显示尺寸 */
+.tool-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: clamp(380px, 56vh, 620px);
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(0deg, rgba(47, 107, 98, 0.02), rgba(47, 107, 98, 0.02)),
+    var(--bg-2);
+  overflow: hidden;
+}
+
+.tool-stage-inner {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-canvas {
+  display: block;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(35, 38, 43, 0.1);
+  background: #fff;
+}
+
+/* 还没上传图片时，canvas 只是一块白底，淡出掉，让空状态更干净 */
+.tool-stage:has(.tool-stage-empty:not(.hidden)) .tool-canvas {
+  opacity: 0;
+}
+
+/* 遮罩/裁切层：与图片画布同尺寸并居中对齐 */
+.tool-overlay {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  box-shadow: none;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.tool-stage-empty {
+  position: absolute;
+  inset: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12.5px;
+  pointer-events: none;
+  border-radius: 10px;
+}
+
+.tool-stage-empty .glyph {
+  font-size: 30px;
+  color: var(--line-strong);
+  line-height: 1;
+}
+
+.tool-stage-empty small {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.tool-stage-empty.hidden {
+  display: none;
+}
+
+.tool-stage-status {
+  height: 28px;
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- 操作史 */
+
+.ops-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.ops-list:empty::after {
+  content: '还没有操作 · 裁剪/旋转/缩放/调色会记录在这里';
+  display: block;
+  padding: 10px 2px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.op-row {
+  display: grid;
+  grid-template-columns: 22px 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.op-row:hover {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.op-row.is-current {
+  background: var(--accent-dim);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.op-index {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  opacity: 0.7;
+  font-size: 10.5px;
+}
+
+.op-kind {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.op-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- 结果 */
+
+.tool-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.tool-results:empty::after {
+  content: '还没有处理结果';
+  display: block;
+  padding: 10px 2px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.tool-result-card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.14s, transform 0.12s, box-shadow 0.14s;
+}
+
+.tool-result-card:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(35, 38, 43, 0.08);
+}
+
+.tool-result-thumb {
+  display: block;
+  width: 100%;
+  height: 74px;
+  object-fit: cover;
+  background: var(--bg-2);
+}
+
+.tool-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 7px;
+  font-size: 10.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-result-meta .badge {
+  font-size: 9.5px;
+  padding: 1px 5px;
+}
+
+/* ------------------------------------------------------------- 响应式 */
+
+@media (max-width: 1440px) {
+  .tools-layout {
+    grid-template-columns: 272px minmax(0, 1fr) 268px;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .tools-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tool-stage {
+    height: clamp(300px, 44vh, 480px);
+  }
+
+  .tool-results {
+    max-height: none;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}

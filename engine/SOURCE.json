@@ -1,0 +1,30 @@
+{
+  "source_root": "<COMFY_ROOT>\\ComfyUI-aki-v3.2\\ComfyUI",
+  "source_version": "0.43.0",
+  "source_commit": "ab08f7b2caa6d4007ecde3762116c6193613f43b",
+  "copied_at": "2026-11-04 01:40:46+0800",
+  "file_count": 329,
+  "total_bytes": 5671325,
+  "total_mb": 5.41,
+  "vendored_packages": [
+    "comfy",
+    "node_helpers.py"
+  ],
+  "comfy_subdirs": [
+    "audio_encoders",
+    "background_removal",
+    "cldm",
+    "comfy_types",
+    "extra_samplers",
+    "image_encoders",
+    "k_diffusion",
+    "ldm",
+    "sd1_tokenizer",
+    "t2i_adapter",
+    "taesd",
+    "text_encoders",
+    "weight_adapter"
+  ],
+  "note": "comfy/ 与 node_helpers.py 为 ComfyUI 源码副本，未修改；本项目只 import 其模型库代码，不启动 ComfyUI 服务、不使用其节点图/队列/前端。",
+  "how_to_update": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\port_engine.ps1"
+}

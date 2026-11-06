@@ -491,6 +491,13 @@ def crop_region_factors(canvas, mask, *, fills,
 | 尺寸 | 直接 32 对齐 | 中心不动 + 向上取整 |
 | 空遮罩 | 报错/全图 | 全图（对齐孤海） |
 
+**已落地（`server/imaging.py` + `server/align.py`）：**
+
+- `crop_region_factors(...)` / `crop_with_color_fill(...)` / `align.fill_mask_holes(...)`；
+- `stitch_region` 支持**越界裁切**：贴回时先与画布求交，越界处的合成像素直接丢弃（遮罩外仍 byte-exact）；
+- `pipeline` 在不破坏旧客户端的前提下切换：`local` 里出现 `fills / expand_*` 才走新路径，否则沿用 `crop_region`；
+- 单测：越界往返遮罩外 `max_abs == 0`、空遮罩返回整画布、空洞填充（U 形开口不填）。
+
 ### 5.4 还原与颜色
 
 新增 `align.robust_color_match(src, ref, strength)`：
@@ -1193,7 +1200,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 9 步 Turbo 预设（`turbo9_official` / `turbo9_ckpt`） | ✅ 已落地，图片精修默认 9 步 | `server/config.py`、`web/src/components/studio/aiPanel.js` |
 | 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（13 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
 | 预处理接入 `pipeline.generate_edit` | ✅ 已接入（仅 `follow` 模式；`custom/ratio` 跳过） | `server/pipeline.py` |
-| zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
+| 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
+| zero_shift 强制 / task / hint=green | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1249,7 +1257,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 
 1. ~~`preprocess.py`（缩放/还原/32 对齐）+ `test_preprocess.py`~~ ✅ 已完成（`imaging.py` 内实现）
 2. ~~preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）~~ ✅ 已完成
-3. `crop_region` 扩展系数 + 越界众数填色
+3. ~~`crop_region` 扩展系数 + 越界众数填色~~ ✅ 已完成
 4. `local.fills / hint=green`（移除场景）
 5. 前端 `changed_ratio / leak_ratio / color.skipped` 标签联调
 

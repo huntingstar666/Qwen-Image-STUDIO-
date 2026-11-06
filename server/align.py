@@ -45,7 +45,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 __all__ = [
     "MULTIPLE",
@@ -62,6 +62,7 @@ __all__ = [
     "feather_mask",
     "curve_mask",
     "band_from_mask",
+    "fill_mask_holes",
     "reinhard_match",
     "diff_map",
     "mad_threshold",
@@ -627,6 +628,34 @@ def band_from_mask(mask, fallback_px: int = 8) -> np.ndarray | None:
     if float(ring.sum()) < 16:
         return None
     return ring
+
+
+def fill_mask_holes(mask, *, threshold: float = 0.5) -> np.ndarray:
+    """填掉遮罩内部的"洞"（被遮罩完全包围的背景区域），返回 float32 0/1 遮罩。
+
+    场景：移除物体时用户可能只圈了外轮廓，内部（如把手、镂空）没涂到；裁切窗口
+    需要按"实心包围盒"算，否则中间的空洞不会被模型看到。
+
+    做法：只在遮罩包围盒内做洪水填充——从包围盒边界出发，把与边界连通的背景标成
+    "外部"，剩下的背景就是洞，一并置 1。复杂度与包围盒面积成正比。
+    """
+    m = (np.asarray(mask, dtype=np.float32) > float(threshold))
+    if not m.any():
+        return np.zeros(m.shape, dtype=np.float32)
+    ys, xs = np.nonzero(m)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    sub = m[y0:y1, x0:x1]
+    h, w = sub.shape
+    # 用 PIL 的洪水填充：外面套一圈 0 边界，从角落灌 "外部" 标记
+    pad = Image.new("L", (w + 2, h + 2), 0)
+    pad.paste(Image.fromarray((sub.astype(np.uint8) * 255), "L"), (1, 1))
+    ImageDraw.floodfill(pad, (0, 0), 128)
+    arr = np.asarray(pad)[1:-1, 1:-1]
+    holes = (arr == 0)
+    out = np.zeros(m.shape, dtype=np.float32)
+    out[y0:y1, x0:x1] = np.logical_or(sub, holes).astype(np.float32)
+    return out
 
 
 def reinhard_match(

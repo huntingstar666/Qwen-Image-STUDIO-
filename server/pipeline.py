@@ -574,12 +574,28 @@ class Pipeline:
         # ---- 方案 B：先裁切局部，只采样这一块（省显存）
         crop_info = None
         if scheme == "b" and mask_canvas is not None:
-            crop_img, crop_info = imaging.crop_region(
-                canvas, mask_canvas,
-                context_factor=float(local.get("context_factor") or 1.5),
-                context_pixels=int(local.get("context_pixels") or 96),
-                multiple=int(profile.get("snap") or 32),
+            use_factors = any(
+                key in local
+                for key in ("fills", "expand_top", "expand_bottom", "expand_left", "expand_right")
             )
+            if use_factors:
+                # 孤海语义：短边 × 每向独立系数，越界用边缘众数色补齐
+                crop_img, crop_info = imaging.crop_region_factors(
+                    canvas, mask_canvas,
+                    fills=_truthy(local.get("fills")),
+                    expand_top=float(local.get("expand_top") or 1.3),
+                    expand_bottom=float(local.get("expand_bottom") or 1.4),
+                    expand_left=float(local.get("expand_left") or 1.4),
+                    expand_right=float(local.get("expand_right") or 1.4),
+                    multiple=int(profile.get("snap") or 32),
+                )
+            else:
+                crop_img, crop_info = imaging.crop_region(
+                    canvas, mask_canvas,
+                    context_factor=float(local.get("context_factor") or 1.5),
+                    context_pixels=int(local.get("context_pixels") or 96),
+                    multiple=int(profile.get("snap") or 32),
+                )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
         else:

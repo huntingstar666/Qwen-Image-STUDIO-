@@ -73,6 +73,8 @@ __all__ = [
     "plan_to_pad_info",
     "composite",
     "crop_region",
+    "crop_region_factors",
+    "crop_with_color_fill",
     "stitch_region",
     "compare",
 ]
@@ -1168,6 +1170,119 @@ def crop_region(
     return padded, info
 
 
+def _edge_mode_color(im: Image.Image, *, step: int = 4) -> tuple[int, int, int]:
+    """取图像四边像素里出现最多的 RGB（量化到 24bit 精确计数）。"""
+    a = np.asarray(im.convert("RGB"), dtype=np.uint8)
+    if a.size == 0:
+        return (0, 0, 0)
+    step = max(1, int(step))
+    border = np.concatenate([
+        a[0, ::step].reshape(-1, 3),
+        a[-1, ::step].reshape(-1, 3),
+        a[::step, 0].reshape(-1, 3),
+        a[::step, -1].reshape(-1, 3),
+    ])
+    packed = (border[:, 0].astype(np.int64) << 16) | (border[:, 1].astype(np.int64) << 8) | border[:, 2]
+    vals, counts = np.unique(packed, return_counts=True)
+    v = int(vals[int(np.argmax(counts))])
+    return ((v >> 16) & 255, (v >> 8) & 255, v & 255)
+
+
+def crop_with_color_fill(
+    im: Image.Image, box: tuple[int, int, int, int],
+    *, fill: tuple[int, int, int] | None = None,
+) -> Image.Image:
+    """按 ``box`` 裁图；越界部分用"边缘众数色"补，输出尺寸恒为 ``box`` 大小。
+
+    与 :func:`crop_region` 的 edge 补边不同：这里窗口可以越出画布，越界区域是
+    合成出来的，只在模型输入里存在；贴回时 :func:`stitch_region` 会按画布求交
+    丢弃它们，所以不会污染画布。
+    """
+    x0, y0, x1, y1 = (int(v) for v in box)
+    w, h = max(1, x1 - x0), max(1, y1 - y0)
+    src = np.asarray(im.convert("RGBA"), dtype=np.uint8)
+    sh, sw = src.shape[:2]
+    color = tuple(int(v) for v in (fill if fill is not None else _edge_mode_color(im)))
+    out = np.empty((h, w, 4), dtype=np.uint8)
+    out[..., 0] = color[0]
+    out[..., 1] = color[1]
+    out[..., 2] = color[2]
+    out[..., 3] = 255
+    ox0, oy0 = max(0, x0), max(0, y0)
+    ox1, oy1 = min(sw, x1), min(sh, y1)
+    if ox1 > ox0 and oy1 > oy0:
+        out[oy0 - y0: oy1 - y0, ox0 - x0: ox1 - x0] = src[oy0:oy1, ox0:ox1]
+    return Image.fromarray(out, "RGBA")
+
+
+def crop_region_factors(
+    original_canvas: Image.Image,
+    mask_canvas: np.ndarray | None,
+    *,
+    fills: bool = False,
+    expand_top: float = 1.3,
+    expand_bottom: float = 1.4,
+    expand_left: float = 1.4,
+    expand_right: float = 1.4,
+    multiple: int = 32,
+    max_side: int = 0,
+) -> tuple[Image.Image, CropInfo]:
+    """按「短边 × 每向独立系数」裁编辑区，允许越界（用边缘众数色填充）。
+
+    与 :func:`crop_region` 的差异（孤海工作流语义）：
+
+    * 扩展量 = ``短边 × (系数 - 1)``，上下左右可独立；
+    * ``fills=True`` 先填掉遮罩内部空洞再算包围盒（移除场景）；
+    * 窗口中心不动、尺寸向上取整到 ``multiple``，**越界不缩小**而是补色；
+    * 空遮罩 → 整画布（不报错）。
+
+    返回的 ``CropInfo.w/h`` 恒为 ``multiple`` 的倍数，因此 :func:`stitch_region`
+    的补边量为 0；越界部分在贴回时被画布求交自动丢弃。
+    """
+    original = original_canvas.convert("RGBA")
+    width, height = original.size
+    full = CropInfo(0, 0, width, height, width, height)
+    if mask_canvas is None:
+        return original, full
+
+    m = np.asarray(mask_canvas, dtype=np.float32)
+    if m.ndim != 2:
+        raise ValueError(f"遮罩必须是 (H, W)，收到 shape={m.shape}")
+    if m.shape != (height, width):
+        m = align.resize_mask(m, width, height)
+    if fills:
+        m = align.fill_mask_holes(m)
+    ys, xs = np.nonzero(m > 0.1)
+    if xs.size == 0:
+        return original, full
+
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    short = max(1, min(x1 - x0, y1 - y0))
+    top = max(0, min(int(short * (float(expand_top) - 1.0)), y0))
+    bottom = max(0, min(int(short * (float(expand_bottom) - 1.0)), height - y1))
+    left = max(0, min(int(short * (float(expand_left) - 1.0)), x0))
+    right = max(0, min(int(short * (float(expand_right) - 1.0)), width - x1))
+
+    multiple = max(1, int(multiple))
+    bw = _snap_up(x1 - x0 + left + right, multiple)
+    bh = _snap_up(y1 - y0 + top + bottom, multiple)
+    cx = (x0 - left + x1 + right) // 2
+    cy = (y0 - top + y1 + bottom) // 2
+    x, y = cx - bw // 2, cy - bh // 2
+
+    crop = crop_with_color_fill(original, (x, y, x + bw, y + bh))
+    if max_side and max(bw, bh) > int(max_side):
+        s = float(max_side) / float(max(bw, bh))
+        tw = max(multiple, int(round(bw * s / multiple)) * multiple)
+        th = max(multiple, int(round(bh * s / multiple)) * multiple)
+        crop = crop.resize((tw, th), Image.Resampling.LANCZOS)
+    return crop, CropInfo(
+        x=int(x), y=int(y), w=int(bw), h=int(bh),
+        canvas_w=int(width), canvas_h=int(height),
+    )
+
+
 def _crop_canvas_mask_for_region(
     mask_canvas: np.ndarray,
     crop: CropInfo,
@@ -1265,10 +1380,22 @@ def stitch_region(
     if (sw, sh) != (cw, ch):
         content = content.resize((cw, ch), Image.Resampling.BICUBIC)
 
+    # 裁切窗口可能越界（:func:`crop_region_factors` 用边缘众数色补齐）；贴回时
+    # 只处理与画布的交集，越界处的合成像素直接丢弃，绝不写到画布外。
+    ix0, iy0 = max(0, x), max(0, y)
+    ix1, iy1 = min(width, x + cw), min(height, y + ch)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return original
+    dx, dy = ix0 - x, iy0 - y
+    iw, ih = ix1 - ix0, iy1 - iy0
+    clipped = (dx, dy, iw, ih) != (0, 0, cw, ch)
+    if clipped:
+        content = content.crop((dx, dy, dx + iw, dy + ih))
+
     original_u8 = _to_uint8(original, alpha=True)
     content_u8 = _to_uint8(content, alpha=True)
     content_f = content_u8.astype(np.float32) / 255.0
-    region_u8 = original_u8[y: y + ch, x: x + cw]
+    region_u8 = original_u8[iy0:iy1, ix0:ix1]
     region_f = region_u8.astype(np.float32) / 255.0
 
     if mask_canvas is not None:
@@ -1309,6 +1436,11 @@ def stitch_region(
             ay[:bp] = ramp
             ay[-bp:] = ramp[::-1]
             alpha = np.outer(ay, ax).astype(np.float32)
+
+    if clipped:
+        alpha = alpha[dy: dy + ih, dx: dx + iw]
+        if hard_alpha is not None:
+            hard_alpha = hard_alpha[dy: dy + ih, dx: dx + iw]
 
     # 颜色：锚区（原始硬遮罩外）估 gain/offset，不足才回退 Reinhard（互斥）
     if band_mode not in ("alpha", "lowfreq"):
@@ -1352,7 +1484,7 @@ def stitch_region(
     alpha = align.curve_mask(alpha, curve)
 
     out = original_u8.copy()
-    view = out[y: y + ch, x: x + cw]
+    view = out[iy0:iy1, ix0:ix1]
     selected = alpha > 0.0
     if bool(selected.any()):
         a = alpha[selected][:, None]

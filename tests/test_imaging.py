@@ -588,6 +588,54 @@ def test_stitch_region_rejects_canvas_size_mismatch():
 
 
 # ---------------------------------------------------------------------------
+# crop_region_factors / crop_with_color_fill（孤海语义：短边系数 + 越界补色）
+# ---------------------------------------------------------------------------
+
+
+def test_crop_region_factors_size_is_aligned_and_covers_mask():
+    canvas = _rgba(512, 384, seed=22)
+    mask = _mask(512, 384, 200, 140, 240, 200)  # 40x60
+    crop, info = imaging.crop_region_factors(canvas, mask)
+    assert crop.size == (info.w, info.h)
+    assert info.w % 32 == 0 and info.h % 32 == 0
+    assert info.w >= 40 and info.h >= 60
+    assert (info.canvas_w, info.canvas_h) == (512, 384)
+
+
+def test_crop_region_factors_allows_out_of_bounds_and_stitches_back_exact():
+    canvas = _rgba(512, 384, seed=23)
+    mask = _mask(512, 384, 0, 0, 20, 200)  # 贴左边，窗口会越界到 x<0
+    crop, info = imaging.crop_region_factors(canvas, mask)
+    assert info.x < 0 or info.y < 0, (info.x, info.y)
+    assert crop.size == (info.w, info.h)
+
+    edited_crop = Image.new("RGBA", crop.size, (0, 255, 128, 255))
+    out = imaging.stitch_region(canvas, edited_crop, info, mask, color_match=False)
+    assert out.size == canvas.size
+    outside = _arr_u8(out)[mask == 0]
+    outside_orig = _arr_u8(canvas)[mask == 0]
+    assert int(np.abs(outside - outside_orig).max()) == 0, "越界裁切贴回后遮罩外被改动"
+
+
+def test_crop_region_factors_empty_mask_returns_full_canvas():
+    canvas = _rgba(128, 96, seed=24)
+    crop, info = imaging.crop_region_factors(canvas, np.zeros((96, 128), dtype=np.float32))
+    assert crop.size == canvas.size
+    assert (info.x, info.y, info.w, info.h) == (0, 0, 128, 96)
+
+
+def test_crop_with_color_fill_uses_edge_mode_color_outside():
+    base = Image.new("RGBA", (64, 64), (10, 20, 30, 255))
+    base.putpixel((0, 0), (200, 10, 10, 255))
+    crop = imaging.crop_with_color_fill(base, (-16, -16, 80, 80))
+    assert crop.size == (96, 96)
+    arr = np.asarray(crop)
+    # 越界角落是边缘众数色，画布内的像素仍是原图
+    assert tuple(int(v) for v in arr[0, 0][:3]) == (10, 20, 30)
+    assert tuple(int(v) for v in arr[20, 20][:3]) == (10, 20, 30)
+
+
+# ---------------------------------------------------------------------------
 # compare / 端到端
 # ---------------------------------------------------------------------------
 

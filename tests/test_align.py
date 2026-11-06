@@ -305,6 +305,32 @@ def test_fixed_point_size_rejects_non_positive():
 # ---------------------------------------------------------------------------
 
 
+def test_fill_mask_holes_closes_interior_hole():
+    mask = np.zeros((64, 64), dtype=np.float32)
+    mask[16:48, 16:48] = 1.0
+    mask[28:36, 28:36] = 0.0  # 内部洞
+    filled = align.fill_mask_holes(mask)
+    assert filled.dtype == np.float32
+    assert float(filled[32, 32]) == 1.0
+    assert float(filled[0, 0]) == 0.0  # 外部背景不动
+    assert float(filled[10, 32]) == 0.0
+
+
+def test_fill_mask_holes_keeps_open_gap():
+    # U 形：开口通向外部，缺口不能被填
+    mask = np.zeros((40, 40), dtype=np.float32)
+    mask[10:30, 10:14] = 1.0
+    mask[10:30, 26:30] = 1.0
+    mask[10:14, 10:30] = 1.0
+    filled = align.fill_mask_holes(mask)
+    assert float(filled[20, 20]) == 0.0
+
+
+def test_fill_mask_holes_empty_is_empty():
+    out = align.fill_mask_holes(np.zeros((8, 8), dtype=np.float32))
+    assert float(out.max()) == 0.0
+
+
 def test_dilate_mask_expands_square_window():
     mask = np.zeros((21, 21), dtype=np.float32)
     mask[10, 10] = 1.0

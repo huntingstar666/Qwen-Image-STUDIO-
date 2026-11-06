@@ -140,7 +140,8 @@ class _FakeEngine:
         pass
 
 
-def _run_edit(params: dict, fake: _FakeEngine, *, on_loras=None):
+def _run_edit(params: dict, fake: _FakeEngine, *, on_loras=None,
+              prompt: str = "把这里换成蓝天"):
     """在内存存储上跑一次 generate_edit，返回 (job, 落盘字节)。
 
     ``on_loras(params, sampling)`` 可以在挂 LoRA 前窥视归一化后的请求。
@@ -173,7 +174,7 @@ def _run_edit(params: dict, fake: _FakeEngine, *, on_loras=None):
 
     pipeline._build_loras = _build
     try:
-        job = jobs.Job(id="e2e", kind="edit", prompt="把这里换成蓝天", params=params)
+        job = jobs.Job(id="e2e", kind="edit", prompt=prompt, params=params)
         pipeline.Pipeline(engine=fake).generate_edit(job)
     finally:
         pipeline.storage.save_upload = old_upload
@@ -368,6 +369,45 @@ def test_generate_edit_outpaint_without_pads_falls_back_to_edit():
     assert quality["outpaint"] is None
     assert any("外扩比例" in warn for warn in quality["warnings"])
     assert (quality["output"]["w"], quality["output"]["h"]) == (1000, 700)
+
+
+def test_generate_edit_outpaint_augments_instruction():
+    """扩图必须带上"移除灰色区域"的训练指令，否则灰边会留在成图里。"""
+    src = _noise_image(1000, 700, seed=53)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "task": {"mode": "outpaint"},
+        "outpaint": {"left": 10, "right": 10},
+    }, fake)
+
+    assert fake.seen["prompt"].startswith("移除图像中的灰色区域")
+    assert job.meta.get("prompt_augmented") == "outpaint"
+
+
+def test_generate_edit_outpaint_keeps_user_gray_instruction():
+    src = _noise_image(1000, 700, seed=59)
+    fake = _FakeEngine()
+    _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "task": {"mode": "outpaint"},
+        "outpaint": {"left": 10},
+    }, fake, prompt="把灰边延展成海景")
+
+    assert fake.seen["prompt"] == "把灰边延展成海景"
+
+
+def test_generate_edit_remove_augments_green_instruction():
+    src = _noise_image(1000, 700, seed=61)
+    fake = _FakeEngine()
+    _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(1000, 700, (400, 250, 600, 450))),
+        "task": {"mode": "remove"},
+    }, fake, prompt="去掉画面里的路人")
+
+    assert fake.seen["prompt"].startswith("移除图像中的绿色区域")
+    assert fake.seen["prompt"].endswith("去掉画面里的路人")
 
 
 def test_generate_edit_outpaint_oversized_raises():

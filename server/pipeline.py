@@ -64,6 +64,10 @@ _TASK_ALIASES = {
     "outpaint": "outpaint",
 }
 
+#: 任务指令：与 LoRA 的训练提示词保持一致（缺了会留下灰边 / 绿区）。
+_OUTPAINT_INSTRUCTION = "移除图像中的灰色区域，无缝自然延展为完整图像。"
+_REMOVE_INSTRUCTION = "移除图像中的绿色区域。"
+
 #: 提示图别名：前端历史上传 ``green``，旧数据可能传 ``overlay``。
 _HINT_ALIASES = {
     "green": "green_overlay",
@@ -888,6 +892,15 @@ class Pipeline:
 
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         prompt_text = job.prompt or ""
+        # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
+        if task_mode == "outpaint" and not any(
+                key in prompt_text for key in ("灰色", "灰边", "gray", "grey")):
+            prompt_text = _OUTPAINT_INSTRUCTION + prompt_text
+            job.meta["prompt_augmented"] = "outpaint"
+        elif hint_mode == "green_overlay" and not any(
+                key in prompt_text.lower() for key in ("绿色", "绿区", "green")):
+            prompt_text = _REMOVE_INSTRUCTION + prompt_text
+            job.meta["prompt_augmented"] = "remove"
         # 姿态参考：插到最前面成为 image1，编辑目标顺延为 image2；
         # 提示词里的 <imageN> 同步顺延，避免 @ 引用指错图。
         pose = _pose_payload(params) if profile["id"] == "qwen" else None

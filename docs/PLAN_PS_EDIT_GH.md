@@ -676,6 +676,9 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 - 触发规则：`local.hint` 显式给出优先；`task.mode == "remove"` 且未给/给 `auto` 时自动 `green_overlay`；非法值回落 `none`；
 - **别名归一（商用兼容）**：前端历史上传 `"green"`，旧数据可能是 `"overlay"` / `"mask"` / `"grey"`，
   统一映射为 `green_overlay` / `gray_fill`，不要求客户端改字段；
+- **任务指令兜底**：`remove` 且提示词不含"绿色/绿区/green"、`outpaint` 且不含"灰色/灰边/gray/grey" 时，
+  后端自动前置对应训练指令（`移除图像中的绿色区域。` / `移除图像中的灰色区域，无缝自然延展为完整图像。`），
+  并写 `job.meta.prompt_augmented`。前端不需要自己拼这两句；
 - 提示图**只替换参考图**（`ref_images[0]`），latent 仍来自干净画布（先按保守方案，A/B 后再定）；
 - `job.quality.hint_mode` / `task_mode` 记录实际生效值。
 
@@ -1270,6 +1273,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 质量告警 `quality.warnings`（未选区 / 近全遮罩 / 回退说明） | ✅ 已落地 | `server/pipeline.py` |
 | 稳定性护栏：编辑画布 `max_side` 上限 + CUDA OOM 中文提示 | ✅ 已落地（e2e 覆盖） | `server/pipeline.py` |
 | 输入限流：单张上传 64MB / 内联图片 48M 字符 / 最多 10 张 | ✅ 已落地（单测覆盖） | `server/main.py` |
+| 任务指令兜底（remove/outpaint 自动补训练提示词） | ✅ 已落地（e2e 覆盖 3 条） | `server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1304,6 +1308,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 15. **告警写 `quality.warnings`，不阻断出图**：用户要能在结果面板看到"为什么和预期不一样"（未选区、近全遮罩、任务回退），后端只解释、不替用户改参数。
 16. **编辑与文生图共用 `cfg["max_side"]`（默认 4096）**：`custom/ratio` 或用户关掉预处理时，画布可能远超显存；在 VAE 编码前抛 `PipelineError`，不要等 CUDA OOM。采样异常里只翻译 `out of memory`，其它异常原样上抛，避免掩盖真实 bug。
 17. **输入必须先限流再解码**：`/api/upload` 单张 64MB，`/api/edit` 内联图片文本 48M 字符（约 36MB 原图）、最多 10 张。`images[i]` 允许 `{data}` / `{url}` / 裸字符串三种形态，只校验"有没有数据 + 大不大"，不做格式猜测。
+18. **训练约定由后端兜底，不指望前端拼提示词**：`remove` / `outpaint` 的指令句是 LoRA 效果的一部分；用户提示词里已含关键词时不重复追加，保证幂等。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1349,4 +1354,5 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 14. ~~`quality.warnings` 告警 + 任务 LoRA 自动挂载~~ ✅ 已完成（`/api/options` 同步暴露 `task_modes` / `outpaint_percent` / `outpaint_max_side`）
 15. ~~稳定性护栏：编辑画布 `max_side` 上限、CUDA OOM 中文提示~~ ✅ 已完成（e2e 覆盖 2 条）
 16. ~~输入限流：上传体积、内联图片体积、参考图张数~~ ✅ 已完成（单测覆盖 3 条）
+17. ~~任务指令兜底：remove/outpaint 自动补训练提示词（幂等）~~ ✅ 已完成（e2e 覆盖 3 条）
 

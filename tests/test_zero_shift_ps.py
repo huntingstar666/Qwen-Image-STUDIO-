@@ -315,6 +315,22 @@ def test_generate_edit_hint_alias_green_enables_overlay():
     assert fake.seen["images"][0].getpixel((500, 350)) != canvas.getpixel((500, 350))
 
 
+def test_generate_edit_remove_forces_green_hint_even_if_none():
+    """hint 关不掉 remove 的绿提示：Remove LoRA 的输入分布必须和训练一致。"""
+    src = _noise_image(1000, 700, seed=19)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(1000, 700, (400, 250, 600, 450))),
+        "task": {"mode": "remove"},
+        "local": {"enabled": True, "scheme": "a", "hint": "none"},
+    }, fake)
+
+    assert job.quality["hint_mode"] == "green_overlay"
+    assert any("绿色选区提示" in item for item in job.quality["warnings"])
+    assert job.meta.get("prompt_augmented") == "remove"
+
+
 def test_generate_edit_remove_without_mask_falls_back_to_edit():
     src = _noise_image(1000, 700, seed=13)
     fake = _FakeEngine()

@@ -894,9 +894,8 @@ class Pipeline:
         else:
             ref_images = [canvas] + decoded[1:]
 
-        # 提示图（green overlay）：移除任务默认开启，让 LoRA 看到的输入分布与训练一致。
-        # 扩图不需要绿提示——灰边本身就是提示。
-        # 默认留空 → 下面按任务自动决定（remove 自动上绿提示）；显式传 "none" 才关闭。
+        # 提示图（green overlay）：移除任务始终开启，让 LoRA 看到的输入分布与训练一致。
+        # 扩图不需要绿提示——灰边本身就是提示；普通编辑默认关闭。
         # 兼容前端写法（"green"）与旧数据（"overlay"）：统一归一到规范名。
         hint_mode = str(local.get("hint") or "").strip().lower()
         hint_mode = _HINT_ALIASES.get(hint_mode, hint_mode)
@@ -905,7 +904,13 @@ class Pipeline:
         else:
             if hint_mode in ("", "auto"):
                 hint_mode = "green_overlay" if task_mode == "remove" else "none"
-            if hint_mode not in ("none", "green_overlay"):
+            if task_mode == "remove":
+                # Remove LoRA 按「绿色选区」训练；既然自动挂了 LoRA，就必须给绿提示，
+                # 否则移除效果会明显退化（用户显式传 none 时说明原因，不静默）。
+                if hint_mode != "green_overlay":
+                    warnings.append("元素移除已自动启用绿色选区提示（Remove LoRA 的训练约定）")
+                hint_mode = "green_overlay"
+            elif hint_mode not in ("none", "green_overlay"):
                 hint_mode = "none"
             if hint_mode == "green_overlay" and mask_canvas is not None:
                 if scheme == "b" and crop_info is not None:

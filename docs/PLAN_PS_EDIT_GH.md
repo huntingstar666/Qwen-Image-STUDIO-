@@ -1191,8 +1191,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 合成（A：整图 / B：区域） | ✅ 已有，遮罩外 byte-exact | `imaging.composite`、`imaging.stitch_region` |
 | 锚区仿射 / 过渡带低频移植 / 差异诊断 | ✅ 已落地（P1–P4），合成默认启用 | `server/align.py` |
 | 9 步 Turbo 预设（`turbo9_official` / `turbo9_ckpt`） | ✅ 已落地，图片精修默认 9 步 | `server/config.py`、`web/src/components/studio/aiPanel.js` |
-| 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（12 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
-| preprocess 接入 pipeline / zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
+| 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（13 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
+| 预处理接入 `pipeline.generate_edit` | ✅ 已接入（仅 `follow` 模式；`custom/ratio` 跳过） | `server/pipeline.py` |
+| zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1247,7 +1248,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 ### 11.6 后续队列（本轮之后）
 
 1. ~~`preprocess.py`（缩放/还原/32 对齐）+ `test_preprocess.py`~~ ✅ 已完成（`imaging.py` 内实现）
-2. preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）
+2. ~~preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）~~ ✅ 已完成
 3. `crop_region` 扩展系数 + 越界众数填色
 4. `local.fills / hint=green`（移除场景）
 5. 前端 `changed_ratio / leak_ratio / color.skipped` 标签联调

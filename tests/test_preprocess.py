@@ -103,3 +103,15 @@ def test_apply_rejects_unexpected_source_size():
 def test_unknown_mode_raises():
     with pytest.raises(ValueError):
         imaging.preprocess_plan(100, 100, mode="bogus")
+
+
+def test_pipeline_geometry_chain_restores_source_size():
+    """预处理 → 画布规划 → 合成 → 裁回 → 还原 的几何闭环（不含采样）。"""
+    src = _noise(4000, 3000)
+    pp = imaging.preprocess_plan(*src.size, max_side=2048)
+    work = imaging.apply_preprocess(src, pp)
+    plan = imaging.plan_canvas(work.width, work.height, mode="follow", fit="pad")
+    canvas = imaging.compose_canvas(work, plan)
+    assert canvas.size == (plan.width, plan.height) == (2048, 1536)
+    final = imaging.restore_preprocess(imaging.crop_back_plan(canvas, plan), pp)
+    assert final.size == src.size

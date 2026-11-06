@@ -506,19 +506,35 @@ class Pipeline:
             data = _entry_bytes(entry)
             decoded.append(imaging.decode_image(data))
         src = decoded[0]
+        size_mode = str(params.get("size_mode") or "follow")
+
+        # 大图预处理：只缩不放，出图后还原。仅 follow 模式启用（custom/ratio 是
+        # 用户指定新尺寸，预处理会把这条路径搅乱）。
+        pp_params = params.get("preprocess") or {}
+        pp = imaging.preprocess_plan(
+            src.width, src.height,
+            enabled=_truthy(pp_params.get("enabled")) and size_mode == "follow",
+            max_side=int(pp_params.get("max_side") or 2048),
+            min_side=int(pp_params.get("min_side") or 768),
+            multiple=int(pp_params.get("multiple") or profile.get("snap") or 32),
+            mode=str(pp_params.get("mode") or "downscale_only"),
+        )
+        # 没真正缩小就不走预处理：对齐补边交给 plan_canvas 即可，少一条路径。
+        use_pp = pp.enabled and (pp.work_w, pp.work_h) != (pp.src_w, pp.src_h)
+        src_work = imaging.apply_preprocess(src, pp) if use_pp else src
 
         # 画布规划（32 对齐）——零像素偏移的第一步
-        plan = _plan_canvas_for(src, params, multiple=int(profile.get("snap") or 32))
-        canvas = imaging.compose_canvas(src, plan, pad_mode=str(params.get("pad_mode") or "edge"))
+        plan = _plan_canvas_for(src_work, params, multiple=int(profile.get("snap") or 32))
+        canvas = imaging.compose_canvas(src_work, plan, pad_mode=str(params.get("pad_mode") or "edge"))
         if canvas.size != (plan.width, plan.height):
             raise PipelineError(
                 f"画布尺寸异常：期望 {plan.width}×{plan.height}，实际 {canvas.size}")
 
-        # 遮罩（原图尺寸 → 画布坐标），零色差靠它把遮罩外原样保留
+        # 遮罩（原图尺寸 → 工作画布坐标），零色差靠它把遮罩外原样保留
         mask_canvas: np.ndarray | None = None
         if params.get("mask"):
             mask_bytes = _entry_bytes(params["mask"])
-            mask_src = imaging.decode_mask(mask_bytes, src.width, src.height)
+            mask_src = imaging.decode_mask(mask_bytes, src_work.width, src_work.height)
             mask_canvas = imaging.map_mask_to_canvas(mask_src, plan)
 
         # 记录输入图，供历史回看
@@ -532,8 +548,10 @@ class Pipeline:
         job.align = {
             "canvas": {"w": plan.width, "h": plan.height},
             "source": {"w": src.width, "h": src.height},
+            "work": {"w": src_work.width, "h": src_work.height},
             "applied": True,
             "plan": _plan_dict(plan),
+            "preprocess": {**dataclasses.asdict(pp), "applied": bool(use_pp)},
         }
 
         local = params.get("local") or {}
@@ -664,12 +682,14 @@ class Pipeline:
 
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
         # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸。
-        size_mode = str(params.get("size_mode") or "follow")
         if size_mode in ("custom", "ratio"):
             final = composed
             expected_size = (plan.width, plan.height)
         else:
             final = imaging.crop_back_plan(composed, plan, method="bicubic")
+            if use_pp:
+                # 预处理还原：先整数裁掉 32 补边，再唯一一次重采样回原尺寸
+                final = imaging.restore_preprocess(final, pp)
             expected_size = src.size
         size_match = final.size == expected_size
 
@@ -689,6 +709,12 @@ class Pipeline:
             "feather": feather,
             "color_match": color_match,
             "color": color_report,
+            "preprocess": {
+                "applied": bool(use_pp),
+                "scale": round(float(pp.scale), 6),
+                "work": {"w": pp.work_w, "h": pp.work_h},
+                "canvas": {"w": pp.canvas_w, "h": pp.canvas_h},
+            },
             "changed_ratio": diff_stats.get("changed_ratio"),
             "leak_ratio": diff_stats.get("leak_ratio"),
             "diff_threshold": diff_stats.get("threshold"),

@@ -217,7 +217,9 @@ GET  /api/options
   -> {"models":{"unet":[{"value","label","size_gb"}],"clip":[...],"vae":[...],"lora":[...]},
       "samplers":["euler","euler_ancestral","dpmpp_2m",...],"schedulers":["simple","normal",...],
       "ratios":[{"id":"1:1","label":"1:1 方形","w":2048,"h":2048},...],
-      "turbo_profiles":[{"id","label","sigmas":[float],"steps","cfg","sampler","lora","strength","note"}],
+      "turbo_profiles":[{"id","label","kind":"lora"|"ckpt","sigmas":[float],"steps","cfg","sampler","scheduler",
+                         "lora":{"name","file","strength","missing"}|null,
+                         "unet":{"name","file","missing"}|null,"note"}],
       "steps_presets":[{"id","label","steps","cfg","note"}],
       "defaults":{"unet","clip","vae","steps","cfg","sampler","scheduler","width","height","turbo_profile","consistency_lora"},
       "turbo_sigmas_help":str}
@@ -228,7 +230,7 @@ POST /api/generate (文生图)
   {"prompt","negative_prompt":"","width":int,"height":int,
    "steps":int,"cfg":float,"seed":int|null,"batch":int,
    "sampler":"euler","scheduler":"simple",
-   "turbo":{"enabled":bool,"profile":str,"sigmas":[float]|null},
+   "turbo":{"enabled":bool,"profile":str},
    "rgba":bool,
    "models":{"unet","clip","vae"},"loras":[{"name","strength"}],
    "meta":{...任意前端元数据，原样回传}}
@@ -288,6 +290,11 @@ GET  / -> web/index.html，其余 /src/... /assets/... /vendor/... 静态托管
 
 采样时再追加 `0.0`（9 个值 = 8 步）。配 `cfg=1.0`、`sampler=euler`。
 引擎把 sigma 直接作为 `torch.FloatTensor` 传给 `guider.sample`，**不需要任何 ComfyUI 节点**。
+
+Turbo 调度以 **预设** 为单位（`/api/options.turbo_profiles`），前端只传 `{enabled, profile}`：
+- `kind=lora`：自动挂载预设指定的加速 LoRA（同时最多挂一个，请求里多余的加速 LoRA 会被忽略）；
+- `kind=ckpt`：自动把扩散模型换成仓库里的 Turbo 权重（`config.json` 的 `turbo_unet`），不挂加速 LoRA。
+用户自己加载的普通 LoRA 不受影响。
 
 ### 4.4 提示词润色（Ollama）
 - 用官方 PE 系统提示词（`data/pe_system_prompt_t2i.txt` / `data/pe_system_prompt_edit.txt`）。

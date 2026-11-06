@@ -223,7 +223,7 @@ export function summarizeParams(params) {
     if (params[key] === undefined || params[key] === null || params[key] === '') continue;
     lines.push(`${label}：${params[key]}`);
   }
-  if (params.turbo?.enabled) lines.push(`Turbo：${params.turbo.profile || '自定义 sigma'}（${params.turbo.sigmas?.length || 0} 段）`);
+  if (params.turbo?.enabled) lines.push(`Turbo：${params.turbo.profile || '开启'}`);
   if (Array.isArray(params.loras) && params.loras.length) {
     lines.push(`LoRA：${params.loras.map((x) => `${x.name} @ ${x.strength}`).join('、')}`);
   }

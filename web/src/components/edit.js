@@ -42,6 +42,7 @@ export function createEditPage(host) {
   let turboControl = null;
   let loraPicker = null;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
+  let turboModelSnapshot = null; // 开 Turbo 前用户选的底模，切回普通模式时还原
   let modelsField = null;
   let dragFrom = null;
   let lastSeed = null;
@@ -856,15 +857,11 @@ export function createEditPage(host) {
     const profiles = store.state.options?.turbo_profiles || [];
     turboControl = new TurboControl(refs.turboHost, {
       profiles,
-      loras: store.state.options?.models?.turbo_lora || [],
+      defaultProfile: store.state.options?.defaults?.turbo_profile || '',
       initial: {
         enabled: Boolean(edit.turbo),
         profile: edit.turboProfile || '',
-        sigmas: edit.sigmas || '',
-        lora: edit.turboLora ?? null,
-        loraStrength: edit.turboLoraStrength ?? null,
       },
-      help: store.state.options?.turbo_sigmas_help || '',
       onChange: (value) => {
         // 开 Turbo 时记住原来的采样参数，关掉时还原。
         // 不还原的话会一直停在 8 步 / cfg 1 ——那是 Turbo 专用值，普通采样用会糊。
@@ -882,9 +879,6 @@ export function createEditPage(host) {
         }
         edit.turbo = value.enabled;
         edit.turboProfile = value.profile;
-        edit.sigmas = value.sigmasText || '';
-        edit.turboLora = value.lora;
-        edit.turboLoraStrength = value.loraStrength;
         if (restored) {
           edit.steps = restored.steps;
           edit.cfg = restored.cfg;
@@ -896,15 +890,13 @@ export function createEditPage(host) {
           }
           patchSettings({
             edit: {
-              turbo: false, turboProfile: value.profile, sigmas: value.sigmasText || '',
-              turboLora: value.lora, turboLoraStrength: value.loraStrength,
+              turbo: false, turboProfile: value.profile,
               steps: restored.steps, cfg: restored.cfg, sampler: restored.sampler,
             },
           });
           toastSuccess(`已关闭 Turbo，采样参数还原为 ${restored.steps} 步 · CFG ${restored.cfg}`);
         } else {
-          patchSettings({ edit: { turbo: value.enabled, turboProfile: value.profile, sigmas: value.sigmasText || '',
-                                  turboLora: value.lora, turboLoraStrength: value.loraStrength } });
+          patchSettings({ edit: { turbo: value.enabled, turboProfile: value.profile } });
         }
         applyTurboToFields();
       },
@@ -926,6 +918,8 @@ export function createEditPage(host) {
     refs.steps.disabled = enabled;
     refs.cfg.disabled = enabled;
     refs.sampler.disabled = enabled;
+    // 「自动切换 Turbo 底模」预设：只改界面显示，关闭后恢复用户原来的选择
+    applyTurboModel(enabled, profile);
     if (enabled && profile && overwriteValues) {
       if (profile.steps) {
         refs.steps.value = String(profile.steps);
@@ -940,6 +934,24 @@ export function createEditPage(host) {
         edit.sampler = profile.sampler;
       }
       patchSettings({ edit: { steps: edit.steps, cfg: edit.cfg, sampler: edit.sampler } });
+    }
+  }
+
+  function applyTurboModel(enabled, profile) {
+    if (!modelsField) return;
+    const ckpt = enabled && profile?.kind === 'ckpt' ? profile.unet?.name : '';
+    if (ckpt) {
+      if (turboModelSnapshot === null) {
+        turboModelSnapshot = modelsField.getValue().unet ?? '';
+      }
+      modelsField.setKey('unet', ckpt);
+      modelsField.setDisabled('unet', true);
+      return;
+    }
+    modelsField.setDisabled('unet', false);
+    if (turboModelSnapshot !== null) {
+      modelsField.setKey('unet', turboModelSnapshot);
+      turboModelSnapshot = null;
     }
   }
 
@@ -966,6 +978,8 @@ export function createEditPage(host) {
       edit.vae = value.vae || '';
       patchSettings({ edit: { unet: edit.unet, clip: edit.clip, vae: edit.vae } });
     });
+    // Turbo 的「自动切底模」预设需要模型下拉已就绪后才能套用
+    applyTurboToFields(false);
   }
 
   function renderConsistency() {
@@ -1099,9 +1113,6 @@ export function createEditPage(host) {
       turbo: {
         enabled: turboValue.enabled,
         profile: turboValue.profile,
-        sigmas: turboValue.enabled ? turboValue.sigmas : null,
-        lora: turboValue.enabled ? turboValue.lora : null,
-        lora_strength: turboValue.enabled ? turboValue.loraStrength : null,
       },
       models: { unet: models.unet || '', clip: models.clip || '', vae: models.vae || '' },
       loras: loraPicker.getValue(),

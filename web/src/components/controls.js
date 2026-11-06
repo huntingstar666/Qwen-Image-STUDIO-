@@ -1,6 +1,6 @@
 /**
  * 可复用表单控件：
- * - TurboControl：Turbo 开关 + turbo_profiles 方案 + 8 段 sigma 可编辑文本；
+ * - TurboControl：Turbo 开关 + 加速预设（调度 / 加速 LoRA / 底模全部由预设决定）；
  * - LoraPicker：LoRA 多选 + 强度；
  * - ModelsField：unet / clip / vae 三个模型下拉。
  * 文生图页与图像编辑页共用，避免参数逻辑两处各写一份。
@@ -9,34 +9,32 @@
 import { escapeHtml } from '../utils.js';
 
 /* ============================================================
- * Turbo 采样调度
+ * Turbo 加速预设
  * ============================================================ */
 export class TurboControl {
   /**
    * @param {HTMLElement} host
-   * @param {{profiles?: Array<object>, loras?: Array<object>, initial?: object, onChange?: Function}} options
+   * @param {{profiles?: Array<object>, initial?: object, defaultProfile?: string, onChange?: Function}} options
    */
-  constructor(host, { profiles = [], loras = [], initial = {}, onChange, help = '' } = {}) {
+  constructor(host, { profiles = [], initial = {}, defaultProfile = '', onChange } = {}) {
     this.host = host;
-    this.profiles = profiles;
-    this.loras = (loras || []).map((item) => {
-      if (typeof item === 'string') return { name: item, label: item, sizeGb: null, compatible: true, default: false };
-      return {
-        name: item.value ?? item.name ?? String(item),
-        label: item.label || item.value || String(item),
-        sizeGb: item.size_gb ?? item.sizeGb ?? null,
-        compatible: item.compatible !== false,
-        default: Boolean(item.default),
-      };
-    });
+    this.profiles = (profiles || []).map((profile) => ({
+      id: profile.id,
+      label: profile.label || profile.id,
+      kind: profile.kind || (profile.lora ? 'lora' : 'none'),
+      steps: profile.steps,
+      cfg: profile.cfg,
+      sampler: profile.sampler,
+      scheduler: profile.scheduler,
+      lora: profile.lora || null,
+      unet: profile.unet || null,
+      note: profile.note || '',
+    }));
     this.onChange = onChange;
-    this.help = help;
+    this.defaultProfile = defaultProfile || this.profiles[0]?.id || '';
     this.value = {
       enabled: Boolean(initial.enabled),
       profile: initial.profile || '',
-      sigmas: initial.sigmas || '',
-      lora: initial.lora ?? null,
-      loraStrength: initial.loraStrength ?? null,
     };
     this.render();
   }
@@ -49,33 +47,20 @@ export class TurboControl {
           <input type="checkbox" data-ref="toggle" ${enabled ? 'checked' : ''} />
           <span class="switch-track"></span>
           <span class="switch-label">Turbo 加速
-            <small>官方保存的 sigma 调度 · cfg 1.0 · euler</small>
+            <small>按预设自动切换调度 / 加速 LoRA / 底模</small>
           </span>
         </label>
       </div>
       <div class="turbo-box ${enabled ? '' : 'hidden'}" data-ref="box">
         <div class="turbo-head">
           <span class="badge-mini">TURBO</span>
-          <span>官方保存的采样调度（sigma 可编辑）</span>
+          <span>加速预设 · 开启时自动沿用上次选择</span>
         </div>
         <div class="field">
-          <span class="field-label">调度方案 <span class="tag-hint" data-ref="profileCount"></span></span>
+          <span class="field-label">加速方案</span>
           <select class="select" data-ref="profile"></select>
         </div>
-        <div class="field">
-          <span class="field-label">加速 LoRA <span class="tag-hint" data-ref="loraHint"></span></span>
-          <select class="select" data-ref="lora"></select>
-        </div>
-        <div class="field" data-ref="loraStrengthField">
-          <span class="field-label">LoRA 强度 <span class="tag-hint" data-ref="loraStrengthVal">1.0</span></span>
-          <input class="range" type="range" min="0" max="1.5" step="0.05" data-ref="loraStrength" />
-        </div>
-        <div class="field">
-          <span class="field-label">sigma 列表 <span class="tag-hint">逗号分隔 · 末尾 0.0 由引擎追加</span></span>
-          <textarea class="textarea mono turbo-sigmas" data-ref="sigmas" spellcheck="false"
-            placeholder="1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568"></textarea>
-        </div>
-        <div class="turbo-note" data-ref="help"></div>
+        <div class="turbo-note turbo-action" data-ref="action"></div>
         <div class="turbo-note" data-ref="note"></div>
       </div>`;
 
@@ -83,210 +68,101 @@ export class TurboControl {
       toggle: this.host.querySelector('[data-ref="toggle"]'),
       box: this.host.querySelector('[data-ref="box"]'),
       profile: this.host.querySelector('[data-ref="profile"]'),
-      sigmas: this.host.querySelector('[data-ref="sigmas"]'),
+      action: this.host.querySelector('[data-ref="action"]'),
       note: this.host.querySelector('[data-ref="note"]'),
-      help: this.host.querySelector('[data-ref="help"]'),
-      profileCount: this.host.querySelector('[data-ref="profileCount"]'),
-      lora: this.host.querySelector('[data-ref="lora"]'),
-      loraHint: this.host.querySelector('[data-ref="loraHint"]'),
-      loraStrength: this.host.querySelector('[data-ref="loraStrength"]'),
-      loraStrengthVal: this.host.querySelector('[data-ref="loraStrengthVal"]'),
-      loraStrengthField: this.host.querySelector('[data-ref="loraStrengthField"]'),
     };
-    if (this.help) this.refs.help.textContent = this.help;
-    this.refs.sigmas.value = this.value.sigmas || '';
+
     this.renderProfiles();
-    this.renderLoras();
+
     this.refs.toggle.addEventListener('change', () => {
       this.value.enabled = this.refs.toggle.checked;
       this.refs.box.classList.toggle('hidden', !this.value.enabled);
-      if (this.value.enabled && !this.refs.sigmas.value.trim()) this.applyFirstProfile();
       this.emitChange();
     });
     this.refs.profile.addEventListener('change', () => {
-      this.applyProfile(this.refs.profile.value);
+      this.value.profile = this.refs.profile.value;
+      this.renderDetail();
       this.emitChange();
     });
-    this.refs.lora.addEventListener('change', () => {
-      this.value.lora = this.refs.lora.value;
-      this.syncLoraStrengthField();
-      this.renderNote(this.selectedProfile());
-      this.emitChange();
-    });
-    this.refs.loraStrength.addEventListener('input', () => {
-      this.value.loraStrength = Number(this.refs.loraStrength.value);
-      this.refs.loraStrengthVal.textContent = this.value.loraStrength.toFixed(2);
-      this.emitChange();
-    });
-    this.refs.sigmas.addEventListener('input', () => {
-      this.value.sigmas = this.refs.sigmas.value;
-      this.emitChange({ sigmasEdited: true });
-    });
-  }
-
-  /** 加速 LoRA 下拉：默认项、全部候选、以及「不挂」 */
-  renderLoras() {
-    const options = this.loras || [];
-    const current = this.value.lora;
-    const rows = [];
-    rows.push('<option value="none">不挂加速 LoRA（用基座 + 官方 sigma）</option>');
-    for (const item of options) {
-      const size = item.sizeGb != null ? ` · ${item.sizeGb}GB` : '';
-      const flags = [item.compatible ? '' : '不兼容', item.default ? '默认' : ''].filter(Boolean).join(' · ');
-      rows.push(
-        `<option value="${escapeHtml(item.name)}" ${item.compatible ? '' : 'disabled'}>` +
-          `${escapeHtml(item.label)}${size}${flags ? `（${flags}）` : ''}</option>`,
-      );
-    }
-    if (!options.length) rows.push('<option value="none">后端未返回加速 LoRA 候选</option>');
-    this.refs.lora.innerHTML = rows.join('');
-
-    let picked = current;
-    if (picked == null) {
-      // 未指定：跟随档位默认，再退回 config 默认，最后不挂
-      const profile = this.selectedProfile();
-      picked = profile?.lora_name
-        || options.find((item) => item.default)?.name
-        || 'none';
-    }
-    const exists = [...this.refs.lora.options].some((opt) => opt.value === picked && !opt.disabled);
-    this.refs.lora.value = exists ? picked : 'none';
-    this.value.lora = this.refs.lora.value;
-    this.syncLoraStrengthField();
-  }
-
-  syncLoraStrengthField() {
-    const off = this.refs.lora.value === 'none';
-    this.refs.loraStrengthField.classList.toggle('hidden', off);
-    const strength = this.value.loraStrength ?? 1.0;
-    this.refs.loraStrength.value = String(strength);
-    this.refs.loraStrengthVal.textContent = Number(strength).toFixed(2);
-    const selected = this.loras.find((item) => item.name === this.refs.lora.value);
-    this.refs.loraHint.textContent = off
-      ? '不挂 LoRA'
-      : selected?.sizeGb != null
-        ? `${selected.sizeGb}GB${selected.sizeGb >= 4 ? ' · 加载慢、占内存/显存' : ''}`
-        : '';
   }
 
   renderProfiles() {
-    const profiles = this.profiles || [];
-    this.refs.profileCount.textContent = `${profiles.length} 个方案`;
-    if (!profiles.length) {
-      this.refs.profile.innerHTML = '<option value="">后端未返回 turbo_profiles</option>';
-      this.refs.note.textContent = '服务未就绪或未配置 turbo_profiles；仍可手动填写 sigma 并开启 Turbo。';
+    const select = this.refs.profile;
+    if (!this.profiles.length) {
+      select.innerHTML = '<option value="">后端未返回加速预设</option>';
+      select.disabled = true;
+      this.refs.action.textContent = '服务未就绪：无法获取 Turbo 加速预设。';
+      this.refs.note.textContent = '';
       return;
     }
-    this.refs.profile.innerHTML = profiles
-      .map((profile) => {
-        const id = profile.id ?? profile.value ?? profile.label;
-        return `<option value="${escapeHtml(id)}">${escapeHtml(profile.label || id)}</option>`;
-      })
+    select.disabled = false;
+    select.innerHTML = this.profiles
+      .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.label)}</option>`)
       .join('');
-    const target = profiles.find((p) => String(p.id ?? p.value) === String(this.value.profile)) || profiles[0];
-    this.refs.profile.value = String(target.id ?? target.value);
-    if (!this.value.sigmas) {
-      this.refs.sigmas.value = sigmasText(target.sigmas);
-      this.value.sigmas = this.refs.sigmas.value;
-    }
-    this.renderNote(target);
+    // 优先用上次选择；没有则用后端默认；都无效时用第一个
+    const target =
+      this.profiles.find((profile) => profile.id === this.value.profile) ||
+      this.profiles.find((profile) => profile.id === this.defaultProfile) ||
+      this.profiles[0];
+    this.value.profile = target.id;
+    select.value = target.id;
+    this.renderDetail();
   }
 
-  applyFirstProfile() {
-    const first = this.profiles?.[0];
-    if (!first) return;
-    this.applyProfile(first.id ?? first.value);
-  }
-
-  applyProfile(profileId) {
-    const profile = (this.profiles || []).find((p) => String(p.id ?? p.value) === String(profileId));
-    if (!profile) return;
-    this.value.profile = String(profileId);
-    const sigmas = sigmasText(profile.sigmas);
-    this.refs.sigmas.value = sigmas;
-    this.value.sigmas = sigmas;
-    // 换档位时同步该档位的默认加速 LoRA（用户仍可在下拉里改）
-    if (profile.lora === false) {
-      this.value.lora = 'none';
-    } else if (typeof profile.lora_name === 'string' && profile.lora_name) {
-      this.value.lora = profile.lora_name;
-    }
-    if (profile.strength != null) this.value.loraStrength = Number(profile.strength);
-    this.renderLoras();
-    this.renderNote(profile);
-  }
-
-  renderNote(profile) {
+  renderDetail() {
+    const profile = this.selectedProfile();
     if (!profile) return;
     const parts = [];
-    if (profile.steps) parts.push(`步数 ${profile.steps}`);
-    if (profile.cfg != null) parts.push(`CFG ${profile.cfg}`);
-    if (profile.sampler) parts.push(`采样器 ${profile.sampler}`);
-    if (typeof profile.lora === 'string' && profile.lora) {
-      parts.push(`LoRA ${profile.lora}${profile.strength != null ? ` @ ${profile.strength}` : ''}`);
-    } else if (profile.lora === true) {
-      parts.push(`自动挂载 Turbo LoRA${profile.strength != null ? ` @ ${profile.strength}` : ''}`);
+    let missing = false;
+    if (profile.kind === 'ckpt' && profile.unet) {
+      parts.push(`自动切换底模：${profile.unet.file}`);
+      missing = Boolean(profile.unet.missing);
+    } else if (profile.lora) {
+      const strength = profile.lora.strength != null ? ` @ ${profile.lora.strength}` : '';
+      parts.push(`自动挂载加速 LoRA：${profile.lora.file}${strength}`);
+      missing = Boolean(profile.lora.missing);
+    } else {
+      parts.push('不挂加速 LoRA');
     }
-    if (profile.note) parts.push(profile.note);
-    this.refs.note.textContent = parts.join(' · ') || '使用官方保存的 sigma 调度。';
+    const sampling = [
+      profile.steps ? `${profile.steps} 步` : '',
+      profile.cfg != null ? `CFG ${profile.cfg}` : '',
+      profile.sampler || '',
+      profile.scheduler ? `· ${profile.scheduler}` : '',
+    ].filter(Boolean).join(' · ');
+
+    this.refs.action.textContent = missing ? `${parts.join('')}（文件缺失）` : parts.join('');
+    this.refs.action.classList.toggle('turbo-missing', missing);
+    this.refs.note.textContent = [
+      sampling,
+      profile.note,
+      '其他 LoRA 仍可在下方按需加载；加速 LoRA 只会挂载预设指定的这一个。',
+    ].filter(Boolean).join(' · ');
   }
 
-  emitChange(extra = {}) {
-    this.onChange?.({ ...this.getValue(), ...extra });
+  emitChange() {
+    this.onChange?.({ ...this.getValue() });
   }
 
-  /** @returns {{enabled:boolean, profile:string, sigmas:number[]|null, sigmasText:string, lora:string, loraStrength:number}} */
+  /** @returns {{enabled:boolean, profile:string}} */
   getValue() {
-    const sigmasText = this.refs.sigmas.value;
-    const sigmas = parseSigmas(sigmasText);
-    this.refs.sigmas.classList.toggle('turbo-invalid', sigmas === null && sigmasText.trim() !== '');
     return {
-      enabled: this.refs.toggle.checked,
-      profile: this.refs.profile.value || '',
-      sigmas,
-      sigmasText,
-      lora: this.refs.lora ? this.refs.lora.value : 'none',
-      loraStrength: Number(this.refs.loraStrength?.value ?? 1),
+      enabled: Boolean(this.refs.toggle?.checked),
+      profile: this.refs.profile?.value || this.value.profile || '',
     };
   }
 
   selectedProfile() {
-    return (this.profiles || []).find((p) => String(p.id ?? p.value) === String(this.refs.profile.value)) || null;
+    return this.profiles.find((profile) => profile.id === this.getValue().profile) || null;
   }
 
   setValue(initial = {}) {
     this.value = {
       enabled: Boolean(initial.enabled),
       profile: initial.profile || '',
-      sigmas: initial.sigmas || '',
-      lora: initial.lora ?? null,
-      loraStrength: initial.loraStrength ?? null,
     };
     this.render();
   }
-}
-
-/** 把 sigma 数组转成可编辑文本：去掉末尾的 0.0（采样时引擎会自动追加）。 */
-export function sigmasText(sigmas) {
-  if (!Array.isArray(sigmas)) return '';
-  const values = sigmas.map(Number).filter((value) => Number.isFinite(value));
-  while (values.length > 1 && values[values.length - 1] === 0) values.pop();
-  return values.join(', ');
-}
-
-/** 解析 sigma 文本：空 → null；有非法值 → null；否则数字数组。 */
-export function parseSigmas(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-  const parts = raw.split(/[\s,，;；]+/).filter(Boolean);
-  const values = [];
-  for (const part of parts) {
-    const n = Number(part);
-    if (!Number.isFinite(n)) return null;
-    values.push(n);
-  }
-  if (!values.length || values.length > 32) return null;
-  return values;
 }
 
 /* ============================================================
@@ -420,6 +296,21 @@ export class ModelsField {
       value[select.dataset.role] = select.value;
     });
     return value;
+  }
+
+  /** 只改某个下拉的选中值（不重建 DOM，避免丢失事件监听）。 */
+  setKey(key, value) {
+    if (value == null) return;
+    const select = this.host.querySelector(`select[data-role="${key}"]`);
+    if (!select) return;
+    if ([...select.options].some((option) => option.value === String(value))) {
+      select.value = String(value);
+    }
+  }
+
+  setDisabled(key, disabled) {
+    const select = this.host.querySelector(`select[data-role="${key}"]`);
+    if (select) select.disabled = Boolean(disabled);
   }
 
   setValue(initial = {}) {

@@ -21,7 +21,6 @@ const DEFAULT_T2I = {
   scheduler: 'simple',
   turbo: false,
   turboProfile: '',
-  sigmas: '',
   rgba: false,
   loras: {},
   unet: '',
@@ -59,7 +58,6 @@ const DEFAULT_EDIT = {
   scheduler: 'simple',
   turbo: false,
   turboProfile: '',
-  sigmas: '',
   loras: {},
   unet: '',
   clip: '',
@@ -324,10 +322,14 @@ export function applyOptionDefaults(options) {
     }
     if (defaults.width) t2i.width = defaults.width;
     if (defaults.height) t2i.height = defaults.height;
-    if (defaults.turbo_profile) {
-      t2i.turboProfile = defaults.turbo_profile;
-      edit.turboProfile = defaults.turbo_profile;
-    }
+  }
+
+  // Turbo 加速预设：上次选择有效就沿用，否则回落到后端默认（config.json 的 turbo_profile）
+  const turboIds = (options?.turbo_profiles || []).map((profile) => profile.id);
+  const turboDefault = defaults.turbo_profile || turboIds[0] || '';
+  if (turboIds.length) {
+    if (!turboIds.includes(t2i.turboProfile)) t2i.turboProfile = turboDefault;
+    if (!turboIds.includes(edit.turboProfile)) edit.turboProfile = turboDefault;
   }
 
   // 比例表里的默认项

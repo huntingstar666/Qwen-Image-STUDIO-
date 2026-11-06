@@ -4,7 +4,7 @@
  * 1. 大提示词 / 负向提示词输入；
  * 2. 比例选择（来自 /api/options.ratios，显示实际 w×h 并标注 32 的倍数）与自定义尺寸；
  * 3. 步数 / CFG / 种子 / 批量 / 采样器 / 调度器；
- * 4. Turbo 开关（turbo_profiles 的 8 段 sigma 可见可改）；
+ * 4. Turbo 开关（按 turbo_profiles 预设自动套用调度 / 加速 LoRA / 底模）；
  * 5. 透明背景、LoRA 多选（强度可调）、模型选择；
  * 6. 提示词上方嵌入风格选择器（风格 / MJ 码图 / 滤镜 / 视角，弹窗选择，chip 展示），
  *    提交时用 vendor 的 buildNodePrompt 合成到提示词；
@@ -237,6 +237,7 @@ export function createT2IPage(host) {
   let turboControl = null;
   let loraPicker = null;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
+  let turboModelSnapshot = null; // 开 Turbo 前用户选的底模，切回普通模式时还原
   let modelsField = null;
   let lastSeed = null;
 
@@ -436,15 +437,11 @@ export function createT2IPage(host) {
     const profiles = store.state.options?.turbo_profiles || [];
     turboControl = new TurboControl(refs.turboHost, {
       profiles,
-      loras: store.state.options?.models?.turbo_lora || [],
+      defaultProfile: store.state.options?.defaults?.turbo_profile || '',
       initial: {
         enabled: Boolean(t2i.turbo),
         profile: t2i.turboProfile || '',
-        sigmas: t2i.sigmas || '',
-        lora: t2i.turboLora ?? null,
-        loraStrength: t2i.turboLoraStrength ?? null,
       },
-      help: store.state.options?.turbo_sigmas_help || '',
       onChange: (value) => {
         // 开 Turbo 时记住原采样参数，关掉时还原（否则会一直停在 8 步 / cfg 1）
         if (value.enabled && !turboSnapshot) {
@@ -461,9 +458,6 @@ export function createT2IPage(host) {
         }
         t2i.turbo = value.enabled;
         t2i.turboProfile = value.profile;
-        t2i.sigmas = value.sigmasText || '';
-        t2i.turboLora = value.lora;
-        t2i.turboLoraStrength = value.loraStrength;
         if (restored) {
           t2i.steps = restored.steps;
           t2i.cfg = restored.cfg;
@@ -475,15 +469,13 @@ export function createT2IPage(host) {
           }
           patchSettings({
             t2i: {
-              turbo: false, turboProfile: value.profile, sigmas: value.sigmasText || '',
-              turboLora: value.lora, turboLoraStrength: value.loraStrength,
+              turbo: false, turboProfile: value.profile,
               steps: restored.steps, cfg: restored.cfg, sampler: restored.sampler,
             },
           });
           toastSuccess(`已关闭 Turbo，采样参数还原为 ${restored.steps} 步 · CFG ${restored.cfg}`);
         } else {
-          patchSettings({ t2i: { turbo: value.enabled, turboProfile: value.profile, sigmas: value.sigmasText || '',
-                                  turboLora: value.lora, turboLoraStrength: value.loraStrength } });
+          patchSettings({ t2i: { turbo: value.enabled, turboProfile: value.profile } });
         }
         applyTurboToFields();
         updateSummary();
@@ -506,6 +498,8 @@ export function createT2IPage(host) {
     refs.steps.disabled = enabled;
     refs.cfg.disabled = enabled;
     refs.sampler.disabled = enabled;
+    // 「自动切换 Turbo 底模」预设：只改界面显示，关闭后恢复用户原来的选择
+    applyTurboModel(enabled, profile);
     if (enabled && profile && overwriteValues) {
       if (profile.steps) {
         refs.steps.value = String(profile.steps);
@@ -522,6 +516,24 @@ export function createT2IPage(host) {
       patchSettings({ t2i: { steps: t2i.steps, cfg: t2i.cfg, sampler: t2i.sampler } });
     }
     updateSummary();
+  }
+
+  function applyTurboModel(enabled, profile) {
+    if (!modelsField) return;
+    const ckpt = enabled && profile?.kind === 'ckpt' ? profile.unet?.name : '';
+    if (ckpt) {
+      if (turboModelSnapshot === null) {
+        turboModelSnapshot = modelsField.getValue().unet ?? '';
+      }
+      modelsField.setKey('unet', ckpt);
+      modelsField.setDisabled('unet', true);
+      return;
+    }
+    modelsField.setDisabled('unet', false);
+    if (turboModelSnapshot !== null) {
+      modelsField.setKey('unet', turboModelSnapshot);
+      turboModelSnapshot = null;
+    }
   }
 
   function renderLoras() {
@@ -550,6 +562,8 @@ export function createT2IPage(host) {
       t2i.vae = value.vae || '';
       patchSettings({ t2i: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae } });
     });
+    // Turbo 的「自动切底模」预设需要模型下拉已就绪后才能套用
+    applyTurboToFields(false);
   }
 
   /* ---------------- 参数摘要 ---------------- */
@@ -559,19 +573,19 @@ export function createT2IPage(host) {
     const height = snapUp(refs.height.value || t2i.height);
     const turboValue = turboControl?.getValue();
     const turboOn = Boolean(turboValue?.enabled);
+    const preset = turboControl?.selectedProfile();
     const loraCount = Object.keys(t2i.loras || {}).length;
-    const turboLoraName = turboOn && turboValue.lora && turboValue.lora !== 'none'
-      ? String(turboValue.lora).split('/').pop()
-      : '';
+    const turboLoraFile = turboOn && preset?.lora?.file ? preset.lora.file : '';
+    const turboCkptFile = turboOn && preset?.kind === 'ckpt' ? preset?.unet?.file || '' : '';
     const loraText = [
       loraCount ? `${loraCount} 个手动` : '',
-      turboLoraName ? `加速 ${turboLoraName}` : (turboOn ? '不挂加速' : ''),
+      turboLoraFile ? `加速 ${turboLoraFile}` : (turboOn ? '不挂加速' : ''),
     ].filter(Boolean).join(' + ') || '无';
     const rows = [
       ['尺寸', `${fmtNum(width)} × ${fmtNum(height)}`],
       ['步数 / CFG', `${refs.steps.value} / ${refs.cfg.value}`],
       ['采样', `${refs.sampler.value} · ${refs.scheduler.value}`],
-      ['Turbo', turboOn ? `${turboValue.profile || '自定义'}` : '关闭'],
+      ['Turbo', turboOn ? (preset?.label || '开启') : '关闭'],
       ['批量', refs.batch.value],
       ['LoRA', loraText],
       ['透明背景', refs.rgba.checked ? '是' : '否'],
@@ -583,9 +597,11 @@ export function createT2IPage(host) {
       )
       .join('');
     if (turboOn) {
-      refs.actionHint.textContent = turboLoraName
-        ? `Turbo 模式 · 加速 LoRA：${turboLoraName}`
-        : 'Turbo 模式：不挂加速 LoRA（基座 + 官方 sigma）';
+      refs.actionHint.textContent = turboCkptFile
+        ? `Turbo 模式 · 自动切换底模：${turboCkptFile}`
+        : turboLoraFile
+          ? `Turbo 模式 · 加速 LoRA：${turboLoraFile}`
+          : 'Turbo 模式：不挂加速 LoRA';
     } else {
       refs.actionHint.textContent = '首次生成需要加载模型，可能要等待一段时间';
     }
@@ -695,9 +711,6 @@ export function createT2IPage(host) {
       turbo: {
         enabled: turboValue.enabled,
         profile: turboValue.profile,
-        sigmas: turboValue.enabled ? turboValue.sigmas : null,
-        lora: turboValue.enabled ? turboValue.lora : null,
-        lora_strength: turboValue.enabled ? turboValue.loraStrength : null,
       },
       rgba: refs.rgba.checked,
       models: {
@@ -765,8 +778,8 @@ export function createT2IPage(host) {
         toastWarn('风格模块未就绪：本次将只使用原始提示词（可稍后重试）');
       }
       const payload = collectPayload();
-      if (payload.turbo.enabled && payload.turbo.sigmas === null && !payload.turbo.profile) {
-        toastWarn('Turbo 已开启但没有可用 sigma，请选择调度方案或手动填写 sigma');
+      if (payload.turbo.enabled && !payload.turbo.profile) {
+        toastWarn('Turbo 已开启但没有可用的加速预设，请等模型信息加载完成后再试');
         return;
       }
       refs.resultState.textContent = '任务进行中';

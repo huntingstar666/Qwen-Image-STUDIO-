@@ -1000,17 +1000,22 @@ a:hover {
   letter-spacing: 0.02em;
 }
 
-.turbo-sigmas {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  min-height: 54px;
-}
-
 .turbo-note {
   font-size: 10.5px;
   color: #a9845f;
   line-height: 1.5;
+}
+
+.turbo-note.turbo-action {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #8a5426;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.turbo-note.turbo-missing {
+  color: var(--bad);
 }
 
 .locked-note {
@@ -1072,11 +1077,6 @@ a:hover {
 
 .page-host {
   display: block;
-}
-
-.turbo-sigmas.turbo-invalid {
-  border-color: rgba(163, 77, 69, 0.5);
-  box-shadow: 0 0 0 3px rgba(163, 77, 69, 0.09);
 }
 
 .action-bar .hint {

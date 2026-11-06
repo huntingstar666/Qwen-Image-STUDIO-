@@ -606,7 +606,8 @@ html[data-theme="dark"] .btn.primary:hover {
 html[data-theme="dark"] .btn.violet,
 html[data-theme="dark"] .turbo-box .turbo-head,
 html[data-theme="dark"] .badge-mini,
-html[data-theme="dark"] .turbo-note {
+html[data-theme="dark"] .turbo-note,
+html[data-theme="dark"] .turbo-note.turbo-action {
   color: var(--warn);
 }
 

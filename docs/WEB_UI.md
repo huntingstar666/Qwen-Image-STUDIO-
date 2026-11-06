@@ -62,7 +62,7 @@ App Shell（所有页面共享）：
 - 自定义宽高（自动向上对齐 32，实时提示对齐结果）；
 - 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；
 - 采样步数预设 chips（`/api/options.steps_presets`）；
-- **Turbo 开关**：`/api/options.turbo_profiles` 选方案，展示可编辑 sigma 文本（自动去掉末尾 `0.0`，由引擎追加），显示 `turbo_sigmas_help`；开启时步数 / CFG / 采样器按方案锁定；
+- **Turbo 开关**：只选加速预设（`/api/options.turbo_profiles`），调度 / 加速 LoRA / 底模全部由预设自动处理；开启时沿用上次选择的预设，步数 / CFG / 采样器按预设锁定；「自动切换 Turbo 底模」预设会临时切换 UNET 下拉并禁用，关闭 Turbo 后恢复；
 - 透明背景（RGBA）开关；
 - 高级折叠区：UNET / CLIP / VAE 模型下拉 + LoRA 多选（强度 0~2）；
 - **润色提示词**：`POST /api/polish` → 原文 / 润色后对比，展示模型、耗时、`wh_ratio`、`ratio_follow`、fallback；可一键采用（可选同时切换建议比例）或回退；
@@ -207,7 +207,7 @@ buildNodePrompt(rawPrompt, {
 请求体与契约第 3 节一致；额外说明：
 
 - 文生图 / 编辑请求的 `prompt` 是「正文 + 预设 + 视角」合成后的最终文本；`meta.rawPrompt` 保留用户原文，`meta.creativePresets` / `meta.imageAngle` 保留快照，便于历史追溯；
-- `turbo.sigmas` 发送去掉末尾 0.0 的数组（后端会追加 0.0）；
+- `turbo` 只发 `{enabled, profile}`：加速 LoRA、sigma、底模由后端预设决定，前端不再允许手动改；
 - 编辑 `local.scheme` 为 `a` / `b`，`local.enabled=false` 时后端按 `scheme=none` 处理；
 - `size_mode=follow` 时 `width/height` 传 `null`；`ratio` 模式传 `ratio` 与可选 `megapixels`；`fixed_point` 只传 `megapixels`。
 
@@ -324,5 +324,5 @@ import * as promptKit from '/vendor/image-tools-kit/src/prompt.js';        // pa
 | **关掉 Turbo 后步数还停在 8** | `applyTurboToFields()` 只在开启时写入档位参数（8 步 / cfg 1 / euler），关闭时只把输入框解除禁用、**不还原数值**。非 Turbo 采样用 8 步会明显发糊 | 开 Turbo 时快照 `{steps,cfg,sampler}`，关闭时还原（无快照则回落到 25 步 / cfg 1 / euler）并 toast 提示；页面加载时若「Turbo 关闭且步数 < 12」自动纠正为 25 |
 | **外扩滑杆显示 `NaN px`** | 绑定的字段名写错：store 里叫 `maskExpand`，代码绑的是 `expand` → `input.value = String(undefined)`，`Math.round(undefined)` 得 NaN | 绑 `maskExpand`，`maskEditor.setPreview` 与提交载荷 `mask_expand` 统一用它 |
 
-另外提醒：`Turbo 面板 → 加速 LoRA` 是可选的（含「不挂」），换档位会自动带出该档位的默认 LoRA；
-写进 `job.meta.turbo_lora` 便于复现。
+另外提醒：Turbo 面板只保留「开关 + 预设」，加速 LoRA 由预设自动挂载且同时最多一个；
+「自动切换 Turbo 底模」预设会临时切到仓库里的 Turbo 权重、不挂加速 LoRA。实际挂载结果写进 `job.meta.turbo_lora` / `job.meta.turbo_unet` 便于复现。

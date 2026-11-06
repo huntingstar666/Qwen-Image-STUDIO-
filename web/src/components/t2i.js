@@ -43,11 +43,12 @@ const FALLBACK_STEPS_PRESETS = [
   { id: 'turbo8', label: 'Turbo · 8 步', steps: 8, cfg: 1.0, note: '需 Turbo' },
 ];
 
-/** 尺寸卡片的分辨率档位：按长边计算，2K 优先用后端官方比例值。 */
+/** 尺寸卡片的分辨率档位：按长边计算，官方比例值仅在长边等于档位时直接采用。 */
 const SIZE_TIERS = [
   { value: 512, label: '512' },
   { value: 1024, label: '1K' },
   { value: 2048, label: '2K' },
+  { value: 2752, label: '2.7K' },
   { value: 4096, label: '4K' },
 ];
 
@@ -72,7 +73,7 @@ export function createT2IPage(host) {
           <div class="wb-adv-body">
             <section class="panel">
               <div class="panel-head">
-                <div class="panel-title">画面尺寸 <span class="panel-sub">官方 2K · 32 倍数</span></div>
+                <div class="panel-title">画面尺寸 <span class="panel-sub">长边档位 · 32 倍数</span></div>
               </div>
               <div class="panel-body">
                 <div class="ratio-grid" data-ref="ratios"></div>
@@ -422,10 +423,12 @@ export function createT2IPage(host) {
     return Math.min(4096, Math.max(256, Math.round(Number(value) || 0)));
   }
 
-  /** 按「长边 = 档位」算尺寸；2K 档优先用后端官方比例值（如 16:9 → 2752×1536）。 */
+  /** 按「长边 = 档位」算尺寸；官方预设仅在长边等于档位时直接采用。 */
   function sizeForRatio(id, tier = sizeTier) {
     const official = ratioList().find((ratio) => ratio.id === id);
-    if (official && tier === 2048) return { w: official.w, h: official.h };
+    if (official && Math.max(official.w, official.h) === tier) {
+      return { w: official.w, h: official.h };
+    }
     const { rw, rh } = ratioPair(id);
     const long = clampSide(tier);
     if (rw >= rh) {
@@ -434,11 +437,11 @@ export function createT2IPage(host) {
     return { w: clampSide(Math.round((long * rw) / rh / 32) * 32), h: long };
   }
 
-  /** 根据当前长边推断档位（官方 2K 值直接归到 2K）。 */
+  /** 根据长边推断档位（官方预设尺寸就近归档）。 */
   function inferTier(width, height) {
-    if (ratioList().some((ratio) => ratio.w === width && ratio.h === height)) return 2048;
     const long = Math.max(Number(width) || 0, Number(height) || 0);
-    let best = 2048;
+    if (!long) return 2048;
+    let best = SIZE_TIERS[0].value;
     for (const tier of SIZE_TIERS) {
       if (Math.abs(long - tier.value) < Math.abs(long - best)) best = tier.value;
     }

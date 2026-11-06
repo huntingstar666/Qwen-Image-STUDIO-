@@ -1282,6 +1282,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | `local.scheme=auto` 后端解析（2%~45% 阈值） | ✅ 已落地（2 条 e2e） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
 | 业务错误不给用户看类名前缀 + `/files` 引用缺失友好提示 | ✅ 已落地（2 条单测） | `server/jobs.py`、`server/pipeline.py` |
 | remove/outpaint 允许空提示词；`replay.json` 复用 `slim_params`；校验 LoRA 强度 | ✅ 已落地（3 条单测） | `server/main.py` |
+| 真机回归（RTX 5090 / 真实权重，edit·remove·outpaint·turbo9） | ✅ 全部通过：遮罩外 `max_abs=0`、扩图真实照片接缝 1~24 RGB、移除无残留 | 见 §11.7 |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1324,6 +1325,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 23. **`auto` 方案前后端同口径**：有遮罩且覆盖率在 2%~45% 才走方案 B，避免大遮罩裁出超大块反而更慢；阈值改动必须两边一起改。
 24. **错误文案面向用户，不面向开发者**：`server.*` 抛出的 `RuntimeError` 子类（`PipelineError`）只回中文正文，去掉 `ClassName:` 前缀；`/files` 引用被清理时提示"图片不存在或已被清理"，不要漏 `FileNotFoundError`。
 25. **`remove` / `outpaint` 不强制提示词**：这两类任务的训练指令由后端补全，第三方只传 `task.mode` + 图 + 遮罩即可；普通编辑仍要求指令，否则等于随机整图重绘。
+26. **`remove` 的绿提示不可关闭**：既然 remove 会自动挂 Remove LoRA，就必须同时给「绿色选区」提示，否则模型输入分布与训练不一致、移除效果明显退化。显式传 `hint="none"` 时仍强制 `green_overlay`，但要在 `quality.warnings` 里说明原因，不静默改写用户参数。
+27. **扩图回归必须用真实照片**：纯色渐变 + 白色矩形这类"卡片感"合成图会被模型理解成「一张画贴在背景上」，输出画框 + 投影；这属于模型语义判断，不是管线缺陷。验收扩图质量用照片素材，合成图只用来测几何（尺寸/偏移/遮罩外 byte-exact）。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1377,4 +1380,23 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 22. ~~`local.scheme=auto` 后端解析（与前端同阈值）~~ ✅ 已完成（2 条 e2e）
 23. ~~业务错误去掉类名前缀 + `/files` 引用缺失友好提示~~ ✅ 已完成（2 条单测）
 24. ~~remove/outpaint 允许空提示词、replay 复用 `slim_params`、LoRA 强度校验~~ ✅ 已完成（3 条单测）
+25. ~~真实权重端到端回归（edit / remove / outpaint / turbo9）~~ ✅ 已完成，见 §11.7
+
+### 11.7 真机回归记录（2026-11-07，RTX 5090 / torch 2.13.0+cu130）
+
+服务用当前代码新起在 `8711`（旧实例还在 `8700`），解释器加 `-s` 避免 user site-packages 的 cu128 torch 覆盖。
+
+| 场景 | 配置 | 耗时 | 关键结果 |
+| --- | --- | --- | --- |
+| 标准编辑 | `scheme=auto`（→B）/ 25 步 | 42.1s（含 18s 加载） | `outside_max_abs=0`、遮罩外非零像素 0、`zero_shift.verified=true` |
+| 元素移除 | 自动 Remove LoRA 1.0 + 绿提示 | 41.1s | `hint_mode=green_overlay`、`mask_coverage=0.1156`、无绿色残留 |
+| 扩图（合成图） | 12%/12%/10%/10% | 11.6s | 几何正确（1280×928、偏移 123/133/77/83），但输出「画框+投影」 |
+| 扩图（照片，25 步） | 同上 | 12.6s | 视觉无缝，接缝 1~24 RGB |
+| 扩图（照片，turbo9） | 同上 | 17.1s | 视觉无缝，接缝 1~4 RGB（右侧 16） |
+| Turbo9 编辑 | `turbo9_gh` / 9 步 | 17.5s | 链路可用、`outside_max_abs=0` |
+
+扩图「画框」问题定位过程：先关掉 `local` 合成看模型原始输出，确认灰边被画成浅色卡纸 + 投影，属于模型对「卡片感」合成图的语义判断；另外同一配置换成真实照片后完全正常。因此不改管线，只把「扩图质量必须用照片验收」写进决策 27。
+
+进度条真机确认单调递增（准备模型 → 文本编码 → 扩散采样 → `采样 n/25` → 解码与合成 → 完成），不再倒退。
+
 

@@ -117,3 +117,32 @@ def test_rejects_local_numeric_out_of_range():
 def test_rejects_mask_wrong_type():
     with pytest.raises(main.ApiError, match="mask"):
         main._validate_edit_params({"mask": 123})
+
+
+def test_edit_endpoint_rejects_image_without_data():
+    with pytest.raises(main.ApiError, match=r"images\[1\]"):
+        main.api_edit({"prompt": "换成蓝天", "images": [{}]})
+
+
+def test_edit_endpoint_accepts_url_entry():
+    """走 /api/upload 后引用 /files/ 路径是合法用法，不能误判为缺数据。"""
+    with pytest.raises(main.ApiError, match="未知"):
+        # 结构合法（有 url），因此会走到参数校验；用一个非法参数证明已越过图片检查
+        main.api_edit({
+            "prompt": "换成蓝天",
+            "images": [{"url": "/files/uploads/up-1.png"}],
+            "size_mode": "zoom",
+        })
+
+
+def test_edit_endpoint_rejects_oversized_inline_image():
+    old = main.MAX_INLINE_IMAGE_CHARS
+    main.MAX_INLINE_IMAGE_CHARS = 16
+    try:
+        with pytest.raises(main.ApiError, match="过大"):
+            main.api_edit({
+                "prompt": "换成蓝天",
+                "images": [{"data": "data:image/png;base64," + "A" * 32}],
+            })
+    finally:
+        main.MAX_INLINE_IMAGE_CHARS = old

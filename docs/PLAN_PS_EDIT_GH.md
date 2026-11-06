@@ -1269,6 +1269,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 任务 LoRA 自动挂载（只传 `task.mode` 也生效） | ✅ 已落地 | `server/pipeline.py` |
 | 质量告警 `quality.warnings`（未选区 / 近全遮罩 / 回退说明） | ✅ 已落地 | `server/pipeline.py` |
 | 稳定性护栏：编辑画布 `max_side` 上限 + CUDA OOM 中文提示 | ✅ 已落地（e2e 覆盖） | `server/pipeline.py` |
+| 输入限流：单张上传 64MB / 内联图片 48M 字符 / 最多 10 张 | ✅ 已落地（单测覆盖） | `server/main.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1302,6 +1303,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 14. **扩图必须有上限与回退**：`outpaint_canvas` 的 `max_side` 是防 OOM 的最后一道闸；API 只做 `0~200` 范围校验；四边全 0 时退回普通编辑并写 `warnings`——既不要 400 卡住用户，也不要静默生成一张尺寸没变的图。
 15. **告警写 `quality.warnings`，不阻断出图**：用户要能在结果面板看到"为什么和预期不一样"（未选区、近全遮罩、任务回退），后端只解释、不替用户改参数。
 16. **编辑与文生图共用 `cfg["max_side"]`（默认 4096）**：`custom/ratio` 或用户关掉预处理时，画布可能远超显存；在 VAE 编码前抛 `PipelineError`，不要等 CUDA OOM。采样异常里只翻译 `out of memory`，其它异常原样上抛，避免掩盖真实 bug。
+17. **输入必须先限流再解码**：`/api/upload` 单张 64MB，`/api/edit` 内联图片文本 48M 字符（约 36MB 原图）、最多 10 张。`images[i]` 允许 `{data}` / `{url}` / 裸字符串三种形态，只校验"有没有数据 + 大不大"，不做格式猜测。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1346,4 +1348,5 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 13. ~~扩图商用护栏：`0~200` 百分比校验、`max_side=8192` 防 OOM、空比例退回普通编辑~~ ✅ 已完成
 14. ~~`quality.warnings` 告警 + 任务 LoRA 自动挂载~~ ✅ 已完成（`/api/options` 同步暴露 `task_modes` / `outpaint_percent` / `outpaint_max_side`）
 15. ~~稳定性护栏：编辑画布 `max_side` 上限、CUDA OOM 中文提示~~ ✅ 已完成（e2e 覆盖 2 条）
+16. ~~输入限流：上传体积、内联图片体积、参考图张数~~ ✅ 已完成（单测覆盖 3 条）
 

@@ -27,6 +27,11 @@ from . import (
 )
 from . import models as image_models
 
+#: 单张上传上限：4K PNG 约 20~30MB，64MB 足够且能挡住误传的超大文件。
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+#: 请求里内联图片（data URL 文本）的长度上限，约合 36MB 原图。
+MAX_INLINE_IMAGE_CHARS = 48 * 1024 * 1024
+
 # --------------------------------------------------------------------------- 单例
 
 
@@ -470,6 +475,18 @@ def api_edit(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         raise ApiError("images 必须是非空数组（第 1 张是编辑目标）")
     if len(images) > 10:
         raise ApiError("最多支持 10 张参考图")
+    for index, entry in enumerate(images, start=1):
+        if isinstance(entry, dict):
+            data = entry.get("data") or entry.get("url") or ""
+        elif isinstance(entry, str):
+            data = entry
+        else:
+            data = ""
+        if not isinstance(data, str) or not data.strip():
+            raise ApiError(f"images[{index}] 缺少图像数据")
+        if len(data) > MAX_INLINE_IMAGE_CHARS:
+            raise ApiError(
+                f"images[{index}] 图像过大，请先压缩或改用 /api/upload 上传后再引用")
     _validate_edit_params(payload)
     payload["prompt"] = prompt
     payload["images"] = images
@@ -796,6 +813,9 @@ async def api_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     data = await file.read()
     if not data:
         raise ApiError("上传文件为空")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ApiError(
+            f"图片过大：{len(data) / 1024 / 1024:.0f}MB，上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
     try:
         meta = storage.save_upload(data, orig_name=file.filename)
     except ValueError as exc:

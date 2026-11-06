@@ -96,8 +96,9 @@ def _mask_bytes(w: int, h: int, box: tuple[int, int, int, int]) -> bytes:
 class _FakeEngine:
     """把「模型」换成一个确定性的像素变换，只验证管线几何/合成。"""
 
-    def __init__(self, transform=None):
+    def __init__(self, transform=None, error: Exception | None = None):
         self.transform = transform or (lambda im: ImageOps.invert(im.convert("RGB")))
+        self.error = error
         self.seen: dict = {}
 
     def status(self):
@@ -128,6 +129,8 @@ class _FakeEngine:
         return image
 
     def sample(self, **kwargs):
+        if self.error is not None:
+            raise self.error
         return self.transform(kwargs["latent"])
 
     def decode(self, samples):
@@ -375,6 +378,27 @@ def test_generate_edit_outpaint_oversized_raises():
             "images": [{"data": _src_url(src)}],
             "task": {"mode": "outpaint"},
             "outpaint": {"left": 100, "right": 100},
+        }, fake)
+
+
+def test_generate_edit_rejects_canvas_over_max_side():
+    """关闭预处理后的大图不能被静默送进采样，必须在编码前拦下。"""
+    src = _noise_image(4400, 1000, seed=43)
+    fake = _FakeEngine()
+    with pytest.raises(pipeline.PipelineError, match="超过上限"):
+        _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "preprocess": {"enabled": False},
+        }, fake)
+
+
+def test_generate_edit_translates_cuda_oom():
+    src = _noise_image(640, 480, seed=47)
+    fake = _FakeEngine(error=RuntimeError("CUDA out of memory. Tried to allocate ..."))
+    with pytest.raises(pipeline.PipelineError, match="显存不足"):
+        _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "mask": imaging.data_url("image/png", _mask_bytes(640, 480, (200, 160, 400, 320))),
         }, fake)
 
 

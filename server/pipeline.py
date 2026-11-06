@@ -758,6 +758,15 @@ class Pipeline:
             raise PipelineError(
                 f"画布尺寸异常：期望 {plan.width}×{plan.height}，实际 {canvas.size}")
 
+        # 与文生图共用同一上限：custom/ratio 或关闭预处理时可能规划出超大画布，
+        # 在编码前就拦住，别等 CUDA OOM 把整个服务拖死。
+        side_limit = int(cfg.get("max_side") or 4096)
+        if max(plan.width, plan.height) > side_limit:
+            raise PipelineError(
+                f"编辑画布 {plan.width}×{plan.height} 超过上限 {side_limit}（max_side）；"
+                "请开启大图预处理、缩小输出尺寸，或改用 follow 模式"
+            )
+
         # 遮罩（原图尺寸 → 工作画布坐标），零色差靠它把遮罩外原样保留
         mask_canvas: np.ndarray | None = None
         if params.get("mask"):
@@ -917,21 +926,29 @@ class Pipeline:
 
         job.check_cancel()
         _signal_progress(job, 4, total, "扩散采样")
-        samples = engine.sample(
-            positive=cond["positive"],
-            negative=cond["negative"],
-            latent=latent,
-            sigmas=sampling["sigmas"],
-            steps=sampling["steps"],
-            cfg=sampling["cfg"],
-            sampler=sampling["sampler"],
-            scheduler=sampling["scheduler"],
-            seed=sampling["seed"],
-            denoise=sampling["denoise"],
-            noise_mask=noise_mask,
-            slg=sampling["slg"],
-            callback=_make_callback(job, sampling["steps"]),
-        )
+        try:
+            samples = engine.sample(
+                positive=cond["positive"],
+                negative=cond["negative"],
+                latent=latent,
+                sigmas=sampling["sigmas"],
+                steps=sampling["steps"],
+                cfg=sampling["cfg"],
+                sampler=sampling["sampler"],
+                scheduler=sampling["scheduler"],
+                seed=sampling["seed"],
+                denoise=sampling["denoise"],
+                noise_mask=noise_mask,
+                slg=sampling["slg"],
+                callback=_make_callback(job, sampling["steps"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - 只翻译 OOM，其它异常原样抛出
+            if "out of memory" not in str(exc).lower():
+                raise
+            raise PipelineError(
+                "显存不足：请开启大图预处理、降低编辑画布/扩图比例，"
+                "或关闭其它占用显卡的程序后重试"
+            ) from exc
         job.check_cancel()
 
         _signal_progress(job, total - 1, total, "解码与合成")

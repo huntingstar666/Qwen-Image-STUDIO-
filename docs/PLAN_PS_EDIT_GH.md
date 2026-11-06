@@ -1268,6 +1268,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 扩图护栏（百分比 0~200 / `max_side=8192` / 空比例回退） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py`、`server/main.py` |
 | 任务 LoRA 自动挂载（只传 `task.mode` 也生效） | ✅ 已落地 | `server/pipeline.py` |
 | 质量告警 `quality.warnings`（未选区 / 近全遮罩 / 回退说明） | ✅ 已落地 | `server/pipeline.py` |
+| 稳定性护栏：编辑画布 `max_side` 上限 + CUDA OOM 中文提示 | ✅ 已落地（e2e 覆盖） | `server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1300,6 +1301,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 13. **任务名必须归一，不能按字符串白名单硬拒**：`inpaint` / `replace` 是前端 `detectTask` 的合法产出，后端映射为 `edit`；以后新增任务名只改 `_TASK_ALIASES`，不要动校验白名单逻辑。
 14. **扩图必须有上限与回退**：`outpaint_canvas` 的 `max_side` 是防 OOM 的最后一道闸；API 只做 `0~200` 范围校验；四边全 0 时退回普通编辑并写 `warnings`——既不要 400 卡住用户，也不要静默生成一张尺寸没变的图。
 15. **告警写 `quality.warnings`，不阻断出图**：用户要能在结果面板看到"为什么和预期不一样"（未选区、近全遮罩、任务回退），后端只解释、不替用户改参数。
+16. **编辑与文生图共用 `cfg["max_side"]`（默认 4096）**：`custom/ratio` 或用户关掉预处理时，画布可能远超显存；在 VAE 编码前抛 `PipelineError`，不要等 CUDA OOM。采样异常里只翻译 `out of memory`，其它异常原样上抛，避免掩盖真实 bug。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1343,4 +1345,5 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 12. ~~前后端契约归一：`inpaint/replace` → edit、`hint:"green"` → `green_overlay`、mask/local 类型与范围~~ ✅ 已完成（含 e2e 覆盖）
 13. ~~扩图商用护栏：`0~200` 百分比校验、`max_side=8192` 防 OOM、空比例退回普通编辑~~ ✅ 已完成
 14. ~~`quality.warnings` 告警 + 任务 LoRA 自动挂载~~ ✅ 已完成（`/api/options` 同步暴露 `task_modes` / `outpaint_percent` / `outpaint_max_side`）
+15. ~~稳定性护栏：编辑画布 `max_side` 上限、CUDA OOM 中文提示~~ ✅ 已完成（e2e 覆盖 2 条）
 

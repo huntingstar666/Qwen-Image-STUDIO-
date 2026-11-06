@@ -430,13 +430,17 @@ def decode_mask(
     return mask
 
 
-def encode_png(im: Image.Image, *, strip_icc: bool = True) -> bytes:
-    """编码 PNG（默认剥离 ICC，输出统一 sRGB 8bit；RGBA 透明通道保留）。"""
+def encode_png(im: Image.Image, *, strip_icc: bool = True, compress_level: int = 6) -> bytes:
+    """编码 PNG（默认剥离 ICC，输出统一 sRGB 8bit；RGBA 透明通道保留）。
+
+    ``compress_level`` 只影响编码耗时与文件体积（不影响画质）：6 是 PIL 默认，
+    1 在 2MP 图上快约 3.3 倍、体积大约 1.6 倍。
+    """
     im = im.copy()
     if strip_icc:
         im.info.pop("icc_profile", None)
     buf = io.BytesIO()
-    im.save(buf, format="PNG")
+    im.save(buf, format="PNG", compress_level=int(compress_level))
     return buf.getvalue()
 
 

@@ -36,9 +36,11 @@ from server.backends.native import (  # noqa: E402
     EngineConfig,
     EngineError,
     NativeEngine,
+    _CondCache,
     as_normal_tensor,
     callback_adapter,
     canvas_size,
+    cond_cache_key,
     latent_hw,
     normalize_loras,
     normalize_sigmas,
@@ -443,3 +445,63 @@ def test_status_is_stable_and_cheap_when_unavailable():
 def test_status_loaded_loras_shape():
     engine = NativeEngine(EngineConfig(engine_dir=FAKE_ROOT))
     assert isinstance(engine.status()["loaded"]["loras"], list)
+
+
+# ================================================================ 文本编码缓存
+
+def test_cond_cache_lru_and_stats():
+    cache = _CondCache(2)
+    cache.put("a", {"v": 1})
+    cache.put("b", {"v": 2})
+    assert cache.get("a")["v"] == 1        # 命中 a，b 变成最久未用
+    cache.put("c", {"v": 3})               # 淘汰 b
+    assert cache.get("b") is None
+    assert cache.get("a")["v"] == 1
+    assert cache.get("c")["v"] == 3
+    st = cache.stats()
+    assert st["size"] == 2 and st["max"] == 2
+    assert st["hits"] == 3 and st["misses"] == 1
+
+
+def test_cond_cache_disabled_when_size_zero():
+    cache = _CondCache(0)
+    assert cache.enabled is False
+    cache.put("a", {})
+    assert cache.get("a") is None
+    assert cache.stats()["size"] == 0
+
+
+def test_cond_cache_key_stable_and_image_sensitive():
+    from PIL import Image
+
+    red = Image.new("RGBA", (64, 64), (255, 0, 0, 255))
+    red_copy = Image.new("RGBA", (64, 64), (255, 0, 0, 255))
+    blue = Image.new("RGBA", (64, 64), (0, 0, 255, 255))
+
+    base = cond_cache_key("p", "", 0, [], 1)
+    assert base == cond_cache_key("p", "", 0, [], 1)
+    assert base != cond_cache_key("p2", "", 0, [], 1)        # 提示词变了
+    assert base != cond_cache_key("p", "neg", 0, [], 1)      # 负向变了
+    assert base != cond_cache_key("p", "", 1024, [], 1)      # resolution 变了
+    assert base != cond_cache_key("p", "", 0, [], 2)         # 权重代号变了
+
+    # 参考图按像素内容摘要：同图重新加载也命中，换色就不命中
+    assert cond_cache_key("p", "", 0, [red], 1) == cond_cache_key("p", "", 0, [red_copy], 1)
+    assert cond_cache_key("p", "", 0, [red], 1) != cond_cache_key("p", "", 0, [blue], 1)
+
+
+def test_clear_encode_cache_drops_entries_and_bumps_generation():
+    engine = NativeEngine(EngineConfig(engine_dir=FAKE_ROOT))
+    assert engine._encode_cache.enabled
+    engine._encode_cache.put("k", {})
+    before = engine._weights_generation
+    engine.clear_encode_cache()
+    assert engine._encode_cache.stats()["size"] == 0
+    assert engine._weights_generation == before + 1
+    assert engine.status()["encode_cache"]["max"] == 8
+
+
+def test_encode_cache_size_zero_disables():
+    engine = NativeEngine(EngineConfig(engine_dir=FAKE_ROOT, encode_cache_size=0))
+    assert engine._encode_cache.enabled is False
+    assert engine.status()["encode_cache"]["max"] == 0

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import secrets
 import time
 from typing import Any, Callable
@@ -110,6 +111,89 @@ def _signal_progress(job, value: int, total: int, label: str) -> None:
         job.set_progress(value, total, label)
     except Exception:  # noqa: BLE001 - 进度上报失败不能影响出图
         pass
+
+
+# --------------------------------------------------------------------------- 姿态参考
+#
+# 语义与 ComfyUI-Gaoshang-Pose / GaoshangQwenFreePose 对齐：
+#   image1 = 人偶姿态参考（黑底彩色人偶，只给动作 / 朝向 / 构图）
+#   image2.. = 人物与场景参考
+#   Qwen 采样时叠加 VNCCS 姿态 LoRA，提示词用 "Draw character from image2" 引导。
+# 图生图会把指令里的 <imageN> 整体顺延 1，保证 @ 引用仍然指向原来的图。
+
+POSE_LORA_FILE = "VNCCS_QI2_PoseStudioV1.1.safetensors"
+_IMAGE_TOKEN = re.compile(r"<image(\d+)>", re.IGNORECASE)
+
+
+def _pose_payload(params: dict[str, Any]) -> dict[str, Any] | None:
+    pose = params.get("pose")
+    if not isinstance(pose, dict):
+        return None
+    image = pose.get("image") or pose.get("data") or pose.get("dataURL")
+    if not image:
+        return None
+    return pose
+
+
+def _pose_reference(pose: dict[str, Any], size: tuple[int, int]) -> Image.Image:
+    """把姿态图等比放进黑底画布，尺寸与采样画布严格一致。"""
+    raw = pose.get("image") or pose.get("data") or pose.get("dataURL")
+    try:
+        image = imaging.decode_image(_entry_bytes(raw))
+    except Exception as exc:  # noqa: BLE001
+        raise PipelineError(f"姿态参考图解码失败：{exc}") from exc
+    image = image.convert("RGB")
+    resample = getattr(Image, "Resampling", Image).LANCZOS
+    scale = min(size[0] / image.width, size[1] / image.height)
+    fitted = image.resize(
+        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+        resample,
+    )
+    canvas = Image.new("RGB", size, (5, 7, 10))
+    canvas.paste(fitted, ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2))
+    return canvas
+
+
+def _shift_image_markers(text: str, offset: int = 1) -> str:
+    """姿态图插到最前面后，把提示词里的 <imageN> 统一顺延，保持引用不串位。"""
+    return _IMAGE_TOKEN.sub(lambda m: f"<image{int(m.group(1)) + offset}>", text or "")
+
+
+def _pose_prompt(prompt: str, pose: dict[str, Any], *, mode: str) -> str:
+    """按节点语义拼提示词：人偶只提供姿态，不进入画面。"""
+    summary = str(pose.get("summary") or "").strip()
+    if mode == "edit":
+        head = "Draw character from image2."
+        guide = (
+            "Image1 is a mannequin pose reference: match its body pose, orientation and framing. "
+            "Keep the identity, face, hairstyle and clothing of image2. "
+            "Do not render the mannequin, its colors, joints or any extra people."
+        )
+    else:
+        head = "Draw a natural, fully rendered person following the exact pose, body orientation and framing of image1."
+        guide = "Do not render the mannequin, its colors, joints or any extra people."
+    pose_line = f" Pose: {summary}." if summary else ""
+    return f"{head} {guide}{pose_line} {prompt}".strip()
+
+
+def _apply_pose_lora(cfg: dict[str, Any], profile: dict[str, Any],
+                     params: dict[str, Any], loras: list[dict[str, Any]], job) -> None:
+    """姿态开启时自动挂 VNCCS LoRA；文件缺失只警告，不影响出图。"""
+    pose = _pose_payload(params)
+    if not pose or profile.get("id") != "qwen":
+        return
+    if not _truthy(pose.get("use_lora", True)):
+        job.meta["pose_lora"] = "请求显式关闭姿态 LoRA"
+        return
+    path = config.resolve_model(cfg, "lora", pose.get("lora") or POSE_LORA_FILE)
+    if not path:
+        job.meta["pose_lora"] = f"未找到姿态 LoRA {POSE_LORA_FILE}，本次只做姿态语义参考"
+        return
+    strength = float(pose.get("strength") if pose.get("strength") is not None else 0.85)
+    strength = max(0.0, min(2.0, strength))
+    if not any(item["name"] == path for item in loras):
+        loras.append({"name": path, "strength": strength})
+    job.meta["pose_lora"] = f"{os.path.basename(path)} @ {strength:g}"
 
 
 # --------------------------------------------------------------------------- 采样计划
@@ -457,6 +541,7 @@ class Pipeline:
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
         model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
         loras = _build_loras(cfg, params, profile, sampling=sampling)
+        _apply_pose_lora(cfg, profile, params, loras, job)
         if sampling.get("turbo_lora_note"):
             job.meta["turbo_lora"] = sampling["turbo_lora_note"]
         if sampling.get("lora_warning") and not job.meta.get("lora_warning"):
@@ -502,7 +587,27 @@ class Pipeline:
         if profile["capabilities"].get("rgba") and _truthy(params.get("rgba")) and "RGBA" not in prompt:
             prompt = (f"This is an RGBA image with transparency. {prompt} "
                       f"The image has an alpha channel and a transparent background.")
-        cond = engine.encode_text(prompt, sampling["negative_prompt"])
+
+        # 姿态参考：作为 image1 交给文本编码器，latent 仍是空画布
+        pose = _pose_payload(params) if profile["id"] == "qwen" else None
+        if pose:
+            pose_ref = _pose_reference(pose, (width, height))
+            prompt = _pose_prompt(prompt, pose, mode="t2i")
+            cond = engine.encode_text(
+                prompt,
+                sampling["negative_prompt"],
+                images=[pose_ref],
+                resolution=0,
+            )
+            job.meta["pose"] = {
+                "preset": pose.get("preset"),
+                "label": pose.get("label"),
+                "summary": pose.get("summary"),
+                "role": "image1",
+            }
+            job.params["pose_prompt"] = prompt
+        else:
+            cond = engine.encode_text(prompt, sampling["negative_prompt"])
 
         job.check_cancel()
         _signal_progress(job, 3, total, "扩散采样")
@@ -649,6 +754,7 @@ class Pipeline:
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
         model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
         loras = _build_loras(cfg, params, profile, sampling=sampling)
+        _apply_pose_lora(cfg, profile, params, loras, job)
         if sampling.get("turbo_lora_note"):
             job.meta["turbo_lora"] = sampling["turbo_lora_note"]
         if sampling.get("lora_warning") and not job.meta.get("lora_warning"):
@@ -710,9 +816,30 @@ class Pipeline:
                     hint_mask = mask_canvas
                 ref_images[0] = imaging.mask_hint_overlay(ref_images[0], hint_mask)
 
+        # 采样画布 / latent 的基准始终是「编辑目标」（或方案 B 的裁切块）
+        work_image = ref_images[0]
+
         _signal_progress(job, 2, total, "文本编码（含参考图）")
+        prompt_text = job.prompt or ""
+        # 姿态参考：插到最前面成为 image1，编辑目标顺延为 image2；
+        # 提示词里的 <imageN> 同步顺延，避免 @ 引用指错图。
+        pose = _pose_payload(params) if profile["id"] == "qwen" else None
+        if pose:
+            pose_ref = _pose_reference(pose, work_image.size)
+            ref_images = [pose_ref] + ref_images
+            prompt_text = _shift_image_markers(prompt_text, 1)
+            prompt_text = _pose_prompt(prompt_text, pose, mode="edit")
+            job.meta["pose"] = {
+                "preset": pose.get("preset"),
+                "label": pose.get("label"),
+                "summary": pose.get("summary"),
+                "role": "image1",
+                "target": "image2",
+            }
+            job.meta["pose_prompt"] = prompt_text
+
         cond = engine.encode_text(
-            job.prompt or "",
+            prompt_text,
             sampling["negative_prompt"],
             images=ref_images,
             resolution=int(params.get("resolution") or 0),
@@ -720,7 +847,6 @@ class Pipeline:
 
         # 零偏移守卫：采样画布必须与参考图画布同尺寸
         cond_canvas = cond.get("canvas")
-        work_image = ref_images[0]
         if cond_canvas and tuple(cond_canvas) != work_image.size:
             raise PipelineError(
                 f"零偏移守卫：参考图画布 {tuple(cond_canvas)} 与采样画布 {work_image.size} 不一致。"

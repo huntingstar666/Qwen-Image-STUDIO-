@@ -98,6 +98,7 @@ const TABS = [
 const pages = new Map();
 let healthTimer = 0;
 let healthFailing = false;
+let healthBusy = false;
 
 /* ============================================================
  * 顶栏
@@ -375,17 +376,30 @@ function renderHealthError() {
 }
 
 async function pollHealth() {
+  if (healthBusy) return;
+  healthBusy = true;
   try {
     const health = await api.health();
     healthFailing = false;
     patchRuntime({ health });
     renderHealth(health);
   } catch (err) {
-    renderHealthError();
-    if (!healthFailing) {
-      healthFailing = true;
-      toastWarn('后端服务未连接：生成、编辑、历史等功能暂不可用。请确认服务已在 127.0.0.1:8700 启动。');
+    // 服务重启或单次网络抖动时先重试一次，避免弹出「后端未连接」吓人
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const health = await api.health();
+      healthFailing = false;
+      patchRuntime({ health });
+      renderHealth(health);
+    } catch {
+      renderHealthError();
+      if (!healthFailing) {
+        healthFailing = true;
+        toastWarn('后端服务未连接：生成、编辑、历史等功能暂不可用。请确认服务已在 127.0.0.1:8700 启动。');
+      }
     }
+  } finally {
+    healthBusy = false;
   }
 }
 

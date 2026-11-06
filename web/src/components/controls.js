@@ -156,6 +156,14 @@ export class TurboControl {
     return this.profiles.find((profile) => profile.id === this.getValue().profile) || null;
   }
 
+  /** 由外部（输入框 pill）切换 Turbo 开关，保持内部开关与侧栏展示同步。 */
+  setEnabled(enabled) {
+    this.value.enabled = Boolean(enabled);
+    if (this.refs?.toggle) this.refs.toggle.checked = this.value.enabled;
+    this.refs?.box?.classList.toggle('hidden', !this.value.enabled);
+    this.emitChange();
+  }
+
   setValue(initial = {}) {
     this.value = {
       enabled: Boolean(initial.enabled),

@@ -4,12 +4,15 @@
  * 1. 提交任务后每 700ms 轮询 /api/jobs/{id}（契约要求）；
  * 2. 进度条（value/max/label）、耗时、取消按钮；
  * 3. 成功后展示结果图、尺寸、align.canvas、quality.outside_max_abs（零色差校验）；
- * 4. 局部编辑时可把遮罩叠加到结果图上，便于人工核对遮罩范围。
+ * 4. 局部编辑时可把遮罩叠加到结果图上，便于人工核对遮罩范围；
+ * 5. feed 模式：结果按批次依次铺开、累积展示，点击图片打开高清大图查看器，
+ *    并可对单批结果提供「对比」入口（图像编辑页使用）。
  */
 
 import { api, pollJob } from '../api.js';
 import { toast, toastError } from './toast.js';
 import { favoriteImage } from './favorites.js';
+import { openLightbox } from './lightbox.js';
 import { copyText, downloadUrl, escapeHtml, fmtElapsed, fmtNum } from '../utils.js';
 
 const STATUS_TEXT = {
@@ -20,15 +23,34 @@ const STATUS_TEXT = {
   canceled: '已取消',
 };
 
+const MAX_BATCHES = 24;
+
 export class JobRunner {
   /**
-   * @param {HTMLElement} host 结果面板容器（会自动填充内容）
-   * @param {{idleText?: string, idleGlyph?: string}} [options]
+   * @param {HTMLElement} host 结果面板容器（feed 模式下是批次流容器）
+   * @param {{idleText?: string, idleGlyph?: string, feed?: boolean, latestOnly?: boolean,
+   *          progressHost?: HTMLElement|null, onCompare?: Function, onBatch?: Function,
+   *          maxBatches?: number}} [options]
    */
-  constructor(host, { idleText = '设置好参数后点击生成，任务进度会显示在这里。', idleGlyph = '◇' } = {}) {
+  constructor(host, {
+    idleText = '设置好参数后点击生成，任务进度会显示在这里。',
+    idleGlyph = '◇',
+    feed = false,
+    latestOnly = false,
+    progressHost = null,
+    onCompare = null,
+    onBatch = null,
+    maxBatches = MAX_BATCHES,
+  } = {}) {
     this.host = host;
+    this.feed = Boolean(feed);
+    this.latestOnly = Boolean(latestOnly);
     this.idleText = idleText;
     this.idleGlyph = idleGlyph;
+    this.onCompare = onCompare;
+    this.onBatch = onBatch;
+    this.maxBatches = maxBatches;
+    this.progressHost = progressHost || host;
     this.jobId = null;
     this.maskOverlay = null;
     this.promptText = '';
@@ -37,8 +59,11 @@ export class JobRunner {
     this.startedAt = 0;
     this.activePoll = null;
     this.showMaskOverlay = false;
-    this.host.innerHTML = `
-      <div class="job-body">
+    this.batches = [];
+    this.batchSeq = 0;
+
+    const progressMarkup = `
+      <div class="job-body ${this.feed ? 'job-body-compact' : ''}">
         <div class="job-idle" data-ref="idle">
           <div class="glyph">${idleGlyph}</div>
           <div>${escapeHtml(idleText)}</div>
@@ -60,11 +85,23 @@ export class JobRunner {
           </div>
         </div>
         <div class="job-error hidden" data-ref="error"></div>
-        <div class="job-result hidden" data-ref="result"></div>
+        ${this.feed ? '' : '<div class="job-result hidden" data-ref="result"></div>'}
       </div>`;
-    const ref = (name) => this.host.querySelector(`[data-ref="${name}"]`);
+
+    this.progressHost.innerHTML = progressMarkup;
+
+    if (this.feed) {
+      host.innerHTML = `
+        <div class="feed-empty" data-ref="idle">
+          <div class="glyph">${idleGlyph}</div>
+          <div>${escapeHtml(idleText)}</div>
+        </div>`;
+    }
+
+    const root = this.feed ? this.progressHost : host;
+    const ref = (name) => root.querySelector(`[data-ref="${name}"]`);
     this.refs = {
-      idle: ref('idle'),
+      idle: this.feed ? host.querySelector('[data-ref="idle"]') : ref('idle'),
       progress: ref('progress'),
       status: ref('status'),
       elapsed: ref('elapsed'),
@@ -75,9 +112,9 @@ export class JobRunner {
       cancel: ref('cancel'),
       jobId: ref('jobId'),
       error: ref('error'),
-      result: ref('result'),
+      result: this.feed ? null : ref('result'),
     };
-    this.refs.cancel.addEventListener('click', () => this.cancel());
+    this.refs.cancel?.addEventListener('click', () => this.cancel());
   }
 
   reset({ idleText } = {}) {
@@ -90,13 +127,18 @@ export class JobRunner {
     this.maskOverlay = null;
     this.favoriteMeta = null;
     this.showMaskOverlay = false;
-    if (idleText) this.refs.idle.querySelector('div:last-child').textContent = idleText;
-    this.refs.idle.classList.remove('hidden');
+    if (idleText && !this.feed) this.refs.idle.querySelector('div:last-child').textContent = idleText;
     this.refs.progress.classList.add('hidden');
     this.refs.error.classList.add('hidden');
+    if (this.refs.jobId) this.refs.jobId.textContent = '';
+    if (this.feed) {
+      if (this.batches.length) this.refs.idle.classList.add('hidden');
+      else this.refs.idle.classList.remove('hidden');
+      return;
+    }
+    this.refs.idle.classList.remove('hidden');
     this.refs.result.classList.add('hidden');
     this.refs.result.innerHTML = '';
-    this.refs.jobId.textContent = '';
   }
 
   /**
@@ -113,6 +155,7 @@ export class JobRunner {
     this.startedAt = performance.now();
     this.refs.idle.classList.add('hidden');
     this.refs.progress.classList.remove('hidden');
+    this.refs.error.classList.add('hidden');
     this.refs.status.textContent = '提交任务…';
     this.refs.label.textContent = '正在把参数发送给后端';
     this.refs.counter.textContent = '0 / 0';
@@ -140,7 +183,7 @@ export class JobRunner {
       return;
     }
     this.jobId = jobId;
-    this.refs.jobId.textContent = `#${jobId}`;
+    if (this.refs.jobId) this.refs.jobId.textContent = `#${jobId}`;
     onProgress?.({ status: 'queued', progress: { value: 0, max: 0, label: '排队中' } });
 
     try {
@@ -239,8 +282,12 @@ export class JobRunner {
     }
     if (job.status === 'canceled') {
       this.refs.progress.classList.add('hidden');
-      this.refs.idle.classList.remove('hidden');
-      this.refs.idle.innerHTML = '<div class="glyph">∅</div><div>任务已取消，可调整参数后重新生成。</div>';
+      if (this.feed) {
+        if (!this.batches.length) this.refs.idle.classList.remove('hidden');
+      } else {
+        this.refs.idle.classList.remove('hidden');
+        this.refs.idle.innerHTML = '<div class="glyph">∅</div><div>任务已取消，可调整参数后重新生成。</div>';
+      }
       return;
     }
     if (job.status !== 'done') {
@@ -251,18 +298,45 @@ export class JobRunner {
     this.refs.progress.classList.add('hidden');
     this.refs.idle.classList.add('hidden');
     this.refs.error.classList.add('hidden');
-    this.renderResult(job);
+    if (this.feed) {
+      this.renderBatch(job);
+    } else {
+      this.renderResult(job);
+    }
     onDone?.(job);
   }
 
-  renderResult(job) {
-    const host = this.refs.result;
-    host.classList.remove('hidden');
+  /* ============================================================
+   * 批次流（feed 模式）
+   * ============================================================ */
+  clearFeed() {
+    this.batches = [];
+    this.batchSeq = 0;
+    this.host.querySelectorAll('.batch-card').forEach((node) => node.remove());
+    this.refs.idle.classList.remove('hidden');
+  }
+
+  getResults() {
+    return this.batches.flatMap((batch) =>
+      batch.images.map((image, index) => ({
+        url: image.url,
+        width: image.width,
+        height: image.height,
+        filename: image.filename,
+        batch: batch.no,
+        index,
+        label:
+          batch.images.length > 1
+            ? `批次 ${String(batch.no).padStart(2, '0')} · 第 ${index + 1} 张`
+            : `批次 ${String(batch.no).padStart(2, '0')}`,
+      })),
+    );
+  }
+
+  buildBadges(job) {
     const images = Array.isArray(job.images) ? job.images : [];
-    const prompt = job.prompt || this.promptText || '';
     const align = job.align || null;
     const quality = job.quality || null;
-
     const badges = [];
     if (job.elapsed_ms != null) badges.push(`<span class="badge info">耗时 ${fmtElapsed(job.elapsed_ms)}</span>`);
     if (images[0]?.width && images[0]?.height) {
@@ -278,7 +352,7 @@ export class JobRunner {
       const zero = Number(quality.outside_max_abs) === 0;
       badges.push(
         zero
-          ? `<span class="badge ok" title="遮罩外像素与原图逐像素差异为 0，零色差校验通过">零色差校验通过 · 遮罩外差异 0</span>`
+          ? '<span class="badge ok" title="遮罩外像素与原图逐像素差异为 0，零色差校验通过">零色差校验通过 · 遮罩外差异 0</span>'
           : `<span class="badge warn" title="遮罩外最大像素差异（0 表示完全一致）">遮罩外差异 ${fmtNum(quality.outside_max_abs)}</span>`,
       );
     }
@@ -288,6 +362,175 @@ export class JobRunner {
       );
     }
     if (align?.applied) badges.push('<span class="badge">已应用对齐裁回</span>');
+    return badges.join('');
+  }
+
+  renderBatch(job) {
+    const rawImages = Array.isArray(job.images) ? job.images : [];
+    const images = rawImages.map((image, index) => ({
+      url: api.fileUrl(image.url || image.path || ''),
+      width: image.width,
+      height: image.height,
+      filename: image.filename || `output-${index + 1}.png`,
+    }));
+    const no = ++this.batchSeq;
+    const batch = {
+      no,
+      time: Date.now(),
+      images,
+      job,
+      prompt: job.prompt || this.promptText || '',
+      maskOverlay: this.maskOverlay,
+      favoriteMeta: this.favoriteMeta,
+    };
+    this.batches.push(batch);
+
+    // 只显示最新结果：把上一批卡片移出视区（历史仍保留在 this.batches 与历史胶囊里）
+    if (this.latestOnly) {
+      this.host.querySelectorAll('.batch-card').forEach((node) => node.remove());
+    }
+
+    const card = document.createElement('article');
+    card.className = 'batch-card';
+    card.dataset.batch = String(no);
+    const prompt = batch.prompt;
+    const multi = images.length > 1;
+    const sizeText =
+      images[0]?.width && images[0]?.height
+        ? `${fmtNum(images[0].width)} × ${fmtNum(images[0].height)}`
+        : '—';
+
+    const imageCards = images
+      .map((image, index) => {
+        const overlay = index === 0 && batch.maskOverlay;
+        return `
+          <figure class="batch-item">
+            <button class="batch-img" type="button" data-lightbox-index="${index}" title="点击查看高清大图">
+              <img src="${escapeHtml(image.url)}" alt="批次 ${no} 结果 ${index + 1}" loading="lazy" />
+              ${overlay ? `<img class="mask-overlay-img" src="${escapeHtml(batch.maskOverlay)}" alt="遮罩叠加" data-ref="maskOverlay" style="display:none" />` : ''}
+              <span class="batch-zoom">查看高清大图</span>
+            </button>
+            <figcaption class="batch-cap">
+              <span class="mono">#${index + 1}${images.length > 1 ? ` · ${fmtNum(image.width)}×${fmtNum(image.height)}` : ''}</span>
+              <span class="spacer"></span>
+              ${batch.favoriteMeta ? `<button class="batch-mini" type="button" data-favorite-index="${index}">收藏</button>` : ''}
+              <button class="batch-mini" type="button" data-download="${escapeHtml(image.url)}" data-filename="${escapeHtml(image.filename)}">下载</button>
+            </figcaption>
+          </figure>`;
+      })
+      .join('');
+
+    card.innerHTML = `
+      <div class="batch-head">
+        <span class="batch-no">批次 ${String(no).padStart(2, '0')}</span>
+        <span class="batch-count">${images.length ? `${images.length} 张 · ${sizeText}` : '无图片'}</span>
+        <span class="spacer"></span>
+        ${this.onCompare && images.length ? '<button class="batch-action" type="button" data-ref="batchCompare">对比</button>' : ''}
+        ${batch.maskOverlay ? '<button class="batch-action" type="button" data-ref="toggleMask">遮罩叠加</button>' : ''}
+        ${prompt ? '<button class="batch-action" type="button" data-ref="copyPrompt">复制提示词</button>' : ''}
+        ${images.length ? '<button class="batch-action" type="button" data-ref="downloadAll">下载本批</button>' : ''}
+      </div>
+      <div class="batch-grid ${multi ? 'multi' : 'single'}">
+        ${imageCards || '<div class="feed-empty compact"><div class="glyph">⌀</div><div>任务完成但没有返回图片</div></div>'}
+      </div>
+      <div class="batch-foot">
+        <div class="batch-badges">${this.buildBadges(job)}</div>
+        ${prompt ? `<div class="batch-prompt" title="${escapeHtml(prompt)}">${escapeHtml(prompt)}</div>` : ''}
+      </div>`;
+
+    this.host.append(card);
+    this.refs.idle.classList.add('hidden');
+
+    /* 点击看高清大图 */
+    card.querySelectorAll('[data-lightbox-index]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const start = Number(button.dataset.lightboxIndex) || 0;
+        openLightbox(
+          images.map((image, index) => ({
+            ...image,
+            label: images.length > 1 ? `批次 ${String(no).padStart(2, '0')} · 第 ${index + 1} 张` : `批次 ${String(no).padStart(2, '0')}`,
+          })),
+          start,
+          { title: `批次 ${String(no).padStart(2, '0')} · 高清大图` },
+        );
+      });
+    });
+
+    /* 下载 */
+    card.querySelectorAll('[data-download]').forEach((button) => {
+      button.addEventListener('click', () => downloadUrl(button.dataset.download, button.dataset.filename));
+    });
+
+    /* 收藏 */
+    card.querySelectorAll('[data-favorite-index]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const image = images[Number(button.dataset.favoriteIndex)];
+        if (!image) return;
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = '收藏中…';
+        await favoriteImage({
+          ...batch.favoriteMeta,
+          image: image.url,
+          prompt,
+          seed: job.params?.seed ?? null,
+        });
+        button.disabled = false;
+        button.textContent = original;
+      });
+    });
+
+    /* 对比（图像编辑页） */
+    card.querySelector('[data-ref="batchCompare"]')?.addEventListener('click', () => {
+      this.onCompare?.(batch);
+    });
+
+    /* 复制提示词 */
+    card.querySelector('[data-ref="copyPrompt"]')?.addEventListener('click', async () => {
+      const ok = await copyText(prompt);
+      toast(ok ? '提示词已复制' : '复制失败，请手动选中复制', ok ? 'success' : 'warn');
+    });
+
+    /* 下载本批 */
+    card.querySelector('[data-ref="downloadAll"]')?.addEventListener('click', () => {
+      images.forEach((image, index) => {
+        setTimeout(() => downloadUrl(image.url, image.filename || `output-${index + 1}.png`), index * 220);
+      });
+    });
+
+    /* 遮罩叠加 */
+    const toggleMask = card.querySelector('[data-ref="toggleMask"]');
+    if (toggleMask) {
+      const overlay = card.querySelector('[data-ref="maskOverlay"]');
+      let visible = false;
+      toggleMask.addEventListener('click', () => {
+        visible = !visible;
+        if (overlay) overlay.style.display = visible ? 'block' : 'none';
+        toggleMask.classList.toggle('active', visible);
+        toggleMask.textContent = visible ? '隐藏遮罩' : '遮罩叠加';
+      });
+    }
+
+    while (this.batches.length > this.maxBatches) {
+      const oldest = this.batches.shift();
+      this.host.querySelector(`[data-batch="${oldest.no}"]`)?.remove();
+    }
+
+    this.onBatch?.(batch);
+    if (!this.latestOnly) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return batch;
+  }
+
+  /* ============================================================
+   * 单次结果（兼容旧布局）
+   * ============================================================ */
+  renderResult(job) {
+    const host = this.refs.result;
+    if (!host) return;
+    host.classList.remove('hidden');
+    const images = Array.isArray(job.images) ? job.images : [];
+    const prompt = job.prompt || this.promptText || '';
+    const badges = this.buildBadges(job);
 
     const imageCards = images
       .map((image, index) => {
@@ -315,7 +558,7 @@ export class JobRunner {
     host.innerHTML = `
       <div class="result-grid">${imageCards || '<div class="empty"><div class="glyph">⌀</div><div>任务完成但没有返回图片</div></div>'}</div>
       <div class="result-meta">
-        <div class="result-badges">${badges.join('')}</div>
+        <div class="result-badges">${badges}</div>
         <div class="result-actions">
           ${this.maskOverlay ? '<button class="btn ghost sm" type="button" data-ref="toggleMask">显示遮罩叠加</button>' : ''}
           <button class="btn ghost sm" type="button" data-ref="copyPrompt">复制提示词</button>

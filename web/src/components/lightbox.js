@@ -1,0 +1,214 @@
+/**
+ * 高清大图查看器。
+ * 1. 点击生成结果图后打开，支持缩放（滚轮 / 按钮 / 双击）、拖拽平移；
+ * 2. 多图时可用左右按钮、方向键、底部缩略图切换；
+ * 3. 提供下载与「新窗口打开原图」，不改变页面状态。
+ */
+
+import { openModal } from './modal.js';
+import { downloadUrl, escapeHtml, fmtNum } from '../utils.js';
+
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 8;
+
+function clampZoom(value) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+}
+
+/**
+ * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string}>} images
+ * @param {number} [startIndex]
+ * @param {{title?:string}} [options]
+ */
+export function openLightbox(images, startIndex = 0, { title = '高清大图' } = {}) {
+  const list = (images || []).filter((item) => item?.url);
+  if (!list.length) return null;
+
+  let index = Math.min(Math.max(0, startIndex), list.length - 1);
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+  let dragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragBaseX = 0;
+  let dragBaseY = 0;
+
+  const content = document.createElement('div');
+  content.className = 'lb';
+  content.innerHTML = `
+    <div class="lb-stage" data-ref="stage" tabindex="0">
+      <img class="lb-img" data-ref="img" alt="高清大图" draggable="false" />
+      <button class="lb-close" type="button" data-ref="close" title="关闭（Esc）">×</button>
+      <button class="lb-nav prev" type="button" data-ref="prev" title="上一张（←）">‹</button>
+      <button class="lb-nav next" type="button" data-ref="next" title="下一张（→）">›</button>
+      <div class="lb-counter mono" data-ref="counter"></div>
+    </div>
+    <div class="lb-bar">
+      <div class="lb-info" data-ref="info"></div>
+      <span class="spacer"></span>
+      <button class="lb-tool" type="button" data-ref="zoomOut" title="缩小">−</button>
+      <button class="lb-tool" type="button" data-ref="zoomReset" title="还原到适应窗口">适应</button>
+      <button class="lb-tool" type="button" data-ref="zoomIn" title="放大">＋</button>
+      <span class="lb-zoom mono" data-ref="zoomVal">100%</span>
+      <button class="lb-tool" type="button" data-ref="download">下载</button>
+      <button class="lb-tool" type="button" data-ref="open">原图</button>
+    </div>
+    <div class="lb-film" data-ref="film"></div>`;
+
+  const ref = (name) => content.querySelector(`[data-ref="${name}"]`);
+  const stage = ref('stage');
+  const img = ref('img');
+  const film = ref('film');
+  const counter = ref('counter');
+
+  const applyTransform = () => {
+    img.style.transform = `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`;
+    img.style.cursor = zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-out';
+    ref('zoomVal').textContent = `${Math.round(zoom * 100)}%`;
+  };
+
+  const resetView = () => {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    applyTransform();
+  };
+
+  const renderFilm = () => {
+    if (list.length <= 1) {
+      film.style.display = 'none';
+      return;
+    }
+    film.style.display = '';
+    film.innerHTML = list
+      .map(
+        (item, i) =>
+          `<button class="lb-thumb ${i === index ? 'active' : ''}" type="button" data-thumb="${i}" title="${escapeHtml(item.label || `第 ${i + 1} 张`)}">
+            <img src="${escapeHtml(item.url)}" alt="" loading="lazy" />
+          </button>`,
+      )
+      .join('');
+    film.querySelectorAll('[data-thumb]').forEach((button) => {
+      button.addEventListener('click', () => show(Number(button.dataset.thumb)));
+    });
+  };
+
+  const show = (nextIndex) => {
+    if (!list.length) return;
+    index = (nextIndex + list.length) % list.length;
+    const item = list[index];
+    img.src = item.url;
+    resetView();
+    counter.textContent = list.length > 1 ? `${index + 1} / ${list.length}` : '';
+    ref('prev').style.display = list.length > 1 ? '' : 'none';
+    ref('next').style.display = list.length > 1 ? '' : 'none';
+    const dims = item.width && item.height ? `${fmtNum(item.width)} × ${fmtNum(item.height)}` : '';
+    ref('info').textContent = [item.label || `第 ${index + 1} 张`, dims].filter(Boolean).join(' · ');
+    film.querySelectorAll('[data-thumb]').forEach((button) => {
+      button.classList.toggle('active', Number(button.dataset.thumb) === index);
+    });
+  };
+
+  let modal = null;
+  const onKey = (event) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      show(index - 1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      show(index + 1);
+    } else if (event.key === '+' || event.key === '=') {
+      zoom = clampZoom(zoom * 1.2);
+      applyTransform();
+    } else if (event.key === '-') {
+      zoom = clampZoom(zoom / 1.2);
+      applyTransform();
+    } else if (event.key === '0') {
+      resetView();
+    }
+  };
+  document.addEventListener('keydown', onKey);
+
+  modal = openModal({
+    title,
+    content,
+    size: 'lg',
+    dialogClass: 'lightbox-modal',
+    hideFooter: true,
+    onClose: () => document.removeEventListener('keydown', onKey),
+  });
+
+  ref('close').addEventListener('click', () => modal.close());
+  ref('prev').addEventListener('click', () => show(index - 1));
+  ref('next').addEventListener('click', () => show(index + 1));
+  ref('zoomIn').addEventListener('click', () => {
+    zoom = clampZoom(zoom * 1.25);
+    applyTransform();
+  });
+  ref('zoomOut').addEventListener('click', () => {
+    zoom = clampZoom(zoom / 1.25);
+    applyTransform();
+  });
+  ref('zoomReset').addEventListener('click', resetView);
+  ref('download').addEventListener('click', () => {
+    const item = list[index];
+    downloadUrl(item.url, item.filename || `image-${index + 1}.png`);
+  });
+  ref('open').addEventListener('click', () => window.open(list[index].url, '_blank', 'noopener'));
+
+  stage.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    zoom = clampZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.9));
+    if (zoom <= 1) {
+      panX = 0;
+      panY = 0;
+    }
+    applyTransform();
+  }, { passive: false });
+
+  stage.addEventListener('dblclick', () => {
+    if (zoom > 1) resetView();
+    else {
+      zoom = 2;
+      applyTransform();
+    }
+  });
+
+  stage.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || zoom <= 1) return;
+    dragging = true;
+    dragStartX = event.clientX;
+    dragStartY = event.clientY;
+    dragBaseX = panX;
+    dragBaseY = panY;
+    stage.setPointerCapture(event.pointerId);
+    applyTransform();
+  });
+  stage.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    panX = dragBaseX + (event.clientX - dragStartX);
+    panY = dragBaseY + (event.clientY - dragStartY);
+    applyTransform();
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    applyTransform();
+  };
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+  stage.addEventListener('pointerleave', endDrag);
+
+  img.addEventListener('load', () => {
+    resetView();
+  });
+  img.addEventListener('error', () => {
+    ref('info').textContent = '图片加载失败，请稍后重试';
+  });
+
+  renderFilm();
+  show(index);
+  stage.focus({ preventScroll: true });
+  return modal;
+}

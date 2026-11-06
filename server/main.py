@@ -359,6 +359,7 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if not target_size and payload.get("width") and payload.get("height"):
         target_size = [payload.get("width"), payload.get("height")]
     references = payload.get("references") or payload.get("images_info")
+    pose = payload.get("pose") if isinstance(payload.get("pose"), dict) else None
     # 参考图本体（data URL）：润色模型支持视觉时随消息发过去，让它真的"看到"图
     reference_images: list[Any] = []
     for entry in (payload.get("images") or []):
@@ -367,6 +368,14 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                                                         keep_alpha=False))
         except Exception:  # noqa: BLE001 - 单张图坏了不影响润色
             continue
+    # 姿态人偶图也交给视觉模型，让它按真实动作写描述
+    if pose and (pose.get("image") or pose.get("data")):
+        try:
+            reference_images.append(imaging.decode_image(
+                pipeline._entry_bytes(pose.get("image") or pose.get("data")),
+                keep_alpha=False))
+        except Exception:  # noqa: BLE001
+            pose = {k: v for k, v in pose.items() if k != "image"}
     try:
         result = prompt_polish.polish(
             prompt,
@@ -377,6 +386,7 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             target_size=target_size,
             references=references,
             reference_images=reference_images or None,
+            pose=pose,
         )
     except Exception as exc:  # noqa: BLE001
         raise ApiError(f"提示词润色失败：{exc}", code="polish_failed", status=502) from exc

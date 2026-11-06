@@ -192,6 +192,25 @@ def _context_block(target_size: Any, references: Any) -> str:
     return "\n".join(lines)
 
 
+def _pose_block(pose: Any, mode: str) -> str:
+    """姿态参考的上下文：告诉润色模型人偶图只约束动作，不要让文字复述人偶本身。"""
+    if not isinstance(pose, dict):
+        return ""
+    lines = [
+        "[姿态参考] 已随消息附上 1 张黑底人偶姿态图，生成时作为 image1：只提供动作、朝向与构图。",
+        "- 提示词要写出与之一致的姿态与镜头，但不要描述人偶的颜色、关节或把它当成真实人物。",
+    ]
+    label = _as_text(pose.get("label")).strip()
+    summary = _as_text(pose.get("summary")).strip()
+    detail = "；".join(item for item in (label, summary) if item)
+    if detail:
+        lines.append(f"- 当前姿态：{detail}")
+    if mode == "edit":
+        lines.append("- 图生图提交时人偶图会成为 image1，编辑目标顺延为 image2；"
+                     "工作台会自动改写 <imageN> 编号，提示词继续按原来的编号书写即可。")
+    return "\n".join(lines)
+
+
 def _strip_code_fence(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -252,10 +271,11 @@ def load_system_prompt(mode: str, image_model: Any = "qwen") -> str:
 
 
 def build_messages(prompt: str, mode: str = "t2i", *, image_model: Any = "qwen",
-                   target_size: Any = None, references: Any = None) -> list[dict]:
+                   target_size: Any = None, references: Any = None,
+                   pose: Any = None) -> list[dict]:
     """构造 Ollama messages：目标模型 PE 原文作 system，用户请求 + 上下文 + JSON 约定作 user。
 
-    ``target_size`` / ``references`` 只影响 user message 里的上下文块（不改变 system）。
+    ``target_size`` / ``references`` / ``pose`` 只影响 user message 里的上下文块（不改变 system）。
     """
     key = normalize_mode(mode)
     model_key = normalize_image_model(image_model)
@@ -269,6 +289,9 @@ def build_messages(prompt: str, mode: str = "t2i", *, image_model: Any = "qwen",
     else:
         contract = JSON_OUTPUT_CONTRACT
     context = _context_block(target_size, references)
+    pose_context = _pose_block(pose, key)
+    if pose_context:
+        context = f"{context}\n\n{pose_context}" if context else pose_context
     head = f"{context}\n\n" if context else ""
     user = f"{head}{text}\n\n{contract}" if text else f"{head}{contract}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -413,6 +436,7 @@ def polish(
     target_size: Any = None,
     references: Any = None,
     reference_images: Any = None,
+    pose: Any = None,
 ) -> dict:
     """润色一条提示词。
 
@@ -475,7 +499,8 @@ def polish(
 
     try:
         messages = build_messages(text, mode_key, image_model=model_key,
-                                  target_size=target_size, references=references)
+                                  target_size=target_size, references=references,
+                                  pose=pose)
         if reference_images:
             encoded = [b64 for b64 in (_image_b64(item) for item in reference_images) if b64]
             if encoded and _client_supports_vision(client, resolved_model):

@@ -358,6 +358,8 @@ export class StylePicker {
     if (!value) return false;
     const textarea = this.promptInput;
     if (!textarea) return false;
+    // contenteditable 输入框自行处理光标，避免依赖 textarea 的 selectionStart
+    if (typeof textarea.insertPromptText === 'function') return textarea.insertPromptText(value);
     const start = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : textarea.value.length;
     const end = Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : textarea.value.length;
     const before = textarea.value.slice(0, start);

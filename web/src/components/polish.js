@@ -16,9 +16,20 @@ import { escapeHtml, fmtNum } from '../utils.js';
  * @param {string|null} [options.model] Ollama 模型
  * @param {HTMLButtonElement} [options.button] 触发按钮（用于 loading 状态）
  * @param {Array<{id:string,w:number,h:number}>} [options.ratios] 可匹配的比例表
+ * @param {{width:number,height:number}} [options.targetSize] 目标尺寸，供模型判断构图
+ * @param {{image:string,summary?:string,label?:string}} [options.pose] 姿态参考图（会一并交给视觉模型）
  * @param {(text: string, result: object) => void} options.onAccept 采用润色结果
  */
-export async function polishWithDialog({ prompt, mode = 't2i', model = null, button = null, ratios = [], onAccept }) {
+export async function polishWithDialog({
+  prompt,
+  mode = 't2i',
+  model = null,
+  button = null,
+  ratios = [],
+  targetSize = null,
+  pose = null,
+  onAccept,
+}) {
   const text = String(prompt || '').trim();
   if (!text) {
     toastWarn('请先填写提示词，再使用润色');
@@ -30,8 +41,24 @@ export async function polishWithDialog({ prompt, mode = 't2i', model = null, but
     button.innerHTML = '<span class="spin"></span>润色中…';
   }
   try {
-    const result = await api.polish({ prompt: text, mode, model: model || null });
-    showCompareDialog({ result, original: text, ratios, onAccept, mode });
+    const payload = { prompt: text, mode, model: model || null };
+    if (targetSize) payload.target_size = targetSize;
+    if (pose?.image) {
+      payload.pose = {
+        image: pose.image,
+        summary: pose.summary || '',
+        label: pose.label || '',
+      };
+    }
+    const result = await api.polish(payload);
+    showCompareDialog({
+      result,
+      original: text,
+      ratios,
+      onAccept,
+      mode,
+      poseAttached: Boolean(pose?.image),
+    });
   } catch (err) {
     toastError(err, '提示词润色失败');
   } finally {
@@ -42,7 +69,7 @@ export async function polishWithDialog({ prompt, mode = 't2i', model = null, but
   }
 }
 
-function showCompareDialog({ result, original, ratios, onAccept, mode }) {
+function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttached = false }) {
   const rewritten = String(result?.rewritten_prompt || '').trim();
   const whRatio = String(result?.wh_ratio || '').trim();
   const fallback = Boolean(result?.fallback);
@@ -52,6 +79,7 @@ function showCompareDialog({ result, original, ratios, onAccept, mode }) {
   if (result?.elapsed_ms != null) {
     meta.push(`<span class="badge">耗时 ${(Number(result.elapsed_ms) / 1000).toFixed(1)}s</span>`);
   }
+  if (poseAttached) meta.push('<span class="badge info">已附带姿态参考</span>');
   if (whRatio) meta.push(`<span class="badge info">建议比例 ${escapeHtml(whRatio)}</span>`);
   if (result?.ratio_follow != null) {
     meta.push(`<span class="badge">${result.ratio_follow ? '会跟随建议比例' : '保持原比例'}</span>`);

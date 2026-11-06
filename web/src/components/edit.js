@@ -16,10 +16,15 @@ import { on, patchSettings, store } from '../store.js';
 import { toastError, toastSuccess, toastWarn } from './toast.js';
 import { polishWithDialog } from './polish.js';
 import { JobRunner } from './jobView.js';
+import { createHistoryRail } from './historyRail.js';
+import { createRefLibrary, hasRefDrag, readRefDrag } from './refLibrary.js';
+import { PromptEditor } from './promptEditor.js';
 import { MaskEditor } from './maskEditor.js';
 import { createStylePicker } from './stylePicker.js';
 import { LoraPicker, ModelsField, TurboControl } from './controls.js';
 import { openModal } from './modal.js';
+import { openPoseStudio } from './poseStudio.js';
+import { openCompareDialog } from './compare.js';
 import { consumeHandoff } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
 import { escapeHtml, fmtNum, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
@@ -48,62 +53,25 @@ export function createEditPage(host) {
   let lastSeed = null;
 
   host.innerHTML = `
-    <div class="page page-edit">
-      <div class="col col-side">
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">编辑指令 <span class="panel-sub">描述如何修改画面</span></div>
-            <div class="panel-actions">
-              <button class="btn violet sm" type="button" data-ref="polish">✦ 润色指令</button>
-            </div>
+    <div class="page wb-page page-edit-v2">
+      <div class="wb-art" aria-hidden="true">
+        <div class="wb-art-glyph">让每一笔都有回响</div>
+        <div class="wb-art-sub">REFINE · THEN BLOOM</div>
+        <div class="wb-art-foot">一图一世界 · 一笔一呼吸</div>
+        <div class="wb-art-seal">修</div>
+      </div>
+      <div class="wb-layout with-lib" data-ref="layout">
+        <aside class="wb-adv" data-ref="advDrawer" aria-label="图生图高级设置">
+          <div class="wb-adv-head">
+            <span>图生图高级设置</span>
+            <button class="wb-adv-close" type="button" data-ref="advClose" title="收起侧边栏">×</button>
           </div>
-          <div class="panel-body">
-            <div class="field">
-              <span class="field-label">指令 <span class="tag-hint" data-ref="promptCount">0 字</span></span>
-              <div data-ref="stylePicker"></div>
-              <textarea class="textarea prompt-main" data-ref="prompt" spellcheck="false"
-                placeholder="例如：把人物外套换成红色羽绒服，保持脸部光影与背景不变。"></textarea>
-            </div>
-            <div class="field">
-              <span class="field-label">负向提示词 <span class="tag-hint">可选</span></span>
-              <input class="input" data-ref="negative" placeholder="例如：文字、水印、变形、重复人物" />
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">参考图 <span class="panel-sub" data-ref="uploadCount">0 / ${MAX_IMAGES}</span></div>
-            <div class="panel-actions">
-              <button class="btn ghost sm" type="button" data-ref="clearImages">清空全部</button>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="dropzone" data-ref="dropzone" role="button" tabindex="0">
-              <div class="glyph">⬆</div>
-              <div>拖拽图片到这里，或点击选择</div>
-              <small>1~10 张 · 第 1 张为「编辑目标」，其余为参考图 · PNG / JPG / WebP</small>
-            </div>
-            <input type="file" accept="image/*" multiple hidden data-ref="fileInput" />
-            <div class="upload-list" data-ref="uploadList"></div>
-            <div class="field-hint" data-ref="uploadHint">第 1 张同时作为遮罩编辑器底图与输出尺寸基准。</div>
-          </div>
-        </section>
-
+          <div class="wb-adv-body">
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">尺寸与画布 <span class="panel-sub">零偏移对齐</span></div>
           </div>
           <div class="panel-body">
-            <label class="field">
-              <span class="field-label">尺寸模式</span>
-              <select class="select" data-ref="sizeMode">
-                <option value="follow">跟随原图（推荐 · 零偏移）</option>
-                <option value="custom">自定义尺寸</option>
-                <option value="ratio">按比例</option>
-                <option value="fixed_point">BlueBox 32 不动点</option>
-              </select>
-            </label>
             <div data-ref="modeRows"></div>
             <div class="grid-2">
               <label class="field">
@@ -205,14 +173,6 @@ export function createEditPage(host) {
                 <input class="input mono" type="number" min="0" max="1" step="0.05" data-ref="denoise" />
               </label>
             </div>
-            <div class="field">
-              <span class="field-label">种子 <span class="tag-hint">留空 = 随机</span></span>
-              <div class="field-row">
-                <input class="input mono" data-ref="seed" placeholder="随机" inputmode="numeric" />
-                <button class="btn ghost sm" type="button" data-ref="randomSeed">随机</button>
-                <button class="btn ghost sm" type="button" data-ref="reuseSeed" disabled>填入上次</button>
-              </div>
-            </div>
             <div class="grid-2">
               <label class="field">
                 <span class="field-label">采样器</span>
@@ -252,45 +212,130 @@ export function createEditPage(host) {
             </div>
           </div>
         </details>
-      </div>
+            <button class="btn ghost block" type="button" data-ref="reset">重置参数</button>
+            <div class="wb-adv-note">尺寸与采样参数都在这里；参考图缩略图上的 ✂ 可打开遮罩编辑器。</div>
+          </div>
+        </aside>
 
-      <div class="col">
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">遮罩编辑器 <span class="panel-sub" data-ref="maskMeta">白 = 编辑区</span></div>
-            <div class="panel-actions">
-              <button class="btn ghost sm" type="button" data-ref="outpaintBtn" title="先规划扩图画布，再自动生成「新增区域」遮罩">⤢ 扩图</button>
-              <span class="panel-sub" data-ref="maskState">尚未绘制</span>
+        <div class="wb-side">
+          <aside class="wb-lib" data-ref="libHost" aria-label="小图库"></aside>
+
+          <section class="wb-refbox" data-ref="refBox" aria-label="参考图">
+            <div class="refbox-head">
+              <span class="refbox-title">参考图</span>
+              <span class="refbox-count mono" data-ref="uploadCount">0 / ${MAX_IMAGES}</span>
+              <span class="spacer"></span>
+              <button class="refbox-link" type="button" data-ref="outpaintBtn" title="先规划扩图画布，再自动生成「新增区域」遮罩">⤢ 扩图</button>
+              <button class="refbox-link" type="button" data-ref="clearImages">清空</button>
+            </div>
+            <div class="refbox-body">
+              <div class="upload-list wb-upload-list" data-ref="uploadList"></div>
+              <div class="dropzone wb-dropzone refbox-drop" data-ref="dropzone" role="button" tabindex="0">
+                <div class="glyph">＋</div>
+                <div class="wb-drop-text">
+                  <b>拖拽图片到这里</b>
+                  <small>或点击上传 · 第 1 张为「编辑目标」</small>
+                </div>
+              </div>
+            </div>
+            <div class="refbox-foot" data-ref="uploadHint">第 1 张同时作为遮罩编辑器底图与输出尺寸基准。</div>
+            <input type="file" accept="image/*" multiple hidden data-ref="fileInput" />
+          </section>
+        </div>
+
+        <main class="wb-main">
+          <div class="wb-topbar">
+            <span class="wb-topbar-hint">上传参考图 · 描述修改 · 生成，高级参数收在右侧</span>
+            <span class="spacer"></span>
+            <button class="wb-compare-btn" type="button" data-ref="compareBtn">⧉ 图像对比</button>
+            <button class="wb-adv-toggle" type="button" data-ref="advToggle" aria-expanded="false">
+              <span class="wb-adv-icon">⚙</span> 图生图高级设置
+            </button>
+          </div>
+
+          <section class="wb-feed">
+            <div class="wb-feed-head">
+              <div class="wb-feed-title">生成结果 <span data-ref="resultState">等待任务</span></div>
+              <span class="spacer"></span>
+              <button class="btn ghost sm" type="button" data-ref="feedClear">清空记录</button>
+            </div>
+            <div class="wb-feed-body" data-ref="resultHost"></div>
+          </section>
+
+          <div class="wb-composer" data-ref="composer">
+            <div class="wb-status">
+              <span class="wb-status-dot"></span>
+              <span class="wb-status-ready" data-ref="readyHint">引擎就绪后可直接编辑</span>
+              <span class="wb-status-sub" data-ref="actionHint">第 1 张图会被完整读取，输出尺寸遵循所选模式</span>
+              <span class="spacer"></span>
+              <div class="wb-status-job" data-ref="statusStrip"></div>
+            </div>
+            <div class="wb-prompt-wrap">
+              <div data-ref="stylePicker"></div>
+              <div class="wb-prompt" data-ref="prompt" spellcheck="false"
+                data-placeholder="描述如何修改画面，例如：把人物外套换成红色羽绒服，保持脸部光影与背景不变。输入 @ 可引用小图库里的参考图。"></div>
+              <div class="wb-prompt-foot">
+                <span class="wb-char" data-ref="promptCount">0 字</span>
+                <input class="wb-negative" data-ref="negative" placeholder="负向提示词（可选）：文字、水印、变形、重复人物" />
+                <button class="wb-link" type="button" data-ref="atRef" title="引用小图库里的参考图">＠ 参考图</button>
+                <button class="wb-link" type="button" data-ref="clearPrompt">清空</button>
+                <button class="wb-link accent" type="button" data-ref="polish">✦ 润色指令</button>
+              </div>
+            </div>
+            <div class="wb-pillbar">
+              <div class="wb-size-anchor" data-ref="sizeAnchor">
+                <button class="wb-pill wb-size-pill" type="button" data-ref="sizePill" aria-expanded="false" title="输出尺寸">
+                  <span class="wb-pill-key">尺寸</span>
+                  <span class="wb-size-value" data-ref="sizePillValue">跟随原图</span>
+                  <span class="wb-caret">▼</span>
+                </button>
+                <div class="size-pop" data-ref="sizePop" hidden>
+                  <div class="size-pop-head">
+                    <span>尺寸模式</span>
+                    <span class="size-pop-dims mono" data-ref="sizePopDims">—</span>
+                  </div>
+                  <div class="size-tier-row" data-ref="sizeModes">
+                    <button class="size-tier" type="button" data-mode="follow">跟随原图</button>
+                    <button class="size-tier" type="button" data-mode="ratio">按比例</button>
+                    <button class="size-tier" type="button" data-mode="custom">自定义</button>
+                    <button class="size-tier" type="button" data-mode="fixed_point">32 不动点</button>
+                  </div>
+                  <div class="size-pop-body" data-ref="sizeBody"></div>
+                </div>
+                <select data-ref="sizeMode" hidden>
+                  <option value="follow">跟随原图</option>
+                  <option value="custom">自定义尺寸</option>
+                  <option value="ratio">按比例</option>
+                  <option value="fixed_point">32 不动点</option>
+                </select>
+              </div>
+              <div class="wb-pill wb-seed" title="固定：每次用输入框的种子；随机：每次生成自动换一个">
+                <span class="wb-pill-key">种子</span>
+                <input data-ref="seed" placeholder="每次随机" inputmode="numeric" />
+                <span class="wb-seed-seg" role="group" aria-label="种子模式">
+                  <button type="button" data-ref="seedFixed" title="固定种子">固定</button>
+                  <button type="button" data-ref="seedRandom" title="每次生成自动换种子">随机</button>
+                </span>
+                <button type="button" data-ref="randomSeed" title="换一个固定种子">⚄</button>
+                <button type="button" data-ref="reuseSeed" title="填入上次使用的种子（切到固定）" disabled>↺</button>
+              </div>
+              <button class="wb-pill wb-pose-pill" type="button" data-ref="posePill" title="姿态参考：设置人物动作与构图">
+                <span class="wb-pill-key">姿态</span>
+                <img class="wb-pose-thumb" data-ref="poseThumb" alt="" hidden />
+                <span data-ref="poseLabel">未设置</span>
+              </button>
+              <button class="wb-pill wb-pill-btn" type="button" data-ref="turboPill" title="Turbo 加速">
+                <span class="wb-pill-key">Turbo</span><span data-role="label">加速</span>
+              </button>
+              <button class="wb-pill wb-pill-check" type="button" data-ref="localPill" title="只重绘遮罩区域">
+                <span class="wb-check-dot"></span><span>局部编辑</span>
+              </button>
+              <span class="spacer"></span>
+              <span class="wb-kbd"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
+              <button class="btn primary lg wb-generate" type="button" data-ref="submit">开始编辑</button>
             </div>
           </div>
-          <div class="mask-body" data-ref="maskHost"></div>
-          <div class="mask-tips" style="padding:0 12px 12px">
-            <span>白 = 编辑区</span><span>·</span><span>导出尺寸 = 第 1 张图尺寸</span>
-            <span class="spacer"></span>
-            <span>滚轮缩放 · 空格/中键平移 · Ctrl+Z 撤销</span>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">编辑结果</div>
-            <div class="panel-actions"><span class="panel-sub" data-ref="resultState">等待任务</span></div>
-          </div>
-          <div data-ref="resultHost"></div>
-        </section>
-      </div>
-
-      <!-- 操作条作为 page 网格的整行（grid-column: 1 / -1），粘底时横跨整页 -->
-      <div class="action-bar card" data-ref="actionBar">
-        <div class="action-strip" data-ref="actionStrip"></div>
-        <div>
-          <div class="field-hint" style="margin-bottom:2px" data-ref="readyHint">引擎就绪后可直接编辑</div>
-          <div class="hint" data-ref="actionHint">第 1 张图会被完整读取，输出尺寸遵循所选模式</div>
-        </div>
-        <span class="spacer"></span>
-        <span class="action-kbd"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 编辑</span>
-        <button class="btn ghost" type="button" data-ref="reset">重置参数</button>
-        <button class="btn primary lg" type="button" data-ref="submit">开始编辑</button>
+        </main>
       </div>
     </div>`;
 
@@ -300,6 +345,11 @@ export function createEditPage(host) {
     prompt: ref('prompt'),
     promptCount: ref('promptCount'),
     negative: ref('negative'),
+    atRef: ref('atRef'),
+    clearPrompt: ref('clearPrompt'),
+    libHost: ref('libHost'),
+    refBox: ref('refBox'),
+    composer: ref('composer'),
     uploadCount: ref('uploadCount'),
     dropzone: ref('dropzone'),
     fileInput: ref('fileInput'),
@@ -307,6 +357,13 @@ export function createEditPage(host) {
     uploadHint: ref('uploadHint'),
     clearImages: ref('clearImages'),
     sizeMode: ref('sizeMode'),
+    sizeAnchor: ref('sizeAnchor'),
+    sizePill: ref('sizePill'),
+    sizePillValue: ref('sizePillValue'),
+    sizePop: ref('sizePop'),
+    sizePopDims: ref('sizePopDims'),
+    sizeModes: ref('sizeModes'),
+    sizeBody: ref('sizeBody'),
     modeRows: ref('modeRows'),
     fit: ref('fit'),
     padMode: ref('padMode'),
@@ -332,6 +389,8 @@ export function createEditPage(host) {
     cfg: ref('cfg'),
     denoise: ref('denoise'),
     seed: ref('seed'),
+    seedFixed: ref('seedFixed'),
+    seedRandom: ref('seedRandom'),
     randomSeed: ref('randomSeed'),
     reuseSeed: ref('reuseSeed'),
     sampler: ref('sampler'),
@@ -349,53 +408,219 @@ export function createEditPage(host) {
     reset: ref('reset'),
     readyHint: ref('readyHint'),
     actionHint: ref('actionHint'),
-    actionBar: ref('actionBar'),
-    actionStrip: ref('actionStrip'),
-    maskHost: ref('maskHost'),
-    maskMeta: ref('maskMeta'),
-    maskState: ref('maskState'),
     resultHost: ref('resultHost'),
     resultState: ref('resultState'),
     stylePicker: ref('stylePicker'),
     outpaintBtn: ref('outpaintBtn'),
+    layout: ref('layout'),
+    advDrawer: ref('advDrawer'),
+    advToggle: ref('advToggle'),
+    advClose: ref('advClose'),
+    ratioPill: null,
+    turboPill: ref('turboPill'),
+    posePill: ref('posePill'),
+    poseThumb: ref('poseThumb'),
+    poseLabel: ref('poseLabel'),
+    localPill: ref('localPill'),
+    statusStrip: ref('statusStrip'),
+    feedClear: ref('feedClear'),
+    compareBtn: ref('compareBtn'),
   };
 
-  const maskEditor = new MaskEditor(refs.maskHost, {
-    onChange: (state) => updateMaskStatus(state),
+  const historyRail = createHistoryRail(host, { label: '图生图历史' });
+
+  /* ============================================================
+   * 姿态参考：与文生图共用姿态工作室，提交时作为 image1
+   * ============================================================ */
+  let poseState = null;
+
+  function syncPoseUi() {
+    const active = Boolean(poseState);
+    refs.posePill.classList.toggle('has-pose', active);
+    refs.poseThumb.hidden = !active;
+    if (active) refs.poseThumb.src = poseState.dataUrl;
+    refs.poseLabel.textContent = active ? poseState.label : '未设置';
+    refs.posePill.title = active
+      ? `姿态：${poseState.summary}（点击修改）`
+      : '姿态参考：设置人物动作与构图';
+  }
+
+  function openPoseDialog() {
+    openPoseStudio({
+      initial: poseState
+        ? {
+            joints: poseState.joints,
+            preset: poseState.preset,
+            strength: poseState.strength,
+            useLora: poseState.useLora,
+          }
+        : null,
+      onApply: (pose) => {
+        poseState = pose;
+        syncPoseUi();
+        toastSuccess(`姿态已应用：${pose.label}，提交时会作为 image1`);
+      },
+      onClear: () => {
+        poseState = null;
+        syncPoseUi();
+        toastSuccess('已清除姿态参考');
+      },
+    });
+  }
+
+  refs.posePill.addEventListener('click', openPoseDialog);
+  syncPoseUi();
+
+  /** 富文本指令框：普通文字 + @参考图缩略图 chip。 */
+  const promptEditor = new PromptEditor(refs.prompt, {
+    onChange: (text) => {
+      edit.prompt = text;
+      patchSettings({ edit: { prompt: text } });
+      updatePromptCount();
+    },
   });
+
+  /** 左侧小图库：点击加入参考图，拖进指令框即插入 @ 引用。 */
+  const refLib = createRefLibrary(refs.libHost, {
+    onUse: (item) => useLibraryItem(item),
+    onRemove: (item) => removeLibraryItem(item),
+  });
+
+  /* 参考图盒子与指令卡等高：底边对齐后，两者的分界线正好落在「引擎已就绪」上方的横线上 */
+  const sideEl = refs.libHost.closest('.wb-side');
+  function syncRefBoxHeight() {
+    if (!sideEl) return;
+    if (window.innerWidth <= 1180) {
+      sideEl.style.removeProperty('--refbox-h');
+      return;
+    }
+    const height = Math.round(refs.composer.getBoundingClientRect().height);
+    if (height > 0) sideEl.style.setProperty('--refbox-h', `${height}px`);
+  }
+  if (typeof ResizeObserver === 'function' && sideEl) {
+    new ResizeObserver(syncRefBoxHeight).observe(refs.composer);
+  }
+  window.addEventListener('resize', syncRefBoxHeight);
+
   const jobRunner = new JobRunner(refs.resultHost, {
-    idleText: '上传参考图、写好编辑指令后点击「开始编辑」，进度与结果会显示在这里。',
+    feed: true,
+    latestOnly: true,
+    progressHost: refs.statusStrip,
+    onCompare: (batch) => openCompare(batch),
+    onBatch: (batch) => historyRail.add(batch),
+    idleText: '生成结果会显示在这里，历史记录收在右侧胶囊里，鼠标靠近即可展开。',
   });
   // 编辑指令上方的风格选择器（与文生图页各自独立）
   const stylePicker = createStylePicker(refs.stylePicker, { scope: 'edit' });
-  stylePicker.attachPrompt(refs.prompt);
+  // MJ 码图等预设按光标插入：contenteditable 走 insertPromptText 适配
+  stylePicker.attachPrompt({
+    insertPromptText(text) {
+      promptEditor.insertText(`\n${String(text || '').trim()}`);
+      return true;
+    },
+  });
+
+  /* ============================================================
+   * 侧栏 / 输入框 pill / 图像对比入口
+   * ============================================================ */
+  function setAdvancedOpen(open) {
+    refs.layout.classList.toggle('adv-open', open);
+    refs.advToggle.setAttribute('aria-expanded', String(open));
+    refs.advToggle.innerHTML = open
+      ? '<span class="wb-adv-icon">⚙</span> 收起高级设置'
+      : '<span class="wb-adv-icon">⚙</span> 图生图高级设置';
+  }
+
+  refs.advToggle.addEventListener('click', () => {
+    const open = !refs.layout.classList.contains('adv-open');
+    setAdvancedOpen(open);
+    if (open) refs.advDrawer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+  refs.advClose.addEventListener('click', () => setAdvancedOpen(false));
+
+  refs.feedClear.addEventListener('click', () => {
+    jobRunner.clearFeed();
+    historyRail.clear();
+    refs.resultState.textContent = '等待任务';
+  });
+
+  refs.localPill.addEventListener('click', () => {
+    refs.localEnabled.checked = !refs.localEnabled.checked;
+    refs.localEnabled.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
+  refs.turboPill.addEventListener('click', () => {
+    if (!turboControl) return;
+    const enabled = Boolean(turboControl.getValue().enabled);
+    if (!enabled && !turboControl.profiles.length) {
+      toastWarn('后端未返回 Turbo 加速预设，暂时无法开启');
+      return;
+    }
+    turboControl.setEnabled(!enabled);
+  });
+
+  refs.compareBtn.addEventListener('click', () => openCompare());
+
+  function openCompare(batch = null) {
+    const results = jobRunner.getResults();
+    if (!images.length) {
+      toastWarn('请先上传参考图，再使用图像对比');
+      return;
+    }
+    if (!results.length) {
+      toastWarn('还没有生成结果，先运行一次编辑再对比');
+      return;
+    }
+    let initialResult = 0;
+    if (batch?.images?.length) {
+      const target = batch.images[0].url;
+      const found = results.findIndex((item) => item.url === target);
+      if (found >= 0) initialResult = found;
+    }
+    openCompareDialog({
+      references: images.map((image, index) => ({
+        url: image.dataUrl,
+        label: index === 0 ? '编辑目标' : `参考图 ${index + 1}`,
+      })),
+      results,
+      initialReference: 0,
+      initialResult,
+    });
+  }
 
   /* ============================================================
    * 提示词
    * ============================================================ */
   function updatePromptCount() {
-    refs.promptCount.textContent = `${refs.prompt.value.length} 字`;
+    refs.promptCount.textContent = `${promptEditor.getText().length} 字`;
   }
-  refs.prompt.value = edit.prompt || '';
+  promptEditor.setText(edit.prompt || '');
   updatePromptCount();
-  refs.prompt.addEventListener('input', () => {
-    edit.prompt = refs.prompt.value;
-    patchSettings({ edit: { prompt: edit.prompt } });
-    updatePromptCount();
-  });
   refs.negative.value = edit.negativePrompt || '';
   refs.negative.addEventListener('input', () => {
     edit.negativePrompt = refs.negative.value;
     patchSettings({ edit: { negativePrompt: edit.negativePrompt } });
   });
+  refs.clearPrompt.addEventListener('click', () => {
+    promptEditor.setText('');
+    edit.prompt = '';
+    patchSettings({ edit: { prompt: '' } });
+    updatePromptCount();
+    promptEditor.focus();
+  });
   refs.polish.addEventListener('click', async () => {
     await polishWithDialog({
-      prompt: refs.prompt.value,
+      // 润色同样走 <imageN> 语义映射，LLM 才能分清「编辑目标」和「参考图」
+      prompt: promptEditor.getSemantic(),
       mode: 'edit',
       model: store.state.polishModel || null,
       button: refs.polish,
+      targetSize: images[0] ? { width: images[0].width, height: images[0].height } : null,
+      pose: poseState
+        ? { image: poseState.dataUrl, summary: poseState.summary, label: poseState.label }
+        : null,
       onAccept: (text) => {
-        refs.prompt.value = text;
+        promptEditor.setText(text);
         edit.prompt = text;
         patchSettings({ edit: { prompt: text } });
         updatePromptCount();
@@ -404,20 +629,352 @@ export function createEditPage(host) {
   });
 
   /* ============================================================
-   * 参考图
+   * 指令框：@ 引用小图库 / 拖图进指令框
    * ============================================================ */
+  let atPop = null;
+  let atRange = null;
+
+  function caretRectOf(range) {
+    const elRect = refs.prompt.getBoundingClientRect();
+    if (range) {
+      const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+      if (rect && (rect.height || rect.width)) return rect;
+    }
+    return { left: elRect.left + 12, top: elRect.top, bottom: elRect.top + 18 };
+  }
+
+  function closeAtPicker() {
+    if (!atPop) return;
+    atPop.remove();
+    atPop = null;
+    atRange = null;
+    document.removeEventListener('pointerdown', onDocPointerDown, true);
+    window.removeEventListener('scroll', closeAtPicker, true);
+    window.removeEventListener('resize', closeAtPicker);
+  }
+
+  function onDocPointerDown(event) {
+    if (atPop?.contains(event.target)) return;
+    closeAtPicker();
+  }
+
+  function openAtPicker(range = null) {
+    closeAtPicker();
+    atRange = range ? range.cloneRange() : null;
+    const items = refLib.items;
+    const pop = document.createElement('div');
+    pop.className = 'ref-at-pop';
+    pop.innerHTML = `
+      <div class="ref-at-head">
+        <span>@ 引用参考图</span>
+        <span class="spacer"></span>
+        <button class="ref-at-link" type="button" data-act="warehouse">从仓库添加</button>
+        <button class="ref-at-link" type="button" data-act="upload">上传</button>
+      </div>
+      <div class="ref-at-grid">
+        ${items
+          .map(
+            (item, index) => `
+          <button class="ref-at-item" type="button" data-src="${escapeHtml(item.src)}" title="${escapeHtml(item.name || '参考图')}">
+            <img src="${escapeHtml(item.src)}" alt="" loading="lazy" />
+            <span class="mono">${index + 1}</span>
+          </button>`,
+          )
+          .join('')}
+      </div>
+      ${items.length ? '' : '<div class="ref-at-empty">小图库还是空的，先上传或从仓库添加</div>'}
+      <div class="ref-at-foot">点选后自动加入参考图区域 · 也可以直接把小图库的图拖进来</div>`;
+    document.body.append(pop);
+
+    const rect = caretRectOf(atRange);
+    const width = pop.offsetWidth;
+    const height = pop.offsetHeight;
+    const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+    let top = rect.bottom + 8;
+    if (top + height > window.innerHeight - 12) top = Math.max(12, rect.top - height - 8);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+
+    pop.addEventListener('click', (event) => {
+      const act = event.target.closest('[data-act]')?.dataset.act;
+      if (act === 'warehouse') {
+        closeAtPicker();
+        refs.libHost.querySelector('[data-ref="warehouse"]')?.click();
+        return;
+      }
+      if (act === 'upload') {
+        closeAtPicker();
+        refs.libHost.querySelector('[data-ref="upload"]')?.click();
+        return;
+      }
+      const btn = event.target.closest('[data-src]');
+      if (!btn) return;
+      const item = refLib.items.find((entry) => entry.src === btn.dataset.src);
+      const range = atRange;
+      closeAtPicker();
+      if (item) insertLibraryChip(item, range);
+    });
+
+    atPop = pop;
+    document.addEventListener('pointerdown', onDocPointerDown, true);
+    window.addEventListener('scroll', closeAtPicker, true);
+    window.addEventListener('resize', closeAtPicker);
+  }
+
+  refs.prompt.addEventListener('keydown', (event) => {
+    if (event.key !== '@' || event.isComposing) return;
+    event.preventDefault();
+    openAtPicker(promptEditor.currentRange());
+  });
+  refs.atRef.addEventListener('click', () => {
+    promptEditor.focus();
+    openAtPicker(promptEditor.currentRange() || promptEditor.endRange());
+  });
+
+  refs.prompt.addEventListener('dragover', (event) => {
+    if (!hasRefDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    refs.prompt.classList.add('drop-active');
+  });
+  refs.prompt.addEventListener('dragleave', () => refs.prompt.classList.remove('drop-active'));
+  refs.prompt.addEventListener('drop', async (event) => {
+    if (!hasRefDrag(event)) return;
+    event.preventDefault();
+    refs.prompt.classList.remove('drop-active');
+    const payload = readRefDrag(event);
+    if (!payload?.src) return;
+    let range = null;
+    try {
+      range = document.caretRangeFromPoint?.(event.clientX, event.clientY) || null;
+    } catch {
+      range = null;
+    }
+    if (range && range.startContainer.parentElement?.closest('.ref-chip')) range = null;
+    let item = refLib.items.find((entry) => entry.src === payload.src);
+    if (!item) {
+      item = await refLib.addItem({
+        src: payload.src,
+        name: payload.name,
+        width: payload.width,
+        height: payload.height,
+        source: 'history',
+      });
+    }
+    if (!item) return;
+    const safeRange =
+      range && (range.startContainer === refs.prompt || refs.prompt.contains(range.startContainer))
+        ? range
+        : null;
+    insertLibraryChip(item, safeRange);
+  });
+
+  /* ============================================================
+   * 参考图 / 小图库联动
+   * ============================================================ */
+  function imageLabel(index) {
+    return index === 0 ? '编辑目标' : `参考图 ${index + 1}`;
+  }
+
+  /** 小图库 → 参考图区域（已在区域里则复用）。 */
+  function useLibraryItem(item) {
+    const existing = images.find((image) => image.libKey === item.id);
+    if (existing) {
+      toastWarn('这张图已经在参考图区域了，拖进指令框可插入 @ 引用');
+      return existing;
+    }
+    if (images.length >= MAX_IMAGES) {
+      toastWarn(`最多 ${MAX_IMAGES} 张参考图`);
+      return null;
+    }
+    const entry = {
+      id: `img-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      libKey: item.id,
+      name: item.name || '参考图',
+      dataUrl: item.src,
+      width: Number(item.width) || 0,
+      height: Number(item.height) || 0,
+    };
+    images.push(entry);
+    syncImages();
+    toastSuccess(`已加入参考图区域（${imageLabel(images.indexOf(entry))}）`);
+    if (!entry.width || !entry.height) {
+      probeImageSize(entry.dataUrl)
+        .then(({ width, height }) => {
+          entry.width = width;
+          entry.height = height;
+          syncImages();
+        })
+        .catch(() => {});
+    }
+    return entry;
+  }
+
+  /** 小图库删除 → 对应参考图与指令框里的引用一起消失。 */
+  function removeLibraryItem(item) {
+    const before = images.length;
+    images = images.filter((image) => image.libKey !== item.id);
+    if (images.length === before) return;
+    syncImages();
+    toastSuccess('已从小图库和参考图区域移除');
+  }
+
+  /** chip → 当前 images 顺序（第 1 张 = <image1>）。 */
+  function resolveChipRef(key) {
+    const index = images.findIndex((image) => image.libKey === key);
+    if (index < 0) return null;
+    const image = images[index];
+    return {
+      index,
+      label: imageLabel(index),
+      src: image.dataUrl,
+      width: image.width,
+      height: image.height,
+    };
+  }
+
+  /** 确保小图库图片已加入参考图区域。 */
+  function ensureLibraryRef(item) {
+    return images.find((image) => image.libKey === item.id) || useLibraryItem(item);
+  }
+
+  /** 把小图库图片插入指令框，显示为「@ + 缩略图」。 */
+  function insertLibraryChip(item, range = null) {
+    if (!item) return;
+    const entry = ensureLibraryRef(item);
+    if (!entry) return;
+    const index = images.indexOf(entry);
+    promptEditor.insertChip(
+      {
+        key: item.id,
+        src: item.src,
+        label: imageLabel(index),
+        index,
+        width: entry.width,
+        height: entry.height,
+      },
+      range,
+    );
+  }
+
+  /* ============================================================
+   * 遮罩编辑器（点击参考图上的 ✂ 打开）
+   * ============================================================ */
+  function openMaskDialog(index) {
+    const image = images[index];
+    if (!image) return;
+    const isTarget = index === 0;
+
+    const content = document.createElement('div');
+    content.className = 'mask-dialog';
+    content.innerHTML = `
+      <div class="mask-dialog-bar">
+        <img class="mask-dialog-thumb" src="${escapeHtml(image.dataUrl)}" alt="" />
+        <div class="mask-dialog-meta">
+          <div class="mask-dialog-name">${escapeHtml(image.name || '参考图')}</div>
+          <div class="mask-dialog-sub">${imageLabel(index)} · ${image.width} × ${image.height}</div>
+        </div>
+        <span class="spacer"></span>
+        <span class="mask-dialog-tip">涂抹 = 重绘区域 · 滚轮缩放 · 空格/中键平移 · Ctrl+Z 撤销</span>
+      </div>
+      ${
+        isTarget
+          ? ''
+          : `<div class="mask-dialog-warn">遮罩只对第 1 张「编辑目标」生效，保存时会把这张图提到第 1 位。</div>`
+      }
+      <div class="mask-dialog-host" data-ref="maskHost"></div>`;
+
+    let coverage = 0;
+    let empty = true;
+    let editor = null;
+
+    const modal = openModal({
+      title: '遮罩编辑器',
+      subtitle: isTarget ? '白色描色区域 = 模型重绘的部分' : '标记区域后可把这张设为编辑目标',
+      content,
+      size: 'lg',
+      dialogClass: 'mask-dialog-modal',
+      onClose: () => {
+        editor?.destroy();
+        editor = null;
+      },
+      actions: [
+        { label: '取消' },
+        {
+          label: '清除遮罩',
+          onClick: () => {
+            image.mask = null;
+            syncImages();
+            if (editor?.image) editor.clear();
+            toastSuccess('已清除这张图的遮罩');
+            return false;
+          },
+        },
+        {
+          label: isTarget ? '保存遮罩' : '设为编辑目标并保存',
+          kind: 'primary',
+          onClick: () => {
+            if (empty) {
+              toastWarn('还没有涂抹任何区域');
+              return false;
+            }
+            const mask = editor?.getMask();
+            if (!mask?.dataURL) {
+              toastWarn('遮罩导出失败，请重试');
+              return false;
+            }
+            image.mask = {
+              dataUrl: mask.dataURL,
+              width: mask.width,
+              height: mask.height,
+              coverage,
+            };
+            if (!isTarget) {
+              const [item] = images.splice(images.indexOf(image), 1);
+              images.unshift(item);
+            }
+            edit.localEnabled = true;
+            patchSettings({ edit: { localEnabled: true } });
+            refs.localEnabled.checked = true;
+            syncLocalUi();
+            syncImages();
+            toastSuccess(`遮罩已保存（覆盖 ${Math.round(coverage * 100)}%），局部编辑已开启`);
+            return true;
+          },
+        },
+      ],
+    });
+
+    editor = new MaskEditor(content.querySelector('[data-ref="maskHost"]'), {
+      onChange: (state) => {
+        coverage = state.coverage || 0;
+        empty = Boolean(state.empty);
+      },
+    });
+    editor.setPreview({ feather: edit.feather, expand: edit.maskExpand });
+    (async () => {
+      await editor.setImage(image.dataUrl);
+      if (image.mask?.dataUrl) await editor.setMaskDataUrl(image.mask.dataUrl);
+      editor.setPreview({ feather: edit.feather, expand: edit.maskExpand });
+    })();
+    void modal;
+  }
+
   function renderUploadList() {
     refs.uploadCount.textContent = `${images.length} / ${MAX_IMAGES}`;
     refs.uploadList.innerHTML = images
-      .map(
-        (image, index) => `
-        <div class="upload-item" draggable="true" data-image-index="${index}" title="${escapeHtml(image.name)}">
-          <img src="${escapeHtml(image.dataUrl)}" alt="参考图 ${index + 1}" />
-          <span class="upload-badge">${index === 0 ? '编辑目标' : `参考图 ${index + 1}`}</span>
+      .map((image, index) => {
+        const hasMask = Boolean(image.mask?.dataUrl);
+        return `
+        <div class="upload-item ${hasMask ? 'has-mask' : ''}" draggable="true" data-image-index="${index}" title="${escapeHtml(image.name)}">
+          <img src="${escapeHtml(image.dataUrl)}" alt="${imageLabel(index)}" />
+          <span class="upload-badge">${imageLabel(index)}</span>
+          ${hasMask ? `<span class="upload-mask-flag">遮罩 ${Math.round((image.mask.coverage || 0) * 100)}%</span>` : ''}
           <button class="upload-del" type="button" data-delete="${index}" title="删除这张">×</button>
+          <button class="upload-cut ${hasMask ? 'active' : ''}" type="button" data-mask="${index}" title="绘制遮罩：只重绘标记区域" aria-label="绘制遮罩"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6.5" r="2.6"/><circle cx="6" cy="17.5" r="2.6"/><path d="M8.3 7.9L19 17.2M8.3 16.1L19 6.8"/></svg></button>
           <span class="upload-index">${index === 0 ? 'target' : `image${index + 1}`}</span>
-        </div>`,
-      )
+        </div>`;
+      })
       .join('');
     if (!images.length) {
       refs.uploadList.innerHTML = '';
@@ -426,6 +983,7 @@ export function createEditPage(host) {
       const first = images[0];
       refs.uploadHint.textContent = `第 1 张：${first.width} × ${first.height}（遮罩与输出以它为准）${images.length > 1 ? ` · 共 ${images.length} 张` : ''}`;
     }
+    refs.refBox?.classList.toggle('has-refs', images.length > 0);
   }
 
   async function addFiles(fileList) {
@@ -469,13 +1027,6 @@ export function createEditPage(host) {
   function syncImages() {
     renderUploadList();
     const first = images[0] || null;
-    if (first) {
-      maskEditor.setImage(first.dataUrl);
-      refs.maskMeta.textContent = `${first.width} × ${first.height} · 白 = 编辑区`;
-    } else {
-      maskEditor.clearImage();
-      refs.maskMeta.textContent = '白 = 编辑区';
-    }
     if (first && Number(edit.width) <= 0) {
       edit.width = snapUp(first.width);
       edit.height = snapUp(first.height);
@@ -483,6 +1034,10 @@ export function createEditPage(host) {
     renderModeRows();
     updateSizeInfo();
     updateMaskStatus();
+    // 指令框里的 @ 引用跟着参考图顺序更新；图库标记「已用」
+    promptEditor.syncChips(resolveChipRef);
+    refLib.setUsed(images.map((image) => image.libKey).filter(Boolean));
+    syncSizeCard();
   }
 
   refs.dropzone.addEventListener('click', () => refs.fileInput.click());
@@ -508,6 +1063,12 @@ export function createEditPage(host) {
   });
 
   refs.uploadList.addEventListener('click', (event) => {
+    const cut = event.target.closest('[data-mask]');
+    if (cut) {
+      event.stopPropagation();
+      openMaskDialog(Number(cut.dataset.mask));
+      return;
+    }
     const button = event.target.closest('[data-delete]');
     if (!button) return;
     event.stopPropagation();
@@ -703,7 +1264,139 @@ export function createEditPage(host) {
     patchSettings({ edit: { sizeMode: edit.sizeMode } });
     renderModeRows();
     updateSizeInfo();
+    syncSizeCard();
   });
+
+  /* ------------------------------------------------------------ 尺寸胶囊卡片 */
+
+  function sizePillText() {
+    const mode = refs.sizeMode.value;
+    const first = images[0] || null;
+    if (mode === 'follow') {
+      return first ? `跟随原图 · ${fmtNum(snapUp(first.width))}×${fmtNum(snapUp(first.height))}` : '跟随原图';
+    }
+    if (mode === 'custom') return `自定义 · ${fmtNum(snapUp(edit.width))}×${fmtNum(snapUp(edit.height))}`;
+    if (mode === 'ratio') {
+      const ratio = ratioList().find((item) => item.id === edit.ratio) || ratioList()[0];
+      return `按比例 · ${ratio.id}`;
+    }
+    return `32 不动点 · ${edit.megapixels || '1.0'} MP`;
+  }
+
+  function syncSizeCard() {
+    const mode = refs.sizeMode.value;
+    const first = images[0] || null;
+    refs.sizePillValue.textContent = sizePillText();
+    refs.sizePopDims.textContent = refs.sizeInfo.textContent;
+    refs.sizeModes.querySelectorAll('[data-mode]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.mode === mode);
+    });
+
+    if (mode === 'custom') {
+      refs.sizeBody.innerHTML = `
+        <label class="size-custom">
+          <span>宽 × 高</span>
+          <input class="mono" type="number" min="256" max="4096" step="32" data-card="width" value="${snapUp(edit.width || first?.width || 1024)}" />
+          <span>×</span>
+          <input class="mono" type="number" min="256" max="4096" step="32" data-card="height" value="${snapUp(edit.height || first?.height || 1024)}" />
+        </label>
+        <div class="size-pop-note">自动向上对齐到 32 的倍数</div>`;
+      refs.sizeBody.querySelectorAll('[data-card]').forEach((input) => {
+        input.addEventListener('change', () => {
+          edit[input.dataset.card] = snapUp(input.value);
+          input.value = String(edit[input.dataset.card]);
+          patchSettings({ edit: { [input.dataset.card]: edit[input.dataset.card] } });
+          renderModeRows();
+          updateSizeInfo();
+          syncSizeCard();
+        });
+      });
+      return;
+    }
+
+    if (mode === 'ratio') {
+      const ratios = ratioList();
+      const active = ratios.find((ratio) => ratio.id === edit.ratio) || ratios[0];
+      refs.sizeBody.innerHTML = `
+        <div class="size-ratio-grid">
+          ${ratios
+            .map(
+              (ratio) => `
+            <button class="size-ratio-item ${ratio.id === active.id ? 'active' : ''}" type="button" data-ratio="${escapeHtml(ratio.id)}" title="${escapeHtml(ratio.label || '')} · ${fmtNum(ratio.w)} × ${fmtNum(ratio.h)}">
+              <span class="ratio-label">${escapeHtml(ratio.id)}</span>
+            </button>`,
+            )
+            .join('')}
+        </div>
+        <label class="size-custom">
+          <span>百万像素</span>
+          <input class="mono" type="number" min="0.1" max="16" step="0.1" placeholder="默认 1.0" data-card="megapixels" value="${edit.megapixels ?? ''}" />
+          <span>MP</span>
+        </label>`;
+      refs.sizeBody.querySelectorAll('[data-ratio]').forEach((button) => {
+        button.addEventListener('click', () => {
+          edit.ratio = button.dataset.ratio;
+          patchSettings({ edit: { ratio: edit.ratio } });
+          renderModeRows();
+          updateSizeInfo();
+          syncSizeCard();
+        });
+      });
+      const mp = refs.sizeBody.querySelector('[data-card="megapixels"]');
+      mp.addEventListener('change', () => {
+        edit.megapixels = mp.value.trim();
+        patchSettings({ edit: { megapixels: edit.megapixels } });
+        renderModeRows();
+        updateSizeInfo();
+        syncSizeCard();
+      });
+      return;
+    }
+
+    if (mode === 'fixed_point') {
+      refs.sizeBody.innerHTML = `
+        <label class="size-custom">
+          <span>参考百万像素</span>
+          <input class="mono" type="number" min="0.1" max="16" step="0.1" data-card="megapixels" value="${edit.megapixels || 1.0}" />
+          <span>MP</span>
+        </label>
+        <div class="size-pop-note">先对齐 32 再缩放回原图尺寸（零偏移）${first ? ` · 当前 ${first.width}×${first.height}` : ''}</div>`;
+      const mp = refs.sizeBody.querySelector('[data-card="megapixels"]');
+      mp.addEventListener('change', () => {
+        edit.megapixels = mp.value.trim() || '1.0';
+        patchSettings({ edit: { megapixels: edit.megapixels } });
+        renderModeRows();
+        updateSizeInfo();
+        syncSizeCard();
+      });
+      return;
+    }
+
+    refs.sizeBody.innerHTML = `<div class="size-pop-note">输出 = 第 1 张图尺寸（仅向上对齐 32），遮罩 1:1 映射，推荐用于零偏移编辑。</div>`;
+  }
+
+  function onSizeDocDown(event) {
+    if (refs.sizeAnchor.contains(event.target)) return;
+    setSizePopOpen(false);
+  }
+
+  function setSizePopOpen(open) {
+    refs.sizePop.hidden = !open;
+    refs.sizePill.setAttribute('aria-expanded', String(open));
+    if (open) document.addEventListener('pointerdown', onSizeDocDown, true);
+    else document.removeEventListener('pointerdown', onSizeDocDown, true);
+  }
+
+  refs.sizePill.addEventListener('click', () => setSizePopOpen(refs.sizePop.hidden));
+  refs.sizeModes.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-mode]');
+    if (!button) return;
+    refs.sizeMode.value = button.dataset.mode;
+    refs.sizeMode.dispatchEvent(new Event('change'));
+  });
+  updateSizeInfo();
+  syncSizeCard();
+
   refs.fit.value = edit.fit;
   refs.fit.addEventListener('change', () => {
     edit.fit = refs.fit.value;
@@ -718,6 +1411,7 @@ export function createEditPage(host) {
     const enabled = refs.localEnabled.checked;
     refs.localOptions.classList.toggle('hidden', !enabled);
     refs.localDisabledNote.classList.toggle('hidden', enabled);
+    refs.localPill?.classList.toggle('active', enabled);
     updateMaskStatus();
   }
 
@@ -753,9 +1447,9 @@ export function createEditPage(host) {
     });
   }
 
-  bindRange(refs.feather, 'feather', refs.featherVal, (v) => `${Math.round(v)} px`, () => maskEditor.setPreview({ feather: edit.feather, expand: edit.maskExpand }));
+  bindRange(refs.feather, 'feather', refs.featherVal, (v) => `${Math.round(v)} px`);
   // 注意：store 里的字段叫 maskExpand（不是 expand），绑错会让滑杆值变成 undefined → 显示 NaN px
-  bindRange(refs.expand, 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`, () => maskEditor.setPreview({ feather: edit.feather, expand: edit.maskExpand }));
+  bindRange(refs.expand, 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`);
   bindRange(refs.colorStrength, 'colorStrength', refs.colorStrengthVal, (v) => Number(v).toFixed(2));
   bindRange(refs.contextFactor, 'contextFactor', refs.contextFactorVal, (v) => `${Number(v).toFixed(1)}×`);
 
@@ -775,20 +1469,16 @@ export function createEditPage(host) {
     patchSettings({ edit: { blendPixels: edit.blendPixels } });
   });
 
-  function updateMaskStatus(state) {
-    const coverage = state?.coverage ?? 0;
-    const percent = Math.round(coverage * 100);
-    if (state?.empty || percent <= 0) {
-      refs.maskState.innerHTML = '<span class="mask-invalid">○ 尚未绘制</span>';
-    } else {
-      refs.maskState.innerHTML = `<span class="mask-valid">● 已绘制 ${percent}%</span>`;
-    }
+  function updateMaskStatus() {
+    const target = images[0];
+    const hasMask = Boolean(target?.mask?.dataUrl);
+    const percent = Math.round((target?.mask?.coverage || 0) * 100);
     if (!refs.localEnabled.checked) {
       refs.actionHint.textContent = '局部编辑关闭：整图参与编辑';
-    } else if (state?.empty) {
-      refs.actionHint.textContent = '局部编辑已开启：请先在右侧遮罩编辑器涂抹编辑区';
+    } else if (!hasMask) {
+      refs.actionHint.textContent = '局部编辑已开启：点参考图上的 ✂ 涂抹要重绘的区域';
     } else {
-      refs.actionHint.textContent = '局部编辑已开启：遮罩外像素会逐像素保留原图';
+      refs.actionHint.textContent = `局部编辑已开启：遮罩覆盖 ${percent}%，遮罩外逐像素保留`;
     }
   }
 
@@ -827,23 +1517,54 @@ export function createEditPage(host) {
     refs.denoise.value = String(edit.denoise);
     patchSettings({ edit: { denoise: edit.denoise } });
   });
+  function setSeedValue(value) {
+    refs.seed.value = value == null ? '' : String(value);
+    edit.seed = refs.seed.value;
+    patchSettings({ edit: { seed: edit.seed } });
+  }
+
+  function syncSeedUi() {
+    const mode = edit.seedMode === 'fixed' ? 'fixed' : 'random';
+    refs.seedFixed.classList.toggle('active', mode === 'fixed');
+    refs.seedRandom.classList.toggle('active', mode === 'random');
+    refs.seed.readOnly = mode === 'random';
+    refs.seed.classList.toggle('is-random', mode === 'random');
+    refs.seed.placeholder = mode === 'random' ? '每次随机' : '固定种子';
+    refs.randomSeed.disabled = mode === 'random';
+    refs.randomSeed.title = mode === 'random' ? '随机模式下每次生成自动换种子' : '换一个固定种子';
+    refs.reuseSeed.disabled = lastSeed == null;
+  }
+
+  function setSeedMode(mode) {
+    const next = mode === 'fixed' ? 'fixed' : 'random';
+    edit.seedMode = next;
+    patchSettings({ edit: { seedMode: next } });
+    if (next === 'fixed' && !refs.seed.value.trim()) {
+      setSeedValue(String(Math.floor(Math.random() * 1_000_000_000)));
+    } else if (next === 'random') {
+      // 随机模式清空显示，生成结束后回填本次实际种子
+      setSeedValue('');
+    }
+    syncSeedUi();
+  }
+
+  refs.seedFixed.addEventListener('click', () => setSeedMode('fixed'));
+  refs.seedRandom.addEventListener('click', () => setSeedMode('random'));
   refs.seed.addEventListener('input', () => {
     edit.seed = refs.seed.value.trim();
     patchSettings({ edit: { seed: edit.seed } });
   });
   refs.randomSeed.addEventListener('click', () => {
-    const seed = Math.floor(Math.random() * 1_000_000_000);
-    refs.seed.value = String(seed);
-    edit.seed = String(seed);
-    patchSettings({ edit: { seed: edit.seed } });
+    setSeedValue(String(Math.floor(Math.random() * 1_000_000_000)));
+    setSeedMode('fixed');
   });
   refs.reuseSeed.addEventListener('click', () => {
     if (lastSeed == null) return;
-    refs.seed.value = String(lastSeed);
-    edit.seed = String(lastSeed);
-    patchSettings({ edit: { seed: edit.seed } });
+    setSeedValue(String(lastSeed));
+    setSeedMode('fixed');
     toastSuccess(`已填入上次种子 ${lastSeed}`);
   });
+  syncSeedUi();
   refs.sampler.addEventListener('change', () => {
     edit.sampler = refs.sampler.value;
     patchSettings({ edit: { sampler: edit.sampler } });
@@ -934,6 +1655,21 @@ export function createEditPage(host) {
         edit.sampler = profile.sampler;
       }
       patchSettings({ edit: { steps: edit.steps, cfg: edit.cfg, sampler: edit.sampler } });
+    }
+    syncTurboPill();
+  }
+
+  function syncTurboPill() {
+    if (!refs.turboPill) return;
+    const value = turboControl?.getValue();
+    const enabled = Boolean(value?.enabled);
+    const profile = turboControl?.selectedProfile();
+    refs.turboPill.classList.toggle('active', enabled);
+    const label = refs.turboPill.querySelector('[data-role="label"]');
+    if (label) {
+      if (!enabled) label.textContent = '加速';
+      else if (profile?.steps) label.textContent = `${profile.steps} 步`;
+      else label.textContent = '已开启';
     }
   }
 
@@ -1051,7 +1787,6 @@ export function createEditPage(host) {
   setScheme(edit.scheme === 'b' ? 'b' : 'a');
   refs.localEnabled.checked = Boolean(edit.localEnabled);
   syncLocalUi();
-  maskEditor.setPreview({ feather: edit.feather, expand: edit.maskExpand });
   renderSelects();
   renderTurbo();
   renderLoras();
@@ -1070,18 +1805,29 @@ export function createEditPage(host) {
     const mode = refs.sizeMode.value;
     const first = images[0];
     const localEnabled = refs.localEnabled.checked;
-    const mask = precomputedMask || (localEnabled ? maskEditor.getMask() : { dataURL: null, empty: true });
+    const targetMask = localEnabled ? images[0]?.mask : null;
+    const mask = precomputedMask || (targetMask?.dataUrl
+      ? {
+          dataURL: targetMask.dataUrl,
+          empty: false,
+          width: targetMask.width || first?.width,
+          height: targetMask.height || first?.height,
+        }
+      : { dataURL: null, empty: true });
     const turboValue = turboControl.getValue();
     const models = modelsField.getValue();
+    const seedMode = edit.seedMode === 'fixed' ? 'fixed' : 'random';
     const seedText = refs.seed.value.trim();
-    const seed = seedText === '' ? null : Math.max(0, Math.floor(Number(seedText)));
+    const seed = seedMode === 'random' ? null : Math.max(0, Math.floor(Number(seedText) || 0));
     const megapixels = Number(edit.megapixels);
     const consistencyOn = refs.consistencyEnabled.checked && Boolean(refs.consistencyLora.value);
     const pickerMeta = stylePicker.getMeta();
+    // 指令框里的 @ 引用按参考图顺序映射成 <imageN>，与后端多图 token 对齐
+    const promptText = promptEditor.getSemantic().trim();
 
     return {
       // 指令正文保持原文，风格/滤镜/视角在这里合成
-      prompt: stylePicker.composePrompt(refs.prompt.value.trim()),
+      prompt: stylePicker.composePrompt(promptText),
       negative_prompt: refs.negative.value.trim(),
       images: images.map((image) => ({ name: image.name, data: image.dataUrl })),
       size_mode: mode,
@@ -1119,13 +1865,35 @@ export function createEditPage(host) {
       consistency_lora: consistencyOn
         ? { name: refs.consistencyLora.value, strength: Number(refs.consistencyStrength.value) }
         : null,
+      // 姿态图作为 image1：后端会把指令里的 <imageN> 顺延为 <image(N+1)>
+      pose: poseState
+        ? {
+            image: poseState.dataUrl,
+            width: poseState.width,
+            height: poseState.height,
+            joints: poseState.joints,
+            preset: poseState.preset,
+            label: poseState.label,
+            summary: poseState.summary,
+            strength: poseState.strength,
+            use_lora: poseState.useLora,
+          }
+        : null,
       meta: {
         source: 'web/edit',
         targetSize: first ? { width: first.width, height: first.height } : null,
         maskSize: mask.dataURL ? { width: mask.width, height: mask.height } : null,
-        rawPrompt: refs.prompt.value.trim(),
+        rawPrompt: promptText,
+        // 给后端的语义映射：<image1> = 编辑目标，<image2>… = 参考图
+        referenceMap: images.map((image, index) => ({
+          marker: `<image${index + 1}>`,
+          role: index === 0 ? '编辑目标' : '参考图',
+          name: image.name,
+          fromLibrary: Boolean(image.libKey),
+        })),
         creativePresets: pickerMeta.creativePresets,
         imageAngle: pickerMeta.imageAngle,
+        pose: poseState ? { preset: poseState.preset, summary: poseState.summary } : null,
         client: 'qwen-image2.1-web',
       },
       // 仅供结果面板显示遮罩叠加，不发送
@@ -1170,18 +1938,24 @@ export function createEditPage(host) {
       toastWarn('请先上传至少 1 张参考图（第 1 张是编辑目标）');
       return;
     }
-    if (!refs.prompt.value.trim()) {
+    if (promptEditor.isEmpty()) {
       toastWarn('请先填写编辑指令');
-      refs.prompt.focus();
+      promptEditor.focus();
       return;
     }
     let maskResult = null;
     if (refs.localEnabled.checked) {
-      maskResult = maskEditor.getMask();
-      if (maskResult.empty) {
-        toastWarn('局部编辑已开启，但还没有涂抹遮罩。请先在右侧遮罩编辑器里画出要编辑的区域。');
+      const target = images[0];
+      if (!target?.mask?.dataUrl) {
+        toastWarn('局部编辑已开启，但还没有遮罩：点参考图上的 ✂ 涂抹要重绘的区域');
         return;
       }
+      maskResult = {
+        dataURL: target.mask.dataUrl,
+        empty: false,
+        width: target.mask.width,
+        height: target.mask.height,
+      };
     }
     refs.submit.disabled = true;
     refs.submit.innerHTML = '<span class="spin"></span>编辑中…';
@@ -1220,7 +1994,9 @@ export function createEditPage(host) {
           const seed = job?.params?.seed;
           if (seed != null) {
             lastSeed = seed;
-            refs.reuseSeed.disabled = false;
+            // 随机模式下把本次实际种子回填到输入框，方便复用
+            if (edit.seedMode !== 'fixed') setSeedValue(String(seed));
+            syncSeedUi();
           }
           refreshHealthSoon();
         },
@@ -1240,10 +2016,20 @@ export function createEditPage(host) {
     }
   });
   refs.reset.addEventListener('click', () => {
-    const defaults = { steps: 25, cfg: 4.0, denoise: 1.0, seed: '', sampler: 'euler', scheduler: 'simple', turbo: false };
+    const defaults = {
+      steps: 25,
+      cfg: 4.0,
+      denoise: 1.0,
+      seed: '',
+      seedMode: 'random',
+      sampler: 'euler',
+      scheduler: 'simple',
+      turbo: false,
+    };
     Object.assign(edit, defaults);
     patchSettings({ edit: defaults });
     refs.seed.value = '';
+    syncSeedUi();
     renderSelects();
     renderTurbo();
     toastSuccess('采样参数已重置');
@@ -1341,13 +2127,14 @@ export function createEditPage(host) {
           dataUrl: result.dataUrl,
           width,
           height,
+          mask: result.maskDataUrl
+            ? { dataUrl: result.maskDataUrl, width, height, coverage: 0 }
+            : null,
         };
         renderUploadList();
         renderModeRows();
         updateSizeInfo();
-        await maskEditor.setImage(images[0].dataUrl);
-        const maskOk = await maskEditor.setMaskDataUrl(result.maskDataUrl);
-        refs.prompt.value = result.prompt;
+        promptEditor.setText(result.prompt);
         edit.prompt = result.prompt;
         patchSettings({ edit: { prompt: result.prompt, localEnabled: true } });
         updatePromptCount();
@@ -1356,7 +2143,7 @@ export function createEditPage(host) {
         syncLocalUi();
         updateMaskStatus();
         toastSuccess(
-          `扩图已准备：新画布 ${width} × ${height}，${maskOk ? '遮罩已生成' : '遮罩生成失败，请手动涂抹'}`,
+          `扩图已准备：新画布 ${width} × ${height}，${result.maskDataUrl ? '已生成新增区域遮罩，可点 ✂ 微调' : '遮罩生成失败，请点 ✂ 手动涂抹'}`,
         );
       } catch (err) {
         toastError(err, '扩图规划失败');
@@ -1396,16 +2183,21 @@ export function createEditPage(host) {
         return;
       }
       images = nextImages;
+      if (payload.mask && images[0]) {
+        images[0].mask = {
+          dataUrl: payload.mask,
+          width: images[0].width,
+          height: images[0].height,
+          coverage: 0,
+        };
+      }
       renderUploadList();
+      promptEditor.syncChips(resolveChipRef);
+      refLib.setUsed(images.map((image) => image.libKey).filter(Boolean));
       renderModeRows();
       updateSizeInfo();
-      await maskEditor.setImage(images[0].dataUrl);
-      if (payload.mask) {
-        const ok = await maskEditor.setMaskDataUrl(payload.mask);
-        if (!ok) toastWarn('扩图遮罩导入失败，可手动涂抹新增区域');
-      }
       if (payload.prompt != null) {
-        refs.prompt.value = payload.prompt;
+        promptEditor.setText(payload.prompt);
         edit.prompt = payload.prompt;
         patchSettings({ edit: { prompt: payload.prompt } });
         updatePromptCount();

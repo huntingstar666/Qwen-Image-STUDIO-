@@ -508,7 +508,7 @@ export function createEditPage(host) {
     progressHost: refs.statusStrip,
     onCompare: (batch) => openCompare(batch),
     onBatch: (batch) => historyRail.add(batch),
-    idleText: '生成结果会显示在这里，历史记录收在右侧胶囊里，鼠标靠近即可展开。',
+    idleText: '生成结果会显示在这里，历史记录收在右侧书脊里，点击即可展开。',
   });
   // 编辑指令上方的风格选择器（与文生图页各自独立）
   const stylePicker = createStylePicker(refs.stylePicker, { scope: 'edit' });

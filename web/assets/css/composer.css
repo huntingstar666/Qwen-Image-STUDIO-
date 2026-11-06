@@ -18,16 +18,24 @@
 }
 
 .wb-page {
-  --rail-reserve: 416px;
+  --rail-reserve: 128px;
+  --rail-drawer: 0px;
   position: relative;
   isolation: isolate;
   max-width: none;
   margin: 0;
-  padding: 18px var(--rail-reserve) 40px 8px;
+  padding: 18px 8px 40px 8px;
+  padding-right: calc(var(--rail-reserve) + var(--rail-drawer));
   background:
     radial-gradient(760px 520px at 100% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
     radial-gradient(680px 520px at 0% 100%, color-mix(in srgb, var(--violet) 7%, transparent), transparent 72%),
     radial-gradient(520px 380px at 62% 34%, color-mix(in srgb, var(--violet) 7%, transparent), transparent 75%);
+  transition: padding-right var(--dur) var(--ease);
+}
+
+/* 历史抽屉展开时把创作区整体左推，浮层不再压住内容 */
+.wb-page:has(.history-rail.is-open) {
+  --rail-drawer: 312px;
 }
 
 /* 淡淡的纸纹，只铺在上半屏 */
@@ -47,7 +55,7 @@
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 62%);
 }
 
-/* 留白处的文艺字：右上主句 + 英文小字 + 右下朱印 */
+/* 留白处的文艺字：右侧竖排书眉 + 底部朱印 */
 .wb-art {
   position: fixed;
   inset: 0;
@@ -57,66 +65,58 @@
 
 .wb-art-glyph {
   position: fixed;
-  top: calc(var(--topbar-h) + 34px);
-  right: 30px;
+  top: calc(var(--topbar-h) + 118px);
+  right: 64px;
   color: var(--text);
   font-family: var(--font-serif);
-  font-size: 27px;
-  line-height: 1.24;
-  letter-spacing: 0.14em;
-  text-align: right;
-  opacity: 0.17;
-}
-
-.wb-art-glyph::after {
-  content: '';
-  display: block;
-  width: 86px;
-  height: 1px;
-  margin: 13px 0 0 auto;
-  background: linear-gradient(90deg, transparent, var(--accent));
-  opacity: 0.55;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 0.34em;
+  writing-mode: vertical-rl;
+  opacity: 0.3;
 }
 
 .wb-art-sub {
   position: fixed;
   top: calc(var(--topbar-h) + 96px);
-  right: 32px;
+  right: 87px;
   color: var(--muted);
   font-family: var(--font);
-  font-size: 8.5px;
-  letter-spacing: 0.44em;
-  opacity: 0.55;
+  font-size: 7.5px;
+  letter-spacing: 0.34em;
+  writing-mode: vertical-rl;
+  opacity: 0.42;
   text-transform: uppercase;
 }
 
 .wb-art-seal {
   position: fixed;
-  right: 32px;
-  bottom: 52px;
+  right: 58px;
+  bottom: 44px;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 26px;
+  height: 26px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 9px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--accent) 5%, transparent);
   color: var(--accent);
   font-family: var(--font-serif);
-  font-size: 18px;
+  font-size: 13px;
   line-height: 1;
   opacity: 0.4;
 }
 
 .wb-art-foot {
   position: fixed;
-  right: 86px;
-  bottom: 63px;
+  right: 66px;
+  bottom: 84px;
   color: var(--muted);
   font-family: var(--font-serif);
-  font-size: 11px;
-  letter-spacing: 0.2em;
-  opacity: 0.55;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  writing-mode: vertical-rl;
+  opacity: 0.5;
 }
 
 .wb-layout {
@@ -2173,14 +2173,14 @@
 /* ------------------------------------------------------------- 右侧历史胶囊 */
 
 .history-rail {
-  --hr-w: 344px;
+  --hr-w: 360px;
   position: fixed;
-  top: 50%;
+  top: calc(var(--topbar-h) + 84px);
+  bottom: 40px;
   right: 0;
   z-index: 64;
   display: flex;
-  align-items: center;
-  transform: translateY(-50%);
+  align-items: stretch;
   transition: right var(--dur) var(--ease);
 }
 
@@ -2188,7 +2188,7 @@
   width: 0;
   border: 1px solid var(--line);
   border-right: 0;
-  border-radius: 16px 0 0 16px;
+  border-radius: 18px 0 0 18px;
   background: var(--panel);
   box-shadow: var(--shadow-float);
   opacity: 0;
@@ -2199,8 +2199,7 @@
     transform var(--dur) var(--ease);
 }
 
-.history-rail:hover .hr-panel,
-.history-rail:focus-within .hr-panel,
+/* 只认点击展开：悬停只高亮书脊，避免浮层压住创作区 */
 .history-rail.is-open .hr-panel {
   width: var(--hr-w);
   opacity: 1;
@@ -2212,7 +2211,7 @@
   display: flex;
   flex-direction: column;
   width: var(--hr-w);
-  max-height: min(78vh, 660px);
+  height: 100%;
   min-height: 0;
 }
 
@@ -2273,8 +2272,10 @@
 
 .hr-empty {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 34px 16px 38px;
   color: var(--dim);
@@ -2408,17 +2409,18 @@
 }
 
 .hr-tab {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  width: 50px;
-  min-height: 228px;
-  padding: 28px 0;
+  gap: 14px;
+  width: 56px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 0 14px;
   border: 1px solid var(--line);
   border-right: 0;
-  border-radius: 16px 0 0 16px;
+  border-radius: 20px 0 0 20px;
   background: var(--panel);
   box-shadow: var(--shadow);
   color: var(--text-2);
@@ -2433,24 +2435,20 @@
   color: var(--text);
 }
 
-.hr-tab-icon {
-  font-size: 17px;
-  opacity: 0.85;
-}
-
-.hr-tab::after {
+.hr-tab::before {
   content: '';
-  width: 1px;
-  height: 34px;
-  background: linear-gradient(180deg, transparent, var(--line-strong), transparent);
-  opacity: 0.8;
+  width: 2px;
+  height: 26px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 0%, transparent));
+  opacity: 0.55;
 }
 
 .hr-tab-count {
   display: grid;
   place-items: center;
-  min-width: 18px;
-  height: 18px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 5px;
   border-radius: 999px;
   background: var(--accent);
@@ -2461,17 +2459,36 @@
 }
 
 .hr-tab-label {
+  margin: auto 0;
   writing-mode: vertical-rl;
-  color: var(--muted);
-  font-size: 10.5px;
-  letter-spacing: 0.26em;
+  color: var(--text-2);
+  font-family: var(--font-serif);
+  font-size: 12px;
+  letter-spacing: 0.3em;
   line-height: 1;
+  transition: color var(--dur-fast) var(--ease);
 }
 
-/* 窄屏不再预留整条走廊，胶囊恢复浮层并收窄 */
+.history-rail.is-open .hr-tab-label {
+  color: var(--accent);
+}
+
+.hr-tab-chev {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  transition: transform var(--dur) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.history-rail.is-open .hr-tab-chev {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+/* 窄屏收窄书脊与展开宽度 */
 @media (max-width: 1360px) {
   .wb-page {
-    --rail-reserve: 64px;
+    --rail-reserve: 72px;
   }
 
   .wb-art {
@@ -2483,20 +2500,35 @@
   .history-rail {
     --hr-w: 320px;
   }
+
+  .wb-page:has(.history-rail.is-open) {
+    --rail-drawer: 328px;
+  }
 }
 
 @media (max-width: 760px) {
   .history-rail {
     --hr-w: min(300px, 86vw);
+    top: calc(var(--topbar-h) + 60px);
+    bottom: 24px;
+  }
+
+  /* 小屏没有可推的空间，抽屉回退成浮层 */
+  .wb-page:has(.history-rail.is-open) {
+    --rail-drawer: 0px;
   }
 
   .hr-tab {
     width: 34px;
-    gap: 5px;
-    padding: 12px 0;
+    gap: 8px;
+    padding: 10px 0 12px;
   }
 
   .hr-tab-label {
+    display: none;
+  }
+
+  .hr-tab-chev {
     display: none;
   }
 }

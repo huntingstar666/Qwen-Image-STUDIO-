@@ -1,6 +1,6 @@
 /**
  * 页面右侧的隐藏式历史胶囊。
- * 默认只露出一条窄胶囊，鼠标靠近（或点击）自动向左展开，
+ * 收起时是一条通高书脊（竖排标题 + 批次计数），点击向左展开同高面板，
  * 按时间倒序列出本次会话生成的批次：时间、编号、张数、尺寸、缩略图，
  * 支持查看高清大图、收藏首图、下载整批。
  */
@@ -50,10 +50,10 @@ export function createHistoryRail(host, { label = '生成历史' } = {}) {
         </div>
       </div>
     </div>
-    <button class="hr-tab" type="button" data-ref="tab" aria-expanded="false" title="生成历史：鼠标靠近展开">
-      <span class="hr-tab-icon">◧</span>
+    <button class="hr-tab" type="button" data-ref="tab" aria-expanded="false" title="生成历史：点击展开">
       <span class="hr-tab-count" data-ref="tabCount">0</span>
-      <span class="hr-tab-label">历史</span>
+      <span class="hr-tab-label">生成历史</span>
+      <span class="hr-tab-chev" aria-hidden="true">‹</span>
     </button>`;
 
   // 挂在 .page 内部，才能配合 `:has(.wb-layout.adv-open)` 做侧栏避让
@@ -154,11 +154,6 @@ export function createHistoryRail(host, { label = '生成历史' } = {}) {
 
   tab.addEventListener('click', () => setOpen(!rail.classList.contains('is-open')));
   closeBtn.addEventListener('click', () => setOpen(false));
-
-  rail.addEventListener('mouseleave', () => {
-    // 悬停展开是纯 CSS；mouseleave 时清掉点击固定的状态，回到「靠近才展开」
-    setOpen(false);
-  });
 
   document.addEventListener('pointerdown', (event) => {
     if (!rail.classList.contains('is-open')) return;

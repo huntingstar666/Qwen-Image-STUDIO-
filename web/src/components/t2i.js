@@ -319,7 +319,7 @@ export function createT2IPage(host) {
     latestOnly: true,
     progressHost: refs.statusStrip,
     onBatch: (batch) => historyRail.add(batch),
-    idleText: '生成结果会显示在这里，历史记录收在右侧胶囊里，鼠标靠近即可展开。',
+    idleText: '生成结果会显示在这里，历史记录收在右侧书脊里，点击即可展开。',
   });
 
   // 提示词上方的风格选择器（本页独立选择集合）

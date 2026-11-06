@@ -746,6 +746,7 @@ class Pipeline:
                 anchor_match=anchor_match,
                 anchor_strength=anchor_strength,
                 band_mode=band_mode,
+                dither=_truthy(local.get("dither", True)),
                 report=color_report,
             )
         else:
@@ -759,6 +760,7 @@ class Pipeline:
                 anchor_match=anchor_match,
                 anchor_strength=anchor_strength,
                 band_mode=band_mode,
+                dither=_truthy(local.get("dither", True)),
                 report=color_report,
             )
 

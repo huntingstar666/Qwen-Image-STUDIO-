@@ -331,6 +331,32 @@ def test_fill_mask_holes_empty_is_empty():
     assert float(out.max()) == 0.0
 
 
+def test_ign_dither_only_touches_transition_band():
+    rgb = np.full((100, 3), 0.5, dtype=np.float32)
+    alpha = np.zeros((100, 1), dtype=np.float32)
+    alpha[:50] = 1.0
+    alpha[50:80] = 0.5
+    out = align.ign_dither(rgb, alpha, amount=1.0 / 255.0)
+    assert np.array_equal(out[:50], rgb[:50])
+    assert np.array_equal(out[80:], rgb[80:])
+    assert not np.array_equal(out[50:80], rgb[50:80])
+    assert float(np.abs(out - rgb).max()) <= (1.0 / 255.0) + 1e-6
+
+
+def test_ign_dither_noop_without_band():
+    rgb = np.full((10, 3), 0.3, dtype=np.float32)
+    out = align.ign_dither(rgb, np.zeros((10, 1), dtype=np.float32))
+    assert np.array_equal(out, rgb)
+
+
+def test_ign_dither_accepts_2d_alpha():
+    rgb = np.full((8, 8, 3), 0.5, dtype=np.float32)
+    alpha = np.full((8, 8, 1), 0.5, dtype=np.float32)
+    out = align.ign_dither(rgb, alpha)
+    assert out.shape == rgb.shape
+    assert not np.array_equal(out, rgb)
+
+
 def test_dilate_mask_expands_square_window():
     mask = np.zeros((21, 21), dtype=np.float32)
     mask[10, 10] = 1.0

@@ -993,6 +993,7 @@ def composite(
     anchor_match: bool = True,
     anchor_strength: float = 1.0,
     band_mode: str = "lowfreq",
+    dither: bool = False,
     report: dict | None = None,
 ) -> Image.Image:
     """方案 A 收尾：用遮罩把编辑结果合成回原图（零色差的关键步骤）。
@@ -1099,6 +1100,9 @@ def composite(
             original_u8[selected].astype(np.float32) * (1.0 - a)
             + base_u8[selected].astype(np.float32) * a
         )
+        if dither:
+            rgb = align.ign_dither(blended[:, :3] / 255.0, a, amount=1.0 / 255.0)
+            blended[:, :3] = rgb * 255.0
         out[selected] = np.rint(np.clip(blended, 0.0, 255.0)).astype(np.uint8)
     if report is not None:
         report.update(color_info)
@@ -1364,6 +1368,7 @@ def stitch_region(
     anchor_match: bool = True,
     anchor_strength: float = 1.0,
     band_mode: str = "lowfreq",
+    dither: bool = False,
     report: dict | None = None,
 ) -> Image.Image:
     """把解码后的裁切结果贴回原画布（带羽化/曲线/颜色匹配）。
@@ -1526,6 +1531,8 @@ def stitch_region(
     if bool(selected.any()):
         a = alpha[selected][:, None]
         blended = region_f[selected] * (1.0 - a) + content_f[selected] * a
+        if dither:
+            blended[:, :3] = align.ign_dither(blended[:, :3], a, amount=1.0 / 255.0)
         view[selected] = np.rint(np.clip(blended, 0.0, 1.0) * 255.0).astype(np.uint8)
     if report is not None:
         report.update(color_info)

@@ -63,6 +63,7 @@ __all__ = [
     "curve_mask",
     "band_from_mask",
     "fill_mask_holes",
+    "ign_dither",
     "reinhard_match",
     "diff_map",
     "mad_threshold",
@@ -655,6 +656,33 @@ def fill_mask_holes(mask, *, threshold: float = 0.5) -> np.ndarray:
     holes = (arr == 0)
     out = np.zeros(m.shape, dtype=np.float32)
     out[y0:y1, x0:x1] = np.logical_or(sub, holes).astype(np.float32)
+    return out
+
+
+def ign_dither(rgb, alpha, *, amount: float = 1.0 / 255.0) -> np.ndarray:
+    """过渡带抖动（IGN，interleaved gradient noise）：压羽化带色带。
+
+    ``rgb``：float32 0~1，形状 ``(N,3)`` / ``(H,W,3)``；``alpha``：``(N,1)`` / ``(H,W,1)``。
+    振幅乘 ``4·α·(1-α)`` 包络，两端归零，所以 ``alpha == 0`` / ``alpha == 1`` 的像素
+    逐字节不变（不破坏遮罩外 byte-exact）。使用确定性梯度噪声，无随机种子。
+    """
+    a = np.asarray(alpha, dtype=np.float32)
+    a2 = a[..., 0] if a.ndim > 1 else a
+    band = (a2 > 0.0) & (a2 < 1.0)
+    if not bool(band.any()):
+        return rgb
+    src = np.asarray(rgb, dtype=np.float32)
+    out = src.copy()
+    n = int(band.sum())
+    idx = np.arange(n, dtype=np.float32)
+    # 以 64 宽网格模拟 2D IGN：fract(52.9829189 * fract(0.06711*x + 0.00584*y))
+    xs = np.mod(idx, 64.0)
+    ys = np.floor_divide(idx, 64.0)
+    frac = np.modf(0.06711056 * xs + 0.00583715 * ys)[0]
+    grain = (np.modf(52.9829189 * frac)[0] - 0.5) * 2.0
+    av = a2[band]
+    env = 4.0 * av * (1.0 - av) * float(amount)
+    out[band] = np.clip(src[band] + grain[:, None] * env[:, None], 0.0, 1.0)
     return out
 
 

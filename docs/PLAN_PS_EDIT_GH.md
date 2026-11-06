@@ -531,6 +531,14 @@ def robust_color_match(src, ref, strength=1.0, tol=24/255, g_lo=0.9, g_hi=1.1, o
 5. 过渡带 0<a<1 加 IGN 抖动（可选，默认开）
 ```
 
+**落地差异（重要）：** `robust_color_match` **不单独实现**——它"用锚区估计 gain/offset"的思想已被 §5.4.1 的 `anchor_affine` 完整覆盖（且更完整：scale + shift + strength）。再写一个弱化版只会多出一条颜色路径，增加不可控性；保留 `reinhard_match` 作为锚区不足时的兜底。
+
+过渡带抖动已落地为 `align.ign_dither(rgb, alpha, amount=1/255)`：
+
+- 确定性 IGN（无随机种子），振幅乘 `4·α·(1-α)` 包络；
+- `alpha == 0` / `alpha == 1` 的像素严格不变 → 不破坏 byte-exact；
+- `composite` / `stitch_region` 新增 `dither` 参数（默认 `False`，`pipeline` 传 `local.dither`，缺省 `True`）。
+
 ### 5.4.1 事后校准：BlueBox Color Calibrator 的取舍
 
 **结论：值得借鉴，但只借"估参数"和"过渡带融合"，不整体移植。**
@@ -1227,6 +1235,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 任务 LoRA 预设（`LORA_TASKS` / preset 解析 / 超量警告） | ✅ 已落地 | `server/config.py`、`server/pipeline.py`、`server/main.py` |
 | zero_shift 强制（resolution/snap 校验 + 出图前硬验收） | ✅ 已落地（8 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
 | `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地 | `server/main.py` |
+| 过渡带 IGN 抖动（`align.ign_dither`，默认开） | ✅ 已落地 | `server/align.py`、`server/imaging.py`、`server/pipeline.py` |
 | 扩图（outpaint） | ⏳ 待做 | — |
 
 ### 11.2 本轮切片（只做这四件）
@@ -1292,7 +1301,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 6. ~~任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`~~ ✅ 已完成
 7. ~~`zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝~~ ✅ 已完成
 8. ~~`server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）~~ ✅ 已完成
-9. `align.robust_color_match` / `ign_dither`（低频抖动，防色带）
+9. ~~`align.robust_color_match` / `ign_dither`（低频抖动，防色带）~~ ✅ `ign_dither` 已落地；`robust_color_match` 由 `anchor_affine` 取代，不再单独实现
 10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
 11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 已有几何守卫单测（端到端待真实出图）
 

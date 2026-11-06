@@ -96,3 +96,44 @@ def test_every_profile_has_lora_name_field():
             assert profile["lora_name"], f"{profile['id']} 需要 lora_name"
         else:
             assert profile["lora_name"] is None
+
+
+# --------------------------------------------------------------------------- 8/9 步双预设
+
+
+def _sigmas(profile_id: str) -> list[float]:
+    return [float(v) for v in config.turbo_profile(profile_id)["sigmas"]]
+
+
+def test_eight_and_nine_step_presets_exist():
+    ids = [p["id"] for p in config.TURBO_PROFILES]
+    for pid in ("turbo8_official", "turbo9_official", "turbo8_ckpt", "turbo9_ckpt"):
+        assert pid in ids, ids
+
+
+def test_every_profile_sigmas_descend_and_match_steps():
+    for profile in config.TURBO_PROFILES:
+        sigmas = [float(v) for v in profile["sigmas"]]
+        assert sigmas[-1] == 0.0, profile["id"]
+        assert all(b < a for a, b in zip(sigmas, sigmas[1:])), profile["id"]
+        assert profile["steps"] == len(sigmas) - 1, profile["id"]
+
+
+def test_nine_step_is_eight_step_plus_low_noise_taper():
+    eight = _sigmas("turbo8_official")
+    nine = _sigmas("turbo9_official")
+    assert nine == eight[:-1] + [0.15, 0.0]
+    assert _sigmas("turbo9_ckpt") == nine
+
+
+def test_nine_step_lora_preset_reuses_eight_step_lora():
+    eight = config.turbo_profile("turbo8_official")
+    nine = config.turbo_profile("turbo9_official")
+    assert nine["kind"] == eight["kind"] == "lora"
+    assert nine["lora_name"] == eight["lora_name"]
+    assert nine["strength"] == eight["strength"]
+
+
+def test_default_profile_stays_eight_steps_for_text_to_image():
+    assert config.DEFAULTS["turbo_profile"] == "turbo8_official"
+    assert config.turbo_profile(None)["steps"] == 8

@@ -36,6 +36,11 @@ TURBO_SIGMAS: list[float] = [
     1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568,
 ]
 
+#: 9 步自定义调度（孤海工作流同款）：在官方 8 步末尾补一个 0.15 低噪台阶，
+#: 让最后一步的细节收敛更充分。采样时同样追加 0.0 → 10 个 sigma = 9 步。
+#: 图片精修（studio）开启 Turbo 时默认用这个预设。
+TURBO_SIGMAS_9: list[float] = TURBO_SIGMAS + [0.15]
+
 #: 仓库里现成的 Turbo 底模（权重本身已蒸馏，不需要再挂加速 LoRA）。
 #: 可在 config.json 用 ``turbo_unet`` 覆盖。
 TURBO_CKPT_UNET = (
@@ -152,6 +157,21 @@ TURBO_PROFILES: list[dict[str, Any]] = [
         "note": "使用官方 8 步 sigma 调度，并自动挂载 8 步加速 LoRA。",
     },
     {
+        "id": "turbo9_official",
+        "label": "Turbo 9 步（自定义调度 + Turbo LoRA）",
+        "kind": "lora",
+        "sigmas": TURBO_SIGMAS_9 + [0.0],
+        "steps": 9,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "lora": True,
+        "lora_name": "loras/qwen2.1加速/qwen_image_2.1_turbo_lora_hifi_T8_v001.safetensors",
+        "strength": 1.0,
+        "unet": None,
+        "note": "官方 8 步调度末尾补 0.15 低噪台阶；图片精修开启 Turbo 时默认使用。",
+    },
+    {
         "id": "turbo8_ckpt",
         "label": "官方 Turbo 8 步（自动切换 Turbo 底模）",
         "kind": "ckpt",
@@ -165,6 +185,21 @@ TURBO_PROFILES: list[dict[str, Any]] = [
         "strength": 1.0,
         "unet": TURBO_CKPT_UNET,
         "note": "自动把底模换成仓库里的 Turbo 权重，不加载加速 LoRA。",
+    },
+    {
+        "id": "turbo9_ckpt",
+        "label": "Turbo 9 步（自定义调度 + Turbo 底模）",
+        "kind": "ckpt",
+        "sigmas": TURBO_SIGMAS_9 + [0.0],
+        "steps": 9,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "lora": False,
+        "lora_name": None,
+        "strength": 1.0,
+        "unet": TURBO_CKPT_UNET,
+        "note": "9 步自定义调度 + Turbo 底模，不加载加速 LoRA。",
     },
     {
         "id": "turbo6_viggle",

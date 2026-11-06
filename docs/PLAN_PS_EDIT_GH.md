@@ -583,30 +583,28 @@ def band_lowfreq_merge(orig, edited, alpha, *, levels=3, sigma=2.0, downscale=4)
 
 引入以上 4 点后，硬指标仍是 **`mask_expand=0` 时遮罩外 `max_abs == 0`**；B3 的 delta 在 `alpha == 0` 处必须为 0，用 `test_band_lowfreq_merges_outside_untouched` 守住。B1/B2 只改遮罩内数值，不碰锚区。
 
-### 5.5 采样：9 步 sigma 与 LoRA
+### 5.5 采样：8/9 步双预设与 LoRA
 
-**新增 Turbo 预设（`server/config.py` 的 `TURBO_PROFILES`）：**
+**已落地（`server/config.py` 的 `TURBO_PROFILES`）：** 每种加速方式各给 8 步与 9 步两套预设，共 4 个。
+
+| id | 加速方式 | 步数 | 调度 |
+| --- | --- | --- | --- |
+| `turbo8_official` | 挂 `qwen_image_2.1_turbo_lora_hifi_T8_v001` | 8 | `TURBO_SIGMAS + [0.0]` |
+| `turbo9_official` | 同一加速 LoRA | 9 | `TURBO_SIGMAS + [0.15, 0.0]` |
+| `turbo8_ckpt` | 切 Turbo int8 底模（不挂 LoRA） | 8 | `TURBO_SIGMAS + [0.0]` |
+| `turbo9_ckpt` | Turbo int8 底模 | 9 | `TURBO_SIGMAS + [0.15, 0.0]` |
 
 ```python
-{
-    "id": "turbo9_gh",
-    "label": "孤海 9 步自定义 sigma（Turbo int8 底模）",
-    "kind": "ckpt",
-    "sigmas": [1.0, 0.978453, 0.954180, 0.926626, 0.895080,
-               0.845148, 0.704534, 0.414568, 0.150000, 0.0],
-    "steps": 9,
-    "cfg": 1.0,
-    "sampler": "euler",
-    "scheduler": "simple",
-    "lora": False,
-    "lora_name": None,
-    "strength": 1.0,
-    "unet": "diffusion_models/QwenImage2.1/qwen_image_2.1_turbo_int8_convrot.safetensors",
-    "note": "8 步官方表 + 0.15 尾步；必须配 Turbo 底模，不挂加速 LoRA。",
-}
+TURBO_SIGMAS = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568]
+# 9 步 = 官方 8 步 + 0.15 低噪尾步；采样时再追加 0.0 → 10 个 sigma = 9 步
+TURBO_SIGMAS_9 = TURBO_SIGMAS + [0.15]
 ```
 
-> 现有 `_sampling_plan` 已经支持 `kind="sigma"` + 预设 `sigmas` + `unet` 切换，**无需改采样代码**，只加预设即可。
+**默认策略：**
+- 文生图 / 图像编辑：`DEFAULTS["turbo_profile"] = "turbo8_official"`，保持 8 步不变。
+- 图片精修（studio）：前端 `aiPanel.loadOptions()` 固定优先 `steps === 9` 的预设（即 `turbo9_official`），开启 Turbo 时默认 9 步。
+
+> 现有采样代码已经支持预设 `sigmas` + `unet` 切换，**无需改采样代码**，只加预设即可。9 步预设与 `turbo9_gh`（孤海工作流）等价：官方 8 步表 + 0.15 尾步。
 
 **LoRA 预设（新增 `LORA_TASKS`）：**
 
@@ -1184,7 +1182,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 颜色核（Reinhard） | ✅ 已有 | `align.reinhard_match` |
 | 合成（A：整图 / B：区域） | ✅ 已有，遮罩外 byte-exact | `imaging.composite`、`imaging.stitch_region` |
 | 锚区仿射 / 过渡带低频移植 / 差异诊断 | ✅ 已落地（P1–P4），合成默认启用 | `server/align.py` |
-| preprocess / zero_shift 强制 / task / fills / hint / 9 步 | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
+| 9 步 Turbo 预设（`turbo9_official` / `turbo9_ckpt`） | ✅ 已落地，图片精修默认 9 步 | `server/config.py`、`web/src/components/studio/aiPanel.js` |
+| preprocess / zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
 
 ### 11.2 本轮切片（只做这四件）
 

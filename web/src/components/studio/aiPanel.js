@@ -297,10 +297,9 @@ export function mountAiPanel(host, ctx) {
       state.turboProfiles = profiles;
       const nine = profiles.find((profile) => Number(profile.steps) === 9);
       const eight = profiles.find((profile) => Number(profile.steps) === 8) || profiles[0];
-      const preferred = options?.defaults?.turbo_profile;
-      state.turboId = profiles.some((profile) => profile.id === preferred)
-        ? preferred
-        : (nine || eight)?.id || '';
+      // 图片精修默认走 9 步预设（细节收敛更充分）；后端 defaults.turbo_profile
+      // 是给文生图/图像编辑用的 8 步，这里不跟随它。
+      state.turboId = (nine || eight)?.id || '';
       syncTurboUi();
 
       const ratios = options?.ratios || [];

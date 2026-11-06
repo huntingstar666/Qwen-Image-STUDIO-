@@ -627,6 +627,61 @@ def test_suppress_small_changes_restores_background_keeps_object():
     assert imaging._suppress_small_changes(mismatched, src).shape == mismatched.shape
 
 
+def test_color_consistency_pulls_back_global_drift_keeps_object():
+    """原生模式整图校色：背景的 1~5 级全局漂移被拉回，物体大改动原样保留。"""
+    rng = np.random.default_rng(5)
+    h, w = 96, 128
+    yy, xx = np.mgrid[0:h, 0:w]
+    src = np.empty((h, w, 3), dtype=np.uint8)
+    src[..., 0] = (40 + xx * 80 / max(1, w - 1)).astype(np.uint8)
+    src[..., 1] = (50 + yy * 70 / max(1, h - 1)).astype(np.uint8)
+    src[..., 2] = 90
+    drift = np.array([5, -4, 3], dtype=np.int16)
+    jitter = rng.integers(-1, 2, (h, w, 3)).astype(np.int16)
+    dst = np.clip(src.astype(np.int16) + drift + jitter, 0, 255).astype(np.uint8)
+    # 物体：大改动，且同样带上全局漂移（模型整图都会漂，校色应把它一起拉回）
+    dst[30:60, 40:80] = np.clip(np.array([250, 240, 10], dtype=np.int16) + drift,
+                                0, 255).astype(np.uint8)
+
+    out, report = imaging.color_consistency(src, dst, strength=1.0)
+    assert report["mode"] == "global_affine" and report["skipped"] is False
+    bg = np.ones((h, w), dtype=bool)
+    bg[26:64, 36:84] = False                     # 避开物体边界
+    before = np.abs(dst.astype(np.int16) - src.astype(np.int16))[bg].mean()
+    after = np.abs(out.astype(np.int16) - src.astype(np.int16))[bg].mean()
+    assert after < before * 0.5, f"全局校色没把背景拉回：before={before:.2f} after={after:.2f}"
+    obj = out[45, 60].astype(np.int16)
+    assert int(np.abs(obj - np.array([250, 240, 10], dtype=np.int16)).max()) <= 4, (
+        f"物体改动被校色误伤：{tuple(int(v) for v in out[45, 60])}"
+    )
+    assert int(np.abs(obj - src[45, 60].astype(np.int16)).max()) > 100
+    assert out.shape == dst.shape and out.dtype == dst.dtype
+
+
+def test_color_consistency_skips_when_no_anchor():
+    """整图都被大改（没有锚区）时必须原样返回，不能瞎拉色。"""
+    src = np.full((64, 64, 3), 40, dtype=np.uint8)
+    dst = np.full((64, 64, 3), 220, dtype=np.uint8)
+    out, report = imaging.color_consistency(src, dst)
+    assert report["skipped"] is True
+    assert np.array_equal(out, dst)
+
+    # 形状不一致也原样返回
+    out2, report2 = imaging.color_consistency(src, dst[:10])
+    assert report2["skipped"] is True and np.array_equal(out2, dst[:10])
+
+
+def test_color_consistency_preserves_pil_mode():
+    """PIL 进 PIL 出（管线在 native 分支直接传 PIL，混类型会在裁回时崩）。"""
+    src = Image.new("RGBA", (64, 48), (60, 70, 80, 255))
+    dst = Image.new("RGBA", (64, 48), (65, 66, 83, 255))
+    out, report = imaging.color_consistency(src, dst)
+    assert isinstance(out, Image.Image) and out.mode == "RGBA" and out.size == dst.size
+    assert report["skipped"] is False
+    arr = np.asarray(out.convert("RGB"), dtype=np.int16)
+    assert int(np.abs(arr - np.array([60, 70, 80], dtype=np.int16)).max()) <= 2
+
+
 def test_stitch_region_handles_resized_edited_crop():
     canvas = _rgba(512, 384, seed=19)
     mask = _mask(512, 384, 200, 140, 360, 280)

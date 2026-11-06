@@ -1283,6 +1283,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 业务错误不给用户看类名前缀 + `/files` 引用缺失友好提示 | ✅ 已落地（2 条单测） | `server/jobs.py`、`server/pipeline.py` |
 | remove/outpaint 允许空提示词；`replay.json` 复用 `slim_params`；校验 LoRA 强度 | ✅ 已落地（3 条单测） | `server/main.py` |
 | 真机回归（RTX 5090 / 真实权重，edit·remove·outpaint·turbo9） | ✅ 全部通过：遮罩外 `max_abs=0`、扩图真实照片接缝 1~24 RGB、移除无残留 | 见 §11.7 |
+| 原生模式 `local.scheme=native`（不用遮罩合成） | ✅ 已落地（5 条 e2e + 真机回归），预处理/32 对齐/裁回全保留 | `server/pipeline.py`、`server/imaging.py`、`server/main.py` |
+| 一致性 LoRA 默认挂载（`consistency` 预设） | ✅ 普通编辑默认挂，`local.consistency` / `consistency_lora` 可关 | `server/pipeline.py` |
+| BlueBox 整图颜色一致性（`imaging.color_consistency`） | ✅ 原生模式默认开，`local.color_restore` 可关（3 条单测） | `server/imaging.py`、`tests/test_imaging.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1331,6 +1334,14 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 29. **"几乎没改"的像素必须压回原图（逐像素软阈值）**：模型会把遮罩内整块区域重画一遍，纯渐变/纯色墙背景上会带 1~8 级偏色与 ±1 噪点，沿矩形遮罩拼出一个肉眼可见的淡矩形。`_suppress_small_changes` 用
     `out = src + (dst - src) * smoothstep(|dst - src|; low=6, high=16)`（0~255 色阶）做**逐像素、单调、值域压缩**：差异 ≤6 精确回到原图（字节级），≥16 原样保留（物体、接触投影、真实改动），中间平滑过渡。
     必须避开的两种写法：`alpha *= gate` 这类乘性闸门会在两场交界留下等高线（真机直接看到一圈"线框"）；对闸门做空间模糊会把物体颜色糊出边界形成光晕。该步骤放在 `lowfreq_merge` **之后**，否则低频移植会把压掉的小残差重新引入。
+30. **原生模式：整张画布就是模型输出，不做任何遮罩合成**（`local.scheme="native"`，`"raw"` 是别名）。用户实测孤海节点无偏移，要求提供同款路径：
+    - **必须保留**的零偏移闭环：大图预处理（缩小到 `max_side`）→ 32 对齐画布 → `resolution=0` → 采样 latent == 画布 → 整数裁回 → 预处理还原。这条链一步都不能少，否则就会出现像素偏移。
+    - **不保留**的：羽化、`noise_mask`、`composite` / `stitch_region`、`_suppress_small_changes`、遮罩外 byte-exact 承诺（`quality.outside_max_abs` 如实返回 `null`）。
+    - 无遮罩（整图编辑）时自动走原生：本来就没有"遮罩外"可保留，且只有这条路径能给整图做 BlueBox 校色。
+    - 最后一步用 :func:`imaging.color_consistency` 做**整图**锚区仿射（不再是过渡带）：以 `|dst-src| <= 6` 的像素为锚区估逐通道 `scale/shift`，把 VAE 编解码的 1~5 级整体漂移拉回；`local.color_restore=false` 可关。锚区不足 5% 时跳过（例如整图都被重画）。
+    - 开关清单：`local.scheme`（`a` / `b` / `auto` / `native`）、`local.consistency`、`params.consistency_lora`、`local.color_restore`、`local.color_restore_strength`、`preprocess.enabled`。
+    - 一致性 LoRA 默认挂：普通编辑且请求未带 `loras` 时自动 `{"preset": "consistency"}`（与孤海工作流一致）；`remove` / `outpaint` 仍优先挂各自任务预设。注意判断必须写成 `cons_switch is not None and not _truthy(cons_switch)`，否则未传该键时 `_truthy(None) == False` 会把默认值误关。
+31. **`anchor_affine` 遇到纯色通道只校偏移**：标准差 `< 1/255` 的通道（白底商品图、纯色海报）增益没有统计意义，硬套 `sd0/sd1` 会撞到 `0.5` 下界，把物体颜色撕开（实测蓝色通道 10 → 49）。现在这类通道 `scale` 固定 1.0，只应用 `shift`。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1385,6 +1396,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 23. ~~业务错误去掉类名前缀 + `/files` 引用缺失友好提示~~ ✅ 已完成（2 条单测）
 24. ~~remove/outpaint 允许空提示词、replay 复用 `slim_params`、LoRA 强度校验~~ ✅ 已完成（3 条单测）
 25. ~~真实权重端到端回归（edit / remove / outpaint / turbo9）~~ ✅ 已完成，见 §11.7
+26. ~~原生模式 `local.scheme=native` + 一致性 LoRA 默认挂载 + BlueBox 整图校色（全部带开关）~~ ✅ 已完成（5 条 e2e + 3 条 imaging 单测 + 真机回归，见 §11.7）
 
 ### 11.7 真机回归记录（2026-11-07，RTX 5090 / torch 2.13.0+cu130）
 
@@ -1414,6 +1426,16 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 遮罩内背景高频纹理（原图为纯渐变） | +0.8 级噪点 | 与遮罩外一致 |
 
 `remove`（seed=12345）更彻底：遮罩内背景带残差 `mean=0.11 / max=1 / zero 89.4%`，边界各方向 Δ≤0.8（等于渐变本身逐像素的 ±1 量化），遮罩外仍 `max_abs=0`。中途试过的乘性闸门 `alpha *= max(near, ramp)` 会在交界处留等高线，实机对比图里是比原问题更明显的"线框"，已废弃（见决策 29）。
+
+**原生模式回归（2026-11-07，seed=777，`.cache/smoke_real_edit.py 8711 native 777`）**：同一提示词 / 同一一致性 LoRA，`local.scheme=native` 不做任何遮罩合成，预处理 + 32 对齐 + `resolution=0` + 整数裁回全部保留，`zero_shift.verified=true`、输出 1024×768 回到源尺寸。合成图（1024×768、遮罩覆盖率 11.6%）实测：
+
+| 配置 | 遮罩外 mean | p95 | p99 | 说明 |
+| --- | --- | --- | --- | --- |
+| 方案 B（遮罩贴回 + 软阈值） | — | — | — | `outside_max_abs=0`，遮罩外逐字节等于原图 |
+| 原生 + BlueBox 校色（默认） | 1.25 | 2 | 3 | 无硬边界，不存在矩形接缝 |
+| 原生 + 关掉校色 | 2.45 | 4 | 5 | 可见整体偏色（对比图 ④ 背景偏品红） |
+
+三组 `max` 均为 111，来自花瓶底部越过遮罩线的真实改动（物体本身），不是漂移。真实照片（1024×768，锚区 79.4%）同样通过：`scale≈1.00`、`shift<=0.005`，视觉无偏色。对照图：`storage/outputs/compare-native-v3.png`。
 
 
 

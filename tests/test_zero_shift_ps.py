@@ -548,7 +548,8 @@ def test_generate_edit_auto_scheme_uses_crop_for_small_mask():
     assert job.quality["outside_max_abs"] == 0
 
 
-def test_generate_edit_auto_scheme_falls_back_to_canvas_without_mask():
+def test_generate_edit_auto_scheme_without_mask_falls_back_to_native():
+    """无遮罩时 auto 没有可合成的区域，直接走原生（整图编辑 + BlueBox 校色）。"""
     src = _noise_image(640, 480, seed=73)
     fake = _FakeEngine()
     job, _sink = _run_edit({
@@ -556,7 +557,7 @@ def test_generate_edit_auto_scheme_falls_back_to_canvas_without_mask():
         "local": {"enabled": True, "scheme": "auto"},
     }, fake)
 
-    assert job.quality["scheme"] == "a"
+    assert job.quality["scheme"] == "native"
     assert job.align.get("crop") is None
 
 
@@ -564,3 +565,114 @@ def test_missing_reference_file_reports_friendly_error():
     """/files 引用被清理后，要给"图片不存在"而不是 FileNotFoundError。"""
     with pytest.raises(pipeline.PipelineError, match="不存在"):
         pipeline._entry_bytes({"url": "/files/uploads/no-such-file.png"})
+
+
+# ---------------------------------------------------------------------------
+# 原生模式（不用遮罩合成）+ 一致性 LoRA 默认挂载 + BlueBox 整图校色
+# ---------------------------------------------------------------------------
+
+
+def _drift(amount: int = 4):
+    """模拟 VAE 编解码带来的整图 1~5 级漂移。"""
+    def _apply(im: Image.Image) -> Image.Image:
+        arr = np.asarray(im.convert("RGB"), dtype=np.int16) + amount
+        return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    return _apply
+
+
+def _rgb_diff(a: Image.Image, b: Image.Image) -> int:
+    x = np.asarray(a.convert("RGB"), dtype=np.int16)
+    y = np.asarray(b.convert("RGB"), dtype=np.int16)
+    return int(np.abs(x - y).max())
+
+
+def test_generate_edit_native_scheme_keeps_geometry_skips_masking():
+    """local.scheme=native：整张画布就是模型输出，但零偏移闭环一步不少。"""
+    src = _noise_image(3000, 2000, seed=13)
+    box = (1400, 900, 1600, 1100)
+    fake = _FakeEngine()
+    job, sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(3000, 2000, box)),
+        "preprocess": {"enabled": True, "max_side": 2048},
+        "local": {"enabled": True, "scheme": "native"},
+    }, fake)
+
+    quality = job.quality
+    assert quality["scheme"] == "native"
+    # 原生模式不承诺「遮罩外逐字节保留」，如实返回 None
+    assert quality["outside_max_abs"] is None
+    assert job.align.get("crop") is None
+    # 预处理 / 32 对齐 / 裁回仍然生效（零偏移根本）
+    assert quality["preprocess"]["applied"] is True
+    assert quality["preprocess"]["canvas"] == {"w": 2048, "h": 1376}
+    assert fake.seen["resolution"] == 0
+    assert fake.seen["latent_size"] == fake.seen["canvas"] == (2048, 1376)
+    assert (quality["output"]["w"], quality["output"]["h"]) == (3000, 2000)
+    final = imaging.decode_image(sink["png"])
+    assert final.size == (3000, 2000)
+    # 模型改动了遮罩外像素：原生模式确实没有做遮罩合成
+    assert _outside_diff(src, final, box) > 0
+
+
+def test_generate_edit_without_mask_uses_native():
+    """整图编辑（无遮罩）本来就没有可保留的遮罩外区域，直接走原生。"""
+    src = _noise_image(640, 480, seed=15)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({"images": [{"data": _src_url(src)}]}, fake)
+    assert job.quality["scheme"] == "native"
+    assert job.quality["outside_max_abs"] is None
+
+
+def test_generate_edit_defaults_to_consistency_lora():
+    """普通编辑默认挂「一致性无偏移」LoRA（与孤海工作流一致）。"""
+    src = _noise_image(640, 480, seed=77)
+    seen: dict = {}
+    fake = _FakeEngine()
+    _run_edit({"images": [{"data": _src_url(src)}]}, fake,
+              on_loras=lambda params, _s: seen.update(loras=params.get("loras")))
+    assert seen["loras"] == [{"preset": "consistency"}]
+
+
+def test_generate_edit_consistency_lora_can_be_disabled():
+    """两个开关（local.consistency / params.consistency_lora）都能关掉默认 LoRA。"""
+    src = _noise_image(640, 480, seed=79)
+    for extra in ({"local": {"enabled": True, "consistency": False}},
+                  {"consistency_lora": False}):
+        seen: dict = {}
+        fake = _FakeEngine()
+        _run_edit({"images": [{"data": _src_url(src)}], **extra}, fake,
+                  on_loras=lambda params, _s: seen.update(loras=params.get("loras")))
+        assert not seen["loras"], f"{extra} 没关掉一致性 LoRA"
+
+
+def _mid_noise(w: int, h: int, seed: int = 7) -> Image.Image:
+    """中段灰阶噪声：±4 级漂移不会撞到 0/255 的截断，便于验证校色精度。"""
+    rng = np.random.default_rng(seed)
+    return Image.fromarray(rng.integers(20, 236, size=(h, w, 3), dtype=np.uint8))
+
+
+def test_generate_edit_native_applies_bluebox_color_consistency():
+    """原生模式默认用 BlueBox 锚区仿射把 VAE 漂移拉回；关掉开关则保留漂移。"""
+    src = _mid_noise(1000, 700, seed=83)
+    fake = _FakeEngine(transform=_drift(4))
+    job, sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "local": {"enabled": True, "scheme": "native"},
+    }, fake)
+
+    quality = job.quality
+    assert quality["scheme"] == "native"
+    assert quality["color"]["mode"] == "global_affine"
+    assert quality["color"]["skipped"] is False
+    final = imaging.decode_image(sink["png"])
+    assert _rgb_diff(src, final) <= 1, "整图漂移没有被拉回"
+
+    # 开关关掉：模型输出原样保留（这里就是 +4 级漂移）
+    fake2 = _FakeEngine(transform=_drift(4))
+    job2, sink2 = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "local": {"enabled": True, "scheme": "native", "color_restore": False},
+    }, fake2)
+    assert job2.quality["color"]["skipped"] is True
+    assert _rgb_diff(src, imaging.decode_image(sink2["png"])) == 4

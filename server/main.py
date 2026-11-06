@@ -334,7 +334,7 @@ def api_options() -> dict[str, Any]:
             "custom_sigmas": True,
             "rgba": True,
             "max_ref_images": 10,
-            "local_edit_schemes": ["a", "b"],
+            "local_edit_schemes": ["a", "b", "native"],
             "size_modes": ["follow", "custom", "ratio", "fixed_point"],
             "fits": ["pad", "crop"],
             "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint"],
@@ -591,7 +591,7 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
         if not isinstance(local, dict):
             raise ApiError("local 必须是对象")
         scheme = local.get("scheme")
-        if scheme is not None and str(scheme) not in ("a", "b", "none", "auto"):
+        if scheme is not None and str(scheme) not in ("a", "b", "none", "auto", "native"):
             raise ApiError(f"未知 local.scheme：{scheme!r}")
         for key, low, high in (("feather", 0, 256), ("mask_expand", 0, 256),
                                ("blend_pixels", 0, 256), ("context_pixels", 0, 1024)):

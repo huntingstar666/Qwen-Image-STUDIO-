@@ -81,6 +81,7 @@ __all__ = [
     "crop_mask_for_region",
     "mask_hint_overlay",
     "stitch_region",
+    "color_consistency",
     "compare",
 ]
 
@@ -1091,6 +1092,62 @@ def _apply_reinhard_to_u8(
     out = edited_u8.copy()
     out[..., :3] = np.rint(np.clip(matched, 0.0, 1.0) * 255.0).astype(np.uint8)
     return out
+
+
+def color_consistency(original, edited, *, strength: float = 1.0,
+                      low: float = 6.0, high: float = 16.0,
+                      anchor_min: float = 0.05):
+    """BlueBox 式整图颜色一致性（原生模式用，不涉及任何遮罩）。
+
+    以"几乎没变"的像素当锚区（``|dst - src| <= low``），用
+    :func:`align.anchor_affine` 估逐通道增益/偏移，再按 ``strength`` 应用到整张图。
+    VAE 编解码必然带来 1~5 级的整体漂移，这一步把它拉回原图的色域，
+    同时不动物体本身（大改动像素只参与统计的极小权重，不会被压平）。
+
+    返回 ``(image, report)``；锚区不足 ``anchor_min`` 时原样返回并标记 ``skipped``。
+    ``original`` / ``edited`` 支持 PIL 或 ndarray，返回类型与 ``edited`` 一致。
+    """
+    is_pil = isinstance(edited, Image.Image)
+    e_raw = np.asarray(edited)
+    o_raw = np.asarray(original)
+    # 画布通常是 RGBA、模型解码输出是 RGB：只比较前 3 通道，要求空间尺寸一致。
+    if (e_raw.ndim != 3 or o_raw.ndim != 3
+            or e_raw.shape[:2] != o_raw.shape[:2]
+            or min(e_raw.shape[2], o_raw.shape[2]) < 3 or e_raw.size == 0):
+        return edited, {"mode": "global_affine", "skipped": True, "reason": "shape"}
+
+    is_u8 = e_raw.dtype == np.uint8
+    scale_div = 255.0 if is_u8 else 1.0
+    o = o_raw[..., :3].astype(np.float32) / scale_div
+    e = e_raw[..., :3].astype(np.float32) / scale_div
+
+    diff = np.abs(e - o).max(axis=2) * 255.0
+    span = max(1e-6, float(high) - float(low))
+    t = np.clip((diff - float(low)) / span, 0.0, 1.0)
+    weight = t * t * (3.0 - 2.0 * t)
+
+    scale, shift, skipped = align.anchor_affine(
+        o, e, weight, anchor_min=float(anchor_min), strength=float(strength))
+    report = {
+        "mode": "global_affine",
+        "scale": [round(float(v), 6) for v in scale],
+        "shift": [round(float(v), 6) for v in shift],
+        "strength": float(strength),
+        "anchor_ratio": round(float((weight <= 0.0).mean()), 4),
+        "skipped": bool(skipped),
+    }
+    if skipped:
+        return edited, report
+
+    corrected = np.clip(e * scale + shift, 0.0, 1.0)
+    out = np.array(e_raw, copy=True)
+    out[..., :3] = (
+        np.rint(corrected * 255.0).astype(np.uint8) if is_u8
+        else corrected.astype(np.float32)
+    )
+    if is_pil:
+        return Image.fromarray(out, mode=edited.mode), report
+    return out, report
 
 
 def _suppress_small_changes(content, original, *, low: float = 6.0,

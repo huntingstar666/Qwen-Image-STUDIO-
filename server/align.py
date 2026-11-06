@@ -871,7 +871,14 @@ def anchor_affine(
     sd0 = np.sqrt((((o - mu0) ** 2) * m).sum(axis=(0, 1)) / n) + 1e-4
     sd1 = np.sqrt((((e - mu1) ** 2) * m).sum(axis=(0, 1)) / n) + 1e-4
 
-    scale = np.clip(sd0 / sd1, float(scale_clamp[0]), float(scale_clamp[1]))
+    # 纯色通道（白底商品图、纯色海报）的标准差接近 0，增益没有统计意义：
+    # 这时只校偏移不放大对比度，否则 0.5 的下界会把物体颜色撕开。
+    eps = 1.0 / 255.0
+    degenerate = (sd0 < eps) | (sd1 < eps)
+    scale = np.where(
+        degenerate, 1.0,
+        np.clip(sd0 / sd1, float(scale_clamp[0]), float(scale_clamp[1])),
+    ).astype(np.float32)
     shift = mu0 - scale * mu1
     if shift_abs is not None:
         shift = np.clip(shift, -float(shift_abs), float(shift_abs))

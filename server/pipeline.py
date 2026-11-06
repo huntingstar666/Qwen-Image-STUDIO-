@@ -399,6 +399,8 @@ def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str,
         sampling["turbo_lora_note"] = lora_info
 
     consistency = params.get("consistency_lora")
+    if isinstance(consistency, dict) and consistency.get("enabled") is False:
+        consistency = None
     if consistency and profile["id"] == "qwen":
         _add(consistency.get("name") or cfg.get("consistency_lora"),
              float(consistency.get("strength", 1.0)))
@@ -826,6 +828,12 @@ class Pipeline:
 
         scheme = (str(local.get("scheme") or "a").strip().lower()
                   if _truthy(local.get("enabled")) else "none")
+        if scheme == "raw":
+            scheme = "native"
+        if scheme not in ("a", "b") and mask_canvas is None:
+            # 没有遮罩 = 整图编辑：本来就没有「遮罩外」可保留，直接走原生。
+            # 这样 BlueBox 整图颜色一致性才生效（全画布编辑最需要校色）。
+            scheme = "native"
         if scheme == "auto":
             # 与前端 resolveScheme 同口径：小遮罩走整画布（接缝最稳），
             # 中等遮罩才裁局部（省显存）；无遮罩/超大遮罩一律回整画布。
@@ -846,9 +854,22 @@ class Pipeline:
         model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
         # 显式任务模式但没带 LoRA 时，按任务自动挂预设：
         # 第三方 API 只传 task.mode 也能得到 Remove / 扩图 LoRA 的正确效果。
-        if not params.get("loras") and task_mode in ("remove", "outpaint"):
-            params = dict(params)
-            params["loras"] = [{"preset": task_mode}]
+        # 普通编辑默认挂「一致性无偏移」LoRA（与孤海工作流一致），
+        # 可用 params.consistency_lora = false 或 local.consistency = false 关掉。
+        cons_cfg = params.get("consistency_lora")
+        cons_switch = local.get("consistency")
+        cons_enabled = not (
+            cons_cfg is False
+            or (isinstance(cons_cfg, dict) and cons_cfg.get("enabled") is False)
+            or (cons_switch is not None and not _truthy(cons_switch))
+        )
+        if not params.get("loras"):
+            if task_mode in ("remove", "outpaint"):
+                params = dict(params)
+                params["loras"] = [{"preset": task_mode}]
+            elif cons_enabled:
+                params = dict(params)
+                params["loras"] = [{"preset": "consistency"}]
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         _apply_pose_lora(cfg, profile, params, loras, job)
         if sampling.get("turbo_lora_note"):
@@ -1016,7 +1037,16 @@ class Pipeline:
             band_mode = "lowfreq"
         color_report: dict[str, Any] = {}
 
-        if crop_info is not None:
+        if scheme == "native":
+            # 原生模式：不裁块、不贴回、不用遮罩；整张画布就是模型输出。
+            # 只保留 BlueBox 式整图颜色一致性（可关），几何/预处理仍走零偏移闭环。
+            composed = edited
+            if anchor_match:
+                composed, color_report = imaging.color_consistency(
+                    canvas, composed, strength=anchor_strength)
+            else:
+                color_report = {"mode": "global_affine", "skipped": True, "reason": "disabled"}
+        elif crop_info is not None:
             composed = imaging.stitch_region(
                 canvas, edited, crop_info, mask_canvas,
                 blend_pixels=int(local.get("blend_pixels") or 24),
@@ -1044,7 +1074,9 @@ class Pipeline:
                 report=color_report,
             )
 
-        outside = _outside_max_abs(canvas, composed, mask_canvas, expand=mask_expand)
+        # 原生模式不承诺"遮罩外逐字节保留"，这里如实返回 None，避免误读。
+        outside = (None if scheme == "native"
+                   else _outside_max_abs(canvas, composed, mask_canvas, expand=mask_expand))
 
         # 诊断（只读）：模型实际改动比例 / 遮罩外泄漏；失败不影响出图。
         try:

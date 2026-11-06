@@ -453,9 +453,53 @@ def api_edit(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         raise ApiError("images 必须是非空数组（第 1 张是编辑目标）")
     if len(images) > 10:
         raise ApiError("最多支持 10 张参考图")
+    _validate_edit_params(payload)
     payload["prompt"] = prompt
     payload["images"] = images
     return _submit("edit", payload, prompt=prompt)
+
+
+def _validate_edit_params(payload: dict[str, Any]) -> None:
+    """编辑参数边界校验：不合法直接 400，别等采样时才炸。"""
+    size_mode = payload.get("size_mode")
+    if size_mode is not None and str(size_mode) not in (
+            "follow", "custom", "ratio", "fixed_point"):
+        raise ApiError(f"未知 size_mode：{size_mode!r}")
+
+    pre = payload.get("preprocess")
+    if pre is not None:
+        if not isinstance(pre, dict):
+            raise ApiError("preprocess 必须是对象")
+        if pre.get("enabled"):
+            try:
+                max_side = int(pre.get("max_side") or 2048)
+            except (TypeError, ValueError):
+                raise ApiError("preprocess.max_side 必须是整数")
+            if not 256 <= max_side <= 8192:
+                raise ApiError("preprocess.max_side 必须在 256~8192")
+            mode = str(pre.get("mode") or "downscale_only")
+            if mode not in ("downscale_only", "clamp_range"):
+                raise ApiError(f"未知 preprocess.mode：{mode!r}")
+
+    task = payload.get("task")
+    if task is not None and not isinstance(task, dict):
+        raise ApiError("task 必须是对象")
+    if isinstance(task, dict) and task.get("mode") not in (None, "edit", "remove", "outpaint"):
+        raise ApiError(f"未知 task.mode：{task.get('mode')!r}")
+
+    loras = payload.get("loras")
+    if loras is not None:
+        if not isinstance(loras, list):
+            raise ApiError("loras 必须是数组")
+        for item in loras:
+            if not isinstance(item, dict):
+                raise ApiError("loras 每一项必须是对象")
+            preset = item.get("preset")
+            if preset and not config.resolve_lora_preset(str(preset)):
+                raise ApiError(f"未知 LoRA 预设：{preset!r}")
+
+    if payload.get("zero_shift") is not None and not isinstance(payload["zero_shift"], dict):
+        raise ApiError("zero_shift 必须是对象")
 
 
 # --------------------------------------------------------------------------- 任务与历史

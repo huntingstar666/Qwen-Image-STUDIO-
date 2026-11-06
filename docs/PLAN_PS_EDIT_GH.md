@@ -1226,6 +1226,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
 | 任务 LoRA 预设（`LORA_TASKS` / preset 解析 / 超量警告） | ✅ 已落地 | `server/config.py`、`server/pipeline.py`、`server/main.py` |
 | zero_shift 强制（resolution/snap 校验 + 出图前硬验收） | ✅ 已落地（8 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
+| `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地 | `server/main.py` |
 | 扩图（outpaint） | ⏳ 待做 | — |
 
 ### 11.2 本轮切片（只做这四件）
@@ -1290,7 +1291,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 
 6. ~~任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`~~ ✅ 已完成
 7. ~~`zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝~~ ✅ 已完成
-8. `server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）
+8. ~~`server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）~~ ✅ 已完成
 9. `align.robust_color_match` / `ign_dither`（低频抖动，防色带）
 10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
 11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 已有几何守卫单测（端到端待真实出图）

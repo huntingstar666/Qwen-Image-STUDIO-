@@ -137,3 +137,70 @@ def test_nine_step_lora_preset_reuses_eight_step_lora():
 def test_default_profile_stays_eight_steps_for_text_to_image():
     assert config.DEFAULTS["turbo_profile"] == "turbo8_official"
     assert config.turbo_profile(None)["steps"] == 8
+
+
+# --------------------------------------------------------------------------- 任务 LoRA 预设
+
+
+def test_lora_task_presets_resolve_with_expected_strength():
+    expected = {"consistency": 0.48, "remove": 1.0, "outpaint": 0.7}
+    for pid, strength in expected.items():
+        spec = config.resolve_lora_preset(pid)
+        assert spec is not None and spec["id"] == pid
+        assert spec["strength"] == strength
+        assert spec["name"].endswith(".safetensors")
+
+
+def test_lora_preset_unknown_returns_none():
+    assert config.resolve_lora_preset("nope") is None
+    assert config.resolve_lora_preset(None) is None
+    assert config.resolve_lora_preset("  ") is None
+
+
+def test_lora_presets_public_hides_file_paths():
+    items = config.lora_presets_public()
+    assert {item["id"] for item in items} == {"consistency", "remove", "outpaint"}
+    for item in items:
+        assert "name" not in item
+
+
+def test_build_loras_expands_preset():
+    import os
+    import tempfile
+
+    from server import pipeline
+
+    with tempfile.TemporaryDirectory() as root:
+        rel = config.LORA_TASKS["remove"]["name"]
+        target = os.path.join(root, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as fh:
+            fh.write(b"fake")
+        cfg = {"model_root": root, "model_dirs": {"lora": ["loras"]}}
+        loras = pipeline._build_loras(
+            cfg,
+            {"loras": [{"preset": "remove"}]},
+            {"id": "qwen", "accelerator": {}},
+            sampling={},
+        )
+    assert len(loras) == 1
+    assert os.path.basename(loras[0]["name"]) == os.path.basename(target)
+    assert loras[0]["strength"] == 1.0
+
+
+def test_build_loras_rejects_unknown_preset():
+    import tempfile
+
+    import pytest
+
+    from server import pipeline
+
+    with tempfile.TemporaryDirectory() as root:
+        cfg = {"model_root": root, "model_dirs": {"lora": ["loras"]}}
+        with pytest.raises(pipeline.PipelineError, match="未知 LoRA 预设"):
+            pipeline._build_loras(
+                cfg,
+                {"loras": [{"preset": "nope"}]},
+                {"id": "qwen", "accelerator": {}},
+                sampling={},
+            )

@@ -214,6 +214,15 @@ def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str,
     for item in (params.get("loras") or []):
         if not item:
             continue
+        preset = item.get("preset")
+        if preset:
+            spec = config.resolve_lora_preset(str(preset))
+            if not spec:
+                raise PipelineError(
+                    f"未知 LoRA 预设：{preset!r}（可选 "
+                    f"{', '.join(config.LORA_TASKS)}）")
+            _add(spec["name"], float(item.get("strength", spec["strength"])))
+            continue
         _add(item.get("name") or item.get("value"), float(item.get("strength", 1.0)))
 
     if sampling.get("turbo"):
@@ -273,6 +282,13 @@ def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str,
     if consistency and profile["id"] == "qwen":
         _add(consistency.get("name") or cfg.get("consistency_lora"),
              float(consistency.get("strength", 1.0)))
+
+    # 契约约束：一致性 + 任务 LoRA 叠加后最多 2 个；超了只警告，不擅自丢任务 LoRA。
+    if len(loras) > 2:
+        sampling["lora_warning"] = (
+            f"LoRA 数量 {len(loras)} 超过建议上限 2，可能互相干扰："
+            + "、".join(os.path.basename(item["name"]) for item in loras)
+        )
 
     return loras
 
@@ -404,6 +420,8 @@ class Pipeline:
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         if sampling.get("turbo_lora_note"):
             job.meta["turbo_lora"] = sampling["turbo_lora_note"]
+        if sampling.get("lora_warning") and not job.meta.get("lora_warning"):
+            job.meta["lora_warning"] = sampling["lora_warning"]
         if turbo_unet:
             job.meta["turbo_unet"] = os.path.basename(turbo_unet)
         job.params.update({
@@ -562,6 +580,8 @@ class Pipeline:
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         if sampling.get("turbo_lora_note"):
             job.meta["turbo_lora"] = sampling["turbo_lora_note"]
+        if sampling.get("lora_warning") and not job.meta.get("lora_warning"):
+            job.meta["lora_warning"] = sampling["lora_warning"]
         if turbo_unet:
             job.meta["turbo_unet"] = os.path.basename(turbo_unet)
 

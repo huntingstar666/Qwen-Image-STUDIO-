@@ -307,6 +307,7 @@ def api_options() -> dict[str, Any]:
         "megapixels": [1.0, 2.0, 2.2, 4.0],
         "turbo_profiles": config.turbo_profiles_public(cfg),
         "steps_presets": config.STEPS_PRESETS,
+        "lora_presets": config.lora_presets_public(),
         "defaults": {
             "unet": cfg.get("unet"),
             "clip": cfg.get("clip"),

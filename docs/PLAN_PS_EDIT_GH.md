@@ -632,6 +632,13 @@ TURBO_SIGMAS_9 = TURBO_SIGMAS + [0.15]
 
 **约束：** 任务 LoRA 最多 1 个；一致性 LoRA 可与任务 LoRA 叠加；总 LoRA 数 ≤ 2（超过给前端黄条警告）。
 
+**已落地（`server/config.py` + `server/pipeline.py` + `server/main.py`）：**
+
+- `config.LORA_TASKS` / `resolve_lora_preset()` / `lora_presets_public()`（`/api/options` 的 `lora_presets` 只暴露 id/label/strength，不暴露文件路径）；
+- `_build_loras` 支持 `{"preset": "remove"}`：按预设取文件与强度，显式 `strength` 可覆盖；未知预设直接 `PipelineError`；
+- LoRA 数 > 2 时写 `job.meta["lora_warning"]`（不擅自丢弃任务 LoRA），前端结果条已有黄条位；
+- 单测：预设解析、未知预设报错、`_build_loras` 展开预设。
+
 ### 5.6 掩码提示（green overlay）
 
 | 任务 | 编码参考图 | latent | noise_mask |
@@ -1209,7 +1216,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（13 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
 | 预处理接入 `pipeline.generate_edit` | ✅ 已接入（仅 `follow` 模式；`custom/ratio` 跳过） | `server/pipeline.py` |
 | 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
-| zero_shift 强制 / task / hint=green | ⏳ zero_shift 与任务 LoRA 待做；hint=green 已落地 | `server/pipeline.py` |
+| 任务 LoRA 预设（`LORA_TASKS` / preset 解析 / 超量警告） | ✅ 已落地 | `server/config.py`、`server/pipeline.py`、`server/main.py` |
+| zero_shift 强制 / 扩图（outpaint） | ⏳ 待做 | — |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1271,9 +1279,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 
 **剩余（按优先级）：**
 
-6. 任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`
+6. ~~任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`~~ ✅ 已完成
 7. `zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝
-8. `server/main.py`：`preprocess / task / loras.preset` 参数校验；`/api/options` 暴露 LoRA 预设
+8. `server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）
 9. `align.robust_color_match` / `ign_dither`（低频抖动，防色带）
 10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
 11. `tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归

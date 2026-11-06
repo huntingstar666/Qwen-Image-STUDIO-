@@ -231,6 +231,45 @@ STEPS_PRESETS: list[dict[str, Any]] = [
     {"id": "text", "label": "文字密集 50 步", "steps": 50, "cfg": 1.0, "note": "画面里字多时用"},
 ]
 
+#: 任务 LoRA 预设：前端发 ``loras: [{"preset": "remove"}]``，后端解析成具体文件。
+#: 与 ``DEFAULTS["consistency_lora"]`` 相互独立——这里是图片精修（studio）的工作台
+#: 预设，不改文生图的默认一致性 LoRA。
+LORA_TASKS: dict[str, dict[str, Any]] = {
+    "consistency": {
+        "id": "consistency",
+        "label": "一致性（GH 无偏移）",
+        "name": "loras/Qwen-功能2.1/Qwen2.1 一致性无偏移_GH_V1.0.safetensors",
+        "strength": 0.48,
+    },
+    "remove": {
+        "id": "remove",
+        "label": "万物移除（GH）",
+        "name": "loras/Qwen-功能2.1/Qwen2.1_万物移除Remove_GH.safetensors",
+        "strength": 1.0,
+    },
+    "outpaint": {
+        "id": "outpaint",
+        "label": "扩图（GH）",
+        "name": "loras/Qwen-功能2.1/Qwen2.1_扩图_GH_3750.safetensors",
+        "strength": 0.7,
+    },
+}
+
+
+def resolve_lora_preset(preset: str | None) -> dict[str, Any] | None:
+    """把任务 LoRA 预设 id 解析成 ``{id,label,name,strength}``；未知返回 ``None``。"""
+    key = str(preset or "").strip().lower()
+    return LORA_TASKS.get(key)
+
+
+def lora_presets_public() -> list[dict[str, Any]]:
+    """给 ``/api/options`` 用的白名单视图（不含文件绝对路径）。"""
+    return [
+        {"id": item["id"], "label": item["label"], "strength": item["strength"]}
+        for item in LORA_TASKS.values()
+    ]
+
+
 _ENV_MAP = {
     "Q2I_COMFY_ROOT": "comfy_root",
     "Q2I_MODEL_ROOT": "model_root",

@@ -16,6 +16,7 @@
  */
 
 import { GALLERY_ITEMS as OPENZHENZHEN_ITEMS } from './gallery-zz.js';
+import { GALLERY_ITEMS as MORE_ITEMS } from './gallery-more.js';
 
 export const GALLERY_CATEGORIES = ['全部', '人像', '海报', '场景', '角色', '室内', '产品', '信息图', '标志', '贴纸'];
 
@@ -535,4 +536,4 @@ const AIFISHER_ITEMS = [
   },
 ];
 
-export const GALLERY_ITEMS = [...AIFISHER_ITEMS, ...OPENZHENZHEN_ITEMS];
+export const GALLERY_ITEMS = [...AIFISHER_ITEMS, ...OPENZHENZHEN_ITEMS, ...MORE_ITEMS];

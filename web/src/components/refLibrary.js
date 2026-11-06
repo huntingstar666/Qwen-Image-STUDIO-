@@ -21,6 +21,13 @@ export const REF_DRAG_TYPE = 'application/x-wb-ref';
 /** 会话级图库内容：模块级变量，切页重建组件时仍保留。 */
 const sessionItems = [];
 
+/** 小图库内容变化的订阅者（其它页面批量发送后通知界面刷新）。 */
+const listeners = new Set();
+
+function notifyRefItems() {
+  for (const listener of listeners) listener();
+}
+
 function hashSrc(src) {
   let hash = 0;
   const text = String(src || '');
@@ -48,6 +55,33 @@ export function readRefDrag(event) {
 
 export function hasRefDrag(event) {
   return Boolean(event.dataTransfer && [...event.dataTransfer.types].includes(REF_DRAG_TYPE));
+}
+
+/**
+ * 从其它页面（素材仓库）向会话小图库批量追加图片。
+ * 同一 src 只保留一份，超过上限的条目会被忽略。
+ * @param {Array<{src:string,name?:string,width?:number,height?:number,source?:string}>} inputs
+ * @returns {number} 实际新增数量
+ */
+export function addRefItems(inputs = []) {
+  let added = 0;
+  for (const input of inputs) {
+    const src = String(input?.src || '');
+    if (!src) continue;
+    if (sessionItems.some((item) => item.src === src)) continue;
+    if (sessionItems.length >= MAX_ITEMS) break;
+    sessionItems.push({
+      id: itemId(src),
+      src,
+      name: input.name || '参考图',
+      width: Number(input.width) || 0,
+      height: Number(input.height) || 0,
+      source: input.source || 'warehouse',
+    });
+    added += 1;
+  }
+  if (added) notifyRefItems();
+  return added;
 }
 
 /**
@@ -363,5 +397,6 @@ export function createRefLibrary(host, { onUse, onRemove } = {}) {
   });
 
   render();
+  listeners.add(render);
   return { addItem, addFiles, removeItem, setUsed, items: sessionItems, element: host };
 }

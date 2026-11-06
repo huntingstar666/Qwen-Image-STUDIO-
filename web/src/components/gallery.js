@@ -10,6 +10,7 @@
  */
 
 import { copyText, escapeHtml, fmtNum } from '../utils.js';
+import { api } from '../api.js';
 import { toast, toastError, toastSuccess } from './toast.js';
 import { openModal, closeModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
@@ -88,6 +89,28 @@ async function collectSource(item) {
   }
 }
 
+/** 已收藏进素材仓库的作品 id（按 source=gallery + sourceRef 反查）。 */
+const FAVORITED = new Set();
+let favoritesLoading = null;
+
+function loadFavorited() {
+  if (favoritesLoading) return favoritesLoading;
+  favoritesLoading = api
+    .materials({ limit: 500 })
+    .then((data) => {
+      const list = Array.isArray(data?.items) ? data.items : [];
+      FAVORITED.clear();
+      for (const entry of list) {
+        if (entry?.source === 'gallery' && entry.sourceRef) FAVORITED.add(String(entry.sourceRef));
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      favoritesLoading = null;
+    });
+  return favoritesLoading;
+}
+
 export function createGalleryPage(host) {
   let category = '全部';
   let keyword = '';
@@ -139,6 +162,7 @@ export function createGalleryPage(host) {
   function cardMarkup(item) {
     const width = item.params?.width || 0;
     const height = item.params?.height || 0;
+    const faved = FAVORITED.has(String(item.id));
     return `
       <article class="gallery-card" data-id="${escapeHtml(item.id)}" tabindex="0" role="button">
         <div class="gallery-cover${item.image ? ' has-image' : ''}" style="${coverStyle(item)}">
@@ -154,6 +178,9 @@ export function createGalleryPage(host) {
             <div class="gallery-sub">${escapeHtml(item.style)}</div>
           </div>
           <div class="gallery-hover">
+            <button class="lib-action${faved ? ' is-faved' : ''}" type="button" data-action="favorite" ${
+              faved ? 'disabled' : ''
+            }>${faved ? '已收藏' : '收藏'}</button>
             <button class="lib-action" type="button" data-action="detail">查看</button>
             <button class="lib-action" type="button" data-action="send">${SEND_ICON}发送到文生图</button>
           </div>
@@ -213,9 +240,22 @@ export function createGalleryPage(host) {
         button.addEventListener('click', (event) => {
           event.stopPropagation();
           if (button.dataset.action === 'send') sendToT2I(item);
+          else if (button.dataset.action === 'favorite') collect(item, button);
           else open();
         });
       }
+    }
+  }
+
+  /** 收藏成功后同步卡片上的收藏按钮状态。 */
+  function syncFavButtons() {
+    for (const button of refs.grid.querySelectorAll('[data-action="favorite"]')) {
+      const card = button.closest('.gallery-card');
+      if (!card) continue;
+      const faved = FAVORITED.has(String(card.dataset.id));
+      button.disabled = faved;
+      button.classList.toggle('is-faved', faved);
+      button.textContent = faved ? '已收藏' : '收藏';
     }
   }
 
@@ -236,12 +276,15 @@ export function createGalleryPage(host) {
     }
   }
 
-  async function collect(item, button) {
+  async function collect(item, button, labels = {}) {
+    const idle = labels.idle || '收藏';
+    const busy = labels.busy || '收藏中…';
+    const done = labels.done || '已收藏';
     if (button) {
       button.disabled = true;
-      button.textContent = '收藏中…';
+      button.textContent = busy;
     }
-    await favoriteImage({
+    const saved = await favoriteImage({
       image: await collectSource(item),
       prompt: item.prompt,
       negativePrompt: item.negativePrompt || '',
@@ -253,10 +296,20 @@ export function createGalleryPage(host) {
       sourceRef: item.id,
       title: item.title,
     });
+    if (saved) {
+      FAVORITED.add(String(item.id));
+      if (button) {
+        button.textContent = done;
+        button.classList.add('is-faved');
+      }
+      syncFavButtons();
+      return true;
+    }
     if (button) {
       button.disabled = false;
-      button.textContent = '收藏到素材仓库';
+      button.textContent = idle;
     }
+    return false;
   }
 
   function showDetail(item) {
@@ -317,7 +370,8 @@ export function createGalleryPage(host) {
         <div class="gallery-tip">图片与提示词版权归原作者所有，这里仅作灵感索引与复刻起点；换种子或微调措辞即可得到不同结果。</div>
       </div>`;
 
-    const dialog = openModal({
+    let dialog = null;
+    dialog = openModal({
       title: item.title,
       subtitle: `${item.category} · ${item.style}`,
       size: 'lg',
@@ -335,11 +389,28 @@ export function createGalleryPage(host) {
           },
         },
         {
-          label: '收藏到素材仓库',
+          label: FAVORITED.has(String(item.id)) ? '已收藏到素材仓库' : '收藏到素材仓库',
           kind: 'ghost',
           close: false,
           onClick: async () => {
-            await collect(item);
+            if (FAVORITED.has(String(item.id))) return false;
+            const ok = await collect(item, null, {
+              idle: '收藏到素材仓库',
+              busy: '收藏中…',
+              done: '已收藏到素材仓库',
+            });
+            const button = [...dialog.root.querySelectorAll('.modal-foot .btn')].find((entry) =>
+              entry.textContent.includes('收藏'),
+            );
+            if (button) {
+              if (ok) {
+                button.textContent = '已收藏到素材仓库';
+                button.disabled = true;
+              } else {
+                button.textContent = '收藏到素材仓库';
+              }
+            }
+            return false;
           },
         },
         {
@@ -383,10 +454,12 @@ export function createGalleryPage(host) {
   });
 
   render();
+  loadFavorited().then(render);
 
   return {
     onShow() {
       render();
+      loadFavorited().then(render);
     },
   };
 }

@@ -15,7 +15,8 @@ import { toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal, closeModal } from './modal.js';
 import { downloadUrl, escapeHtml, fmtNum, fmtTime, summarizeParams } from '../utils.js';
 import { CATEGORY_PRESETS, KIND_LABELS } from './favorites.js';
-import { goToStudioPage, goToT2IPage, setStudioHandoff, setT2IHandoff } from '../handoff.js';
+import { goToEditPage, goToStudioPage, goToT2IPage, setStudioHandoff, setT2IHandoff } from '../handoff.js';
+import { addRefItems } from './refLibrary.js';
 
 const KIND_FILTERS = [
   { id: 'all', label: '全部' },
@@ -35,6 +36,8 @@ export function createMaterialsPage(host) {
   let kindFilter = 'all';
   let categoryFilter = '全部';
   let keyword = '';
+  let selecting = false;
+  const selected = new Set();
 
   host.innerHTML = `
     <div class="page page-library">
@@ -45,6 +48,7 @@ export function createMaterialsPage(host) {
         </label>
         <span class="spacer"></span>
         <span class="lib-summary" data-ref="summary">加载中…</span>
+        <button class="btn ghost" type="button" data-ref="selectMode">批量管理</button>
         <button class="btn ghost" type="button" data-ref="refresh">刷新</button>
         <button class="btn primary" type="button" data-ref="upload">上传图片</button>
         <input type="file" accept="image/*" multiple data-ref="fileInput" hidden />
@@ -61,6 +65,17 @@ export function createMaterialsPage(host) {
       </div>
       <div class="lib-dropzone" data-ref="dropzone" hidden>松开即可上传到素材仓库</div>
       <div data-ref="grid"></div>
+      <aside class="mat-basket" data-ref="basket" hidden>
+        <div class="mat-basket-head">
+          <span class="mat-basket-title">已选 <b data-ref="basketCount">0</b> 张</span>
+          <button class="mat-basket-clear" type="button" data-basket="clear">清空</button>
+        </div>
+        <div class="mat-basket-list" data-ref="basketList"></div>
+        <div class="mat-basket-foot">
+          <button class="btn primary" type="button" data-basket="send">一键发送到图生图小仓库</button>
+          <button class="btn danger" type="button" data-basket="delete">批量删除</button>
+        </div>
+      </aside>
     </div>`;
 
   const ref = (name) => host.querySelector(`[data-ref="${name}"]`);
@@ -69,11 +84,15 @@ export function createMaterialsPage(host) {
     kindFilter: ref('kindFilter'),
     categories: ref('categories'),
     summary: ref('summary'),
+    selectMode: ref('selectMode'),
     refresh: ref('refresh'),
     upload: ref('upload'),
     fileInput: ref('fileInput'),
     dropzone: ref('dropzone'),
     grid: ref('grid'),
+    basket: ref('basket'),
+    basketCount: ref('basketCount'),
+    basketList: ref('basketList'),
   };
   const page = host.querySelector('.page-library');
 
@@ -146,27 +165,34 @@ export function createMaterialsPage(host) {
     const image = item.image || {};
     const thumb = image.thumbUrl || image.url || '';
     const kindLabel = KIND_LABELS[item.kind] || '素材';
-    const seedText = item.seed != null ? `seed ${item.seed}` : '';
     const sizeText = image.width && image.height ? `${fmtNum(image.width)}×${fmtNum(image.height)}` : '';
     const prompt = item.prompt || item.note || (item.kind === 'upload' ? '本地上传素材（无提示词）' : '（无提示词）');
     const canSend = Boolean(item.prompt);
+    const sub = [item.category || '未分类', sizeText, item.seed != null ? `seed ${item.seed}` : '']
+      .filter(Boolean)
+      .join(' · ');
+    const isSelected = selected.has(String(item.id));
     return `
-      <article class="lib-card" data-id="${escapeHtml(item.id)}" tabindex="0" role="button">
-        <div class="lib-thumb">
-          ${thumb ? `<img src="${escapeHtml(thumb)}" alt="${escapeHtml(item.title || '素材')}" loading="lazy" />` : '<span class="dim">无预览</span>'}
-          <span class="lib-kind">${escapeHtml(kindLabel)}</span>
-          ${seedText ? `<span class="lib-seed mono">${escapeHtml(seedText)}</span>` : ''}
-          <div class="lib-thumb-actions">
+      <article class="gallery-card${isSelected ? ' is-selected' : ''}" data-id="${escapeHtml(item.id)}" tabindex="0" role="button">
+        <div class="gallery-cover${thumb ? ' has-image' : ''}" style="--c1:#9aa7a4;--c2:#5c6b6a;--c3:#2f3b3b">
+          ${thumb ? `<img class="gallery-cover-img" src="${escapeHtml(thumb)}" alt="${escapeHtml(item.title || '素材')}" loading="lazy" />` : '<span class="dim">无预览</span>'}
+          <button class="mat-check" type="button" data-action="select" aria-pressed="${isSelected}" aria-label="选择素材"></button>
+          <span class="gallery-badge">${escapeHtml(kindLabel)}</span>
+          <div class="gallery-cover-text">
+            <div class="gallery-title">${escapeHtml(item.title || '未命名素材')}</div>
+            <div class="gallery-sub">${escapeHtml(sub)}</div>
+          </div>
+          <div class="gallery-hover">
             <button class="lib-action" type="button" data-action="detail">查看</button>
             <button class="lib-action ${canSend ? '' : 'is-disabled'}" type="button" data-action="send" ${
               canSend ? '' : 'disabled title="该素材没有提示词"'
             }>发送到文生图</button>
+            <button class="lib-action lib-action-danger" type="button" data-action="delete">删除</button>
           </div>
         </div>
-        <div class="lib-body">
-          <div class="lib-title">${escapeHtml(item.title || '未命名素材')}</div>
-          <div class="lib-prompt">${escapeHtml(prompt)}</div>
-          <div class="lib-meta">
+        <div class="gallery-body">
+          <p class="gallery-prompt">${escapeHtml(prompt)}</p>
+          <div class="gallery-meta">
             <span class="lib-cat">${escapeHtml(item.category || '未分类')}</span>
             ${sizeText ? `<span class="mono">${sizeText}</span>` : ''}
             <span class="spacer"></span>
@@ -179,6 +205,7 @@ export function createMaterialsPage(host) {
   function render() {
     renderCounts();
     renderCategories();
+    renderBasket();
     const list = filtered();
     const filteredText =
       kindFilter === 'all' && categoryFilter === '全部' && !keyword.trim()
@@ -188,8 +215,8 @@ export function createMaterialsPage(host) {
 
     if (loading) {
       refs.grid.innerHTML = `
-        <div class="lib-grid">${Array.from({ length: 8 })
-          .map(() => '<div class="lib-card is-skeleton"><div class="lib-thumb"></div><div class="lib-body"><div class="sk-line"></div><div class="sk-line short"></div></div></div>')
+        <div class="gallery-grid">${Array.from({ length: 8 })
+          .map(() => '<div class="gallery-card is-skeleton"><div class="gallery-cover"></div><div class="gallery-body"><div class="sk-line"></div><div class="sk-line short"></div></div></div>')
           .join('')}</div>`;
       return;
     }
@@ -230,24 +257,34 @@ export function createMaterialsPage(host) {
       return;
     }
 
-    refs.grid.innerHTML = `<div class="lib-grid">${list.map(cardMarkup).join('')}</div>`;
+    refs.grid.innerHTML = `<div class="gallery-grid">${list.map(cardMarkup).join('')}</div>`;
 
-    for (const img of refs.grid.querySelectorAll('.lib-thumb img')) {
+    for (const img of refs.grid.querySelectorAll('.gallery-cover-img')) {
       img.addEventListener('error', () => {
         img.replaceWith(Object.assign(document.createElement('span'), { className: 'dim', textContent: '无预览' }));
       });
     }
 
-    for (const card of refs.grid.querySelectorAll('.lib-card[data-id]')) {
+    for (const card of refs.grid.querySelectorAll('.gallery-card[data-id]')) {
       const item = itemById(card.dataset.id);
       if (!item) continue;
-      const open = () => showDetail(item);
+      const open = () => {
+        if (selecting) {
+          toggleSelect(item.id);
+          return;
+        }
+        showDetail(item);
+      };
       card.addEventListener('click', open);
       card.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           open();
         }
+      });
+      card.querySelector('[data-action="select"]')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleSelect(item.id);
       });
       card.querySelector('[data-action="detail"]')?.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -257,11 +294,143 @@ export function createMaterialsPage(host) {
         event.stopPropagation();
         sendToT2I(item);
       });
+      card.querySelector('[data-action="delete"]')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        deleteOne(item);
+      });
     }
   }
 
   function itemById(id) {
     return items.find((item) => String(item.id) === String(id)) || null;
+  }
+
+  /* ============================================================
+   * 批量选择
+   * ============================================================ */
+  function selectedItems() {
+    return [...selected].map((id) => itemById(id)).filter(Boolean);
+  }
+
+  function toggleSelect(id) {
+    const key = String(id);
+    if (selected.has(key)) selected.delete(key);
+    else selected.add(key);
+    syncSelection();
+  }
+
+  function syncSelection() {
+    for (const card of refs.grid.querySelectorAll('.gallery-card[data-id]')) {
+      const isSelected = selected.has(String(card.dataset.id));
+      card.classList.toggle('is-selected', isSelected);
+      card.querySelector('[data-action="select"]')?.setAttribute('aria-pressed', String(isSelected));
+    }
+    renderBasket();
+  }
+
+  function renderBasket() {
+    // 素材被删除或刷新后，同步清理已失效的选择
+    for (const id of [...selected]) {
+      if (!itemById(id)) selected.delete(id);
+    }
+    const list = selectedItems();
+    page.classList.toggle('is-selecting', selecting);
+    refs.selectMode.textContent = selecting
+      ? list.length
+        ? `完成选择 · ${list.length}`
+        : '完成选择'
+      : '批量管理';
+    refs.basket.hidden = !selecting || list.length === 0;
+    refs.basketCount.textContent = String(list.length);
+    refs.basketList.innerHTML = list
+      .map((item) => {
+        const image = item.image || {};
+        const thumb = image.thumbUrl || image.url || '';
+        return `
+          <div class="mat-basket-item">
+            ${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" />` : '<span class="mat-basket-no">无图</span>'}
+            <span class="mat-basket-name">${escapeHtml(item.title || '未命名素材')}</span>
+            <button class="mat-basket-remove" type="button" data-basket="remove" data-id="${escapeHtml(
+              item.id,
+            )}" aria-label="移出选择">×</button>
+          </div>`;
+      })
+      .join('');
+  }
+
+  async function deleteOne(item) {
+    const ok = await confirmDialog({
+      title: '删除素材',
+      message: `将从素材仓库删除「${escapeHtml(item.title || '未命名素材')}」，原始历史记录不受影响。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteMaterial(item.id);
+      items = items.filter((entry) => String(entry.id) !== String(item.id));
+      selected.delete(String(item.id));
+      toastSuccess('素材已删除');
+      render();
+    } catch (err) {
+      toastError(err, '删除失败');
+    }
+  }
+
+  async function deleteSelected() {
+    const list = selectedItems();
+    if (!list.length) return;
+    const ok = await confirmDialog({
+      title: '批量删除素材',
+      message: `将从素材仓库删除选中的 ${list.length} 件素材，原始历史记录不受影响。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    let done = 0;
+    let failed = 0;
+    for (const item of list) {
+      try {
+        await api.deleteMaterial(item.id);
+        done += 1;
+      } catch (err) {
+        failed += 1;
+        console.error('[materials] 批量删除失败', item.id, err);
+      }
+    }
+    const deleted = new Set(list.map((item) => String(item.id)));
+    items = items.filter((entry) => !deleted.has(String(entry.id)));
+    selected.clear();
+    render();
+    if (done) toastSuccess(`已删除 ${done} 件素材`);
+    if (failed) toastError(new Error(`${failed} 件素材删除失败`), '部分删除失败');
+  }
+
+  /** 把选中的素材图片批量放进图生图页左侧的小图库。 */
+  function sendSelectedToEdit() {
+    const usable = selectedItems().filter((item) => item.image?.url);
+    if (!usable.length) {
+      toastWarn('选中的素材没有可用图片');
+      return;
+    }
+    const added = addRefItems(
+      usable.map((item) => ({
+        src: api.fileUrl(item.image.url),
+        name: item.title || '素材',
+        width: item.image.width,
+        height: item.image.height,
+        source: 'warehouse',
+      })),
+    );
+    if (!added) {
+      toastWarn('所选图片已经都在小仓库里了');
+      return;
+    }
+    toastSuccess(`已发送 ${added} 张到图生图小仓库`);
+    selected.clear();
+    selecting = false;
+    render();
+    goToEditPage();
   }
 
   /* ============================================================
@@ -582,6 +751,29 @@ export function createMaterialsPage(host) {
   refs.refresh.addEventListener('click', () => load({ force: true }));
   refs.upload.addEventListener('click', () => refs.fileInput.click());
   refs.fileInput.addEventListener('change', () => uploadFiles(refs.fileInput.files));
+
+  refs.selectMode.addEventListener('click', () => {
+    selecting = !selecting;
+    if (!selecting) selected.clear();
+    syncSelection();
+  });
+
+  refs.basket.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-basket]');
+    if (!button) return;
+    const action = button.dataset.basket;
+    if (action === 'remove') {
+      selected.delete(button.dataset.id);
+      syncSelection();
+    } else if (action === 'clear') {
+      selected.clear();
+      syncSelection();
+    } else if (action === 'send') {
+      sendSelectedToEdit();
+    } else if (action === 'delete') {
+      deleteSelected();
+    }
+  });
 
   let dragDepth = 0;
   page.addEventListener('dragenter', (event) => {

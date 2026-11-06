@@ -81,17 +81,24 @@ App Shell（所有页面共享）：
 
 ### 作品画廊（`#gallery`）
 
-- 静态数据 `src/data/gallery.js` 24 条，字段：标题、分类、风格、提示词、负向提示词、种子、尺寸、采样参数、三色配色。
-- 分类 chips（风景 / 人像 / 建筑 / 产品 / 插画 / 概念）+ 搜索；卡片使用 Canvas 生成的渐变编号封面（不依赖网络）。
-- 详情弹窗：完整提示词、种子、参数；操作：复制提示词、收藏到素材仓库、发送到文生图（写入提示词 / 负向 / 种子 / 宽高后跳转 `#t2i`）。
+- 静态数据分三层：`src/data/gallery.js`（AIFISHER 原始 27 条）+ `gallery-zz.js`（OpenZhenZhen 精选 27 条）+ `gallery-more.js`（两站批量精选 178 条），合并为 232 条
+- 字段：标题、分类、风格、提示词、负向提示词、种子、尺寸、采样参数、三色配色、本地封面 `image`、来源站点 / 作者 / 原帖链接
+- 封面图已下载到 `web/assets/gallery/`（WebP）并通过 `/assets` 静态挂载，不依赖外站；`gallery-more.js` 由 `.cache/gen_gallery_more.py` 生成，缺失会导致全站白屏
+- 分类 chips（全部 / 人像 / 海报 / 场景 / 角色 / 室内 / 产品 / 信息图 / 标志 / 贴纸）+ 搜索
+- 详情弹窗：完整原图、画面说明、模型/尺寸徽标、来源署名；操作：复制提示词、收藏到素材仓库、发送到文生图（写入提示词 / 负向 / 种子 / 宽高后跳转 `#t2i`）
+- 卡片悬停可直接「收藏」：写入素材仓库（`source=gallery`、`sourceRef=作品 id`），已收藏的作品显示「已收藏」并禁用；页面进入时通过 `/api/materials` 回填收藏状态
 - 「随机灵感」按钮随机打开一条详情。
 
 ### 素材仓库（`#materials`）
 
 - 区别于历史记录：只收录用户主动收藏的作品与本地上传，数据存 `storage/materials.json` + `storage/materials/` 图片。
 - 搜索、类型 chips（全部 / 文生图 / 图生图 / 精修 / 本地素材，带计数）、分类 chips（点击当前分类取消筛选）。
-- 卡片：棋盘格缩略图、类型、种子、提示词摘要、分类；悬停显示快捷操作。
+- 卡片与作品画廊同一套视觉（`gallery-grid / gallery-card / gallery-cover`）：封面图 + 标题/分类叠加 + 提示词摘要；悬停显示「查看 / 发送到文生图 / 删除」。
 - 详情弹窗：大图、参数、参考图（图生图）、编辑信息、下载、删除、发送到文生图、在图片精修中打开。
+- 单个删除：卡片悬停「删除」或详情弹窗内删除，二次确认后调用 `DELETE /api/materials/{id}`。
+- 批量管理：「批量管理」进入选择模式，卡片左上角出现勾选圆点，点击卡片多选；选中后右侧弹出「已选」侧栏，可逐张移除 / 清空。
+  - 「一键发送到图生图小仓库」：通过 `refLibrary.addRefItems()` 把所选图片（`src=api.fileUrl(image.url)`）追加到图生图页会话级小图库（上限 24 张、按 src 去重），成功后跳转 `#edit`。
+  - 「批量删除」：二次确认后逐个调用删除接口，统计成功/失败并刷新列表。
 - 支持拖拽 / 选择批量上传，上传项 `kind=upload`、无提示词。
 - 收藏入口：任务结果卡片、历史详情、作品画廊、图片精修工作台。
 
@@ -134,7 +141,7 @@ web/
    ├─ store.js                全局状态（health/options/styles/主题/提示词/采样参数）+ localStorage + 事件总线
    ├─ utils.js                DOM/格式化/剪贴板/文件读取/图片探测/32 对齐等工具
    ├─ handoff.js              跨页交接（图生图 / 文生图 / 图片精修）
-   ├─ data/gallery.js         作品画廊静态数据
+   ├─ data/gallery.js         作品画廊数据入口（合并 gallery-zz.js / gallery-more.js）
    └─ components/
       ├─ toast.js             顶栏右侧中文提示（info/success/warn/error）
       ├─ modal.js             通用模态框（支持 dialogClass / hideFooter）+ 确认对话框
@@ -144,6 +151,7 @@ web/
       ├─ stylePicker.js       ★ 提示词上方的风格选择器（风格/滤镜/自定义/MJ/视角弹窗）
       ├─ maskEditor.js        ★ 遮罩编辑器（Canvas 2D 自研）
       ├─ favorites.js         收藏到素材仓库的统一入口
+      ├─ refLibrary.js        图生图页小图库（会话级，导出 addRefItems 供跨页批量追加）
       ├─ gallery.js           「作品画廊」页面
       ├─ materials.js         「素材仓库」页面
       ├─ studio.js            「图片精修」页面与交互

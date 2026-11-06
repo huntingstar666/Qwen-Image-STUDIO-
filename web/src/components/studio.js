@@ -18,6 +18,8 @@ import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS } from './studio/studioDoc.js';
+import { mountAiPanel } from './studio/aiPanel.js';
+import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
 const TOOLS = [
@@ -69,6 +71,22 @@ const TOOLS = [
     icon:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.4"><ellipse cx="12" cy="12" rx="8" ry="6.4"/></svg>',
   },
+  {
+    id: 'lasso',
+    label: '套索蒙版',
+    key: 'L',
+    hint: '沿目标画一圈，松手自动闭合填充',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5c0 2.6-1.8 4.9-4.5 5.9-1 .4-1.6 1-1.6 2" stroke-dasharray="3 2.4"/><circle cx="13.4" cy="19.4" r="1.3"/></svg>',
+  },
+  {
+    id: 'move',
+    label: '移动叠加图',
+    key: 'M',
+    hint: '拖动叠加层；滚轮缩放仍作用于画布',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M9 6l3-3 3 3"/><path d="M9 18l3 3 3-3"/><path d="M3 12h18"/><path d="M6 9l-3 3 3 3"/><path d="M18 9l3 3-3 3"/></svg>',
+  },
 ];
 
 const ADJUST_FIELDS = [
@@ -80,7 +98,7 @@ const ADJUST_FIELDS = [
   { key: 'tint', label: '色调', min: -100, max: 100 },
 ];
 
-const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse']);
+const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 
 export function createStudioPage(host) {
   let doc = null;
@@ -88,7 +106,7 @@ export function createStudioPage(host) {
   let brush = { size: 64, hardness: 0.7, opacity: 1 };
   let view = { scale: 1, x: 0, y: 0 };
   let showMask = true;
-  let activeTab = 'adjust';
+  let activeTab = 'ai';
   let cropRect = null;
   let drag = null;
   let cursor = null;
@@ -96,6 +114,8 @@ export function createStudioPage(host) {
   let raf = 0;
   let tint = null;
   let tintDirty = true;
+  let selectedLayerId = null;
+  let preview = { url: '', image: null, flash: false };
 
   host.innerHTML = `
     <div class="page page-studio">
@@ -166,9 +186,14 @@ export function createStudioPage(host) {
 
           <aside class="studio-panel">
             <div class="studio-tabs">
-              <button type="button" class="active" data-tab="adjust">调整</button>
+              <button type="button" class="active" data-tab="ai">AI 修改</button>
+              <button type="button" data-tab="adjust">调整</button>
               <button type="button" data-tab="mask">蒙版</button>
               <button type="button" data-tab="transform">变换</button>
+            </div>
+
+            <div class="studio-pane studio-pane-ai" data-pane="ai">
+              <div data-ref="aiPane"></div>
             </div>
 
             <div class="studio-pane" data-pane="adjust">
@@ -273,9 +298,116 @@ export function createStudioPage(host) {
     cropStart: ref('cropStart'),
     cropClear: ref('cropClear'),
     resetAll: ref('resetAll'),
+    aiPane: ref('aiPane'),
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
+
+  /* ============================================================
+   * AI 面板（右栏「AI 修改」）
+   * ============================================================ */
+
+  const ai = mountAiPanel(refs.aiPane, {
+    getSize() {
+      return doc ? doc.size : { width: 0, height: 0 };
+    },
+    getMainThumb() {
+      if (!doc) return '';
+      try {
+        const base = doc.renderBase();
+        const size = 168;
+        const k = Math.min(1, size / Math.max(base.width, base.height));
+        const thumb = document.createElement('canvas');
+        thumb.width = Math.max(1, Math.round(base.width * k));
+        thumb.height = Math.max(1, Math.round(base.height * k));
+        thumb.getContext('2d').drawImage(base, 0, 0, thumb.width, thumb.height);
+        return thumb.toDataURL('image/jpeg', 0.72);
+      } catch {
+        return '';
+      }
+    },
+    getSource() {
+      if (!doc) return null;
+      const size = doc.size;
+      const hasMask = doc.hasMask();
+      return {
+        main: { data: doc.bake('image/png'), name: doc.name, width: size.width, height: size.height },
+        mask: hasMask ? doc.maskPng() : null,
+        maskSize: doc.maskSize,
+        coverage: hasMask ? doc.maskCoverage() : 0,
+        hasMask,
+      };
+    },
+    showResult(url) {
+      setPreview(url);
+    },
+    compare(referenceUrl, results) {
+      openCompareDialog({
+        references: [{ url: referenceUrl, label: '底图（主图）' }],
+        results,
+      });
+    },
+    async addOverlay(file) {
+      if (!doc) throw new Error('请先打开一张主图');
+      if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件');
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.readAsDataURL(file);
+      });
+      const image = await loadImage(dataUrl);
+      const layer = doc.addOverlay(image, { name: file.name || '叠加图' });
+      selectedLayerId = layer.id;
+      setTool('move');
+      updateHistoryUi();
+      scheduleDraw();
+      ai?.refresh();
+      return layer;
+    },
+    getLayers() {
+      return doc?.layers || [];
+    },
+    selectLayer(id) {
+      selectedLayerId = id;
+      setTool('move');
+      scheduleDraw();
+    },
+    removeLayer(id) {
+      if (!doc) return;
+      if (doc.removeOverlay(id)) {
+        if (selectedLayerId === id) selectedLayerId = null;
+        updateHistoryUi();
+        scheduleDraw();
+      }
+    },
+    setLayerOpacity(id, value) {
+      if (!doc) return;
+      doc.setOverlayOpacity(id, value);
+      scheduleDraw();
+    },
+    scaleLayer(id, factor) {
+      if (!doc) return;
+      doc.scaleOverlay(id, factor);
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleDraw();
+    },
+  });
+
+  function setPreview(url) {
+    if (!url) {
+      preview = { url: '', image: null, flash: false };
+      scheduleDraw();
+      return;
+    }
+    loadImage(url)
+      .then((image) => {
+        preview = { url, image, flash: false };
+        scheduleDraw();
+      })
+      .catch((err) => toastError(err, '结果预览加载失败'));
+  }
 
   /* ============================================================
    * 工具与画布
@@ -298,6 +430,9 @@ export function createStudioPage(host) {
     }
     if (next === 'crop' && doc) {
       activeTab = 'transform';
+      syncTabs();
+    } else if (next === 'move') {
+      activeTab = 'ai';
       syncTabs();
     } else if (MASK_TOOLS.has(next)) {
       activeTab = 'mask';
@@ -407,7 +542,16 @@ export function createStudioPage(host) {
     ctx.drawImage(image, view.x, view.y, w, h);
     ctx.restore();
 
-    if (showMask && doc.hasMask()) {
+    // AI 结果预览（覆盖底图；按住 Tab 可临时看回底图）
+    if (preview.image && !preview.flash) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(preview.image, view.x, view.y, w, h);
+      ctx.restore();
+    }
+
+    if (showMask && doc.hasMask() && !preview.image) {
       if (tintDirty || !tint) {
         tint = doc.renderMaskTint();
         tintDirty = false;
@@ -467,8 +611,53 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 套索路径预览
+    if (drag?.mode === 'lasso' && drag.points?.length > 1) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(view.x + drag.points[0].x * view.scale, view.y + drag.points[0].y * view.scale);
+      for (const point of drag.points.slice(1)) {
+        ctx.lineTo(view.x + point.x * view.scale, view.y + point.y * view.scale);
+      }
+      ctx.strokeStyle = 'rgba(255, 59, 48, 0.95)';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255, 59, 48, 0.16)';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 选中叠加层的外框
+    const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
+    if (tool === 'move' && activeLayer) {
+      const crop = doc.transform.crop;
+      const box = activeLayer.bounds();
+      const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
+      const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;
+      const rw = box.width * view.scale;
+      const rh = box.height * view.scale;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      for (const [hx, hy] of [
+        [rx, ry],
+        [rx + rw, ry],
+        [rx, ry + rh],
+        [rx + rw, ry + rh],
+      ]) {
+        ctx.fillRect(hx - 3, hy - 3, 6, 6);
+      }
+      ctx.restore();
+    }
+
     // 画笔光标
-    if (cursor && MASK_TOOLS.has(tool) && tool !== 'rect' && tool !== 'ellipse') {
+    if (cursor && (tool === 'brush' || tool === 'eraser')) {
       const radius = Math.max(3, (brush.size / 2) * view.scale);
       ctx.save();
       ctx.beginPath();
@@ -591,6 +780,26 @@ export function createStudioPage(host) {
     updateMaskStatus();
   }
 
+  /** 套索：把自由路径自动闭合后填充成蒙版。 */
+  function fillLasso(points) {
+    if (!doc || points.length < 3) return;
+    const mctx = doc.mask.getContext('2d');
+    mctx.save();
+    mctx.globalAlpha = brush.opacity;
+    mctx.fillStyle = '#ffffff';
+    mctx.beginPath();
+    mctx.moveTo(points[0].x, points[0].y);
+    for (const point of points.slice(1)) mctx.lineTo(point.x, point.y);
+    mctx.closePath();
+    mctx.fill();
+    mctx.restore();
+    doc.markMaskChanged(true);
+    tintDirty = true;
+    doc.snapshot();
+    updateHistoryUi();
+    updateMaskStatus();
+  }
+
   /* ============================================================
    * 指针交互
    * ============================================================ */
@@ -619,6 +828,24 @@ export function createStudioPage(host) {
     if (tool === 'rect' || tool === 'ellipse') {
       drag = { mode: 'shape', start: point, rect: null };
       return;
+    }
+    if (tool === 'lasso') {
+      drag = { mode: 'lasso', points: [maskPoint(point)] };
+      return;
+    }
+    if (tool === 'move') {
+      const crop = doc.transform.crop;
+      const ix = point.x + (crop?.x || 0);
+      const iy = point.y + (crop?.y || 0);
+      const layer = [...(doc.layers || [])].reverse().find((item) => item.hitTest(ix, iy));
+      if (layer) {
+        selectedLayerId = layer.id;
+        drag = { mode: 'moveLayer', layer, start: point, originX: layer.x, originY: layer.y };
+        scheduleDraw();
+        return;
+      }
+      drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
+      refs.canvas.classList.add('is-grabbing');
     }
   });
 
@@ -649,6 +876,23 @@ export function createStudioPage(host) {
     if (drag.mode === 'shape') {
       drag.rect = normalizeRect(drag.start, point);
       scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'lasso') {
+      const last = drag.points[drag.points.length - 1];
+      const threshold = Math.max(1, 1.6 / view.scale);
+      if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= threshold) {
+        drag.points.push(maskPoint(point));
+        scheduleDraw();
+      }
+      return;
+    }
+    if (drag.mode === 'moveLayer') {
+      const layer = drag.layer;
+      layer.x = Math.round(drag.originX + (point.x - drag.start.x));
+      layer.y = Math.round(drag.originY + (point.y - drag.start.y));
+      doc.touchLayers();
+      scheduleDraw();
     }
   });
 
@@ -657,6 +901,7 @@ export function createStudioPage(host) {
     if (!drag) return;
     const mode = drag.mode;
     const rect = drag.rect;
+    const points = drag.points;
     drag = null;
     if (mode === 'paint') {
       doc?.markMaskChanged(tool !== 'eraser');
@@ -665,6 +910,16 @@ export function createStudioPage(host) {
       updateMaskStatus();
     } else if (mode === 'shape' && rect) {
       fillShape(offsetRect(rect));
+    } else if (mode === 'lasso' && points?.length >= 3) {
+      fillLasso(points);
+      // 圈完回到 AI 分页，直接写指令
+      activeTab = 'ai';
+      syncTabs();
+      ai?.focusPrompt?.();
+    } else if (mode === 'moveLayer') {
+      doc?.commitLayers();
+      updateHistoryUi();
+      ai?.refresh?.();
     } else if (mode === 'crop' && rect && rect.width > 6 && rect.height > 6) {
       cropRect = rect;
       refs.cropbar.hidden = false;
@@ -753,6 +1008,8 @@ export function createStudioPage(host) {
     updateHistoryUi();
     updateMaskStatus();
     setTool(tool === 'view' ? 'view' : tool);
+    setPreview(null);
+    ai?.refresh?.();
     requestAnimationFrame(() => {
       fitView();
       updateSizeInfo();
@@ -783,6 +1040,7 @@ export function createStudioPage(host) {
     const has = doc.hasMask();
     refs.maskClear.disabled = !has;
     refs.maskExport.disabled = !has;
+    ai?.onMaskChanged?.(coverage);
   }
 
   function syncAdjustInputs() {
@@ -803,6 +1061,8 @@ export function createStudioPage(host) {
     updateMaskStatus();
     tintDirty = true;
     fitView();
+    selectedLayerId = null;
+    ai?.refresh?.();
   }
 
   function downloadDataUrl(dataUrl, filename) {
@@ -917,6 +1177,8 @@ export function createStudioPage(host) {
       updateHistoryUi();
       updateMaskStatus();
       tintDirty = true;
+      selectedLayerId = null;
+      ai?.refresh?.();
       scheduleDraw();
     }
   });
@@ -927,6 +1189,8 @@ export function createStudioPage(host) {
       updateHistoryUi();
       updateMaskStatus();
       tintDirty = true;
+      selectedLayerId = null;
+      ai?.refresh?.();
       scheduleDraw();
     }
   });
@@ -1027,6 +1291,7 @@ export function createStudioPage(host) {
     updateHistoryUi();
     fitView();
     setTool('view');
+    ai?.refresh?.();
   });
 
   refs.cropCancel.addEventListener('click', () => {
@@ -1059,6 +1324,8 @@ export function createStudioPage(host) {
     updateHistoryUi();
     updateMaskStatus();
     fitView();
+    selectedLayerId = null;
+    ai?.refresh?.();
   });
 
   for (const button of host.querySelectorAll('[data-zoom]')) {
@@ -1110,6 +1377,12 @@ export function createStudioPage(host) {
     if (!isActive()) return;
     const tag = event.target?.tagName || '';
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
+    if (event.key === 'Tab' && preview.image) {
+      event.preventDefault();
+      preview.flash = true;
+      scheduleDraw();
+      return;
+    }
     const mod = event.ctrlKey || event.metaKey;
     if (mod && event.key.toLowerCase() === 'z') {
       event.preventDefault();
@@ -1162,6 +1435,11 @@ export function createStudioPage(host) {
   }
 
   function onKeyUp(event) {
+    if (event.key === 'Tab' && preview.flash) {
+      preview.flash = false;
+      scheduleDraw();
+      return;
+    }
     if (event.code !== 'Space') return;
     spaceDown = false;
     refs.canvas.classList.remove('is-grab');
@@ -1199,6 +1477,7 @@ export function createStudioPage(host) {
     updateMaskStatus();
     updateHistoryUi();
     setTool(tool);
+    syncTabs();
     if (!doc) refs.statusTool.textContent = '未打开图片 · 支持拖拽 / 粘贴';
   });
 

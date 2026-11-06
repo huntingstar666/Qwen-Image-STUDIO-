@@ -1,0 +1,243 @@
+/**
+ * 「图片精修 → AI 修改」的请求构造（纯函数，便于单测）。
+ *
+ * 契约以现有 `web/src/components/edit.js` 提交的 /api/edit payload 为准，
+ * 新能力（预处理 / 零偏移 / 色彩保护 / 任务）只做**追加字段**，
+ * 后端未实现时会安全忽略，不需要前端降级。
+ */
+
+export const SNAP = 32;
+export const MAX_SIDE_DEFAULT = 2048;
+export const MIN_SIDE_DEFAULT = 768;
+
+/** 向上取整到 multiple 的倍数（像素对齐，不裁内容）。 */
+export function snapUp(value, multiple = SNAP) {
+  const n = Math.max(1, Math.round(Number(value) || 0));
+  return Math.ceil(n / multiple) * multiple;
+}
+
+export function snapDims({ width, height }, multiple = SNAP) {
+  return { width: snapUp(width, multiple), height: snapUp(height, multiple) };
+}
+
+/**
+ * 计算真正送进模型的工作画布：长边超限才等比缩小，再向上对齐 32。
+ * 返回 scale 便于 UI 说明「原图 → 工作画布 → 还原」。
+ */
+export function workSize(size, { preprocess = true, maxSide = MAX_SIDE_DEFAULT, multiple = SNAP } = {}) {
+  const srcW = Math.max(1, Math.round(Number(size?.width) || 1));
+  const srcH = Math.max(1, Math.round(Number(size?.height) || 1));
+  let width = srcW;
+  let height = srcH;
+  let scaled = false;
+  const limit = Number(maxSide) || 0;
+  if (preprocess && limit > 0 && Math.max(srcW, srcH) > limit) {
+    const k = limit / Math.max(srcW, srcH);
+    width = Math.max(1, Math.round(srcW * k));
+    height = Math.max(1, Math.round(srcH * k));
+    scaled = true;
+  }
+  const snapped = snapDims({ width, height }, multiple);
+  return {
+    width: snapped.width,
+    height: snapped.height,
+    scaled,
+    scale: snapped.width / srcW,
+    source: { width: srcW, height: srcH },
+  };
+}
+
+const TASK_RULES = [
+  { task: 'outpaint', re: /扩图|外扩|延展|向外扩展|补边|outpaint|expand\s*(the\s*)?canvas/i },
+  { task: 'remove', re: /移除|去除|去掉|删除|抹掉|消除|清理|remove|erase|delete/i },
+  { task: 'replace', re: /替换|换成|改为|改成|置换|replace|swap/i },
+];
+
+/** 按指令关键词推断任务（用于自动挂任务 LoRA / 决定是否开启遮罩孔洞填充）。 */
+export function detectTask(prompt, hasMask = false) {
+  const text = String(prompt || '');
+  for (const rule of TASK_RULES) {
+    if (rule.re.test(text)) return rule.task;
+  }
+  return hasMask ? 'inpaint' : 'edit';
+}
+
+const CN_DIGITS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+
+/**
+ * 把 UI 里的 `@图二` 转成模型能理解的 `图2`；越界引用原样保留。
+ * @param {string} text
+ * @param {number} count 总图数（含主图）
+ */
+export function mapMentions(text, count) {
+  return String(text || '').replace(/@图\s*([一二三四五六七八九十]|\d{1,2})/g, (raw, token) => {
+    const index = /^\d+$/.test(token) ? Number(token) : CN_DIGITS[token] || 0;
+    if (!index || index > count) return raw;
+    return `图${index}`;
+  });
+}
+
+/** 自动挑选任务 LoRA：按关键词匹配后端返回的 LoRA 列表，找不到就不挂。 */
+export function pickTaskLora(loras, task) {
+  if (!task || task === 'edit' || task === 'inpaint') return null;
+  const rules =
+    task === 'remove'
+      ? [/移除|remove|erase/i]
+      : task === 'outpaint'
+        ? [/扩图|外扩|outpaint|expand/i]
+        : [];
+  if (!rules.length) return null;
+  const list = Array.isArray(loras) ? loras : [];
+  for (const rule of rules) {
+    const hit = list.find((item) => rule.test(item.label || item.value || item.name || ''));
+    if (hit) return { name: hit.value || hit.name, strength: task === 'remove' ? 1.0 : 0.7 };
+  }
+  return null;
+}
+
+/** 一致性 LoRA：优先用后端默认值，其次按关键词找，最后退回首项。 */
+export function pickConsistencyLora(loras, defaultPath = '') {
+  const list = (Array.isArray(loras) ? loras : []).filter(Boolean);
+  if (!list.length) return '';
+  const defaultName = String(defaultPath || '').split(/[\\/]/).pop();
+  if (defaultName) {
+    const hit = list.find((item) => String(item.value || item.name || '').split(/[\\/]/).pop() === defaultName);
+    if (hit) return hit.value || hit.name;
+  }
+  const named = list.find((item) => /consistency|一致性/i.test(item.label || item.value || item.name || ''));
+  if (named) return named.value || named.name;
+  return list[0].value || list[0].name || '';
+}
+
+function clampStrength(value, fallback = 0.48) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(1, Math.max(0, n));
+}
+
+/**
+ * 构造 /api/edit payload。
+ * @param {{
+ *   main: {data:string, name:string, width:number, height:number},
+ *   mask: string|null,
+ *   prompt: string,
+ *   negative?: string,
+ *   refs: Array<{name:string, data:string}>,
+ *   settings: object,
+ *   loras: {task:string, consistency:boolean, consistencyName:string, strength:number, custom:Array<{name:string,strength:number}>},
+ *   sampling: {steps:number, cfg:number, sampler:string, scheduler:string, turbo:{enabled:boolean, profile:string}},
+ *   models?: {unet?:string,clip?:string,vae?:string},
+ *   task?: string,
+ * }} input
+ */
+export function buildEditPayload({
+  main,
+  mask = null,
+  prompt,
+  negative = '',
+  refs = [],
+  settings = {},
+  loras = {},
+  sampling = {},
+  models = {},
+  task = 'edit',
+}) {
+  const imageCount = 1 + refs.length;
+  const text = mapMentions(prompt, imageCount);
+  const hasMask = Boolean(mask);
+  const sizeMode = settings.sizeMode || 'follow';
+  const preprocess = settings.preprocess !== false;
+  const maxSide = Number(settings.maxSide) || MAX_SIDE_DEFAULT;
+  const work = workSize({ width: main?.width, height: main?.height }, { preprocess, maxSide });
+  const scheme = resolveScheme(settings.scheme, settings.hasMask ?? hasMask, settings.coverage || 0);
+
+  const loraList = [];
+  const taskLora = loras.taskLora || null;
+  if (taskLora?.name) loraList.push({ name: taskLora.name, strength: clampStrength(taskLora.strength, 1) });
+  for (const item of loras.custom || []) {
+    if (item?.name) loraList.push({ name: item.name, strength: clampStrength(item.strength, 1) });
+  }
+
+  const local = {
+    enabled: hasMask && settings.localEnabled !== false,
+    scheme,
+    feather: Math.round(Number(settings.feather ?? 32) || 0),
+    color_match: settings.colorGuard !== false,
+    color_strength: 0.6,
+    color_restore: settings.colorGuard !== false,
+    color_restore_strength: 1.0,
+    mask_expand: Math.round(Number(settings.maskExpand ?? 0) || 0),
+    context_factor: 1.5,
+    context_pixels: 96,
+    blend_pixels: 24,
+    fills: task === 'remove',
+    hint: task === 'remove' ? 'green' : 'none',
+    expand_top: 1.3,
+    expand_bottom: 1.4,
+    expand_left: 1.4,
+    expand_right: 1.4,
+  };
+
+  return {
+    prompt: text,
+    negative_prompt: String(negative || ''),
+    images: [
+      { name: main?.name || 'main.png', data: main?.data || '' },
+      ...refs.map((ref, index) => ({ name: ref.name || `ref-${index + 2}.png`, data: ref.data })),
+    ],
+    size_mode: sizeMode,
+    width: sizeMode === 'custom' ? snapUp(settings.width) : null,
+    height: sizeMode === 'custom' ? snapUp(settings.height) : null,
+    ratio: sizeMode === 'ratio' ? settings.ratio || '1:1' : null,
+    megapixels: sizeMode === 'ratio' ? Number(settings.megapixels) || null : null,
+    fit: 'pad',
+    pad_mode: 'edge',
+    mask: hasMask ? { data: mask } : null,
+    local,
+    resolution: 0,
+    steps: Math.max(1, Math.round(Number(sampling.steps) || 9)),
+    cfg: Number(sampling.cfg) || 1,
+    seed: null,
+    denoise: 1,
+    sampler: sampling.sampler || 'euler',
+    scheduler: sampling.scheduler || 'simple',
+    turbo: sampling.turbo?.enabled
+      ? { enabled: true, profile: sampling.turbo.profile || '' }
+      : { enabled: false, profile: null },
+    models: { unet: models.unet || '', clip: models.clip || '', vae: models.vae || '' },
+    loras: loraList,
+    consistency_lora:
+      loras.consistency && loras.consistencyName
+        ? { name: loras.consistencyName, strength: clampStrength(loras.strength, 0.48) }
+        : null,
+
+    // ===== 追加字段：后端未实现时忽略 =====
+    task: { mode: task },
+    preprocess: {
+      enabled: preprocess,
+      max_side: maxSide,
+      min_side: MIN_SIDE_DEFAULT,
+      multiple: SNAP,
+      mode: 'downscale_only',
+    },
+    zero_shift: { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 },
+    color_guard: { enabled: settings.colorGuard !== false, outside_exact: true, icc: 'srgb' },
+    meta: {
+      source: 'web/studio',
+      rawPrompt: String(prompt || ''),
+      task,
+      targetSize: { width: main?.width || 0, height: main?.height || 0 },
+      workSize: { width: work.width, height: work.height },
+      maskSize: hasMask ? { width: main?.width || 0, height: main?.height || 0 } : null,
+      consistencyStrength: loras.consistency ? clampStrength(loras.strength, 0.48) : null,
+      client: 'qwen-image2.1-web',
+    },
+  };
+}
+
+/** auto：遮罩面积小用整画布（a，接缝更稳），面积大用区域裁剪（b，更快）。 */
+export function resolveScheme(scheme, hasMask, coverage) {
+  if (!hasMask) return 'a';
+  if (scheme === 'a' || scheme === 'b') return scheme;
+  return coverage > 0.02 && coverage < 0.45 ? 'b' : 'a';
+}

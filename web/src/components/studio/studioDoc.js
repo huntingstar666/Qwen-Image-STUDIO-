@@ -10,6 +10,8 @@
  * 该模块不依赖 DOM 事件，方便后续替换成后端渲染或单元测试。
  */
 
+import { OverlayLayer } from './layers.js';
+
 export const ADJUST_DEFAULTS = {
   exposure: 0,
   brightness: 0,
@@ -49,6 +51,8 @@ export class StudioDoc {
     this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
+    /** @type {OverlayLayer[]} 叠加层（底图不在其中，底图永远锁定） */
+    this.layers = [];
     this.history = [];
     this.future = [];
     this._base = null;
@@ -82,6 +86,7 @@ export class StudioDoc {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       adjust: { ...this.adjust },
       mask: cloneCanvas(this.mask),
+      layers: this.layers.map((layer) => layer.clone()),
     });
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future.length = 0;
@@ -93,6 +98,7 @@ export class StudioDoc {
     this.transform = { ...state.transform, crop: state.transform.crop ? { ...state.transform.crop } : null };
     this.adjust = { ...state.adjust };
     this.mask = cloneCanvas(state.mask);
+    this.layers = (state.layers || []).map((layer) => layer.clone());
     this._base = null;
     this._maskHas = null;
   }
@@ -125,6 +131,7 @@ export class StudioDoc {
   rotateRight() {
     this.transform.rotate = (this.transform.rotate + 90) % 360;
     this.transform.crop = null;
+    this.layers = [];
     this.rotateMaskRight();
     this._maskHas = null;
     this.snapshot();
@@ -133,6 +140,7 @@ export class StudioDoc {
   rotateLeft() {
     this.transform.rotate = (this.transform.rotate + 270) % 360;
     this.transform.crop = null;
+    this.layers = [];
     this.rotateMaskLeft();
     this._maskHas = null;
     this.snapshot();
@@ -147,6 +155,7 @@ export class StudioDoc {
       this.flipMask('v');
     }
     this.transform.crop = null;
+    this.layers = [];
     this._maskHas = null;
     this.snapshot();
   }
@@ -174,6 +183,7 @@ export class StudioDoc {
     this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
+    this.layers = [];
     this._maskHas = null;
     this.snapshot();
   }
@@ -280,6 +290,71 @@ export class StudioDoc {
     this.mask = next;
   }
 
+  /* ---------------------------------------------------------- 叠加层 */
+
+  /**
+   * 叠加一张图片（扣图 / 素材），默认居中并缩放到画布的 60% 以内。
+   * @param {HTMLImageElement} image
+   * @param {{name?:string, x?:number, y?:number, scale?:number, opacity?:number}} [options]
+   */
+  addOverlay(image, options = {}) {
+    const box = this.renderBase();
+    const fit = Math.min(1, (box.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
+    const scale = options.scale ?? fit;
+    const width = (image.naturalWidth || image.width) * scale;
+    const height = (image.naturalHeight || image.height) * scale;
+    const layer = new OverlayLayer(image, {
+      name: options.name || `叠加 ${this.layers.length + 2}`,
+      x: options.x ?? Math.round((box.width - width) / 2),
+      y: options.y ?? Math.round((box.height - height) / 2),
+      scale,
+      opacity: options.opacity ?? 1,
+    });
+    this.layers.push(layer);
+    this.snapshot();
+    return layer;
+  }
+
+  findLayer(id) {
+    return this.layers.find((layer) => layer.id === id) || null;
+  }
+
+  removeOverlay(id) {
+    const before = this.layers.length;
+    this.layers = this.layers.filter((layer) => layer.id !== id);
+    if (this.layers.length === before) return false;
+    this.snapshot();
+    return true;
+  }
+
+  /**
+   * 拖动/缩放过程中频繁调用：只失效缓存，不写历史。
+   * 松手后调用 commitLayers() 落一次快照。
+   */
+  touchLayers() {
+    this.invalidateBase();
+  }
+
+  commitLayers() {
+    this.snapshot();
+  }
+
+  setOverlayOpacity(id, opacity) {
+    const layer = this.findLayer(id);
+    if (!layer) return false;
+    layer.opacity = Math.max(0, Math.min(1, Number(opacity) || 0));
+    this.invalidateBase();
+    return true;
+  }
+
+  scaleOverlay(id, factor) {
+    const layer = this.findLayer(id);
+    if (!layer) return false;
+    layer.scale = Math.max(0.02, Math.min(8, layer.scale * factor));
+    this.invalidateBase();
+    return true;
+  }
+
   /* ---------------------------------------------------------- 渲染 */
 
   /** 调色等状态被外部修改后调用，丢弃合成缓存。 */
@@ -340,6 +415,16 @@ export class StudioDoc {
       cropped.getContext('2d').drawImage(canvas, -crop.x, -crop.y);
       canvas = cropped;
     }
+
+    // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移
+    if (this.layers.length) {
+      const ctx2 = canvas.getContext('2d');
+      ctx2.save();
+      if (crop) ctx2.translate(-crop.x, -crop.y);
+      for (const layer of this.layers) layer.draw(ctx2);
+      ctx2.restore();
+    }
+
     this._base = canvas;
     return canvas;
   }

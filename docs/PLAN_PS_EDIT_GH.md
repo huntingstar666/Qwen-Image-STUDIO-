@@ -654,6 +654,14 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 > 移除任务必须用"提示图"同时做编码参考与 latent 初始化（与孤海一致）；否则 LoRA 看到的输入分布和训练时不一致。
 > **A/B 结论待测**：如果发现绿边泄漏，退化为"干净 latent + 绿提示仅作编码参考"，并记录在 `job.quality.hint_mode`。
 
+**已落地（`server/imaging.py` + `server/pipeline.py`）：**
+
+- `imaging.mask_hint_overlay(im, mask, color=(0,200,80), opacity=0.4)`：只染 RGB，alpha 原样；
+- `imaging.crop_mask_for_region(crop, mask)`：把画布遮罩切到"模型输入"坐标系（含补边/缩放），保证提示图与裁切图对齐；
+- 触发规则：`local.hint` 显式给出优先；`task.mode == "remove"` 且未给/给 `auto` 时自动 `green_overlay`；非法值回落 `none`；
+- 提示图**只替换参考图**（`ref_images[0]`），latent 仍来自干净画布（先按保守方案，A/B 后再定）；
+- `job.quality.hint_mode` / `task_mode` 记录实际生效值。
+
 ### 5.7 扩图
 
 不直接生成大画布，沿用孤海：
@@ -1201,7 +1209,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（13 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
 | 预处理接入 `pipeline.generate_edit` | ✅ 已接入（仅 `follow` 模式；`custom/ratio` 跳过） | `server/pipeline.py` |
 | 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
-| zero_shift 强制 / task / hint=green | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
+| zero_shift 强制 / task / hint=green | ⏳ zero_shift 与任务 LoRA 待做；hint=green 已落地 | `server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1258,6 +1266,6 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 1. ~~`preprocess.py`（缩放/还原/32 对齐）+ `test_preprocess.py`~~ ✅ 已完成（`imaging.py` 内实现）
 2. ~~preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）~~ ✅ 已完成
 3. ~~`crop_region` 扩展系数 + 越界众数填色~~ ✅ 已完成
-4. `local.fills / hint=green`（移除场景）
+4. ~~`local.fills / hint=green`（移除场景）~~ ✅ 已完成（fills 已用于裁切/空洞；hint 自动触发）
 5. 前端 `changed_ratio / leak_ratio / color.skipped` 标签联调
 

@@ -635,6 +635,29 @@ def test_crop_with_color_fill_uses_edge_mode_color_outside():
     assert tuple(int(v) for v in arr[20, 20][:3]) == (10, 20, 30)
 
 
+def test_mask_hint_overlay_tints_only_masked_area():
+    canvas = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
+    mask = _mask(64, 64, 16, 16, 48, 48)
+    out = imaging.mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4)
+    arr = np.asarray(out)
+    assert arr.shape == (64, 64, 4)
+    assert tuple(int(v) for v in arr[32, 32][:3]) == (153, 233, 185)
+    assert tuple(int(v) for v in arr[0, 0][:3]) == (255, 255, 255)
+    assert int(arr[32, 32][3]) == 255
+
+
+def test_crop_mask_for_region_matches_crop_geometry():
+    canvas = _rgba(512, 384, seed=25)
+    mask = _mask(512, 384, 200, 140, 300, 260)
+    crop, info = imaging.crop_region_factors(canvas, mask)
+    m = imaging.crop_mask_for_region(info, mask)
+    assert m.shape == (crop.size[1], crop.size[0])
+    cy, cx = 200 - info.y, 250 - info.x
+    assert 0 <= cy < m.shape[0] and 0 <= cx < m.shape[1]
+    assert float(m[cy, cx]) > 0.9
+    assert float(m[0, 0]) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # compare / 端到端
 # ---------------------------------------------------------------------------

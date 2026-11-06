@@ -601,6 +601,20 @@ class Pipeline:
         else:
             ref_images = [canvas] + decoded[1:]
 
+        # 提示图（green overlay）：移除任务默认开启，让 LoRA 看到的输入分布与训练一致。
+        task_mode = str((params.get("task") or {}).get("mode") or "edit")
+        hint_mode = str(local.get("hint") or "none").strip().lower()
+        if hint_mode in ("", "auto") and task_mode == "remove":
+            hint_mode = "green_overlay"
+        if hint_mode not in ("none", "green_overlay"):
+            hint_mode = "none"
+        if hint_mode == "green_overlay" and mask_canvas is not None:
+            if scheme == "b" and crop_info is not None:
+                hint_mask = imaging.crop_mask_for_region(crop_info, mask_canvas)
+            else:
+                hint_mask = mask_canvas
+            ref_images[0] = imaging.mask_hint_overlay(ref_images[0], hint_mask)
+
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         cond = engine.encode_text(
             job.prompt or "",
@@ -725,6 +739,8 @@ class Pipeline:
             "feather": feather,
             "color_match": color_match,
             "color": color_report,
+            "hint_mode": hint_mode,
+            "task_mode": task_mode,
             "preprocess": {
                 "applied": bool(use_pp),
                 "scale": round(float(pp.scale), 6),

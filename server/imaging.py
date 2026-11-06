@@ -75,6 +75,8 @@ __all__ = [
     "crop_region",
     "crop_region_factors",
     "crop_with_color_fill",
+    "crop_mask_for_region",
+    "mask_hint_overlay",
     "stitch_region",
     "compare",
 ]
@@ -1283,6 +1285,31 @@ def crop_region_factors(
     )
 
 
+def mask_hint_overlay(
+    im: Image.Image,
+    mask: np.ndarray,
+    *,
+    color: tuple[int, int, int] = (0, 200, 80),
+    opacity: float = 0.4,
+) -> Image.Image:
+    """按遮罩把区域染成绿色提示（remove 任务约定），返回 RGBA 图。
+
+    只改 RGB，alpha 保持原样；``opacity`` 是最大不透明度，遮罩内按遮罩值线性混合。
+    """
+    base = np.asarray(im.convert("RGBA"), dtype=np.float32) / 255.0
+    m = np.asarray(mask, dtype=np.float32)
+    if m.ndim == 3:
+        m = m[..., 0]
+    if m.shape != base.shape[:2]:
+        m = align.resize_mask(m, base.shape[1], base.shape[0])
+    a = np.clip(m, 0.0, 1.0)[..., None] * float(np.clip(opacity, 0.0, 1.0))
+    tint = np.array(
+        [color[0], color[1], color[2], 255], dtype=np.float32) / 255.0
+    out = base * (1.0 - a) + tint * a
+    out[..., 3] = base[..., 3]
+    return Image.fromarray(np.rint(np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8), "RGBA")
+
+
 def _crop_canvas_mask_for_region(
     mask_canvas: np.ndarray,
     crop: CropInfo,
@@ -1312,6 +1339,16 @@ def _crop_canvas_mask_for_region(
         align.resize_mask(m, int(crop.canvas_w), int(crop.canvas_h)),
         int(crop.x) - int(pad_l), int(crop.y) - int(pad_t), target_w, target_h,
     )
+
+
+def crop_mask_for_region(crop: CropInfo, mask_canvas: np.ndarray) -> np.ndarray:
+    """按 :class:`CropInfo` 把画布遮罩切到「模型输入」坐标系（含补边/缩放）。"""
+    cw, ch = int(crop.w), int(crop.h)
+    target_w, target_h = align.snap_dims(cw, ch, SNAP)
+    pad_l = (target_w - cw) // 2
+    pad_t = (target_h - ch) // 2
+    return _crop_canvas_mask_for_region(
+        mask_canvas, crop, target_w, target_h, pad_l, pad_t)
 
 
 def stitch_region(

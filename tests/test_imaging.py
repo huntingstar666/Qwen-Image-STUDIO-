@@ -562,6 +562,33 @@ def test_stitch_region_color_match_keeps_outside_exact():
     assert int(np.abs(outside - outside_orig).max()) == 0
 
 
+def test_stitch_region_feathers_mask_boundary_inside_only():
+    """遮罩边必须是过渡带，不能是 0/1 硬切。
+
+    真机回归：模型重绘的背景/投影在矩形遮罩边界被直接切断，肉眼能看到一圈方块。
+    改成按 ``blend_pixels`` 羽化后，边界内侧应是渐变，外侧仍逐字节保留。
+    """
+    canvas = _rgba(256, 192, seed=25)
+    mask = _mask(256, 192, 100, 70, 160, 130)
+    crop, info = imaging.crop_region(canvas, mask, context_pixels=48)
+    edited_crop = Image.new("RGBA", crop.size, (30, 60, 90, 255))
+
+    out = imaging.stitch_region(
+        canvas, edited_crop, info, mask, blend_pixels=16, color_match=False
+    )
+    arr, orig = _arr_u8(out), _arr_u8(canvas)
+    assert int(np.abs(arr[mask == 0] - orig[mask == 0]).max()) == 0, "遮罩外被改动"
+
+    target = np.array([30, 60, 90])
+    edge, src = arr[100, 100, :3].astype(int), orig[100, 100, :3].astype(int)
+    assert tuple(edge) != tuple(target), f"边界被硬切成了编辑色：{edge}"
+    assert np.abs(edge - src).sum() < np.abs(target - src).sum(), (
+        f"边界应比中心更接近原图：edge={edge} src={src}"
+    )
+    # 距边界 30px 的遮罩内部应完全来自编辑结果
+    assert tuple(int(v) for v in arr[100, 130, :3]) == (30, 60, 90)
+
+
 def test_stitch_region_handles_resized_edited_crop():
     canvas = _rgba(512, 384, seed=19)
     mask = _mask(512, 384, 200, 140, 360, 280)

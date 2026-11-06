@@ -1577,6 +1577,11 @@ def stitch_region(
         hard_alpha = hard_win[top: top + sh, left: left + sw]
         if (sw, sh) != (cw, ch):
             hard_alpha = _resize_mask_nearest(hard_alpha, cw, ch)
+        # 羽化：mask 通常是 0/1 硬边，直接用会把模型重绘的背景/投影按直线切断，
+        # 在原图与重绘区之间留下一圈可见的矩形台阶（真机回归里的「像素块」）。
+        # 这里按 blend_pixels 做高斯羽化，再钳回遮罩内——遮罩外仍然严格 0。
+        if int(blend_pixels) > 0:
+            alpha = align.feather_mask(alpha, int(blend_pixels))
         alpha = alpha * (hard_alpha > 0.5).astype(np.float32)
     else:
         hard_alpha = None

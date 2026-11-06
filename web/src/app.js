@@ -16,6 +16,7 @@ import { createEditPage } from './components/edit.js';
 import { createImageToolsPage } from './components/imageTools.js';
 import { createHistoryPage } from './components/history.js';
 import { createMaterialsPage } from './components/materials.js';
+import { createGalleryPage } from './components/gallery.js';
 
 /* ---------------------------------------------------------------- 图标 */
 
@@ -93,7 +94,7 @@ const TABS = [
     group: 'assets',
     icon: 'grid',
     badge: '新',
-    factory: createPlaceholderPage('作品画廊', '精选作品与提示词正在整理'),
+    factory: createGalleryPage,
   },
   {
     id: 'materials',

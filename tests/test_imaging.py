@@ -467,7 +467,9 @@ def test_composite_outside_mask_is_pixel_identical():
 
 
 def test_composite_inside_mask_comes_from_edited():
-    original = _rgba(128, 96, seed=11)
+    # 用平滑底色而不是随机噪声：``_suppress_small_changes`` 会把与编辑色只差几级的
+    # 像素压回原图（真机回归的"背景重绘噪块"），随机噪声里偶发这种像素属于预期行为。
+    original = Image.new("RGBA", (128, 96), (40, 40, 40, 255))
     edited = Image.new("RGBA", (128, 96), (7, 250, 13, 255))
     mask = _mask(128, 96, 30, 20, 90, 60)
     out = imaging.composite(original, edited, mask, feather=0, color_match=False)
@@ -587,6 +589,42 @@ def test_stitch_region_feathers_mask_boundary_inside_only():
     )
     # 距边界 30px 的遮罩内部应完全来自编辑结果
     assert tuple(int(v) for v in arr[100, 130, :3]) == (30, 60, 90)
+
+
+def test_suppress_small_changes_restores_background_keeps_object():
+    """模型重绘整块遮罩时的 1~4 级背景偏差/噪点必须回到原图，物体改动必须保留。
+
+    真机回归：纯渐变背景上，模型重画带来的几级偏色 + 噪点会拼出一个可见矩形。
+    逐像素软阈值（不是空间模糊、也不是乘性 alpha 闸门）既能抹掉它，
+    又不会把物体颜色糊到边界外。
+    """
+    rng = np.random.default_rng(3)
+    h, w = 96, 128
+    src = rng.integers(40, 120, (h, w, 3), dtype=np.uint8)
+    jitter = rng.integers(-1, 2, (h, w, 1)).astype(np.int16)
+    dst = np.clip(src.astype(np.int16) + 3 + jitter, 0, 255).astype(np.uint8)
+    dst[30:60, 40:80] = (250, 240, 10)          # 物体：大改动
+
+    out = imaging._suppress_small_changes(dst, src, low=6, high=16)
+    bg = np.ones((h, w), dtype=bool)
+    bg[28:62, 38:82] = False                     # 避开物体边界
+    assert int(np.abs(out.astype(np.int16)[bg] - src.astype(np.int16)[bg]).max()) == 0, (
+        "背景小改动没有回到原图"
+    )
+    assert tuple(int(v) for v in out[45, 60]) == (250, 240, 10), "物体改动被误压"
+    assert out.shape == dst.shape and out.dtype == dst.dtype
+
+    # 中间档：介于两者之间，且方向不变（单调压缩，不翻转）
+    mid_src = src.astype(np.int16)
+    mid_dst = np.clip(mid_src + 11, 0, 255).astype(np.uint8)
+    mid_out = imaging._suppress_small_changes(mid_dst, src, low=6, high=16).astype(np.int16)
+    delta_out = mid_out[bg] - mid_src[bg]
+    assert bool((delta_out >= 0).all()) and int(delta_out.max()) <= 11
+    assert int(delta_out.min()) < 11, "中间档应被部分压缩"
+
+    # 形状不一致时原样返回，绝不报错
+    mismatched = dst[:10]
+    assert imaging._suppress_small_changes(mismatched, src).shape == mismatched.shape
 
 
 def test_stitch_region_handles_resized_edited_crop():

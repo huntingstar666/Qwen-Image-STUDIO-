@@ -1093,6 +1093,51 @@ def _apply_reinhard_to_u8(
     return out
 
 
+def _suppress_small_changes(content, original, *, low: float = 6.0,
+                            high: float = 16.0):
+    """把模型"顺手重绘"带来的小改动压回原图（逐像素软阈值，不引入空间台阶）。
+
+    ``out = src + (dst - src) * smoothstep(|dst - src|; low, high)``
+
+    模型会把遮罩内整块区域重画一遍，干净背景上通常带 1~8 级的偏色与噪点；在纯渐变、
+    纯色墙这类背景上，这些"几乎没改"的像素会拼出一个可见矩形。这里按差异大小做
+    **逐像素**软阈值：差异 ``<= low`` 完全回到原图（字节级一致），``>= high`` 原样
+    保留（物体、接触投影、真实改动），中间单调平滑过渡。
+
+    为什么不用这两种写法：
+
+    * ``alpha *= max(a, b)`` 乘性闸门会在两场的交界处留下一条等高线（真机回归里
+      直接看到一圈"线框"），比原问题更糟；
+    * 对闸门做空间模糊会把物体的颜色糊到边界外，形成光晕。
+
+    逐像素软阈值只做值域上的单调压缩，输出始终是 ``src`` 与 ``dst`` 的凸组合，
+    且 ``|dst - src| <= low`` 处精确等于 ``src``。参数是 0~255 色阶差；
+    ``content`` / ``original`` 允许 u8 或 0~1 浮点，返回与 ``content`` 同类型。
+    """
+    data = np.asarray(content)
+    src = np.asarray(original)
+    if src.shape != data.shape or data.size == 0:
+        return content
+
+    is_u8 = data.dtype == np.uint8
+    dst_f = data[..., :3].astype(np.float32) / (255.0 if is_u8 else 1.0)
+    src_f = src[..., :3].astype(np.float32) / (255.0 if is_u8 else 1.0)
+    diff = np.abs(dst_f - src_f).max(axis=2) * 255.0
+    span = max(1e-6, float(high) - float(low))
+    t = np.clip((diff - float(low)) / span, 0.0, 1.0)
+    weight = (t * t * (3.0 - 2.0 * t))[..., None]
+    if not bool((weight < 1.0).any()):
+        return content
+
+    out = np.array(data, copy=True)
+    merged = src_f + (dst_f - src_f) * weight
+    out[..., :3] = (
+        np.rint(np.clip(merged, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if is_u8 else np.clip(merged, 0.0, 1.0).astype(np.float32)
+    )
+    return out
+
+
 def composite(
     original_canvas: Image.Image,
     edited_canvas: Image.Image,
@@ -1203,6 +1248,11 @@ def composite(
             merged = align.lowfreq_merge(original_f, edited_f, alpha)
             base_u8 = edited_u8.copy()
             base_u8[..., :3] = np.rint(np.clip(merged, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+    # 小改动压回原图：模型"顺手重绘"整块背景会带来 1~8 级偏色/噪点，在纯渐变、
+    # 纯色墙这类干净背景上会拼出一个可见矩形（真机回归的「像素块」）。
+    if mask_canvas is not None:
+        base_u8 = _suppress_small_changes(base_u8, original_u8)
 
     # 6) 混合：只在 alpha > 0 处赋值，保证遮罩外逐字节保留。
     out = original_u8.copy()
@@ -1640,6 +1690,10 @@ def stitch_region(
             merged = align.lowfreq_merge(region_f, content_f, alpha)
             content_f = content_f.copy()
             content_f[..., :3] = merged
+
+    # 小改动压回原图：模型"顺手重绘"整块背景会带来 1~8 级偏色/噪点，在纯渐变、
+    # 纯色墙这类干净背景上会拼出一个可见矩形（真机回归的「像素块」）。
+    content_f = _suppress_small_changes(content_f, region_f)
 
     alpha = align.curve_mask(alpha, curve)
 

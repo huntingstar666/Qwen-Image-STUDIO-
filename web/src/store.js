@@ -70,6 +70,8 @@ const DEFAULT_EDIT = {
 const DEFAULT_SETTINGS = {
   prompt: '',
   polishModel: '',
+  theme: 'system',
+  sidebarCollapsed: false,
   creativePresets: {},
   imageAngle: { azimuth: 0, elevation: 0, zoom: 5, enabled: false },
   t2i: DEFAULT_T2I,
@@ -84,6 +86,8 @@ function loadSettings() {
     return {
       ...structuredClone(DEFAULT_SETTINGS),
       ...parsed,
+      theme: ['light', 'dark', 'system'].includes(parsed?.theme) ? parsed.theme : 'system',
+      sidebarCollapsed: Boolean(parsed?.sidebarCollapsed),
       t2i: { ...DEFAULT_T2I, ...(parsed?.t2i || {}) },
       edit: { ...DEFAULT_EDIT, ...(parsed?.edit || {}) },
       creativePresets: parsed?.creativePresets && typeof parsed.creativePresets === 'object' ? parsed.creativePresets : {},
@@ -143,6 +147,12 @@ const state = {
   },
   get activeTab() {
     return runtime.activeTab;
+  },
+  get theme() {
+    return settings.theme;
+  },
+  get sidebarCollapsed() {
+    return settings.sidebarCollapsed;
   },
   get lastResults() {
     return runtime.lastResults;
@@ -237,6 +247,32 @@ export function getPrompt() {
   return settings.prompt;
 }
 
+/** ---------------------------------------------------------------- 主题 */
+
+const THEME_MODES = new Set(['light', 'dark', 'system']);
+
+/** 把主题模式应用到 <html data-theme>，返回是否为暗色。 */
+export function applyTheme(mode = settings.theme) {
+  const normalized = THEME_MODES.has(mode) ? mode : 'system';
+  const dark =
+    normalized === 'dark' ||
+    (normalized === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  emit('theme:change', { mode: normalized, dark });
+  return dark;
+}
+
+export function setTheme(mode) {
+  if (!THEME_MODES.has(mode)) return;
+  patchSettings({ theme: mode });
+  applyTheme(mode);
+}
+
+export function setSidebarCollapsed(collapsed) {
+  patchSettings({ sidebarCollapsed: Boolean(collapsed) });
+}
+
 /** 已选创意预设快照操作：kind → preset（同 kind 覆盖）。 */
 export function setCreativePreset(kind, preset) {
   const next = { ...settings.creativePresets };
@@ -318,8 +354,19 @@ export const store = {
   emit,
   setPrompt,
   getPrompt,
+  applyTheme,
+  setTheme,
+  setSidebarCollapsed,
   setCreativePreset,
   applyOptionDefaults,
   rememberResult,
   defaults: { t2i: DEFAULT_T2I, edit: DEFAULT_EDIT },
 };
+
+// 跟随系统主题：仅当用户选择 "system" 时响应系统切换。
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (settings.theme === 'system') applyTheme('system');
+});
+
+// 模块加载即同步主题（index.html 的首屏脚本已先行设置，避免闪烁）。
+applyTheme(settings.theme);

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>Qwen-Image 2.1 工作台</title>
     <link
       rel="icon"
@@ -12,20 +12,47 @@
     <link rel="stylesheet" href="/assets/css/app.css" />
     <link rel="stylesheet" href="/assets/css/mask.css" />
     <link rel="stylesheet" href="/assets/css/tools.css" />
+    <link rel="stylesheet" href="/assets/css/theme.css" />
+    <link rel="stylesheet" href="/assets/css/shell.css" />
+    <script>
+      // 首屏应用主题，避免亮暗切换闪烁。读取与 store.js 使用同一个 key。
+      (function () {
+        try {
+          var raw = localStorage.getItem('qi21.workbench.settings.v1');
+          var settings = raw ? JSON.parse(raw) : {};
+          var mode = settings.theme || 'system';
+          var dark =
+            mode === 'dark' ||
+            (mode !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.dataset.theme = dark ? 'dark' : 'light';
+          root.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (err) {
+          /* 忽略：使用 CSS 默认亮色 */
+        }
+      })();
+    </script>
   </head>
   <body>
     <noscript>
       <div class="noscript">本工作台需要启用 JavaScript 才能运行。</div>
     </noscript>
 
-    <!-- 顶栏：品牌 + 引擎/Ollama/队列状态，由 app.js 渲染 -->
-    <header id="topbar" class="topbar"></header>
+    <div id="app-shell" class="app-shell">
+      <!-- 侧边栏：品牌、导航分组、主题与状态，由 app.js 渲染 -->
+      <aside id="sidebar" class="sidebar" aria-label="主导航"></aside>
 
-    <!-- 页签导航，由 app.js 渲染 -->
-    <nav id="tabbar" class="tabbar" aria-label="工作台页面"></nav>
+      <div class="app-main">
+        <!-- 顶部工具栏：页面标题、引擎状态、主题切换 -->
+        <header id="topbar" class="topbar"></header>
 
-    <!-- 页面容器：各页面 DOM 在首次进入时挂载到这里 -->
-    <main id="viewport" class="viewport" aria-live="polite"></main>
+        <!-- 页面容器：各页面 DOM 在首次进入时挂载到这里 -->
+        <main id="viewport" class="viewport" aria-live="polite"></main>
+      </div>
+    </div>
+
+    <!-- 移动端侧边栏遮罩 -->
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
     <!-- 全局中文提示 -->
     <div id="toast-root" class="toast-root" role="status" aria-live="assertive"></div>

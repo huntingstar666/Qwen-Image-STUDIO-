@@ -6,42 +6,10 @@
  *       → 结果/任务 → 模态框/提示 → 风格选择器 → 图像处理页 → 响应式
  * ============================================================= */
 
-/* ---------- 设计变量 ---------- */
-:root {
-  color-scheme: light;
-  --bg: #faf8f4;
-  --bg-2: #f6f2eb;
-  --panel: #ffffff;
-  --panel-2: #f6f2eb;
-  --panel-3: #efe9df;
-  --line: #e7e1d7;
-  --line-soft: #efeae1;
-  --line-strong: #d8d1c4;
-  --text: #23262b;
-  --text-2: #5c6169;
-  --muted: #8b9099;
-  --dim: #a9adb4;
-  --accent: #2f6b62;
-  --accent-2: #4a7f76;
-  --violet: #b87340;
-  --ok: #2f6b62;
-  --warn: #b87340;
-  --bad: #a34d45;
-  --ok-dim: rgba(47, 107, 98, 0.1);
-  --warn-dim: rgba(184, 115, 64, 0.1);
-  --bad-dim: rgba(163, 77, 69, 0.1);
-  --accent-dim: rgba(47, 107, 98, 0.09);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-xs: 6px;
-  --shadow: 0 1px 2px rgba(35, 38, 43, 0.04), 0 8px 24px rgba(35, 38, 43, 0.06);
-  --shadow-float: 0 16px 40px rgba(35, 38, 43, 0.14);
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Microsoft YaHei UI", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
-  --font-serif: "Songti SC", "Source Han Serif SC", "Noto Serif SC", Georgia,
-    "Times New Roman", serif;
-  --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
-}
+/* ---------- 设计变量 ----------
+ * 已统一迁移到 theme.css（亮/暗双主题单一来源）。
+ * 本文件只保留组件样式，禁止再新增颜色常量。
+ */
 
 * {
   box-sizing: border-box;

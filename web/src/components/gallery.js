@@ -1,12 +1,12 @@
 /**
  * 「作品画廊」页面。
- * 精选社区常见写法的提示词，按分类以卡片形式陈列；
- * 封面暂用分类渐变色卡（含编号与标题），后续补真实图片只需给数据加 image 字段。
+ * 精选 AIFISHER 灵感画廊与 OpenZhenZhen 的作品，封面为本地缓存的原图，按分类以卡片形式陈列；
+ * 每条作品保留原始提示词与来源署名，方便复刻与追溯。
  *
  * 核心动线：
  * 1. 浏览 / 搜索 / 分类筛选；
- * 2. 卡片一键「发送到文生图」，提示词、负向、种子、尺寸全部带上；
- * 3. 喜欢就「收藏到素材仓库」，会生成一张渐变封面作为素材图。
+ * 2. 卡片一键「发送到文生图」，提示词、负向、尺寸全部带上；
+ * 3. 喜欢就「收藏到素材仓库」，会把封面写入素材仓库。
  */
 
 import { copyText, escapeHtml, fmtNum } from '../utils.js';
@@ -70,6 +70,24 @@ export function coverDataUrl(item) {
   return canvas.toDataURL('image/png');
 }
 
+/** 收藏时优先用真实封面；跨域或加载失败时退回渐变封面。 */
+async function collectSource(item) {
+  if (!item.image) return coverDataUrl(item);
+  try {
+    const response = await fetch(item.image, { cache: 'force-cache' });
+    if (!response.ok) throw new Error('封面加载失败');
+    const blob = await response.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('封面读取失败'));
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    return coverDataUrl(item);
+  }
+}
+
 export function createGalleryPage(host) {
   let category = '全部';
   let keyword = '';
@@ -105,7 +123,7 @@ export function createGalleryPage(host) {
     return GALLERY_ITEMS.filter((item) => {
       if (category !== '全部' && item.category !== category) return false;
       if (!q) return true;
-      return [item.title, item.prompt, item.style, item.category]
+      return [item.title, item.prompt, item.style, item.category, item.description, item.model, ...(item.tags || [])]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -123,7 +141,12 @@ export function createGalleryPage(host) {
     const height = item.params?.height || 0;
     return `
       <article class="gallery-card" data-id="${escapeHtml(item.id)}" tabindex="0" role="button">
-        <div class="gallery-cover" style="${coverStyle(item)}">
+        <div class="gallery-cover${item.image ? ' has-image' : ''}" style="${coverStyle(item)}">
+          ${
+            item.image
+              ? `<img class="gallery-cover-img" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async" />`
+              : ''
+          }
           <span class="gallery-index">${escapeHtml(item.index)}</span>
           <span class="gallery-badge">${escapeHtml(item.category)}</span>
           <div class="gallery-cover-text">
@@ -138,7 +161,7 @@ export function createGalleryPage(host) {
         <div class="gallery-body">
           <p class="gallery-prompt">${escapeHtml(item.prompt)}</p>
           <div class="gallery-meta">
-            <span class="mono">${item.seed != null ? `seed ${item.seed}` : 'seed —'}</span>
+            ${item.seed != null ? `<span class="mono">seed ${item.seed}</span>` : ''}
             <span class="mono">${width && height ? `${fmtNum(width)}×${fmtNum(height)}` : ''}</span>
             <span class="spacer"></span>
             <button class="btn ghost sm" type="button" data-action="send">发送</button>
@@ -219,7 +242,7 @@ export function createGalleryPage(host) {
       button.textContent = '收藏中…';
     }
     await favoriteImage({
-      image: coverDataUrl(item),
+      image: await collectSource(item),
       prompt: item.prompt,
       negativePrompt: item.negativePrompt || '',
       seed: item.seed,
@@ -243,7 +266,12 @@ export function createGalleryPage(host) {
     content.className = 'lib-detail gallery-detail';
     content.innerHTML = `
       <div class="lib-detail-media">
-        <div class="gallery-cover is-large" style="${coverStyle(item)}">
+        <div class="gallery-cover is-large${item.image ? ' has-image' : ''}" style="${coverStyle(item)}">
+          ${
+            item.image
+              ? `<img class="gallery-cover-img" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.title)}" />`
+              : ''
+          }
           <span class="gallery-index">${escapeHtml(item.index)}</span>
           <div class="gallery-cover-text">
             <div class="gallery-title">${escapeHtml(item.title)}</div>
@@ -254,11 +282,13 @@ export function createGalleryPage(host) {
       <div class="lib-detail-side">
         <div class="result-badges">
           <span class="badge">${escapeHtml(item.category)}</span>
-          <span class="badge mono">${item.seed != null ? `seed ${escapeHtml(String(item.seed))}` : 'seed —'}</span>
-          ${width && height ? `<span class="badge">${fmtNum(width)} × ${fmtNum(height)}</span>` : ''}
+          ${item.model ? `<span class="badge">${escapeHtml(item.model)}</span>` : ''}
+          ${width && height ? `<span class="badge mono">${fmtNum(width)} × ${fmtNum(height)}</span>` : ''}
+          ${item.seed != null ? `<span class="badge mono">seed ${escapeHtml(String(item.seed))}</span>` : ''}
           ${item.params?.steps ? `<span class="badge">${item.params.steps} steps</span>` : ''}
           ${item.params?.cfg ? `<span class="badge">cfg ${item.params.cfg}</span>` : ''}
         </div>
+        ${item.description ? `<div class="field"><span class="field-label">画面说明</span><div class="result-prompt">${escapeHtml(item.description)}</div></div>` : ''}
         <div class="field">
           <span class="field-label">提示词</span>
           <div class="result-prompt">${escapeHtml(item.prompt)}</div>
@@ -279,7 +309,12 @@ export function createGalleryPage(host) {
               .join(' · ') || '—',
           )}</div>
         </div>
-        <div class="gallery-tip">提示词整理自社区公开写法，仅作复刻起点；换种子或微调措辞即可得到不同结果。</div>
+        <div class="gallery-source">
+          来源：<a href="${escapeHtml(item.sourceSiteUrl || item.siteUrl || 'https://gallery.work-fisher.com/')}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.sourceSite || 'AIFISHER 灵感画廊')}</a>
+          ${item.sourceName ? ` · ${escapeHtml(item.sourceName)}` : ''}
+          ${item.sourceUrl ? ` · <a href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">查看原帖</a>` : ''}
+        </div>
+        <div class="gallery-tip">图片与提示词版权归原作者所有，这里仅作灵感索引与复刻起点；换种子或微调措辞即可得到不同结果。</div>
       </div>`;
 
     const dialog = openModal({

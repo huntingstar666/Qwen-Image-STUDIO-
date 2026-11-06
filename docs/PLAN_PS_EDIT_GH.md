@@ -1243,7 +1243,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 裁切因子扩展 + 越界众数填色 + 空洞填充 | ✅ 已落地（含越界贴回无损单测） | `server/imaging.py`、`server/align.py`、`server/pipeline.py` |
 | 任务 LoRA 预设（`LORA_TASKS` / preset 解析 / 超量警告） | ✅ 已落地 | `server/config.py`、`server/pipeline.py`、`server/main.py` |
 | zero_shift 强制（resolution/snap 校验 + 出图前硬验收） | ✅ 已落地（8 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
-| `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地 | `server/main.py` |
+| `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地（13 条单测，入队前 400） | `server/main.py`、`tests/test_edit_validation.py` |
 | 过渡带 IGN 抖动（`align.ign_dither`，默认开） | ✅ 已落地 | `server/align.py`、`server/imaging.py`、`server/pipeline.py` |
 | 扩图（灰边画板 / 外补遮罩 / 不裁回输出） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py` |
 | 端到端零偏移/零色差回归（假引擎，不占显存） | ✅ 5 条全链路（follow / 预处理 / 裁切越界 / 扩图 / 移除提示） | `tests/test_zero_shift_ps.py` |

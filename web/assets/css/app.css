@@ -2608,9 +2608,9 @@ details.fold > .fold-body {
 }
 
 .pk-cat.active {
-  border-color: rgba(47, 107, 98, 0.43);
+  border-color: var(--accent-ring);
   background: var(--accent-dim);
-  color: #2f6b62;
+  color: var(--accent);
 }
 
 .pk-grid {
@@ -2634,7 +2634,7 @@ details.fold > .fold-body {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #ffffff;
+  background: var(--panel);
   overflow: hidden;
   cursor: pointer;
   transition: border-color 0.14s, transform 0.12s, box-shadow 0.14s;
@@ -2654,7 +2654,7 @@ details.fold > .fold-body {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: linear-gradient(135deg, #ece6db, #f1ece3);
+  background: linear-gradient(135deg, var(--panel-2), var(--panel-3));
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -2718,7 +2718,7 @@ details.fold > .fold-body {
 }
 
 .pk-card.selected .pk-name {
-  color: #2f6b62;
+  color: var(--accent);
 }
 
 .pk-cat-name {
@@ -2735,7 +2735,7 @@ details.fold > .fold-body {
   border-top: 1px solid var(--line-soft);
   color: var(--dim);
   font-size: 10.5px;
-  background: rgba(250, 248, 244, 0.7);
+  background: var(--panel-2);
 }
 
 .pk-empty {
@@ -3149,8 +3149,9 @@ details.fold > .fold-body {
   font-family: var(--mono);
   font-size: 11px;
   color: #9a7d38;
-  min-width: 52px;
+  min-width: 66px;
   text-align: center;
+  white-space: nowrap;
 }
 
 .mj-pk-foot {

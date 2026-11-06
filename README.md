@@ -15,7 +15,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 
 ### 界面预览
 
-浅色主题，四个页签：**文生图 / 图像编辑 / 图像处理 / 历史**。
+浅色 / 暗色双主题，App Shell 侧边栏导航，共 7 个模块：**文生图 / 图像编辑 / 图片精修 / 作品画廊 / 素材仓库 / 图像处理 / 历史记录**。
 
 **文生图**（Turbo 面板直接展示官方 8 个 sigma，可编辑）：
 
@@ -122,6 +122,18 @@ prompt enhancer 发布），让本地 Ollama 模型把一句话扩写成官方�
 
 分工是刻意的：**预览在前端 canvas（快），落盘走服务端 Pillow（无损、可控、能进历史）**。
 详见 [docs/IMAGE_TOOLS.md](docs/IMAGE_TOOLS.md)。
+
+### 作品画廊 / 素材仓库 / 图片精修
+
+- **作品画廊**（`#gallery`）：24 条精选作品与社区写法提示词（含种子、尺寸、采样参数），
+  分类 + 搜索，渐变编号封面；详情可复制提示词、发送到文生图、收藏到素材仓库。
+- **素材仓库**（`#materials`）：只收录主动收藏的满意作品与本地上传，区别于全量历史；
+  文生图 / 图生图 / 精修 / 本地素材分类展示，支持搜索、编辑信息、下载、删除、
+  「在图片精修中打开」与「发送到文生图」。数据存 `storage/materials.json` + 图片目录。
+- **图片精修**（`#studio`）：PS 式三栏工作台 —— 抓手 / 裁剪 / 画笔 / 橡皮 / 矩形 / 椭圆，
+  曝光、亮度、对比度、饱和度、色温、色调，旋转翻转，蒙版叠加与覆盖率，30 步撤销重做；
+  可导出 PNG / JPEG、复制、收藏，或把「当前图 + 蒙版」送入图像编辑做局部重绘。
+  快捷键：`V/C/B/E/R/O`、`[` `]`、`0` 适配、`1` 100%、`Ctrl+Z` / `Ctrl+Shift+Z`。
 
 ### 操作条与快捷键
 
@@ -245,7 +257,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | 零色差验收 | 局部编辑遮罩外 `max_abs_diff = 0`（方案 A 与方案 B 均通过） |
 | 零偏移验收 | `size_mode=follow` 输出尺寸 == 输入尺寸，画布为 32 倍数 |
 | 图像处理接口 | crop / grid(6 块) / pad32+adjust / jpeg / outpaint-plan 全部实测通过 |
-| 浏览器实测 | 四页签 + 风格弹窗 + 遮罩编辑器 + 图像处理（裁剪→保存→送入图生图→扩图规划）全链路 |
+| 浏览器实测 | 7 个模块 + 风格弹窗 + 遮罩编辑器 + 图片精修 + 素材仓库 + 作品画廊全链路 |
 
 ### config.json 字段
 
@@ -342,7 +354,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | [docs/PROMPT_POLISH.md](docs/PROMPT_POLISH.md) | 提示词润色的官方规则与 Ollama 实测 |
 | [docs/STYLE_KIT.md](docs/STYLE_KIT.md) | 风格库接入说明 |
 | [docs/IMAGE_TOOLS.md](docs/IMAGE_TOOLS.md) | 图像处理台：裁切/宫格/调色/扩图与 image-tools-kit 接入 |
-| [docs/WEB_UI.md](docs/WEB_UI.md) | 前端页面与组件结构（三页签 + 风格选择器弹窗） |
+| [docs/WEB_UI.md](docs/WEB_UI.md) | 前端页面与组件结构（App Shell + 7 个模块 + 风格选择器弹窗） |
 | [docs/screenshots/](docs/screenshots/) | 界面截图与出图示例 |
 
 ---

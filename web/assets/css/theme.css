@@ -700,6 +700,125 @@ html[data-theme="dark"] .mj-card:hover {
   border-color: var(--line-strong);
 }
 
+/* MJ 码图卡片：暗色下改为低明度琥珀色，而不是亮金白底 */
+html[data-theme="dark"] .mj-pk-card {
+  border-color: rgba(184, 134, 43, 0.38);
+  background: #211f19;
+}
+
+html[data-theme="dark"] .mj-pk-card:hover {
+  border-color: rgba(184, 134, 43, 0.72);
+}
+
+html[data-theme="dark"] .mj-pk-thumb {
+  background: linear-gradient(135deg, #2a261c, #221f18);
+}
+
+html[data-theme="dark"] .mj-pk-name {
+  color: #dcc68f;
+}
+
+html[data-theme="dark"] .mj-pk-meta,
+html[data-theme="dark"] .mj-pk-thumb-fallback {
+  color: #a8925c;
+}
+
+html[data-theme="dark"] .mj-badge {
+  border-color: rgba(184, 134, 43, 0.42);
+  color: #c9b077;
+}
+
+/* MJ 码图弹窗：整窗切换为暗色琥珀色谱 */
+html[data-theme="dark"] .mj-picker-modal {
+  border-color: rgba(184, 134, 43, 0.28);
+  background: linear-gradient(180deg, #1e1c16, #181712);
+}
+
+html[data-theme="dark"] .mj-picker-modal .modal-head {
+  border-bottom-color: rgba(184, 134, 43, 0.22);
+  background: linear-gradient(180deg, rgba(184, 134, 43, 0.12), transparent);
+}
+
+html[data-theme="dark"] .mj-picker-modal .modal-title {
+  color: #d9b45f;
+}
+
+html[data-theme="dark"] .mj-picker-modal .modal-sub,
+html[data-theme="dark"] .mj-pk-count,
+html[data-theme="dark"] .mj-pager-info,
+html[data-theme="dark"] .mj-pk-tip,
+html[data-theme="dark"] .mj-tree-title {
+  color: #a8925c;
+}
+
+html[data-theme="dark"] .mj-picker-modal .modal-close,
+html[data-theme="dark"] .mj-pk-pill,
+html[data-theme="dark"] .mj-pager-btn,
+html[data-theme="dark"] .mj-pk-mode select {
+  border-color: rgba(184, 134, 43, 0.32);
+  background: #262218;
+  color: #c9b077;
+}
+
+html[data-theme="dark"] .mj-pk-search {
+  border-color: rgba(184, 134, 43, 0.32);
+  background: #221f18;
+  color: var(--text);
+}
+
+html[data-theme="dark"] .mj-pk-pill span {
+  color: #a8925c;
+}
+
+html[data-theme="dark"] .mj-pk-pill.active {
+  border-color: #b8862b;
+  background: #b8862b;
+  color: #1b1810;
+}
+
+html[data-theme="dark"] .mj-pk-pill.active span {
+  color: rgba(27, 24, 16, 0.6);
+}
+
+html[data-theme="dark"] .mj-pk-body,
+html[data-theme="dark"] .mj-pk-tree {
+  border-color: rgba(184, 134, 43, 0.2);
+}
+
+html[data-theme="dark"] .mj-pk-tree {
+  background: rgba(30, 27, 21, 0.72);
+}
+
+html[data-theme="dark"] .mj-tree-all,
+html[data-theme="dark"] .mj-tree-head,
+html[data-theme="dark"] .mj-tree-cat,
+html[data-theme="dark"] .mj-tree-arrow {
+  color: #c0aa74;
+}
+
+html[data-theme="dark"] .mj-tree-all:hover,
+html[data-theme="dark"] .mj-tree-head:hover,
+html[data-theme="dark"] .mj-tree-cat:hover {
+  background: rgba(184, 134, 43, 0.12);
+  color: #e0bd72;
+}
+
+html[data-theme="dark"] .mj-tree-all.active,
+html[data-theme="dark"] .mj-tree-cat.active {
+  background: rgba(184, 134, 43, 0.18);
+  border-color: rgba(184, 134, 43, 0.34);
+  color: #e6c887;
+}
+
+html[data-theme="dark"] .mj-pk-foot {
+  border-top-color: rgba(184, 134, 43, 0.26);
+  background: rgba(24, 22, 17, 0.85);
+}
+
+html[data-theme="dark"] .mj-pk-mode {
+  color: #c0aa74;
+}
+
 html[data-theme="dark"] .modal-foot {
   background: var(--panel-2);
 }

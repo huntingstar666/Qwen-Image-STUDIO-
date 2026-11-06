@@ -6,21 +6,27 @@
 
 ## 1. 页面结构
 
-顶栏（所有页面共享）：
+App Shell（所有页面共享）：
 
 | 区域 | 内容 | 数据来源 |
 | --- | --- | --- |
-| 品牌 | 「Qwen-Image 2.1 工作台」+「本地推理 · 零偏移 · 零色差」 | 静态 |
-| 引擎状态灯 | `engine.ready`（后端未提供时兼容 `engine.available`）/ `reason` / `device` / 已加载模型 | `GET /api/health`，每 5s 轮询 |
-| 显存 | 已用 = `vram_total_mb - vram_free_mb` / `vram_total_mb` | `GET /api/health` |
-| Ollama 状态灯 + 模型下拉 | `ollama.connected`、`ollama.models`；下拉选择润色模型（持久化到 localStorage） | `GET /api/health` |
-| 队列 | `queue.pending`、`queue.running`、`outputs` | `GET /api/health` |
+| 左侧边栏 | 品牌、创作 / 资产 / 工具三组导航、折叠按钮、主题切换（亮 / 暗 / 自动） | 静态 + `localStorage` |
+| 顶部工具栏 | 页面标题 / 副标题 / 面包屑，右侧引擎、显存、Ollama、队列状态 | `GET /api/health`，每 5s 轮询 |
+| 内容区 | `#viewport` 内按 hash 切换页面，宽度 100%（上限 1560px） | hash 路由 |
 
-页签共三个：
+侧边栏导航共 7 项：
 
-1. **文生图**（`#t2i`）
-2. **图像编辑**（`#edit`）
-3. **历史**（`#history`）
+| 分组 | 页面 | hash |
+| --- | --- | --- |
+| 创作 | 文生图 | `#t2i` |
+| 创作 | 图像编辑 | `#edit` |
+| 创作 | 图片精修 | `#studio` |
+| 资产 | 作品画廊 | `#gallery` |
+| 资产 | 素材仓库 | `#materials` |
+| 工具 | 图像处理 | `#tools` |
+| 工具 | 历史记录 | `#history` |
+
+> 主题：`theme.css` 提供 `html[data-theme="light|dark"]` 两套令牌，偏好存 `qi21.workbench.settings.v1`，支持跟随系统且首屏不闪烁。
 
 > 旧版「风格库」独立页已按用户要求移除，改为「提示词框上方的工具条 + 弹窗选择器」。
 
@@ -73,6 +79,32 @@
 - 采样：步数 / CFG / denoise / 种子 / 采样器 / 调度器 / Turbo；
 - 右侧：**遮罩编辑器** + 编辑结果（进度、结果、`align.canvas`、`quality.outside_max_abs` 零色差标记、遮罩叠加开关）。
 
+### 作品画廊（`#gallery`）
+
+- 静态数据 `src/data/gallery.js` 24 条，字段：标题、分类、风格、提示词、负向提示词、种子、尺寸、采样参数、三色配色。
+- 分类 chips（风景 / 人像 / 建筑 / 产品 / 插画 / 概念）+ 搜索；卡片使用 Canvas 生成的渐变编号封面（不依赖网络）。
+- 详情弹窗：完整提示词、种子、参数；操作：复制提示词、收藏到素材仓库、发送到文生图（写入提示词 / 负向 / 种子 / 宽高后跳转 `#t2i`）。
+- 「随机灵感」按钮随机打开一条详情。
+
+### 素材仓库（`#materials`）
+
+- 区别于历史记录：只收录用户主动收藏的作品与本地上传，数据存 `storage/materials.json` + `storage/materials/` 图片。
+- 搜索、类型 chips（全部 / 文生图 / 图生图 / 精修 / 本地素材，带计数）、分类 chips（点击当前分类取消筛选）。
+- 卡片：棋盘格缩略图、类型、种子、提示词摘要、分类；悬停显示快捷操作。
+- 详情弹窗：大图、参数、参考图（图生图）、编辑信息、下载、删除、发送到文生图、在图片精修中打开。
+- 支持拖拽 / 选择批量上传，上传项 `kind=upload`、无提示词。
+- 收藏入口：任务结果卡片、历史详情、作品画廊、图片精修工作台。
+
+### 图片精修（`#studio`）
+
+- 三栏布局：左侧工具轨（抓手 / 裁剪 / 画笔 / 橡皮 / 矩形 / 椭圆）、中央画布、右侧检查器（调整 / 蒙版 / 变换）。
+- 打开方式：拖拽、选择文件、粘贴、素材仓库「在图片精修中打开」。
+- 调整：曝光 / 亮度 / 对比度 / 饱和度 / 色温 / 色调；变换：左右旋转、水平 / 垂直翻转、裁剪（应用 / 清除）、全部重置。
+- 蒙版：画笔大小 / 硬度 / 不透明度、反相、清空、覆盖率；显示叠加开关。
+- 历史：最多 30 步撤销 / 重做，`Ctrl+Z` / `Ctrl+Shift+Z`；快捷键 `V/C/B/E/R/O`、`[` `]`、`0`、`1`、`Esc`。
+- 输出：导出 PNG / JPEG、复制、收藏到素材仓库、导出蒙版、送入图像编辑（带图 + 蒙版，自动开启局部编辑）。
+- 文档模型见 `src/components/studio/studioDoc.js`：原图 + 变换 + 调整 + 蒙版 + 历史快照，非破坏式，展示与导出共用渲染管线。
+
 ### 历史页
 
 - `GET /api/history?limit=60`，缩略图网格（优先 `thumb_url`），按文生图 / 编辑筛选；
@@ -86,27 +118,40 @@
 
 ```
 web/
-├─ index.html                 页面骨架（顶栏/页签/页面容器/toast/模态框挂载点）
+├─ index.html                 页面骨架（侧边栏/顶栏/内容区/toast/模态框挂载点）
 ├─ assets/css/
-│  ├─ app.css                 设计变量、顶栏/页签/面板/表单/结果/模态框、风格选择器与 MJ 码图馆弹窗、响应式
-│  └─ mask.css                遮罩编辑器（工具栏/舞台/状态栏/全屏）
+│  ├─ theme.css               设计令牌（亮/暗）、排版、动效、基础重置
+│  ├─ shell.css               App Shell：侧边栏、顶栏、响应式
+│  ├─ app.css                 面板/表单/结果/模态框、风格选择器与 MJ 码图馆弹窗
+│  ├─ mask.css                遮罩编辑器（工具栏/舞台/状态栏/全屏）
+│  ├─ tools.css               图像处理页
+│  ├─ library.css             作品画廊 + 素材仓库
+│  └─ studio.css              图片精修工作台
 └─ src/
    ├─ main.js                 引导入口：DOM 就绪 → boot()，启动失败时显示中文兜底页
-   ├─ app.js                  布局与路由：顶栏渲染、健康检查 5s 轮询、options/styles 预加载、hash 路由
-   ├─ api.js                  fetch 封装（超时 / 中文错误 / ApiError）+ pollJob 轮询
-   ├─ store.js                全局状态（health/options/styles/提示词/采样参数）+ localStorage 持久化 + 事件总线
+   ├─ app.js                  布局与路由：App Shell、健康检查 5s 轮询、options/styles 预加载、hash 路由
+   ├─ api.js                  fetch 封装（超时 / 中文错误 / ApiError）+ pollJob 轮询 + 素材接口
+   ├─ store.js                全局状态（health/options/styles/主题/提示词/采样参数）+ localStorage + 事件总线
    ├─ utils.js                DOM/格式化/剪贴板/文件读取/图片探测/32 对齐等工具
+   ├─ handoff.js              跨页交接（图生图 / 文生图 / 图片精修）
+   ├─ data/gallery.js         作品画廊静态数据
    └─ components/
       ├─ toast.js             顶栏右侧中文提示（info/success/warn/error）
       ├─ modal.js             通用模态框（支持 dialogClass / hideFooter）+ 确认对话框
       ├─ polish.js            提示词润色对比弹窗（文生图 / 图像编辑共用）
-      ├─ jobView.js           任务进度轮询 + 结果渲染（尺寸/align/质量/遮罩叠加）
+      ├─ jobView.js           任务进度轮询 + 结果渲染（尺寸/align/质量/遮罩叠加/收藏）
       ├─ controls.js          TurboControl / LoraPicker / ModelsField 复用控件
       ├─ stylePicker.js       ★ 提示词上方的风格选择器（风格/滤镜/自定义/MJ/视角弹窗）
       ├─ maskEditor.js        ★ 遮罩编辑器（Canvas 2D 自研）
+      ├─ favorites.js         收藏到素材仓库的统一入口
+      ├─ gallery.js           「作品画廊」页面
+      ├─ materials.js         「素材仓库」页面
+      ├─ studio.js            「图片精修」页面与交互
+      ├─ studio/studioDoc.js  精修文档模型（变换 / 调色 / 蒙版 / 历史 / 烘焙）
       ├─ t2i.js               「文生图」页面
       ├─ edit.js              「图像编辑」页面
-      └─ history.js           「历史」页面
+      ├─ imageTools.js        「图像处理」页面
+      └─ history.js           「历史记录」页面
 ```
 
 页面在首次进入时才创建 DOM（`app.js` 中 `pages` Map），之后切换只做显隐，状态不丢。旧的 `components/styles.js` 已删除。
@@ -149,6 +194,11 @@ buildNodePrompt(rawPrompt, {
 | 历史列表 | `GET /api/history?limit=60` |
 | 清空历史 | `DELETE /api/history` |
 | 任务参数 JSON | `GET /api/jobs/{id}/replay.json` |
+| 素材列表 | `GET /api/materials?kind=&category=&q=&limit=` |
+| 新建收藏 | `POST /api/materials`（支持 dataURL / `/files/...`） |
+| 修改素材 | `PATCH /api/materials/{id}` |
+| 删除素材 | `DELETE /api/materials/{id}` |
+| 本地上传 | `POST /api/materials/upload`（multipart） |
 | 结果 / 缩略图 | `GET /files/...` |
 | 风格预览图 | `GET /creative-presets/...`（静态托管） |
 | MJ 缩略图 | `GET /mj-styles/...`（静态托管） |
@@ -189,20 +239,18 @@ buildNodePrompt(rawPrompt, {
 
 ---
 
-## 8. 改版记录：浅色主题 + 图像处理台（当前版本）
+## 8. 改版记录：App Shell + 资产模块 + 图片精修（当前版本）
 
 ### 8.1 主题
 
-整体改成**浅色优雅**风格（不再有暗色主题），色板写在 `app.css` 的 `:root`：
+- 设计令牌统一在 `theme.css`：亮色沿用暖白 / 墨绿 / 暖赭，暗色为同色相低明度映射；`html[data-theme="light|dark"]` 切换，`system` 跟随系统。
+- 主题偏好持久化在 `qi21.workbench.settings.v1`，`index.html` 首屏脚本提前写入 `data-theme`，避免闪烁。
+- 组件只使用令牌，不再新增硬编码颜色。
 
-```css
---bg: #faf8f4;  --bg-2: #f6f2eb;  --line: #e7e1d7;  --line-soft: #efeae1;
---text: #23262b; --text-2: #5c6169;
---accent: #2f6b62;  --accent-2: #4a7f76;  --accent-dim: rgba(47, 107, 98, 0.09);
-```
+### 8.1.1 App Shell
 
-标题衬线、正文系统无衬线、数字 `tabular-nums`；卡片用 1px 发丝描边 + 极淡阴影。
-`index.html` 的 `color-scheme` 改为 `light`，图标与 favicon 同步换成浅色。
+- 左侧边栏（232px，可折叠 72px）+ 顶部工具栏 + 内容区；移动端侧边栏改为抽屉。
+- 导航分「创作 / 资产 / 工具」三组，共 7 项；内容区 `.viewport` 宽度 100%（上限 1560px）。
 
 ### 8.2 新增页签「图像处理」
 

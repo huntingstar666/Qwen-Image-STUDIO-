@@ -1267,5 +1267,14 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 2. ~~preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）~~ ✅ 已完成
 3. ~~`crop_region` 扩展系数 + 越界众数填色~~ ✅ 已完成
 4. ~~`local.fills / hint=green`（移除场景）~~ ✅ 已完成（fills 已用于裁切/空洞；hint 自动触发）
-5. 前端 `changed_ratio / leak_ratio / color.skipped` 标签联调
+5. ~~前端 `changed_ratio / leak_ratio / color.skipped` 标签联调~~ ✅ 已完成（`aiPanel.renderQuality`）
+
+**剩余（按优先级）：**
+
+6. 任务 LoRA：`config.LORA_TASKS`（remove 1.0 / outpaint 0.7）+ `_build_loras` 支持 `preset`
+7. `zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝
+8. `server/main.py`：`preprocess / task / loras.preset` 参数校验；`/api/options` 暴露 LoRA 预设
+9. `align.robust_color_match` / `ign_dither`（低频抖动，防色带）
+10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
+11. `tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归
 

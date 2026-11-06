@@ -646,6 +646,13 @@ export function mountAiPanel(host, ctx) {
       });
   }
 
+  function fmtRatio(value) {
+    const ratio = Number(value);
+    if (!Number.isFinite(ratio) || ratio <= 0) return '0%';
+    const pct = ratio * 100;
+    return pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`;
+  }
+
   function renderQuality(job) {
     const quality = job?.quality || {};
     const align = job?.align || {};
@@ -659,6 +666,16 @@ export function mountAiPanel(host, ctx) {
     }
     if (quality.size_match != null) {
       parts.push(`<span class="ai-tag ${quality.size_match ? 'ok' : 'warn'}">尺寸${quality.size_match ? '一致' : '不一致'}</span>`);
+    }
+    if (quality.changed_ratio != null) {
+      parts.push(`<span class="ai-tag">改动 ${fmtRatio(quality.changed_ratio)}</span>`);
+    }
+    if (quality.leak_ratio != null) {
+      const leak = Number(quality.leak_ratio) > 0;
+      parts.push(`<span class="ai-tag ${leak ? 'warn' : 'ok'}">遮罩外改动 ${fmtRatio(quality.leak_ratio)}</span>`);
+    }
+    if (quality.color?.skipped) {
+      parts.push('<span class="ai-tag">校色已跳过</span>');
     }
     if (align.canvas) {
       const multiple = align.canvas.w % 32 === 0 && align.canvas.h % 32 === 0;

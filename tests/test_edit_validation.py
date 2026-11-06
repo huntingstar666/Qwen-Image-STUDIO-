@@ -75,6 +75,41 @@ def test_rejects_bad_sampling_params():
         main._validate_edit_params({"scheduler": "magic"})
 
 
+def test_rejects_bad_lora_strength():
+    with pytest.raises(main.ApiError, match="strength"):
+        main._validate_edit_params({"loras": [{"strength": "strong"}]})
+    with pytest.raises(main.ApiError, match="strength"):
+        main._validate_edit_params({"loras": [{"strength": 3}]})
+
+
+def test_remove_allows_empty_prompt():
+    """remove 的训练指令由后端补，第三方只传 task.mode + 遮罩也能直接出图。"""
+    original = main._submit
+    calls = []
+
+    def _fake_submit(kind, payload, *, prompt):
+        calls.append((kind, prompt))
+        return {"job_id": "test", "status": "pending"}
+
+    main._submit = _fake_submit
+    try:
+        result = main.api_edit({
+            "images": [{"data": "data:image/png;base64,QUJD"}],
+            "mask": "data:image/png;base64,QUJD",
+            "task": {"mode": "remove"},
+        })
+    finally:
+        main._submit = original
+
+    assert result["status"] == "pending"
+    assert calls == [("edit", "")]
+
+
+def test_plain_edit_still_requires_prompt():
+    with pytest.raises(main.ApiError, match="编辑指令"):
+        main.api_edit({"images": [{"data": "data:image/png;base64,QUJD"}]})
+
+
 def test_rejects_non_object_task():
     with pytest.raises(main.ApiError, match="task"):
         main._validate_edit_params({"task": "remove"})

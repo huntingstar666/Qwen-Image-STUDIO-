@@ -469,7 +469,14 @@ def api_generate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @app.post("/api/edit")
 def api_edit(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    prompt = str(_require(payload, "prompt", label="编辑指令") or "").strip()
+    task = payload.get("task")
+    task_mode = str(task.get("mode") or "").strip().lower() if isinstance(task, dict) else ""
+    # remove / outpaint 由后端补训练指令，提示词可以留空（第三方只传 task.mode 也能用）；
+    # 普通编辑没有指令就变成「随机整图重绘」，仍然要求填写。
+    if task_mode in ("remove", "outpaint"):
+        prompt = str(payload.get("prompt") or "").strip()
+    else:
+        prompt = str(_require(payload, "prompt", label="编辑指令") or "").strip()
     images = _require(payload, "images", label="输入图片")
     if not isinstance(images, list) or not images:
         raise ApiError("images 必须是非空数组（第 1 张是编辑目标）")
@@ -618,6 +625,13 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
             preset = item.get("preset")
             if preset and not config.resolve_lora_preset(str(preset)):
                 raise ApiError(f"未知 LoRA 预设：{preset!r}")
+            if item.get("strength") is not None:
+                try:
+                    strength = float(item["strength"])
+                except (TypeError, ValueError):
+                    raise ApiError("loras[].strength 必须是数字")
+                if not 0 <= strength <= 2:
+                    raise ApiError("loras[].strength 必须在 0~2")
 
     if payload.get("zero_shift") is not None and not isinstance(payload["zero_shift"], dict):
         raise ApiError("zero_shift 必须是对象")
@@ -649,19 +663,7 @@ def api_job_replay(job_id: str) -> dict[str, Any]:
     if job is None:
         raise ApiError(f"任务不存在：{job_id}", code="not_found", status=404)
 
-    def _strip(entry: Any) -> Any:
-        if isinstance(entry, dict) and isinstance(entry.get("data"), str) \
-                and entry["data"].startswith("data:"):
-            out = {k: v for k, v in entry.items() if k != "data"}
-            out["data"] = "<binary omitted>"
-            return out
-        return entry
-
-    params = dict(job.params)
-    for key in ("images", "mask"):
-        if key in params:
-            value = params[key]
-            params[key] = [_strip(v) for v in value] if isinstance(value, list) else _strip(value)
+    params = jobs.slim_params(job.params)
     return {
         "job": {"id": job.id, "kind": job.kind, "prompt": job.prompt},
         "params": params,

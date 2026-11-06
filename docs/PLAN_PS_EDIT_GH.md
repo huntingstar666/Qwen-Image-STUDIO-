@@ -435,6 +435,14 @@ def restore_preprocess(img, plan, method="lanczos"):
 
 > 只缩一次、只放一次；32 补边是整数裁剪，不参与重采样。
 
+**已落地（`server/imaging.py`）：** `PreprocessPlan` / `preprocess_plan` / `apply_preprocess` / `restore_preprocess`。
+
+- `work` 尺寸只做比例缩放，不强抬到 32；32 对齐只在 `canvas` 上做（小图/已对齐图不会被无谓放大）。
+- `apply_preprocess` 用边缘复制补边；`restore_preprocess` 先整数裁掉补边，再唯一一次 LANCZOS 回源尺寸。
+- `scale == 1` 且源尺寸已对齐时，`apply`/`restore` 是**纯恒等**（有单测逐像素比对）。
+- 传入非预期尺寸直接 `ValueError`，杜绝"悄悄重采样"造成的偏移。
+- 测试：`tests/test_preprocess.py`（12 条）。
+
 ### 5.3 区域化裁剪（移植 + 改良）
 
 新增 `imaging.crop_region_factors()`，行为对齐孤海但保留本项目的 byte-exact 语义：
@@ -1183,7 +1191,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 合成（A：整图 / B：区域） | ✅ 已有，遮罩外 byte-exact | `imaging.composite`、`imaging.stitch_region` |
 | 锚区仿射 / 过渡带低频移植 / 差异诊断 | ✅ 已落地（P1–P4），合成默认启用 | `server/align.py` |
 | 9 步 Turbo 预设（`turbo9_official` / `turbo9_ckpt`） | ✅ 已落地，图片精修默认 9 步 | `server/config.py`、`web/src/components/studio/aiPanel.js` |
-| preprocess / zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
+| 预处理几何（只缩不放 / 32 对齐 / 可逆还原） | ✅ 已落地（12 条单测） | `server/imaging.py`、`tests/test_preprocess.py` |
+| preprocess 接入 pipeline / zero_shift 强制 / task / fills / hint | ⏳ 后端并行中 | 前端已发字段，后端安全忽略 |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1237,9 +1246,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 
 ### 11.6 后续队列（本轮之后）
 
-1. `preprocess.py`（缩放/还原/32 对齐）+ `test_preprocess.py`
-2. `crop_region` 扩展系数 + 越界众数填色
-3. 9 步 sigma 预设 + 任务 LoRA 自动挂载
+1. ~~`preprocess.py`（缩放/还原/32 对齐）+ `test_preprocess.py`~~ ✅ 已完成（`imaging.py` 内实现）
+2. preprocess 接入 `pipeline.generate_edit`（预处理 → 画布 → 还原闭环）
+3. `crop_region` 扩展系数 + 越界众数填色
 4. `local.fills / hint=green`（移除场景）
 5. 前端 `changed_ratio / leak_ratio / color.skipped` 标签联调
 

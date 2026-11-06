@@ -54,6 +54,7 @@ __all__ = [
     "CanvasPlan",
     "ImageMeta",
     "CropInfo",
+    "PreprocessPlan",
     "decode_image",
     "decode_mask",
     "encode_png",
@@ -63,6 +64,9 @@ __all__ = [
     "image_meta",
     "parse_ratio",
     "plan_canvas",
+    "preprocess_plan",
+    "apply_preprocess",
+    "restore_preprocess",
     "compose_canvas",
     "map_mask_to_canvas",
     "map_mask_from_canvas",
@@ -146,6 +150,32 @@ class CropInfo:
     h: int
     canvas_w: int
     canvas_h: int
+
+
+@dataclass
+class PreprocessPlan:
+    """大图预处理几何（源图 → 工作尺寸 → 32 对齐画布）。
+
+    * ``work_w/work_h``     缩放后的工作尺寸（未补边）
+    * ``canvas_w/canvas_h`` 向上对齐到 32 后的画布尺寸
+    * ``scale``             工作尺寸 / 源尺寸（``downscale_only`` 下恒 ``<= 1``）
+    * ``pad_x/pad_y``       补边在画布内的左上偏移（居中、整数）
+
+    ``work`` 与 ``canvas`` 之差只是补边；还原时先整数裁掉补边，再做唯一一次
+    重采样回源尺寸，因此不会引入二次模糊或像素偏移。
+    """
+
+    enabled: bool
+    src_w: int
+    src_h: int
+    work_w: int
+    work_h: int
+    canvas_w: int
+    canvas_h: int
+    scale: float
+    pad_x: int
+    pad_y: int
+    max_side: int
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +833,127 @@ def crop_back_plan(im: Image.Image, plan: CanvasPlan, *, method: str = "bicubic"
     if out.size != (int(plan.src_w), int(plan.src_h)):
         out = out.resize((int(plan.src_w), int(plan.src_h)), resample)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 大图预处理：只缩不放 + 32 对齐 + 可逆还原
+# ---------------------------------------------------------------------------
+
+_PREPROCESS_MODES = ("downscale_only", "clamp_range")
+
+
+def _snap_up(value: int, multiple: int) -> int:
+    multiple = max(1, int(multiple))
+    value = max(1, int(value))
+    return max(multiple, ((value + multiple - 1) // multiple) * multiple)
+
+
+def preprocess_plan(
+    w: int,
+    h: int,
+    *,
+    enabled: bool = True,
+    max_side: int = 2048,
+    min_side: int = 768,
+    multiple: int = 32,
+    mode: str = "downscale_only",
+) -> PreprocessPlan:
+    """计算大图预处理几何（不碰像素）。
+
+    ``mode``：
+
+    * ``downscale_only``（默认）：长边超过 ``max_side`` 才缩，小图原样保留，
+      永不放大；
+    * ``clamp_range``：长边夹到 ``[min_side, max_side]``，小图会被放大
+      （仅用于对齐出图档位）。
+
+    ``work`` 尺寸只做比例缩放；32 对齐交给 ``canvas``，因此补边永远是整数
+    裁剪，不参与重采样。
+    """
+    if mode not in _PREPROCESS_MODES:
+        raise ValueError(f"未知预处理模式 {mode!r}，可选 {_PREPROCESS_MODES}")
+    src_w, src_h = max(1, int(w)), max(1, int(h))
+    max_side = max(1, int(max_side))
+    scale = 1.0
+    if enabled:
+        long_side = max(src_w, src_h)
+        if mode == "clamp_range":
+            target = min(max(long_side, int(min_side)), max_side)
+        else:
+            target = min(long_side, max_side)
+        scale = target / float(long_side)
+        if mode == "downscale_only":
+            scale = min(1.0, scale)
+    if scale == 1.0:
+        work_w, work_h = src_w, src_h
+    else:
+        work_w = max(1, int(round(src_w * scale)))
+        work_h = max(1, int(round(src_h * scale)))
+    canvas_w = _snap_up(work_w, multiple)
+    canvas_h = _snap_up(work_h, multiple)
+    return PreprocessPlan(
+        enabled=bool(enabled),
+        src_w=src_w,
+        src_h=src_h,
+        work_w=work_w,
+        work_h=work_h,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        scale=work_w / float(src_w),
+        pad_x=(canvas_w - work_w) // 2,
+        pad_y=(canvas_h - work_h) // 2,
+        max_side=max_side,
+    )
+
+
+def apply_preprocess(im: Image.Image, plan: PreprocessPlan, *, method: str = "lanczos") -> Image.Image:
+    """按 :class:`PreprocessPlan` 缩放并补边，返回 ``canvas_w x canvas_h`` 的工作图。
+
+    ``scale == 1`` 时不做任何重采样；补边用边缘复制（``edge``），且落在还原时
+    会被整数裁掉的区域内，不会污染内容。
+    """
+    if im.size != (plan.src_w, plan.src_h):
+        raise ValueError(
+            f"预处理源图尺寸不符：期望 {plan.src_w}x{plan.src_h}，"
+            f"实际 {im.width}x{im.height}")
+    if im.mode == "P":
+        im = im.convert("RGBA")
+    work = im if im.size == (plan.work_w, plan.work_h) else im.resize(
+        (plan.work_w, plan.work_h), _resample(method))
+    if work.size == (plan.canvas_w, plan.canvas_h):
+        return work
+
+    arr = np.asarray(work)
+    if arr.ndim < 2:
+        raise ValueError("预处理只支持位图图像")
+    pad_r = plan.canvas_w - arr.shape[1] - plan.pad_x
+    pad_b = plan.canvas_h - arr.shape[0] - plan.pad_y
+    if min(plan.pad_x, plan.pad_y, pad_r, pad_b) < 0:
+        raise ValueError("预处理补边参数越界")
+    pads = ((plan.pad_y, pad_b), (plan.pad_x, pad_r)) + ((0, 0),) * (arr.ndim - 2)
+    return Image.fromarray(np.pad(arr, pads, mode="edge"))
+
+
+def restore_preprocess(
+    im: Image.Image, plan: PreprocessPlan, *, method: str = "lanczos"
+) -> Image.Image:
+    """还原：整数裁掉 32 补边 → 唯一一次重采样回源尺寸。
+
+    接受工作尺寸（``work``）或画布尺寸（``canvas``）的输入；其它尺寸直接报错，
+    避免"悄悄重采样"造成偏移。``scale == 1`` 且源尺寸本就对齐时是**纯恒等**。
+    """
+    if im.size == (plan.canvas_w, plan.canvas_h) and im.size != (plan.work_w, plan.work_h):
+        im = im.crop((
+            plan.pad_x, plan.pad_y,
+            plan.pad_x + plan.work_w, plan.pad_y + plan.work_h,
+        ))
+    elif im.size != (plan.work_w, plan.work_h):
+        raise ValueError(
+            f"待还原图尺寸不符：期望 {plan.work_w}x{plan.work_h}（工作尺寸）或 "
+            f"{plan.canvas_w}x{plan.canvas_h}（画布），实际 {im.width}x{im.height}")
+    if im.size != (plan.src_w, plan.src_h):
+        im = im.resize((plan.src_w, plan.src_h), _resample(method))
+    return im
 
 
 # ---------------------------------------------------------------------------

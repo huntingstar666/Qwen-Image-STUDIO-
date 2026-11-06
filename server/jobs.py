@@ -47,6 +47,13 @@ def slim_params(params: dict[str, Any] | None) -> dict[str, Any]:
     return _slim(dict(params or {}))
 
 
+def error_text(exc: Exception) -> str:
+    """业务异常只回中文信息，别把 ``PipelineError:`` 这种前缀丢给用户。"""
+    if isinstance(exc, RuntimeError) and type(exc).__module__.startswith("server."):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
+
+
 @dataclass
 class Job:
     """一次生成任务。`fn(job)` 在 worker 线程里执行，通过 job.set_progress 上报进度。"""
@@ -214,7 +221,7 @@ class JobQueue:
         except Exception as exc:  # noqa: BLE001 - 任务失败要落库给前端看
             # 注意顺序：先把 error/traceback 写全，最后才改 status。
             # 否则轮询方可能在 status=error 的瞬间读到 error=None（偶发竞态）。
-            job.error = f"{type(exc).__name__}: {exc}"
+            job.error = error_text(exc)
             job.traceback = "".join(traceback.format_exc())[-4000:]
             job.status = "error"
         finally:

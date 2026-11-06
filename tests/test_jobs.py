@@ -11,7 +11,7 @@ import shutil
 import time
 import uuid
 
-from server import config, jobs
+from server import config, jobs, pipeline
 
 
 @contextlib.contextmanager
@@ -243,4 +243,22 @@ def test_finished_job_drops_inline_binary():
             time.sleep(0.02)
         assert job.finished_at is not None
         assert job.params["images"][0] == "<inline data omitted>"
+        q.stop()
+
+
+def test_business_error_drops_class_prefix():
+    """用户看到的错误不该带 ``PipelineError:`` 前缀。"""
+    with _tmpdir() as tmp:
+        q = _queue(tmp)
+        q.start()
+
+        def _boom(_job):
+            raise pipeline.PipelineError("显存不足：请降低编辑画布后重试")
+
+        job = q.submit("edit", _boom)
+        deadline = time.time() + 5
+        while time.time() < deadline and job.finished_at is None:
+            time.sleep(0.02)
+        assert job.status == "error"
+        assert job.error == "显存不足：请降低编辑画布后重试"
         q.stop()

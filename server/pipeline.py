@@ -1204,8 +1204,13 @@ def _entry_bytes(entry: Any) -> bytes:
         _mime, data = imaging.parse_data_url(raw)
         return data
     if raw.startswith("/files/"):
-        with open(storage.resolve_storage_path(raw[len("/files/"):]), "rb") as fh:
-            return fh.read()
+        try:
+            with open(storage.resolve_storage_path(raw[len("/files/"):]), "rb") as fh:
+                return fh.read()
+        except FileNotFoundError as exc:
+            raise PipelineError(f"引用的图片不存在或已被清理：{raw}") from exc
+        except ValueError as exc:
+            raise PipelineError(f"图片路径不合法：{raw}") from exc
     raise PipelineError("无法识别的图片数据（需要 data URL 或 /files/ 路径）")
 
 

@@ -1280,6 +1280,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 轮询/历史剔除内联图片（`slim_params`） | ✅ 已落地（2 条单测） | `server/jobs.py`、`tests/test_jobs.py` |
 | 解码像素上限 120MP + `preprocess`/采样参数校验 | ✅ 已落地（4 条单测） | `server/imaging.py`、`server/main.py`、`tests/` |
 | `local.scheme=auto` 后端解析（2%~45% 阈值） | ✅ 已落地（2 条 e2e） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
+| 业务错误不给用户看类名前缀 + `/files` 引用缺失友好提示 | ✅ 已落地（2 条单测） | `server/jobs.py`、`server/pipeline.py` |
+| remove/outpaint 允许空提示词；`replay.json` 复用 `slim_params`；校验 LoRA 强度 | ✅ 已落地（3 条单测） | `server/main.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1320,6 +1322,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 21. **轮询/历史接口不得回传内联图片**：`/api/jobs/{id}` 每 700ms 一次，一张 4K 图 data URL 十几 MB；`slim_params` 统一替换成占位符，原图看 `meta.input_urls`。任务结束后同样瘦身，避免历史常驻大字符串。
 22. **解码前按文件头尺寸拦截**：`MAX_DECODE_PIXELS = 120MP`，在 `load()` 之前判断，否则小体积 PNG 能把服务端内存打爆；`preprocess.min_side` / `multiple`、`steps/cfg/denoise`、`sampler/scheduler` 一律入队前 400。
 23. **`auto` 方案前后端同口径**：有遮罩且覆盖率在 2%~45% 才走方案 B，避免大遮罩裁出超大块反而更慢；阈值改动必须两边一起改。
+24. **错误文案面向用户，不面向开发者**：`server.*` 抛出的 `RuntimeError` 子类（`PipelineError`）只回中文正文，去掉 `ClassName:` 前缀；`/files` 引用被清理时提示"图片不存在或已被清理"，不要漏 `FileNotFoundError`。
+25. **`remove` / `outpaint` 不强制提示词**：这两类任务的训练指令由后端补全，第三方只传 `task.mode` + 图 + 遮罩即可；普通编辑仍要求指令，否则等于随机整图重绘。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1371,4 +1375,6 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 20. ~~轮询/历史剔除内联图片（`jobs.slim_params`）~~ ✅ 已完成（2 条单测）
 21. ~~解码像素上限 120MP + `preprocess`/采样参数入队前校验~~ ✅ 已完成（4 条单测）
 22. ~~`local.scheme=auto` 后端解析（与前端同阈值）~~ ✅ 已完成（2 条 e2e）
+23. ~~业务错误去掉类名前缀 + `/files` 引用缺失友好提示~~ ✅ 已完成（2 条单测）
+24. ~~remove/outpaint 允许空提示词、replay 复用 `slim_params`、LoRA 强度校验~~ ✅ 已完成（3 条单测）
 

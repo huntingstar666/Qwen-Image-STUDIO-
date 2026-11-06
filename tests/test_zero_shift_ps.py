@@ -542,3 +542,9 @@ def test_generate_edit_auto_scheme_falls_back_to_canvas_without_mask():
 
     assert job.quality["scheme"] == "a"
     assert job.align.get("crop") is None
+
+
+def test_missing_reference_file_reports_friendly_error():
+    """/files 引用被清理后，要给"图片不存在"而不是 FileNotFoundError。"""
+    with pytest.raises(pipeline.PipelineError, match="不存在"):
+        pipeline._entry_bytes({"url": "/files/uploads/no-such-file.png"})

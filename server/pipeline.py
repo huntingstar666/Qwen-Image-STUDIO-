@@ -615,6 +615,17 @@ class Pipeline:
         color_match = _truthy(local.get("color_match", True))
         color_strength = float(local.get("color_strength") if local.get("color_strength") is not None else 0.6)
         mask_expand = int(local.get("mask_expand") or 0)
+        # 锚区仿射（BlueBox 思路）是 color_match 的子模式：可用时替代 Reinhard。
+        anchor_match = _truthy(local.get("color_restore", True))
+        anchor_strength = float(
+            local.get("color_restore_strength")
+            if local.get("color_restore_strength") is not None
+            else 1.0
+        )
+        band_mode = str(local.get("band_mode") or "lowfreq")
+        if band_mode not in ("alpha", "lowfreq"):
+            band_mode = "lowfreq"
+        color_report: dict[str, Any] = {}
 
         if crop_info is not None:
             composed = imaging.stitch_region(
@@ -623,6 +634,10 @@ class Pipeline:
                 curve="smoothstep",
                 color_match=color_match,
                 color_strength=max(color_strength, 0.7),
+                anchor_match=anchor_match,
+                anchor_strength=anchor_strength,
+                band_mode=band_mode,
+                report=color_report,
             )
         else:
             composed = imaging.composite(
@@ -632,9 +647,20 @@ class Pipeline:
                 color_match=color_match,
                 color_strength=color_strength,
                 mask_expand=mask_expand,
+                anchor_match=anchor_match,
+                anchor_strength=anchor_strength,
+                band_mode=band_mode,
+                report=color_report,
             )
 
         outside = _outside_max_abs(canvas, composed, mask_canvas, expand=mask_expand)
+
+        # 诊断（只读）：模型实际改动比例 / 遮罩外泄漏；失败不影响出图。
+        try:
+            diff_stats = align.changed_stats(canvas, composed, mask_canvas)
+        except Exception as exc:  # noqa: BLE001 - 诊断是附加信息，不能拖垮任务
+            print(f"[pipeline] 改动诊断跳过：{type(exc).__name__}: {exc}", flush=True)
+            diff_stats = {}
 
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
         # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸。
@@ -662,6 +688,10 @@ class Pipeline:
             "scheme": scheme,
             "feather": feather,
             "color_match": color_match,
+            "color": color_report,
+            "changed_ratio": diff_stats.get("changed_ratio"),
+            "leak_ratio": diff_stats.get("leak_ratio"),
+            "diff_threshold": diff_stats.get("threshold"),
             "lora_warning": job.meta.get("lora_warning"),
             "model": profile["id"],
             "elapsed_encode_s": round(time.time() - t_start, 1),

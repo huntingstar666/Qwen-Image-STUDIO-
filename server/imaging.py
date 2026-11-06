@@ -835,6 +835,10 @@ def composite(
     color_match: bool = True,
     color_strength: float = 0.6,
     mask_expand: int = 0,
+    anchor_match: bool = True,
+    anchor_strength: float = 1.0,
+    band_mode: str = "lowfreq",
+    report: dict | None = None,
 ) -> Image.Image:
     """方案 A 收尾：用遮罩把编辑结果合成回原图（零色差的关键步骤）。
 
@@ -842,9 +846,14 @@ def composite(
 
     1. ``mask=None`` → 全图编辑（alpha 全 1）；
     2. ``mask_expand`` → 先膨胀遮罩（覆盖模型边缘的硬接缝）；
-    3. ``color_match`` → 用过渡带做 Reinhard 匹配（只改变 edited 的颜色统计）；
+    3. 颜色（``color_match`` 开启时）：优先用**锚区**（遮罩外）估 gain/offset
+       （BlueBox 思路，最干净）；锚区不足才回退"过渡带 Reinhard"；
     4. ``feather`` → 高斯羽化，``curve`` → smoothstep 过渡；
-    5. 混合：``original * (1 - a) + edited * a``。
+    5. ``band_mode="lowfreq"`` → 过渡带低频移植（消接缝色块），``"alpha"`` → 纯羽化；
+    6. 混合：``original * (1 - a) + edited * a``。
+
+    ``report`` 传入字典时写入本次实际使用的颜色参数与锚区比例（供 quality 用），
+    只读不参与像素写入。
 
     **零色差硬保证**：输出从原图 uint8 拷贝出发，只对 ``alpha > 0`` 的像素赋值，
     因此遮罩外（alpha == 0）像素与 ``original_canvas`` 逐字节相同，
@@ -876,11 +885,34 @@ def composite(
         if int(mask_expand) > 0:
             raw = align.dilate_mask(raw, int(mask_expand))
 
-    # 3) 颜色匹配：在羽化之前、用"过渡带"统计，只对 edited 做仿射校正。
-    if color_match:
+    # 3) 颜色：锚区仿射优先，锚区不足才回退 Reinhard（两者互斥，避免二次拉色）
+    if band_mode not in ("alpha", "lowfreq"):
+        raise ValueError(f"未知 band_mode={band_mode!r}")
+    color_info = {"mode": "off", "band_mode": band_mode}
+    anchor_ok = False
+    if anchor_match and color_match and mask_canvas is not None:
+        original_f = original_u8[..., :3].astype(np.float32) / 255.0
+        edited_f = edited_u8[..., :3].astype(np.float32) / 255.0
+        scale, shift, skipped = align.anchor_affine(
+            original_f, edited_f, raw, strength=float(anchor_strength)
+        )
+        color_info["anchor_ratio"] = float((raw <= 0.0).mean())
+        color_info["skipped"] = bool(skipped)
+        if not skipped:
+            corrected = np.clip(edited_f * scale + shift, 0.0, 1.0)
+            edited_u8 = edited_u8.copy()
+            edited_u8[..., :3] = np.rint(corrected * 255.0).astype(np.uint8)
+            anchor_ok = True
+            color_info.update(
+                mode="anchor_affine",
+                scale=[round(float(v), 6) for v in scale],
+                offset=[round(float(v), 6) for v in shift],
+            )
+    if color_match and not anchor_ok:
         band = align.band_from_mask(raw, fallback_px=max(8, int(feather)))
         if band is not None and float(band.sum()) > 0:
             edited_u8 = _apply_reinhard_to_u8(edited_u8, original_u8, band, float(color_strength))
+            color_info["mode"] = "reinhard"
 
     # 4) 羽化 + 曲线
     alpha = align.feather_mask(raw, int(feather)) if int(feather) > 0 else raw
@@ -892,16 +924,29 @@ def composite(
     if mask_canvas is not None:
         alpha = alpha * (raw > 0.0).astype(np.float32)
 
-    # 5) 混合：只在 alpha > 0 处赋值，保证遮罩外逐字节保留。
+    # 5) 过渡带低频移植（只动 0 < alpha < 1，alpha 0/1 处严格不变）
+    base_u8 = edited_u8
+    if band_mode == "lowfreq" and mask_canvas is not None:
+        band_sel = (alpha > 0.0) & (alpha < 1.0)
+        if bool(band_sel.any()):
+            original_f = original_u8[..., :3].astype(np.float32) / 255.0
+            edited_f = edited_u8[..., :3].astype(np.float32) / 255.0
+            merged = align.lowfreq_merge(original_f, edited_f, alpha)
+            base_u8 = edited_u8.copy()
+            base_u8[..., :3] = np.rint(np.clip(merged, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+    # 6) 混合：只在 alpha > 0 处赋值，保证遮罩外逐字节保留。
     out = original_u8.copy()
     selected = alpha > 0.0
     if bool(selected.any()):
         a = alpha[selected][:, None]
         blended = (
             original_u8[selected].astype(np.float32) * (1.0 - a)
-            + edited_u8[selected].astype(np.float32) * a
+            + base_u8[selected].astype(np.float32) * a
         )
         out[selected] = np.rint(np.clip(blended, 0.0, 255.0)).astype(np.uint8)
+    if report is not None:
+        report.update(color_info)
     return Image.fromarray(out, "RGBA")
 
 
@@ -1013,6 +1058,10 @@ def stitch_region(
     curve: str = "smoothstep",
     color_match: bool = True,
     color_strength: float = 0.85,
+    anchor_match: bool = True,
+    anchor_strength: float = 1.0,
+    band_mode: str = "lowfreq",
+    report: dict | None = None,
 ) -> Image.Image:
     """把解码后的裁切结果贴回原画布（带羽化/曲线/颜色匹配）。
 
@@ -1022,8 +1071,10 @@ def stitch_region(
        若模型输出尺寸与裁切画布不同，按参考实现按比例映射窗口并缩放；
     2. ``mask_canvas`` 给出时用它当 alpha（含羽化带）；``mask_canvas=None`` 时用
        ``blend_pixels`` 做边缘线性 ramp（参考实现的"无 mask"分支）；
-    3. ``color_match`` → 用过渡带做 Reinhard 匹配，把编辑块颜色拉回原图；
-    4. 混合时只写 ``alpha > 0`` 的像素——**遮罩外逐像素保留原图**。
+    3. 颜色（``color_match`` 开启时）：优先用**锚区**（原始硬遮罩外）估 gain/offset，
+       不足才回退过渡带 Reinhard；
+    4. ``band_mode="lowfreq"`` → 过渡带低频移植，``"alpha"`` → 纯羽化；
+    5. 混合时只写 ``alpha > 0`` 的像素——**遮罩外逐像素保留原图**。
 
     返回原画布尺寸的 RGBA 图。
     """
@@ -1095,6 +1146,7 @@ def stitch_region(
             hard_alpha = _resize_mask_nearest(hard_alpha, cw, ch)
         alpha = alpha * (hard_alpha > 0.5).astype(np.float32)
     else:
+        hard_alpha = None
         alpha = np.ones((ch, cw), dtype=np.float32)
         bp = min(int(blend_pixels), cw // 2, ch // 2)
         if bp > 0:
@@ -1107,11 +1159,44 @@ def stitch_region(
             ay[-bp:] = ramp[::-1]
             alpha = np.outer(ay, ax).astype(np.float32)
 
-    if color_match:
+    # 颜色：锚区（原始硬遮罩外）估 gain/offset，不足才回退 Reinhard（互斥）
+    if band_mode not in ("alpha", "lowfreq"):
+        raise ValueError(f"未知 band_mode={band_mode!r}")
+    color_info = {"mode": "off", "band_mode": band_mode}
+    anchor_ok = False
+    if anchor_match and color_match:
+        anchor_src = hard_alpha if hard_alpha is not None else np.ones_like(alpha)
+        scale, shift, skipped = align.anchor_affine(
+            region_f, content_f, anchor_src, strength=float(anchor_strength)
+        )
+        color_info["anchor_ratio"] = float((anchor_src <= 0.0).mean())
+        color_info["skipped"] = bool(skipped)
+        if not skipped:
+            corrected = np.clip(
+                content_f[..., :3] * scale + shift, 0.0, 1.0
+            ).astype(np.float32)
+            content_f = content_f.copy()
+            content_f[..., :3] = corrected
+            anchor_ok = True
+            color_info.update(
+                mode="anchor_affine",
+                scale=[round(float(v), 6) for v in scale],
+                offset=[round(float(v), 6) for v in shift],
+            )
+    if color_match and not anchor_ok:
         band = align.band_from_mask(alpha, fallback_px=max(8, int(blend_pixels)))
         if band is not None and float(band.sum()) > 0:
             matched = align.reinhard_match(content_f, region_f, band, float(color_strength))
             content_f = matched.astype(np.float32)
+            color_info["mode"] = "reinhard"
+
+    # 过渡带低频移植（alpha 0/1 处严格不变，只动中间带）
+    if band_mode == "lowfreq":
+        band_sel = (alpha > 0.0) & (alpha < 1.0)
+        if bool(band_sel.any()):
+            merged = align.lowfreq_merge(region_f, content_f, alpha)
+            content_f = content_f.copy()
+            content_f[..., :3] = merged
 
     alpha = align.curve_mask(alpha, curve)
 
@@ -1122,6 +1207,8 @@ def stitch_region(
         a = alpha[selected][:, None]
         blended = region_f[selected] * (1.0 - a) + content_f[selected] * a
         view[selected] = np.rint(np.clip(blended, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if report is not None:
+        report.update(color_info)
     return Image.fromarray(out, "RGBA")
 
 

@@ -21,6 +21,10 @@ numpy + PIL，方便本项目服务端（FastAPI）直接调用，不再经过 C
 :func:`curve_mask`                                     ``_apply_curve``
 :func:`band_from_mask`                                 ``_band_from_mask``
 :func:`reinhard_match`                                 ``_color_match``（Reinhard 仿射匹配）
+:func:`diff_map` / :func:`mad_threshold`                ``color_calibrator_bluebox.py`` 的差异图与 MAD 阈值
+:func:`anchor_affine`                                  ``color_calibrator_bluebox.py`` 的锚区逐通道仿射
+:func:`lowfreq_merge`                                  ``color_calibrator_bluebox.py`` 的金字塔低频移植
+:func:`changed_stats`                                  ``color_calibrator_bluebox.py`` 的改动/泄漏比例
 :func:`region_shapes_to_mask`                          ``_rasterize_shapes``
 :func:`transform_mask` / :func:`inverse_transform_mask` ``_mask_to_canvas`` 与 CropBack 的 mask 分支
 :func:`latent_tokens`                                  ``_sanity_warnings`` 里的 token 估算
@@ -59,6 +63,11 @@ __all__ = [
     "curve_mask",
     "band_from_mask",
     "reinhard_match",
+    "diff_map",
+    "mad_threshold",
+    "anchor_affine",
+    "lowfreq_merge",
+    "changed_stats",
     "region_shapes_to_mask",
     "transform_mask",
     "inverse_transform_mask",
@@ -659,6 +668,236 @@ def reinhard_match(
     corrected = (ed - me) * (so / se) + mo
     out = ed + float(strength) * (corrected - ed)
     return out.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# 事后校准（思路来源：ComfyUI-BlueBox Color Calibrator，只借鉴不照搬）
+#
+# 与原节点的区别：本模块只负责"估参数"和"过渡带修色"，不做自动遮罩决策，
+# 也不允许改动遮罩外像素——零色差的底线仍由合成阶段（alpha == 0 不写）保证。
+# ---------------------------------------------------------------------------
+
+
+def _as_rgb(image) -> np.ndarray:
+    """统一成 ``(H, W, 3)`` float32 ``[0, 1]``；uint8 自动归一化，灰度自动复制三通道。"""
+    arr = np.asarray(image)
+    arr = arr.astype(np.float32) / 255.0 if arr.dtype == np.uint8 else arr.astype(np.float32)
+    if arr.ndim == 2:
+        arr = np.repeat(arr[..., None], 3, axis=2)
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        raise ValueError(f"图像必须是 (H, W, 3)，收到 shape={arr.shape}")
+    return arr[..., :3]
+
+
+def _rgb_to_ycbcr(rgb: np.ndarray) -> np.ndarray:
+    """RGB → YCbCr（BT.601，与 BlueBox 的差异图一致）。"""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cb = -0.168736 * r - 0.331264 * g + 0.5 * b
+    cr = 0.5 * r - 0.418688 * g - 0.081312 * b
+    return np.stack((y, cb, cr), axis=-1)
+
+
+def _gaussian_blur(arr: np.ndarray, sigma: float) -> np.ndarray:
+    """可分离高斯模糊（replicate 边界），复用 :func:`_convolve_axis`，不引入 scipy。"""
+    if sigma <= 0.0:
+        return arr.astype(np.float32)
+    radius = max(1, int(math.ceil(3.0 * float(sigma))))
+    xs = np.arange(-radius, radius + 1, dtype=np.float64)
+    g = np.exp(-(xs * xs) / (2.0 * float(sigma) ** 2))
+    g = g / g.sum()
+    offsets = np.arange(-radius, radius + 1, dtype=np.int64)
+    out = _convolve_axis(arr, g, offsets, radius, radius, axis=1)
+    out = _convolve_axis(out, g, offsets, radius, radius, axis=0)
+    return out.astype(np.float32)
+
+
+def _block_mean(arr: np.ndarray, factor: int) -> np.ndarray:
+    """按 ``factor`` 做块均值下采样（用于低频统计，避免逐像素开销）。"""
+    f = max(1, int(factor))
+    h, w = arr.shape[:2]
+    sh, sw = h // f, w // f
+    if sh < 1 or sw < 1:
+        return arr.astype(np.float32)
+    a = arr[: sh * f, : sw * f]
+    if a.ndim == 2:
+        return a.reshape(sh, f, sw, f).mean(axis=(1, 3)).astype(np.float32)
+    return a.reshape(sh, f, sw, f, a.shape[2]).mean(axis=(1, 3)).astype(np.float32)
+
+
+def _resize_float(arr: np.ndarray, width: int, height: int) -> np.ndarray:
+    """float 数组双线性缩放（PIL 的 F 模式，逐通道处理）。"""
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.shape[:2] == (height, width):
+        return arr
+    if arr.ndim == 2:
+        img = Image.fromarray(arr, mode="F")
+        return np.asarray(
+            img.resize((width, height), Image.Resampling.BILINEAR), dtype=np.float32
+        )
+    chans = [_resize_float(arr[..., i], width, height) for i in range(arr.shape[2])]
+    return np.stack(chans, axis=-1).astype(np.float32)
+
+
+def diff_map(
+    original, edited, *, preblur: float = 0.8, chroma_weight: float = 1.0
+) -> np.ndarray:
+    """YCbCr 加权差异图：``0.4·|ΔY| + w·soft_sat(√(ΔCb²+ΔCr²))``。
+
+    相比逐通道 RGB 最大差，这个度量对"亮度几乎没变、只是偏色"更敏感，
+    且颜色差先做软饱和，避免大面积强色块把统计拉爆。
+    """
+    o, e = _as_rgb(original), _as_rgb(edited)
+    if o.shape != e.shape:
+        raise ValueError(f"original{o.shape} 与 edited{e.shape} 形状不一致")
+    yo, ye = _rgb_to_ycbcr(o), _rgb_to_ycbcr(e)
+    dy = np.abs(yo[..., 0] - ye[..., 0])
+    dc = np.sqrt((yo[..., 1] - ye[..., 1]) ** 2 + (yo[..., 2] - ye[..., 2]) ** 2)
+    dc = dc / (1.0 + dc)
+    diff = 0.4 * dy + float(chroma_weight) * dc
+    if preblur and float(preblur) > 0.0:
+        diff = _gaussian_blur(diff, float(preblur))
+    return diff.astype(np.float32)
+
+
+def mad_threshold(
+    diff, *, floor: float = 0.02, ceil_mult: float = 2.0, k: float = 3.0
+) -> float:
+    """MAD 自适应阈值：``med + k·1.4826·MAD``，夹在 ``[floor, floor·ceil_mult]``。
+
+    没改动时差异全是噪声，MAD 很小，阈值会落到 ``floor``；
+    大面积改动时 MAD 变大，阈值最多抬到 ``floor·ceil_mult``，不会一路飙升。
+    """
+    d = np.asarray(diff, dtype=np.float32).reshape(-1)
+    med = float(np.median(d))
+    mad = float(np.median(np.abs(d - med)))
+    thr = med + float(k) * 1.4826 * max(mad, 0.002)
+    return float(min(max(thr, float(floor)), float(floor) * float(ceil_mult)))
+
+
+def anchor_affine(
+    original,
+    edited,
+    alpha,
+    *,
+    anchor_min: float = 0.02,
+    scale_clamp: tuple[float, float] = (0.5, 2.0),
+    shift_abs: float | None = None,
+    strength: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """只用"锚区"（``alpha == 0``，即遮罩外）估计模型的整体漂移。
+
+    锚区理论上应与原图逐像素一致，差异只剩模型漂移，因此估出来的
+    ``scale``（对比度/增益）与 ``shift``（偏移）最干净。
+
+    返回 ``(scale[3], shift[3], skipped)``；锚区占比不足 ``anchor_min`` 时
+    ``skipped=True``，调用方应回退 Reinhard 或不做校色。
+
+    默认**不夹紧 shift**（与 BlueBox 一致）：锚区本就该与原图一致，偏移是真实的
+    整体漂移，夹紧反而校不干净；``scale`` 仍夹在 ``[0.5, 2]`` 防极端对比度崩坏。
+    """
+    o, e = _as_rgb(original), _as_rgb(edited)
+    if o.shape != e.shape:
+        raise ValueError(f"original{o.shape} 与 edited{e.shape} 形状不一致")
+    a = _as_mask(alpha)
+    if a.shape != o.shape[:2]:
+        raise ValueError(f"alpha{a.shape} 与图像尺寸 {o.shape[:2]} 不一致")
+
+    anchor = a <= 0.0
+    if float(anchor.mean()) < float(anchor_min):
+        return np.ones(3, dtype=np.float32), np.zeros(3, dtype=np.float32), True
+
+    m = anchor[..., None]
+    n = float(m.sum())
+    mu0 = (o * m).sum(axis=(0, 1)) / n
+    mu1 = (e * m).sum(axis=(0, 1)) / n
+    sd0 = np.sqrt((((o - mu0) ** 2) * m).sum(axis=(0, 1)) / n) + 1e-4
+    sd1 = np.sqrt((((e - mu1) ** 2) * m).sum(axis=(0, 1)) / n) + 1e-4
+
+    scale = np.clip(sd0 / sd1, float(scale_clamp[0]), float(scale_clamp[1]))
+    shift = mu0 - scale * mu1
+    if shift_abs is not None:
+        shift = np.clip(shift, -float(shift_abs), float(shift_abs))
+    s = float(np.clip(strength, 0.0, 1.0))
+    return (
+        (1.0 + s * (scale - 1.0)).astype(np.float32),
+        (s * shift).astype(np.float32),
+        False,
+    )
+
+
+def lowfreq_merge(
+    original,
+    edited,
+    alpha,
+    *,
+    levels: int = 3,
+    sigma: float = 2.0,
+    downscale: int = 4,
+) -> np.ndarray:
+    """过渡带低频移植：把原图的低频颜色/亮度搬回 edited，保留其高频细节。
+
+    ``out = edited + (1 - alpha) · lowpass(original - edited)``。
+
+    性质（很重要）：
+
+    * ``alpha == 0`` → 权重为 0，edited 原样返回（合成阶段本来也不写这些像素）；
+    * ``alpha == 1`` → 权重为 0，遮罩内核心区仍是模型自己的内容；
+    * ``0 < alpha < 1`` → 越靠近边界，越向原图的低频靠拢，用来消接缝色块/光晕。
+    """
+    o, e = _as_rgb(original), _as_rgb(edited)
+    if o.shape != e.shape:
+        raise ValueError(f"original{o.shape} 与 edited{e.shape} 形状不一致")
+    a = np.clip(_as_mask(alpha), 0.0, 1.0)
+    if a.shape != e.shape[:2]:
+        raise ValueError(f"alpha{a.shape} 与图像尺寸 {e.shape[:2]} 不一致")
+
+    height, width = e.shape[:2]
+    delta = _block_mean(o - e, downscale)
+    for _ in range(max(1, int(levels))):
+        delta = _gaussian_blur(delta, float(sigma))
+    delta = _resize_float(delta, width, height)
+
+    weight = np.where(a > 0.0, 1.0 - a, 0.0)[..., None]
+    return np.clip(e + weight * delta, 0.0, 1.0).astype(np.float32)
+
+
+def changed_stats(
+    original,
+    edited,
+    mask=None,
+    *,
+    threshold: float | None = None,
+    preblur: float = 0.0,
+    chroma_weight: float = 1.0,
+) -> dict:
+    """诊断：模型实际改动比例与遮罩外泄漏比例。纯只读，不参与像素写入。
+
+    ``mask`` 给出时额外算 ``leak_ratio``（遮罩外被改动的像素占遮罩外的比例）；
+    阈值缺省用 :func:`mad_threshold` 自适应。
+
+    ``preblur`` 默认 0：诊断要的是"哪一像素真的变了"，预模糊会把边界外
+    1~2px 抹成差异，制造假泄漏。8bit 噪声只有 1/255，远低于阈值下限。
+    """
+    diff = diff_map(
+        original, edited, preblur=preblur, chroma_weight=chroma_weight
+    )
+    thr = float(threshold) if threshold is not None else mad_threshold(diff)
+    changed = diff > thr
+    stats = {
+        "threshold": round(thr, 6),
+        "changed_ratio": float(changed.mean()),
+    }
+    if mask is not None:
+        m = _as_mask(mask)
+        if m.shape != changed.shape:
+            m = resize_mask(m, changed.shape[1], changed.shape[0])
+        outside = m <= 0.0
+        total = int(outside.sum())
+        stats["leak_ratio"] = (
+            float((changed & outside).sum()) / float(total) if total else 0.0
+        )
+    return stats
 
 
 # ---------------------------------------------------------------------------

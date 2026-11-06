@@ -419,6 +419,91 @@ def test_reinhard_match_uses_only_weighted_band():
 
 
 # ---------------------------------------------------------------------------
+# 事后校准：diff_map / mad_threshold / anchor_affine / lowfreq_merge
+# ---------------------------------------------------------------------------
+
+
+def test_diff_map_detects_color_shift():
+    """亮度不变、只是偏色也要被识别（RGB 最大差会被这题骗）。"""
+    base = np.full((32, 32, 3), 0.5, np.float32)
+    shifted = np.clip(base + np.array([0.0, 0.08, -0.08], np.float32), 0.0, 1.0)
+    diff = align.diff_map(base, shifted, preblur=0.0)
+    assert diff.shape == (32, 32) and diff.dtype == np.float32
+    assert float(diff.mean()) > 0.05
+    assert float(align.diff_map(base, base, preblur=0.0).max()) < 1e-6
+
+
+def test_mad_threshold_is_clamped():
+    flat = np.zeros((16, 16), np.float32)
+    assert align.mad_threshold(flat) == 0.02
+    noisy = np.full((16, 16), 0.3, np.float32)
+    assert 0.02 <= align.mad_threshold(noisy) <= 0.04
+
+
+def test_anchor_affine_estimated_only_from_outside_mask():
+    """遮罩内怎么改都不影响估计；锚区漂移被准确还原成 scale/shift。"""
+    rng = np.random.default_rng(41)
+    original = (rng.random((64, 64, 3)) * 0.4 + 0.3).astype(np.float32)
+    alpha = np.zeros((64, 64), np.float32)
+    alpha[20:44, 20:44] = 1.0
+    edited = original.copy()
+    edited[alpha > 0] = 0.9
+    edited[alpha == 0] = np.clip(original[alpha == 0] * 1.2 + 0.05, 0.0, 1.0)
+
+    scale, shift, skipped = align.anchor_affine(original, edited, alpha)
+    assert skipped is False
+    assert np.allclose(scale, 1.0 / 1.2, atol=5e-3)
+    assert np.allclose(shift, -0.05 / 1.2, atol=2e-2)
+
+    # 遮罩内换成别的颜色，估计结果不应变化
+    edited2 = edited.copy()
+    edited2[alpha > 0] = 0.1
+    scale2, shift2, _ = align.anchor_affine(original, edited2, alpha)
+    assert np.allclose(scale, scale2) and np.allclose(shift, shift2)
+
+
+def test_anchor_affine_skips_when_anchor_below_min():
+    original = np.full((16, 16, 3), 0.5, np.float32)
+    alpha = np.ones((16, 16), np.float32)
+    scale, shift, skipped = align.anchor_affine(original, original, alpha)
+    assert skipped is True
+    assert np.allclose(scale, 1.0) and np.allclose(shift, 0.0)
+
+
+def test_band_lowfreq_merges_outside_untouched():
+    """alpha==0 / alpha==1 严格不变；过渡带被拉向原图低频。"""
+    rng = np.random.default_rng(43)
+    original = (rng.random((64, 64, 3)) * 0.5 + 0.2).astype(np.float32)
+    edited = np.clip(original * 1.15 + 0.05, 0.0, 1.0)
+    alpha = np.zeros((64, 64), np.float32)
+    alpha[10:54, 10:54] = 0.5
+    alpha[16:48, 16:48] = 1.0
+
+    merged = align.lowfreq_merge(original, edited, alpha)
+    assert np.allclose(merged[alpha == 0.0], edited[alpha == 0.0], atol=1e-6)
+    assert np.allclose(merged[alpha == 1.0], edited[alpha == 1.0], atol=1e-6)
+
+    band = alpha == 0.5
+    d_merged = float(np.abs(merged[band] - original[band]).mean())
+    d_edited = float(np.abs(edited[band] - original[band]).mean())
+    assert d_merged < d_edited * 0.8
+
+
+def test_changed_stats_reports_leak():
+    original = np.zeros((160, 160, 3), np.float32)
+    edited = original.copy()
+    edited[40:120, 40:120] = 1.0
+    mask = np.zeros((160, 160), np.float32)
+    mask[40:120, 40:120] = 1.0
+
+    stats = align.changed_stats(original, edited, mask)
+    # 80x80 / 160x160 = 25%，诊断不做预模糊，边界应严格落在遮罩内
+    assert 0.24 < stats["changed_ratio"] < 0.26
+    assert stats["leak_ratio"] == 0.0
+    assert 0.02 <= stats["threshold"] <= 0.04
+
+
+# ---------------------------------------------------------------------------
 # region_shapes_to_mask
 # ---------------------------------------------------------------------------
 

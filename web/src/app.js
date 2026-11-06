@@ -17,6 +17,7 @@ import { createImageToolsPage } from './components/imageTools.js';
 import { createHistoryPage } from './components/history.js';
 import { createMaterialsPage } from './components/materials.js';
 import { createGalleryPage } from './components/gallery.js';
+import { createStudioPage } from './components/studio.js';
 
 /* ---------------------------------------------------------------- 图标 */
 
@@ -51,22 +52,6 @@ function navIcon(name) {
 
 /* ---------------------------------------------------------------- 页面注册 */
 
-function createPlaceholderPage(label, message) {
-  return (host) => {
-    host.innerHTML = `
-      <div class="page">
-        <div class="panel">
-          <div class="empty">
-            <div class="glyph">${navIcon('sparkles')}</div>
-            <div>${escapeHtml(label)}正在建设中</div>
-            <div class="empty-hint">${escapeHtml(message)}</div>
-          </div>
-        </div>
-      </div>`;
-    return {};
-  };
-}
-
 const NAV_GROUPS = [
   { id: 'create', label: '创作' },
   { id: 'assets', label: '资产' },
@@ -84,7 +69,7 @@ const TABS = [
     group: 'create',
     icon: 'brush',
     badge: '新',
-    factory: createPlaceholderPage('图片精修', 'PS 式工作台正在建设中'),
+    factory: createStudioPage,
   },
   {
     id: 'gallery',

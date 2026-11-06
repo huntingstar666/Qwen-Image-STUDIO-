@@ -1,0 +1,661 @@
+/* =============================================================
+ * 图片精修工作台（PS 式编辑器）
+ * 三栏布局：工具轨 / 画布 / 检查器；只使用 theme.css 的令牌。
+ * ============================================================= */
+
+.page-studio {
+  --studio-rail-w: 58px;
+  --studio-panel-w: 296px;
+  height: calc(100vh - var(--topbar-h) - 92px);
+  min-height: 560px;
+}
+
+.studio {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+/* ------------------------------------------------------------- 顶部信息条 */
+
+.studio-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 52px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--glass-strong);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.studio-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.studio-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.studio-dot.is-live {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.studio-name {
+  overflow: hidden;
+  max-width: 230px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.studio-dims {
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.studio-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
+.studio-bar .btn {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- 三栏主体 */
+
+.studio-body {
+  display: grid;
+  grid-template-columns: var(--studio-rail-w) minmax(0, 1fr) var(--studio-panel-w);
+  flex: 1;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------- 工具轨 */
+
+.studio-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 0;
+  border-right: 1px solid var(--line-soft);
+  background: var(--panel-2);
+}
+
+.studio-tool {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.studio-tool svg {
+  width: 19px;
+  height: 19px;
+}
+
+.studio-tool:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.studio-tool:active {
+  transform: scale(0.94);
+}
+
+.studio-tool.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+.studio-tool-key {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  color: var(--dim);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.studio-tool.active .studio-tool-key {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+/* ------------------------------------------------------------- 画布区 */
+
+.studio-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-2);
+}
+
+.studio-stage-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.studio-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+
+.studio-zoom button {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.studio-zoom button:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.studio-zoom .studio-zoom-value {
+  min-width: 52px;
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.studio-zoom .studio-sep {
+  margin: 0 3px;
+}
+
+.studio-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.studio-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.studio-stage-bar .btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+.studio-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 1px 1px, var(--line-soft) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--bg-2);
+}
+
+.studio-canvas-wrap.is-dropping {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-dim);
+}
+
+.studio-canvas-wrap canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  touch-action: none;
+  cursor: default;
+}
+
+.studio-canvas-wrap canvas[data-tool="view"] {
+  cursor: grab;
+}
+
+.studio-canvas-wrap canvas[data-tool="view"].is-grabbing,
+.studio-canvas-wrap canvas.is-grabbing {
+  cursor: grabbing;
+}
+
+.studio-canvas-wrap canvas[data-tool="crop"] {
+  cursor: crosshair;
+}
+
+.studio-canvas-wrap canvas[data-tool="brush"],
+.studio-canvas-wrap canvas[data-tool="eraser"] {
+  cursor: none;
+}
+
+.studio-canvas-wrap canvas[data-tool="rect"],
+.studio-canvas-wrap canvas[data-tool="ellipse"] {
+  cursor: crosshair;
+}
+
+.studio-canvas-wrap canvas.is-grab {
+  cursor: grab;
+}
+
+/* 空状态 */
+.studio-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.studio-empty[hidden] {
+  display: none;
+}
+
+.studio-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: var(--shadow-card);
+}
+
+.studio-empty-mark svg {
+  width: 32px;
+  height: 32px;
+}
+
+.studio-empty-title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.studio-empty-hint {
+  max-width: 380px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.studio-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 裁剪确认条 */
+.studio-cropbar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 300px;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--glass-strong);
+  box-shadow: var(--shadow-float);
+  transform: translateX(-50%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.studio-cropbar[hidden] {
+  display: none;
+}
+
+.studio-cropbar .mono {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.studio-cropbar .btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  border-radius: 999px;
+}
+
+/* 状态栏 */
+.studio-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 14px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.studio-status [data-ref="statusMask"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- 右侧检查器 */
+
+.studio-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.studio-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 10px 12px 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.studio-tabs button {
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.studio-tabs button:hover {
+  color: var(--text);
+}
+
+.studio-tabs button.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-card), 0 0 0 1px var(--line-soft);
+}
+
+.studio-pane {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 16px 16px;
+  overflow-y: auto;
+}
+
+.studio-pane[hidden] {
+  display: none;
+}
+
+.studio-pane-title {
+  margin: 12px 0 10px;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.studio-pane-title:first-child {
+  margin-top: 6px;
+}
+
+.studio-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.studio-slider {
+  display: block;
+}
+
+.studio-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.studio-slider-head .mono {
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.studio-slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--panel-3);
+  outline: none;
+  cursor: pointer;
+}
+
+.studio-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.studio-slider input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+.studio-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  background: var(--accent);
+}
+
+.studio-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.studio-row .btn {
+  height: 32px;
+  font-size: 11.5px;
+}
+
+.studio-block {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.studio-note {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.studio-panel-foot {
+  flex: 0 0 auto;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--dim);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- 响应式 */
+
+@media (max-width: 1180px) {
+  .page-studio {
+    --studio-panel-w: 262px;
+  }
+
+  .studio-name {
+    max-width: 150px;
+  }
+}
+
+@media (max-width: 980px) {
+  .page-studio {
+    height: auto;
+    min-height: 0;
+  }
+
+  .studio {
+    height: auto;
+  }
+
+  .studio-bar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+
+  .studio-bar .spacer {
+    display: none;
+  }
+
+  .studio-body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .studio-rail {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 6px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+    overflow-x: auto;
+  }
+
+  .studio-tool {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 36px;
+  }
+
+  .studio-stage {
+    min-height: 58vh;
+  }
+
+  .studio-panel {
+    border-left: 0;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .studio-pane {
+    min-height: 240px;
+    max-height: 420px;
+  }
+}
+
+@media (max-width: 620px) {
+  .studio-stage-bar {
+    flex-wrap: wrap;
+    padding: 6px 10px;
+  }
+
+  .studio-stage-bar .spacer {
+    display: none;
+  }
+
+  .studio-stage {
+    min-height: 48vh;
+  }
+
+  .studio-empty-hint {
+    max-width: 260px;
+  }
+
+  .studio-cropbar {
+    min-width: 0;
+    width: calc(100% - 24px);
+    justify-content: space-between;
+  }
+}

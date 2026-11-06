@@ -16,13 +16,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    __version__, config, imageops, imaging, jobs, pipeline, prompt_polish, storage, styles,
+    __version__, config, imageops, imaging, jobs, materials, pipeline, prompt_polish, storage, styles,
 )
 
 # --------------------------------------------------------------------------- 单例
@@ -477,6 +477,75 @@ def api_history_delete(job_id: str) -> dict[str, Any]:
     if not get_queue().delete(job_id):
         raise ApiError("记录不存在或任务仍在运行", code="not_found", status=404)
     return {"ok": True, "job_id": job_id}
+
+
+# --------------------------------------------------------------------------- 素材仓库
+#
+# 只保存用户主动收藏 / 上传的内容；图片复制到 storage/materials/，
+# 与 outputs、history 解耦，清理历史不会影响仓库。
+
+
+@app.get("/api/materials")
+def api_materials(
+    kind: str = "",
+    category: str = "",
+    q: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    return {
+        "items": materials.list_materials(
+            kind=kind or None,
+            category=category or None,
+            q=q or None,
+            limit=limit,
+        )
+    }
+
+
+@app.post("/api/materials")
+def api_material_create(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        item = materials.create_material(payload)
+    except ValueError as exc:
+        raise ApiError(str(exc), code="invalid_material") from exc
+    return {"item": item}
+
+
+@app.post("/api/materials/upload")
+async def api_material_upload(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    category: str = Form(""),
+) -> dict[str, Any]:
+    data = await file.read()
+    try:
+        item = materials.create_upload(
+            data,
+            filename=file.filename or "upload.png",
+            title=title or None,
+            category=category or None,
+        )
+    except ValueError as exc:
+        raise ApiError(str(exc), code="invalid_material") from exc
+    return {"item": item}
+
+
+@app.patch("/api/materials/{material_id}")
+def api_material_update(material_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        item = materials.update_material(material_id, payload)
+    except KeyError as exc:
+        raise ApiError("素材不存在", code="not_found", status=404) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), code="invalid_material") from exc
+    return {"item": item}
+
+
+@app.delete("/api/materials/{material_id}")
+def api_material_delete(material_id: str) -> dict[str, Any]:
+    if not materials.delete_material(material_id):
+        raise ApiError("素材不存在", code="not_found", status=404)
+    return {"ok": True, "id": material_id}
 
 
 def _decode_image_payload(raw: Any) -> bytes:

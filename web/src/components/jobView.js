@@ -9,6 +9,7 @@
 
 import { api, pollJob } from '../api.js';
 import { toast, toastError } from './toast.js';
+import { favoriteImage } from './favorites.js';
 import { copyText, downloadUrl, escapeHtml, fmtElapsed, fmtNum } from '../utils.js';
 
 const STATUS_TEXT = {
@@ -31,6 +32,7 @@ export class JobRunner {
     this.jobId = null;
     this.maskOverlay = null;
     this.promptText = '';
+    this.favoriteMeta = null;
     this.timer = 0;
     this.startedAt = 0;
     this.activePoll = null;
@@ -86,6 +88,7 @@ export class JobRunner {
     }
     this.jobId = null;
     this.maskOverlay = null;
+    this.favoriteMeta = null;
     this.showMaskOverlay = false;
     if (idleText) this.refs.idle.querySelector('div:last-child').textContent = idleText;
     this.refs.idle.classList.remove('hidden');
@@ -98,11 +101,14 @@ export class JobRunner {
 
   /**
    * 开始一次任务。
-   * @param {{create: () => Promise<{job_id:string}>, maskDataUrl?: string|null, prompt?: string, onDone?: Function}} options
+   * @param {{create: () => Promise<{job_id:string}>, maskDataUrl?: string|null, prompt?: string,
+   *          favoriteMeta?: {kind?:string, category?:string, params?:object, referenceImages?:Array},
+   *          onDone?: Function, onProgress?: Function}} options
    */
-  async start({ create, maskDataUrl = null, prompt = '', onDone, onProgress } = {}) {
+  async start({ create, maskDataUrl = null, prompt = '', favoriteMeta = null, onDone, onProgress } = {}) {
     this.reset();
     this.maskOverlay = maskDataUrl || null;
+    this.favoriteMeta = favoriteMeta;
     this.promptText = prompt || '';
     this.startedAt = performance.now();
     this.refs.idle.classList.add('hidden');
@@ -299,6 +305,7 @@ export class JobRunner {
             <div class="result-card-foot">
               <span class="mono">${fmtNum(image.width)}×${fmtNum(image.height)}</span>
               <span class="spacer"></span>
+              ${this.favoriteMeta ? `<button class="btn ghost sm" type="button" data-favorite-index="${index}">收藏</button>` : ''}
               <button class="btn ghost sm" type="button" data-download="${escapeHtml(url)}" data-filename="${escapeHtml(filename)}">下载</button>
             </div>
           </div>`;
@@ -319,6 +326,24 @@ export class JobRunner {
 
     for (const btn of host.querySelectorAll('[data-download]')) {
       btn.addEventListener('click', () => downloadUrl(btn.dataset.download, btn.dataset.filename));
+    }
+    for (const btn of host.querySelectorAll('[data-favorite-index]')) {
+      btn.addEventListener('click', async () => {
+        const image = images[Number(btn.dataset.favoriteIndex)];
+        if (!image) return;
+        const url = api.fileUrl(image.url || image.path || '');
+        btn.disabled = true;
+        const original = btn.textContent;
+        btn.textContent = '收藏中…';
+        await favoriteImage({
+          ...this.favoriteMeta,
+          image: url,
+          prompt,
+          seed: job.params?.seed ?? null,
+        });
+        btn.disabled = false;
+        btn.textContent = original;
+      });
     }
     host.querySelector('[data-ref="copyPrompt"]')?.addEventListener('click', async () => {
       const ok = await copyText(prompt);

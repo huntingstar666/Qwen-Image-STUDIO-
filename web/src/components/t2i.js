@@ -17,6 +17,7 @@ import { getPrompt, on, patchSettings, setPrompt, store } from '../store.js';
 import { toastSuccess, toastWarn } from './toast.js';
 import { polishWithDialog } from './polish.js';
 import { JobRunner } from './jobView.js';
+import { consumeT2IHandoff } from '../handoff.js';
 import { createStylePicker } from './stylePicker.js';
 import { LoraPicker, ModelsField, TurboControl } from './controls.js';
 import { escapeHtml, fmtNum, snapUp } from '../utils.js';
@@ -772,6 +773,20 @@ export function createT2IPage(host) {
       await jobRunner.start({
         create: () => api.generate(payload),
         prompt: payload.prompt,
+        favoriteMeta: {
+          kind: 't2i',
+          category: '未分类',
+          params: {
+            width: payload.width,
+            height: payload.height,
+            steps: payload.steps,
+            cfg: payload.cfg,
+            batch: payload.batch,
+            sampler: payload.sampler,
+            scheduler: payload.scheduler,
+            rgba: payload.rgba,
+          },
+        },
         onProgress: syncActionProgress,
         onDone: (job) => {
           refs.resultState.textContent = '已完成';
@@ -820,9 +835,41 @@ export function createT2IPage(host) {
     }, 800);
   }
 
+  /** 消费作品画廊 / 素材仓库发来的提示词交接。 */
+  function applyT2IHandoff() {
+    const payload = consumeT2IHandoff();
+    if (!payload) return;
+    refs.prompt.value = payload.prompt;
+    setPrompt(payload.prompt);
+    updatePromptCount();
+    if (payload.negativePrompt) {
+      refs.negative.value = payload.negativePrompt;
+      t2i.negativePrompt = payload.negativePrompt;
+      patchSettings({ t2i: { negativePrompt: payload.negativePrompt } });
+    }
+    if (payload.seed != null) {
+      refs.seed.value = String(payload.seed);
+      t2i.seed = String(payload.seed);
+      patchSettings({ t2i: { seed: String(payload.seed) } });
+    }
+    if (payload.width && payload.height) {
+      t2i.width = snapUp(payload.width);
+      t2i.height = snapUp(payload.height);
+      t2i.custom = true;
+      t2i.ratioId = '';
+      patchSettings({
+        t2i: { width: t2i.width, height: t2i.height, custom: true, ratioId: '' },
+      });
+      syncSizeFields();
+    }
+    refs.prompt.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    toastSuccess(payload.toast);
+  }
+
   return {
     onShow() {
       renderHealthHint();
+      applyT2IHandoff();
     },
   };
 }

@@ -119,6 +119,57 @@ export const api = {
     return request('/api/history', { method: 'DELETE', timeout: 20000 });
   },
 
+  /* ---------------------------------------------------------- 素材仓库 */
+
+  /** GET /api/materials?kind=&category=&q=&limit= */
+  materials({ kind = '', category = '', q = '', limit = 200 } = {}) {
+    const params = new URLSearchParams();
+    if (kind) params.set('kind', kind);
+    if (category) params.set('category', category);
+    if (q) params.set('q', q);
+    params.set('limit', String(limit));
+    return request(`/api/materials?${params.toString()}`, { timeout: 20000 });
+  },
+
+  /** POST /api/materials —— 收藏一张结果图（图片可以是 /files 路径或 dataURL） */
+  createMaterial(payload) {
+    return request('/api/materials', { method: 'POST', body: payload, timeout: 120000 });
+  },
+
+  /** PATCH /api/materials/{id} —— 修改标题 / 分类 / 备注 / 提示词 / 种子 */
+  updateMaterial(materialId, patch) {
+    return request(`/api/materials/${encodeURIComponent(materialId)}`, {
+      method: 'PATCH',
+      body: patch,
+      timeout: 20000,
+    });
+  },
+
+  /** DELETE /api/materials/{id} */
+  deleteMaterial(materialId) {
+    return request(`/api/materials/${encodeURIComponent(materialId)}`, { method: 'DELETE', timeout: 20000 });
+  },
+
+  /** POST /api/materials/upload —— multipart 上传本地图片素材 */
+  async uploadMaterial(file, { title = '', category = '' } = {}) {
+    const form = new FormData();
+    form.append('file', file);
+    if (title) form.append('title', title);
+    if (category) form.append('category', category);
+    const response = await fetch('/api/materials/upload', { method: 'POST', body: form });
+    if (!response.ok) {
+      let message = `上传失败：HTTP ${response.status}`;
+      try {
+        const data = await response.json();
+        if (data?.error?.message) message = data.error.message;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(message, { status: response.status, path: '/api/materials/upload' });
+    }
+    return response.json();
+  },
+
   /** POST /api/upload —— multipart 上传（当前编辑页直接用 dataURL，保留接口备用） */
   async upload(file) {
     const form = new FormData();

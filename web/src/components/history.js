@@ -10,6 +10,7 @@
 import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
+import { favoriteImage } from './favorites.js';
 import {
   copyText,
   downloadUrl,
@@ -206,6 +207,7 @@ export function createHistoryPage(host) {
               <div class="result-card-foot">
                 <span class="mono">${fmtNum(image.width)}×${fmtNum(image.height)}</span>
                 <span class="spacer"></span>
+                <button class="btn ghost sm" type="button" data-favorite-index="${index}">收藏</button>
                 <button class="btn ghost sm" type="button" data-download-index="${index}">下载</button>
               </div>
             </div>`,
@@ -231,6 +233,27 @@ export function createHistoryPage(host) {
       button.addEventListener('click', () => {
         const image = item.images[Number(button.dataset.downloadIndex)];
         if (image) downloadUrl(imageUrl(image.url), image.filename);
+      });
+    });
+
+    content.querySelectorAll('[data-favorite-index]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const image = item.images[Number(button.dataset.favoriteIndex)];
+        if (!image) return;
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = '收藏中…';
+        await favoriteImage({
+          image: imageUrl(image.url),
+          prompt: item.prompt,
+          seed: item.params?.seed ?? null,
+          kind: item.kind === 'edit' ? 'edit' : 't2i',
+          params: item.params,
+          source: 'history',
+          sourceRef: String(item.id),
+        });
+        button.disabled = false;
+        button.textContent = original;
       });
     });
 

@@ -1,0 +1,497 @@
+/* =============================================================
+ * 资产库：素材仓库 / 作品画廊共用的卡片、筛选与详情样式。
+ * 只使用 theme.css 中的设计令牌，亮暗主题自动适配。
+ * ============================================================= */
+
+.page-library {
+  --lib-card-radius: 16px;
+}
+
+/* ------------------------------------------------------------- 工具栏 */
+
+.lib-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lib-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 320px;
+  min-width: 180px;
+  color: var(--muted);
+}
+
+.lib-toolbar .btn {
+  flex-shrink: 0;
+}
+
+.lib-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.lib-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  flex-shrink: 0;
+}
+
+.lib-search svg {
+  position: absolute;
+  left: 11px;
+  pointer-events: none;
+}
+
+.lib-search .input {
+  width: 100%;
+  height: 34px;
+  padding-left: 33px;
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.lib-search .input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+.lib-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lib-kinds .chip small,
+.lib-cats .chip small {
+  margin-left: 5px;
+  opacity: 0.62;
+  font-size: 10px;
+}
+
+.lib-summary {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.lib-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lib-cats-empty {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+/* 拖拽上传提示 */
+.lib-dropzone {
+  display: grid;
+  place-items: center;
+  height: 74px;
+  margin-bottom: 14px;
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.lib-dropzone[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------- 卡片网格 */
+
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 16px;
+}
+
+.lib-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--lib-card-radius);
+  background: var(--panel);
+  cursor: pointer;
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.lib-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.lib-card:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.lib-thumb {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background-color: var(--bg-2);
+  background-image: linear-gradient(45deg, var(--panel-3) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--panel-3) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--panel-3) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--panel-3) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.lib-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform var(--dur-slow) var(--ease);
+}
+
+.lib-card:hover .lib-thumb img {
+  transform: scale(1.025);
+}
+
+.lib-thumb .dim {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+.lib-kind,
+.lib-seed {
+  position: absolute;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(20, 22, 25, 0.58);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.lib-kind {
+  top: 9px;
+  left: 9px;
+}
+
+.lib-seed {
+  left: 9px;
+  bottom: 9px;
+  font-size: 9.5px;
+  font-weight: 500;
+}
+
+.lib-thumb-actions {
+  position: absolute;
+  inset: auto 9px 9px auto;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.lib-card:hover .lib-thumb-actions,
+.lib-card:focus-within .lib-thumb-actions {
+  opacity: 1;
+  transform: none;
+}
+
+.lib-action {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(20, 22, 25, 0.62);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 550;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.lib-action:hover:not(:disabled) {
+  background: rgba(20, 22, 25, 0.82);
+}
+
+.lib-action.is-disabled,
+.lib-action:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.lib-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px 12px;
+}
+
+.lib-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lib-prompt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-height: 33px;
+}
+
+.lib-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.lib-cat {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 9.5px;
+  font-weight: 550;
+}
+
+.lib-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* 骨架屏 */
+.lib-card.is-skeleton {
+  pointer-events: none;
+}
+
+.lib-card.is-skeleton .lib-thumb,
+.lib-card.is-skeleton .sk-line {
+  background-color: var(--panel-2);
+  background-image: linear-gradient(90deg, var(--panel-2) 0%, var(--panel-3) 50%, var(--panel-2) 100%);
+  background-size: 200% 100%;
+  animation: lib-shimmer 1.4s var(--ease) infinite;
+}
+
+.lib-card.is-skeleton .sk-line {
+  height: 9px;
+  margin: 3px 0;
+  border-radius: 999px;
+}
+
+.lib-card.is-skeleton .sk-line.short {
+  width: 58%;
+}
+
+@keyframes lib-shimmer {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+
+/* ------------------------------------------------------------- 详情弹窗 */
+
+.modal.modal-library {
+  width: min(1080px, calc(100vw - 48px));
+}
+
+.modal-library .modal-body {
+  padding: 0;
+}
+
+.lib-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  max-height: min(72vh, 760px);
+}
+
+.lib-detail-media {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  padding: 18px;
+  background-color: var(--bg-2);
+  background-image: linear-gradient(45deg, var(--panel-3) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--panel-3) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--panel-3) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--panel-3) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  border-right: 1px solid var(--line-soft);
+}
+
+.lib-detail-media img {
+  max-width: 100%;
+  max-height: calc(72vh - 36px);
+  border-radius: 8px;
+  object-fit: contain;
+  box-shadow: var(--shadow);
+}
+
+.lib-detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 18px 20px 22px;
+}
+
+.lib-detail-side .result-prompt {
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lib-detail-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.lib-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lib-ref {
+  display: block;
+  width: 68px;
+  height: 68px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.lib-ref img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lib-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ------------------------------------------------------------- 暗色细节 */
+
+html[data-theme="dark"] .lib-thumb {
+  background-color: #171b1f;
+  background-image: linear-gradient(45deg, #22272d 25%, transparent 25%),
+    linear-gradient(-45deg, #22272d 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #22272d 75%),
+    linear-gradient(-45deg, transparent 75%, #22272d 75%);
+}
+
+html[data-theme="dark"] .lib-card.is-skeleton .lib-thumb,
+html[data-theme="dark"] .lib-card.is-skeleton .sk-line {
+  background-color: #1f242a;
+  background-image: linear-gradient(90deg, #1f242a 0%, #2a3037 50%, #1f242a 100%);
+}
+
+html[data-theme="dark"] .lib-detail-media {
+  background-color: #171b1f;
+  background-image: linear-gradient(45deg, #22272d 25%, transparent 25%),
+    linear-gradient(-45deg, #22272d 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #22272d 75%),
+    linear-gradient(-45deg, transparent 75%, #22272d 75%);
+}
+
+/* ------------------------------------------------------------- 响应式 */
+
+@media (max-width: 980px) {
+  .lib-detail {
+    grid-template-columns: minmax(0, 1fr);
+    max-height: 74vh;
+    overflow-y: auto;
+  }
+
+  .lib-detail-media {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .lib-detail-media img {
+    max-height: 46vh;
+  }
+
+  .lib-detail-side {
+    overflow: visible;
+  }
+}
+
+@media (max-width: 720px) {
+  .lib-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .lib-search {
+    flex: 1 1 100%;
+  }
+
+  .lib-summary {
+    display: none;
+  }
+
+  .lib-meta .mono {
+    display: none;
+  }
+
+  .lib-grid {
+    grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+    gap: 12px;
+  }
+
+  .lib-prompt {
+    display: none;
+  }
+
+  .lib-body {
+    padding: 9px 11px 10px;
+  }
+}

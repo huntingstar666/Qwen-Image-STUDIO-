@@ -1187,6 +1187,21 @@ export function createEditPage(host) {
       await jobRunner.start({
         create: () => api.edit(payload),
         prompt: payload.prompt,
+        favoriteMeta: {
+          kind: 'edit',
+          category: '未分类',
+          referenceImages: images.slice(0, 3).map((image) => image.dataUrl),
+          params: {
+            width: payload.width,
+            height: payload.height,
+            size_mode: payload.size_mode,
+            steps: payload.steps,
+            cfg: payload.cfg,
+            denoise: payload.denoise,
+            sampler: payload.sampler,
+            scheduler: payload.scheduler,
+          },
+        },
         maskDataUrl: payload.local.enabled ? maskOverlay : null,
         onProgress: syncActionProgress,
         onDone: (job) => {

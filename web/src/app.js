@@ -15,6 +15,7 @@ import { createT2IPage } from './components/t2i.js';
 import { createEditPage } from './components/edit.js';
 import { createImageToolsPage } from './components/imageTools.js';
 import { createHistoryPage } from './components/history.js';
+import { createMaterialsPage } from './components/materials.js';
 
 /* ---------------------------------------------------------------- 图标 */
 
@@ -102,7 +103,7 @@ const TABS = [
     group: 'assets',
     icon: 'archive',
     badge: '新',
-    factory: createPlaceholderPage('素材仓库', '收藏与本地素材即将上线'),
+    factory: createMaterialsPage,
   },
   { id: 'tools', label: '图像处理', sub: '裁剪 · 调色 · 扩图', code: 'IMAGE TOOLS', group: 'utilities', icon: 'wand', factory: createImageToolsPage },
   { id: 'history', label: '历史记录', sub: '全部生成与编辑结果', code: 'HISTORY', group: 'utilities', icon: 'clock', factory: createHistoryPage },

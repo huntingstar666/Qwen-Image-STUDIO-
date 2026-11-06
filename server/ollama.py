@@ -188,6 +188,28 @@ class OllamaClient:
         return content
 
     # ---------------------------------------------------------------- 便捷方法
+    def show(self, model: str) -> dict:
+        """``/api/show``：模型详情（含 ``capabilities``，用于判断能否读图）。"""
+        if not model:
+            raise OllamaError("未指定 Ollama 模型")
+        return self._request("POST", "/api/show", json={"model": str(model)})
+
+    def supports_vision(self, model: str) -> bool:
+        """模型是否支持读图；探测失败一律返回 ``False``（调用方退化为纯文本）。"""
+        try:
+            data = self.show(model)
+        except OllamaError:
+            return False
+        capabilities = data.get("capabilities")
+        if isinstance(capabilities, list) and capabilities:
+            return any(str(item).strip().lower() == "vision" for item in capabilities)
+        details = data.get("details")
+        families = details.get("families") if isinstance(details, Mapping) else None
+        if isinstance(families, list):
+            return any(("vl" in str(item).lower()) or ("vision" in str(item).lower())
+                       for item in families)
+        return False
+
     def model_names(self) -> list[str]:
         """仅返回模型名列表（/api/health 用）。"""
         return [item["name"] for item in self.list_models()]

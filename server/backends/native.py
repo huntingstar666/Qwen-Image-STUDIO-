@@ -29,13 +29,16 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import logging
 import math
 import numbers
 import os
+import re
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
 
@@ -143,11 +146,13 @@ def canvas_size(image_sizes: Iterable[tuple[int, int]] | None = None,
     return r, r
 
 
-def latent_hw(width: int, height: int) -> tuple[int, int]:
-    """像素尺寸 → 采样 latent 的 ``(H, W)``（16 倍下采样，向下取整，最小 1）。"""
+def latent_hw(width: int, height: int,
+              downscale: int = LATENT_DOWNSCALE) -> tuple[int, int]:
+    """像素尺寸 → 采样 latent 的 ``(H, W)``（默认 16 倍下采样，向下取整，最小 1）。"""
     width = _check_positive_int(width, "width")
     height = _check_positive_int(height, "height")
-    return max(1, height // LATENT_DOWNSCALE), max(1, width // LATENT_DOWNSCALE)
+    step = max(1, int(downscale))
+    return max(1, height // step), max(1, width // step)
 
 
 def normalize_sigmas(values: Any, *, append_zero: bool = True) -> list[float]:
@@ -316,6 +321,13 @@ class EngineConfig:
     vae: str | None = None
     vram_reserve: float = 0.15
     dtype: str = "default"
+    #: CLIPType 名称（Qwen = "qwen_image"，MOSS = "moss_image"）
+    clip_type: str = "qwen_image"
+    #: 文本编码方式："qwen"（带参考图 / keep_vision）或 "moss"（纯 tokenize）
+    text_backend: str = "qwen"
+    #: 采样 latent 通道数（Qwen 64 / MOSS 128）与下采样倍数
+    latent_channels: int = LATENT_CHANNELS
+    latent_downscale: int = LATENT_DOWNSCALE
     #: 分块解码的 tile 边长（像素）。实测 1024 比 ComfyUI 默认的 512 快 2.3 倍
     vae_tile_size: int = 1024
     #: 分块解码的重叠像素
@@ -323,6 +335,9 @@ class EngineConfig:
     #: 超过这个输出像素数就直接走分块解码。CLIP 常驻 + 18GB LoRA 时 896² 全量就会 OOM，
     #: 失败一次既浪费 3~5 秒、又会把后续采样拖慢；768²（0.59MP）全量仍更快。
     tiled_decode_threshold: int = 600_000
+    #: 文本编码结果缓存条数（0 = 关闭）。同提示词连抽多张时省掉一次 CLIP 前向，
+    #: 热态约省 0.15s/张（2K 带参考图时省得更多，因为整段参考图 VAE 编码也能复用）。
+    encode_cache_size: int = 8
     #: 旧字段名兼容别名（旧契约里叫 comfy_root）
     comfy_root: str | None = None
 
@@ -343,9 +358,11 @@ class EngineConfig:
 class _Libs:
     """ComfyUI 模块句柄集合（延迟 import，避免每次调用重新解析属性）。"""
 
-    __slots__ = ("torch", "sd", "samplers", "sample", "utils", "mm", "helpers", "node_helpers")
+    __slots__ = ("torch", "sd", "samplers", "sample", "utils", "mm", "helpers",
+                 "node_helpers", "mp")
 
-    def __init__(self, torch, sd, samplers, sample, utils, mm, helpers, node_helpers):
+    def __init__(self, torch, sd, samplers, sample, utils, mm, helpers, node_helpers,
+                 mp=None):
         self.torch = torch
         self.sd = sd
         self.samplers = samplers
@@ -354,6 +371,7 @@ class _Libs:
         self.mm = mm
         self.helpers = helpers
         self.node_helpers = node_helpers
+        self.mp = mp
 
 
 def _conditioning_set_values(conditioning, values: dict, append: bool = False):
@@ -369,6 +387,84 @@ def _conditioning_set_values(conditioning, values: dict, append: bool = False):
             new[1][key] = val
         out.append(new)
     return out
+
+
+class _CondCache:
+    """文本编码结果的 LRU 缓存：同提示词连抽多张时省掉重复的 CLIP 前向。
+
+    只存**已经算好的 conditioning**（GPU 张量，单条 1~15MB），键由
+    「权重代号 + 提示词 + 负向提示词 + resolution + 每张参考图的内容摘要」组成。
+    权重一变（换模型 / 换 LoRA）代号 +1 并清空，旧条目不会串味。
+
+    ``max_entries<=0`` 表示关闭（``get`` 恒返回 None，也不统计）。
+    """
+
+    __slots__ = ("_max", "_data", "_hits", "_misses")
+
+    def __init__(self, max_entries: int = 8) -> None:
+        self._max = max(0, int(max_entries))
+        self._data: OrderedDict[str, dict] = OrderedDict()
+        self._hits = 0
+        self._misses = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self._max > 0
+
+    def get(self, key: str) -> dict | None:
+        if self._max <= 0:
+            return None
+        item = self._data.get(key)
+        if item is None:
+            self._misses += 1
+            return None
+        self._data.move_to_end(key)
+        self._hits += 1
+        return item
+
+    def put(self, key: str, value: dict) -> None:
+        if self._max <= 0:
+            return
+        self._data[key] = value
+        self._data.move_to_end(key)
+        while len(self._data) > self._max:
+            self._data.popitem(last=False)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def stats(self) -> dict:
+        return {"size": len(self._data), "max": self._max,
+                "hits": self._hits, "misses": self._misses}
+
+
+def _image_digest(im: Any, hasher: Any) -> None:
+    """把一张 PIL 图的像素喂进哈希器（尺寸/模式也进，避免不同图的字节撞车）。"""
+    hasher.update(f"{im.mode}\x00{im.width}x{im.height}\x00".encode("ascii"))
+    hasher.update(im.tobytes())
+
+
+def cond_cache_key(prompt: str, negative: str, resolution: int,
+                   images: Sequence[Any], generation: int) -> str:
+    """文本编码缓存的键（纯逻辑，不 import torch）。
+
+    参考图按**像素内容**摘要，所以同一张图重新上传也能命中；提示词只做整串哈希。
+    """
+    h = hashlib.blake2b(digest_size=16)
+    h.update(f"{int(generation)}\x00{int(resolution)}\x00".encode("ascii"))
+    # 文本带长度前缀，避免 a+"\x00"+b 与 a\x00b 这类拼接歧义
+    for text in (prompt, negative):
+        raw = (text or "").encode("utf-8")
+        h.update(f"{len(raw)}\x00".encode("ascii"))
+        h.update(raw)
+    for im in images:
+        _image_digest(im, h)
+    return h.hexdigest()
+
+
+def copy_conditioning(cond: Any) -> list:
+    """浅拷贝 conditioning：张量共享（采样只读），元信息 dict 各拷贝一份。"""
+    return [[entry[0], dict(entry[1])] for entry in cond]
 
 
 class NativeEngine:
@@ -418,6 +514,10 @@ class NativeEngine:
         self._loras: list[dict] = []
         self._text_encoder_offloaded = False
         self._pending_loras: list[dict] = []
+
+        # 文本编码缓存：键里带权重代号，换模型/换 LoRA 时代号自增，旧键自然失效
+        self._encode_cache = _CondCache(config.encode_cache_size)
+        self._weights_generation = 0
 
         # 观测数据（status() 与 docs 用）
         self._load_seconds: float | None = None
@@ -480,6 +580,7 @@ class NativeEngine:
                 import comfy.utils as _utils
                 import comfy.model_management as _mm
                 import comfy.sampler_helpers as _helpers
+                import comfy.model_patcher as _mp
             except Exception as exc:  # pragma: no cover - 依赖环境
                 self._lib_error = f"导入引擎模型库失败（engine_dir={root}）: {exc}"
                 raise EngineError(self._lib_error) from exc
@@ -504,7 +605,7 @@ class NativeEngine:
             # ComfyUI 默认也没开（只有 --fast 才开）。
 
             self._libs = _Libs(torch, _sd, _samplers, _sample, _utils, _mm,
-                               _helpers, _node_helpers)
+                               _helpers, _node_helpers, _mp)
             return self._libs
 
     def _assert_imports_inside(self, root: str, sd_module, node_helpers_module) -> None:
@@ -587,6 +688,7 @@ class NativeEngine:
             "loaded": loaded,
             "text_encoder_offloaded": self._text_encoder_offloaded,
         "warmup_s": getattr(self, "_last_warmup_seconds", None),
+            "encode_cache": self._encode_cache.stats(),
             "timings": {
                 "load_s": self._load_seconds,
                 "clip_reload_s": self._last_clip_reload_seconds,
@@ -654,12 +756,16 @@ class NativeEngine:
             prev_loras = list(self._loras)
             self._unload_models(log=False)
             try:
+                clip_type_name = str(self.config.clip_type or "qwen_image").upper()
+                clip_type = getattr(libs.sd.CLIPType, clip_type_name, None)
+                if clip_type is None:
+                    raise EngineError(f"引擎不支持 CLIPType.{clip_type_name}")
                 logger.info("装载 diffusion model: %s", target["unet"])
                 model = libs.sd.load_diffusion_model(target["unet"],
                                                      model_options=self._model_options())
-                logger.info("装载 text encoder: %s", target["clip"])
+                logger.info("装载 text encoder: %s（CLIPType.%s）", target["clip"], clip_type_name)
                 clip_obj = libs.sd.load_clip([target["clip"]], embedding_directory=None,
-                                             clip_type=libs.sd.CLIPType.QWEN_IMAGE)
+                                             clip_type=clip_type)
                 logger.info("装载 vae: %s", target["vae"])
                 vae_sd = libs.utils.load_torch_file(target["vae"])
                 vae = libs.sd.VAE(sd=vae_sd)
@@ -675,6 +781,7 @@ class NativeEngine:
             self._loras = []
             self._text_encoder_offloaded = False
             self._load_seconds = round(time.time() - t0, 3)
+            self.clear_encode_cache()   # 权重换了，旧 conditioning 不能再用
             logger.info("模型装载完成 %.2fs（权重多为 mmap 延迟加载，首次编码才会真正上卡）",
                         self._load_seconds)
 
@@ -717,6 +824,7 @@ class NativeEngine:
                 self._clip = self._base_clip
                 self._loras = []
                 self._text_encoder_offloaded = False
+                self.clear_encode_cache()   # CLIP 权重变了（卸 LoRA）
                 return
 
             model, clip_obj = self._base_model, self._base_clip
@@ -732,6 +840,7 @@ class NativeEngine:
             self._loras = [{"name": it["name"], "strength": it["strength"]}
                            for it in norm]
             self._text_encoder_offloaded = False
+            self.clear_encode_cache()       # CLIP 权重变了（新挂 LoRA）
 
     def warmup(self, *, size: int = 256, width: int | None = None,
                height: int | None = None, steps: int = 1) -> float:
@@ -773,6 +882,7 @@ class NativeEngine:
         self._paths = {"unet": None, "clip": None, "vae": None}
         self._loras = []
         self._text_encoder_offloaded = False
+        self.clear_encode_cache()   # 缓存的 conditioning 属于已卸载的权重
         if self._libs is not None:
             try:
                 self._libs.mm.unload_all_models()
@@ -787,17 +897,29 @@ class NativeEngine:
             logger.info("模型已卸载")
 
     def free(self, *, unload: bool = False) -> None:
-        """归还显存。``unload=False`` 只清缓存；``unload=True`` 卸载全部模型。"""
+        """归还显存。``unload=False`` 只清分配器预留块；``unload=True`` 卸载全部模型。"""
         with self._gen_lock:
             if unload:
                 self._unload_models()
                 return
-            if self._libs is not None:
-                try:
-                    self._libs.mm.soft_empty_cache()
-                except Exception:  # pragma: no cover
-                    pass
-            gc.collect()
+            libs = self._libs
+            if libs is None:
+                return
+            # 每单只做 empty_cache（把预留块还给驱动，下一单少碎片）。
+            # 不做 synchronize / ipc_collect / gc.collect：实测这三项每单多花 0.2~0.25s，
+            # 对下一单耗时没有任何改善（2K：5.39s → 5.14s）。
+            try:
+                libs.torch.cuda.empty_cache()
+            except Exception:  # pragma: no cover
+                pass
+
+    # ------------------------------------------------------------ 文本编码缓存
+
+    def clear_encode_cache(self) -> None:
+        """清空文本编码缓存并让权重代号 +1（换模型 / 换 LoRA 时自动调用）。"""
+        with self._gen_lock:
+            self._encode_cache.clear()
+            self._weights_generation += 1
 
     # ------------------------------------------------------------ 文本编码器上下卡
 
@@ -908,16 +1030,32 @@ class NativeEngine:
         elif not isinstance(images, (list, tuple)):
             images = [images]
         images = [im for im in images if im is not None]
+        if images and str(self.config.text_backend).lower() == "moss":
+            raise EngineError("MOSS 参考图编辑尚未接入（当前只支持文生图），请勿传 images")
 
         with self._gen_lock:
             self._require_loaded()
-            libs = self._load_libs()
-            self._ensure_text_encoder_loaded()
 
             Image = self._require_pillow()
             for idx, im in enumerate(images):
                 if not isinstance(im, Image.Image):
                     raise EngineError(f"images[{idx}] 不是 PIL.Image.Image")
+
+            # 同提示词连抽多张：命中缓存就整段跳过 CLIP 前向
+            # （连「把编码器装回显存」也省了，另存开关下更明显）
+            cache_key = None
+            if self._encode_cache.enabled:
+                cache_key = cond_cache_key(prompt, negative_prompt, resolution,
+                                           images, self._weights_generation)
+                cached = self._encode_cache.get(cache_key)
+                if cached is not None:
+                    logger.info("文本编码命中缓存，跳过 CLIP 前向")
+                    return {"positive": copy_conditioning(cached["positive"]),
+                            "negative": copy_conditioning(cached["negative"]),
+                            "canvas": tuple(cached["canvas"])}
+
+            libs = self._load_libs()
+            self._ensure_text_encoder_loaded()
 
             images_vl: list[Any] = []
             ref_latents: list[Any] = []
@@ -958,10 +1096,17 @@ class NativeEngine:
                 negative = self._set_cond_values(libs, negative, values)
 
             self._text_encoder_offloaded = False
-            return {"positive": positive, "negative": negative,
-                    "canvas": (int(canvas_w), int(canvas_h))}
+            result = {"positive": positive, "negative": negative,
+                      "canvas": (int(canvas_w), int(canvas_h))}
+            if cache_key is not None:
+                self._encode_cache.put(cache_key, result)
+            return result
 
     def _encode_one(self, libs: _Libs, text: str, images_vl: list, keep_vision: bool):
+        if str(self.config.text_backend).lower() == "moss":
+            # MOSS 的文本编码器只做 chat 模板 + tokenize（参考图编辑走另一个节点，本轮未接入）
+            tokens = self._clip.tokenize(text)
+            return self._clip.encode_from_tokens_scheduled(tokens)
         tokens = self._clip.tokenize(text, images=images_vl, keep_vision=keep_vision,
                                      prevent_empty_text=True)
         return self._clip.encode_from_tokens_scheduled(tokens)
@@ -1017,10 +1162,7 @@ class NativeEngine:
                 raise EngineError(f"VAE 编码失败: {exc}") from exc
 
     def empty_latent(self, width: int, height: int, batch: int = 1):
-        """按画布尺寸造空 latent ``[batch, 64, h//16, w//16]``（64 通道 / 16 倍下采样）。
-
-        pipeline 走 ``sample(latent=None, width=..., height=...)`` 时引擎内部用的就是它。
-        """
+        """按画布尺寸造空 latent ``[batch, C, h/16, w/16]``（Qwen 64 通道 / MOSS 128 通道）。"""
         libs = self._load_libs()
         return self._make_empty_latent(libs, width, height, batch)
 
@@ -1091,7 +1233,8 @@ class NativeEngine:
                steps: int, cfg: float, sampler: str = "euler", scheduler: str = "simple",
                seed: int = 0, denoise: float = 1.0,
                width: int | None = None, height: int | None = None, batch: int = 1,
-               noise_mask=None, callback: Callable[[int, int, Any], Any] | None = None):
+               noise_mask=None, slg: dict | None = None,
+               callback: Callable[[int, int, Any], Any] | None = None):
         """执行采样。
 
         :param latent: 已有 latent（VAE 编码后的图像 latent）。传 ``None`` 时按
@@ -1101,6 +1244,8 @@ class NativeEngine:
         :param noise_mask: 局部编辑遮罩，等价 SetLatentNoiseMask。接受
             ``np.float32 (H, W)``（**像素尺寸**，不是 latent 尺寸，值域 0..1，1=重绘）、
             PIL ``L`` 图、或已 reshape 好的 tensor；引擎内部按 latent 形状插值。
+        :param slg: SkipLayerGuidanceDiTSimple 参数（``single_layers`` / ``double_layers``
+            / ``start_percent`` / ``end_percent``）。传 None = 不启用；只影响本次采样。
         :param callback: ``callback(step, total_steps, current_latent)``，用于进度条；
             在回调里抛异常可以中断采样（取消任务），该异常会原样抛给上层，不包裹成
             EngineError。
@@ -1128,7 +1273,7 @@ class NativeEngine:
             if latent is None:
                 latent = self._make_empty_latent(libs, width, height, batch)
             else:
-                latent = self._validate_latent(libs, latent)
+                latent = self._validate_latent(libs, latent, int(self.config.latent_channels))
                 # 防御：调用方若把 inference tensor 传进来（例如自己用 tiled VAE 产出的），
                 # 采样器对 latent 的原地操作会抛 "Inplace update to inference tensor ..."。
                 latent = as_normal_tensor(latent)
@@ -1141,7 +1286,10 @@ class NativeEngine:
 
             sampler_obj = self._sampler_object(libs, sampler)
 
-            guider = libs.samplers.CFGGuider(self._model)
+            # SLG 只对本次采样生效：clone 一个带 calc_cond_batch 钩子的模型，
+            # 不动 self._model（否则后续没开 SLG 的请求会继承这个钩子）。
+            model_for_sample = self._apply_slg(libs, self._model, slg)
+            guider = libs.samplers.CFGGuider(model_for_sample)
             guider.set_conds(positive, negative)
             guider.set_cfg(cfg)
 
@@ -1172,8 +1320,65 @@ class NativeEngine:
                         max(0, sig_tensor.shape[-1] - 1), cfg, seed)
             return out
 
+    def _apply_slg(self, libs: _Libs, model, slg: dict | None):
+        """把 SkipLayerGuidanceDiTSimple 的等价逻辑挂到模型副本上（只影响本次采样）。
+
+        原节点逻辑（`comfy_extras/nodes_slg.py`）：把指定层的 residual 置零后再算一次
+        负向条件，用更强的引导压细节；只在 ``start_percent..end_percent`` 区间生效。
+        MOSS 只有 single_block，所以默认只配 ``single_layers="22"``。
+        """
+        if not slg:
+            return model
+
+        def _ints(value) -> list[int]:
+            return [int(v) for v in re.findall(r"\d+", str(value or ""))]
+
+        double_layers = _ints(slg.get("double_layers"))
+        single_layers = _ints(slg.get("single_layers"))
+        if not double_layers and not single_layers:
+            return model
+        if libs.mp is None:
+            raise EngineError("SLG 需要 comfy.model_patcher，但引擎未加载该模块")
+
+        model_sampling = model.get_model_object("model_sampling")
+        sigma_start = model_sampling.percent_to_sigma(
+            float(slg.get("start_percent", 0.0)))
+        sigma_end = model_sampling.percent_to_sigma(
+            float(slg.get("end_percent", 0.5)))
+
+        def skip(args, extra_args=None):
+            return args
+
+        def calc_cond_batch_function(args):
+            x = args["input"]
+            m = args["model"]
+            conds = args["conds"]
+            sigma = args["sigma"]
+            model_options = args["model_options"]
+            slg_options = model_options.copy()
+            for layer in double_layers:
+                slg_options = libs.mp.set_model_options_patch_replace(
+                    slg_options, skip, "dit", "double_block", layer)
+            for layer in single_layers:
+                slg_options = libs.mp.set_model_options_patch_replace(
+                    slg_options, skip, "dit", "single_block", layer)
+
+            cond, uncond = conds
+            sigma_value = sigma[0].item()
+            if sigma_end <= sigma_value <= sigma_start and uncond is not None:
+                cond_out, _ = libs.samplers.calc_cond_batch(
+                    m, [cond, None], x, sigma, model_options)
+                _, uncond_out = libs.samplers.calc_cond_batch(
+                    m, [None, uncond], x, sigma, slg_options)
+                return [cond_out, uncond_out]
+            return libs.samplers.calc_cond_batch(m, conds, x, sigma, model_options)
+
+        patched = model.clone()
+        patched.set_model_sampler_calc_cond_batch_function(calc_cond_batch_function)
+        return patched
+
     def _make_empty_latent(self, libs: _Libs, width, height, batch):
-        """``torch.zeros([batch, 64, h//16, w//16])``（与 TextEncodeQwenImage21 的 latent 输出一致）。"""
+        """``torch.zeros([batch, C, h/downscale, w/downscale])``，C 由模型档案决定。"""
         if width is None or height is None:
             raise EngineError(
                 "latent 为空时必须给 width/height（引擎内部造空 latent）")
@@ -1190,20 +1395,20 @@ class NativeEngine:
             raise EngineError(f"batch 不是整数: {batch!r}") from exc
         if batch < 1:
             raise EngineError(f"batch 必须 >= 1，收到 {batch}")
-        lh, lw = latent_hw(width, height)
-        return libs.torch.zeros([batch, LATENT_CHANNELS, lh, lw],
+        lh, lw = latent_hw(width, height, self.config.latent_downscale)
+        return libs.torch.zeros([batch, int(self.config.latent_channels), lh, lw],
                                 device=libs.mm.intermediate_device())
 
     @staticmethod
-    def _validate_latent(libs: _Libs, latent):
+    def _validate_latent(libs: _Libs, latent, channels: int = LATENT_CHANNELS):
         torch = libs.torch
         if not torch.is_tensor(latent):
             raise EngineError(f"latent 必须是 torch.Tensor，收到 {type(latent).__name__}")
         if latent.ndim != 4:
-            raise EngineError(f"latent 必须是 4 维 [B, 64, H/16, W/16]，收到 {tuple(latent.shape)}")
-        if latent.shape[1] != LATENT_CHANNELS:
+            raise EngineError(f"latent 必须是 4 维 [B, C, H/16, W/16]，收到 {tuple(latent.shape)}")
+        if latent.shape[1] != channels:
             raise EngineError(
-                f"latent 通道数必须是 {LATENT_CHANNELS}，收到 {latent.shape[1]}"
+                f"latent 通道数必须是 {channels}，收到 {latent.shape[1]}"
                 f"（形状 {tuple(latent.shape)}）")
         return latent
 
@@ -1261,10 +1466,11 @@ class NativeEngine:
     # ------------------------------------------------------------ 解码
 
     def _decode_pixels(self, samples) -> int:
-        """latent 形状 → 输出像素数（latent_h*16 × latent_w*16）。"""
+        """latent 形状 → 输出像素数（latent_h*downscale × latent_w*downscale）。"""
         if samples.ndim != 4:
             return 0
-        return int(samples.shape[-2]) * LATENT_DOWNSCALE * int(samples.shape[-1]) * LATENT_DOWNSCALE
+        step = int(self.config.latent_downscale)
+        return int(samples.shape[-2]) * step * int(samples.shape[-1]) * step
 
     def _free_torch_mb(self, libs) -> int:
         """返回当前空闲显存（MB）；拿不到就返回 0。"""

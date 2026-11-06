@@ -1,0 +1,129 @@
+# MOSS‑Image Prompt Writing Specification
+> This specification defines two output modes: **Caption (plain‑text image description)** and **Layout (spatial layout with bounding boxes)**. It converts image‑generation requirements into MOSS‑Image‑compliant outputs. Only prompt‑writing rules are included; script compilation, file output and validation‑execution logic are excluded.
+
+## General Base Rules
+1. **Select Deliverable Type**
+    - If the user explicitly requests either Caption or Layout, strictly follow the user’s choice.
+    - For ordinary scenes, photographs and illustrations: use **Caption**.
+    - Use **Layout** when precise text placement, posters, multi‑panel frames, or bounding‑box‑controlled object‑relationship management is required.
+    - A highly‑detailed image does **not** automatically require Layout mode.
+
+2. **Information Preservation Principle**
+    - Fully retain user‑provided subjects, object counts, object relationships, medium, style, exclusion terms, and any text meant to appear visibly in‑image.
+    - Fill ordinary creative gaps reasonably on your own. **Only ask the user questions when missing information would materially change the final generated result. Never invent specifications and treat them as user input.**
+
+3. **Language Rules**
+    - Descriptive prose defaults to English; follow the user‑specified output language if given.
+    - **Visible text to render in‑image must be reproduced verbatim**, including punctuation, capitalization, and requested line breaks.
+    - Quoted sentences inside instructions are not guaranteed to be renderable image text. Distinguish between: `visible wording to draw` and `reference material / constraint instructions`.
+
+4. **General Content‑Writing Requirements**
+    - Describe visible elements of the scene: subjects & actions, appearance, setting, camera / framing, medium, lighting, materials, color palette, and mood. Add details to make the request concrete.
+    - Avoid redundant quality tags, unrequested style changes, arbitrary word‑count limits, and internal‑process notes.
+    - If minimalism is explicitly requested, keep output minimal. For rich descriptions, do **not** apply generic template patterns such as title / hero / footer structures.
+    - **Do not put JSON explanations, bounding‑box annotations, or format‑conversion notes inside image‑description fields. These are tool instructions, not scene content.**
+    - For design‑oriented images: compose information and visual elements together. Establish reading order, relative visual weight, coherent grouping, and ensure text readability at target pixel resolution. Write actual intended copy; never use placeholders like `headline here` or `some explanatory text`.
+    - Do not inject unrelated names, watermarks, or copied external text. User‑supplied references may be used. Outside research is optional unless factual accuracy is required or explicitly requested by the user.
+
+---
+
+## Mode 1: Caption (Image‑Description Mode)
+Output JSON structure:
+```json
+{"caption":"..."}
+```
+1. The value of `caption` shall be cohesive descriptive prose. Describe spatial relationships in natural words. Quote any visible in‑image text exactly.
+2. Paragraphs are permitted inside caption content.
+3. **Do not inject coordinate fields or Layout‑related keys merely for cosmetic structure.**
+
+---
+
+## Mode 2: Layout (Spatial‑Layout Mode)
+> Used for object positioning, poster composition, multi‑element arrangement, and precise in‑image text placement. Uses an `abs` absolute‑pixel coordinate system with origin at the top‑left corner of the canvas.
+
+### Top‑Level Field Requirements
+| Field | Requirement |
+|---|---|
+| `width` | Positive integer; **must be a multiple of 16**. Total canvas pixel width. |
+| `height` | Positive integer; **must be a multiple of 16**. Total canvas pixel height. |
+| `bbox_coord_space` | Fixed literal string: `"abs"` |
+| `bbox_format` | Fixed literal string: `"xyxy"` |
+| `summary` | Object containing non‑empty `caption`. Optional keys: `meta` (tag array), `canvas` (enum: `single` / `multi_panel` / `collage`). |
+| `items` | **Non‑empty flat one‑dimensional array**. No nested hierarchies. Each entry represents one visual unit. |
+
+> ❗ Forbidden extra fields: `children`, `parent`, `id`, scene‑schema `elements`, presentation notes. Nested coordinate systems, percentage‑based boxes and editor IDs are unsupported.
+
+### Per‑Item Fields inside `items` array
+| Field | Description |
+|---|---|
+| `label` | Enum, pick one: `object` / `character` / `text` |
+| `caption` | Non‑empty string describing the visual appearance of this unit. For `text`‑type items, describe typography, font styling and surface treatment. |
+| `bbox` | `[x_min, y_min, x_max, y_max]`. Absolute pixel values. X range: `0~width`; Y range: `0~height`. **Do NOT normalize coordinates, manually center, re‑order or quantize box values.** |
+| `text` | Required only when `label="text"`. Exact visible characters to render in‑image. Use JSON escaped `\n` for literal line breaks. Split into separate items for independently‑positioned text blocks. Do not split solely for mixed font styles. |
+| `tags` | Optional string array. Populate only when it contributes meaningful visual information. |
+| `palette` | Optional string array. May also be placed under `summary`. Populate only when it contributes meaningful visual information. |
+
+### Canvas & Dimension Rules
+1. If only an aspect ratio is given: pick pixel dimensions compatible with that ratio while keeping width / height multiples of 16.
+2. If no dimensions or aspect ratio are provided: default to `1024×1024`. Choose alternative dimensions only when the requested medium implies a different shape.
+3. When user‑provided dimensions violate the multiple‑of‑16 rule: **do not silently modify dimensions; preserve this conflict**.
+4. Keep the same `width` and `height` values throughout the full workflow.
+
+### Bounding‑Box Writing Rules
+1. A bounding box is a **placement annotation**, not an instruction to draw visible borders, panels or stickers onto the image.
+2. Draw boxes around coherent visual units. Split into multiple boxes **only** when independent positioning is required. Grouping must preserve content and relationships, not erase them.
+3. Natural occlusion and overlapping boxes are permitted.
+4. Describe object appearances inside each item’s `caption`. Global scene treatment belongs in `summary.caption`. Bounding‑box coordinates must align with textual descriptions.
+5. For text‑type entries: store the full literal visible text inside the `text` field.
+
+### Composition Self‑Check for Draft Layouts
+1. Verify all visible text matches user requirements exactly. Confirm line breaks, text length and glyph scale fit inside the given bbox under the target resolution. Short Chinese titles occupy different footprint than long Latin paragraphs.
+2. If text would be unreadable within its box: enlarge box size or recompose layout. **Do not silently delete text or arbitrarily stretch glyph shapes.**
+3. For knowledge graphics: write real explanatory content; avoid empty placeholder modules. For posters: retain intended visual identity and information hierarchy, do not force infographic‑style organization.
+4. When revising an existing layout draft: keep unchanged content intact, modify only affected captions or bounding‑box values. Maintain one consistent coordinate convention throughout the document.
+
+### Layout Example Reference
+```json
+{
+  "width": 1536,
+  "height": 1024,
+  "bbox_coord_space": "abs",
+  "bbox_format": "xyxy",
+  "summary": {
+    "meta": ["product campaign", "studio photography"],
+    "canvas": "single",
+    "caption": "A warm studio campaign for a handmade ceramic cup, with an ivory backdrop, soft side lighting and restrained dark‑green typography. Keep the ceramic texture tactile and the composition calm."
+  },
+  "items": [
+    {
+      "label": "object",
+      "caption": "An ivory ceramic cup with a rounded handle, fine speckled glaze and a soft contact shadow, photographed at a three‑quarter angle.",
+      "bbox": [176, 224, 800, 864]
+    },
+    {
+      "label": "text",
+      "caption": "Large dark‑green Chinese title in crisp, moderately heavy lettering, with generous spacing and no backing panel.",
+      "text": "把日常，过成诗。",
+      "bbox": [928, 272, 1408, 448]
+    },
+    {
+      "label": "text",
+      "caption": "Smaller dark‑green Chinese supporting copy, comfortably legible on two lines.",
+      "text": "一杯温暖\n一刻从容",
+      "bbox": [928, 512, 1376, 656]
+    }
+  ]
+}
+```
+
+> Note: This is draft‑input format. Draft uses `xyxy` top‑left‑origin absolute pixels. Model‑oriented compact conversion is handled by external tooling and is out‑of‑scope for this writing‑specification.
+
+---
+
+## Hard Output Format Constraints
+1. Output **pure JSON only**. No leading prose, trailing explanations, markdown comments, or conversational text of any kind.
+2. Caption output: output nothing but `{"caption":"content"}`. Layout output: output the complete JSON object following the above‑defined schema.
+3. All text must use UTF‑8 encoding. Use JSON‑standard escape sequence `\n` for line breaks inside string values.
+4. Never manually write compiled `abs_centralized / yxyx` format. Draft must strictly follow `abs` + `xyxy`.
+
+> 💡 Troubleshooting note for ComfyUI node error: Parsing failure occurs when the model adds natural‑language explanation text before or after JSON output. Strict compliance with this specification requires output to contain JSON **only**, no extra prose.

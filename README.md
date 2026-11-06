@@ -59,6 +59,54 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 | Turbo 8 步 | 官方保存的采样 schedule | ✅ 显式注入官方 sigma（见下） |
 | 前缀 KV 缓存 | 编辑任务的条件编码复用 | ✅ 引擎层复用（`comfy` 模型实现自带） |
 
+### 多模型：Qwen-Image 2.1 / MOSS-Image
+
+同一套推理引擎，通过**模型档案**（`server/models.py`）区分模型差异，请求里用 `model` 字段切换：
+
+```jsonc
+// POST /api/generate
+{ "model": "moss", "prompt": "...", "ratio": "3:4", "megapixels": 2.0 }
+```
+
+| 项 | `qwen`（默认） | `moss` |
+|---|---|---|
+| 文生图 | ✅ | ✅ |
+| 图像编辑（参考图） | ✅ 1~10 张 | ❌ 本轮未接入 |
+| 原生透明图 | ✅ | ❌ |
+| 边界框布局 | ❌ | ✅ 可选 |
+| SLG | ❌ | ✅ 可选（默认关） |
+| 默认采样 | 25 步 / cfg 1.0 / euler | 50 步 / cfg 3.5 / er_sde / simple |
+| 加速 | 官方 8 步 sigma 表 | 8 步 LoRA（8 步 / cfg 1.0 / euler） |
+| 像素对齐 | 32 | 16 |
+
+`GET /api/options` 新增 `model_profiles`（每个模型的默认值、加速档、能力、缺失文件）与
+`default_model`，前端据此渲染模型切换与参数面板。
+
+**边界框请求格式**（`bbox` 可选，仅 MOSS）：
+
+```jsonc
+{
+  "model": "moss",
+  "prompt": "夏日海报",
+  "bbox": {
+    "enabled": true,
+    "character_boxes": "1",
+    "items": [
+      { "x": 120, "y": 900, "w": 784, "h": 500,
+        "type": "character", "desc": "穿校服的少女在草地上跳跃" },
+      { "x": 320, "y": 80, "w": 384, "h": 160,
+        "type": "text", "text": "清凉一夏",
+        "desc": "顶部手写体大标题，深绿色" }
+    ]
+  }
+}
+```
+
+- 框用**像素坐标** `x/y/w/h`（画布左上角原点），也可直接给 0..1000 的 element；
+- `type` / `text` / `desc` / `palette` 既可写在框顶层，也可包在 `metadata` 里；
+- 服务端把框换算成 MOSS 的 `abs_centralized + yxyx` 紧凑 JSON 当提示词；
+  不给框时就是普通 caption 文生图。
+
 ### 本项目的三项增强
 
 **1. 零像素偏移（Precise-Align 方案移植）**
@@ -268,10 +316,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | `unet` / `clip` / `vae` | 见文件 | 相对 `model_root` 的路径，也可写绝对路径 |
 | `turbo_lora` | `qwen_image_2.1_turbo_lora_hifi_T8_v001` | Turbo 8 步用的适配 LoRA |
 | `consistency_lora` | `qwen-image-2.1-consistency-2000` | 局部编辑保持主体一致性 |
+| `model` | `qwen` | 默认图像模型（`qwen` / `moss`），请求里的 `model` 优先 |
+| `moss` | 见文件 | MOSS 档案：`unet/clip/vae/turbo_lora`、`steps=50/cfg=3.5/er_sde`、`turbo_steps=8/turbo_cfg=1/euler`、`negative_prompt`、`slg` |
 | `port` | 8700 | 服务端口 |
 | `ollama_url` | `http://127.0.0.1:11434` | 本地 Ollama |
 | `max_batch` / `max_side` | 4 / 4096 | 资源上限保护 |
 | `turbo_profile` | `turbo8_official` | 默认 Turbo 档位 |
+| `tiled_decode_threshold` | 600000 | 输出像素超过它就直接分块解码（避免全量 OOM 重试） |
+| `png_compress_level` | 1 | 输出 PNG 压缩档位，只影响速度/体积，不影响画质 |
+| `encode_cache_size` | 8 | 文本编码结果缓存条数（同提示词连抽复用），0 = 关闭 |
 
 ---
 
@@ -286,8 +339,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 ├─ server\
 │   ├─ main.py             FastAPI 入口与路由
 │   ├─ config.py           配置 / 比例表 / Turbo 档位 / 模型扫描
-│   ├─ pipeline.py         编排：解码 → 32 对齐画布 → 采样 → 裁回 → 合成 → 存盘
-│   ├─ backends\native.py  进程内推理引擎
+│   ├─ models.py           模型档案注册表（qwen / moss：权重、latent、采样默认、加速、能力）
+│   ├─ moss.py             MOSS 专有纯逻辑：分辨率选择 / 边界框换算 / 布局提示词 / SLG 配置
+│   ├─ pipeline.py         编排：解码 → 对齐画布 → 采样 → 裁回 → 合成 → 存盘
+│   ├─ backends\native.py  进程内推理引擎（两模型共用）
 │   ├─ align.py            Precise-Align 几何/颜色算法移植（纯 numpy）
 │   ├─ imaging.py          BlueBox 图像 I/O + 画布规划 + 合成移植
 │   ├─ ollama.py           Ollama 客户端
@@ -321,11 +376,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 引擎 / Ollama / 队列 / 显存 / 空闲时长 |
-| GET | `/api/options` | 模型清单、采样器、比例、Turbo 档位、默认值 |
+| GET | `/api/options` | 模型清单、**模型档案 `model_profiles` / `default_model`**、采样器、比例、Turbo 档位、默认值 |
 | GET | `/api/styles` | 风格库目录（285 + 493 条） |
 | GET | `/api/styles/angle-prompt` | 视角提示词 |
-| POST | `/api/polish` | 提示词润色（`mode=t2i\|edit`） |
-| POST | `/api/generate` | 提交文生图任务 → `{job_id}` |
+| POST | `/api/polish` | 提示词润色（`mode=t2i\|edit`，`image_model=qwen\|moss`，可带 `target_size` / `references` / `images`） |
+| POST | `/api/generate` | 提交文生图任务 → `{job_id}`（`model` / `ratio` / `bbox`） |
 | POST | `/api/edit` | 提交图像编辑任务 → `{job_id}` |
 | POST | `/api/image/process` | 图像处理：crop / grid / rotate / flip / resize / adjust / pad32 / trim_alpha |
 | POST | `/api/image/outpaint-plan` | 扩图规划：返回新画布、pad、原图偏移 |
@@ -381,18 +436,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 
 | 场景 | 尺寸 | 冷启动首张 | **热态每张（端到端）** |
 |---|---|---|---|
-| 文生图 · Turbo | 512×512 | 约 20s | **0.9s**（引擎层） |
-| 文生图 · Turbo | 1024×1024 | 32.8s | **2.7s** |
-| 文生图 · Turbo | 2016×1152 | 约 33s | **5.7s** |
-| 文生图 · Turbo | 2752×1536 | — | **12.9s**（引擎层） |
+| 文生图 · Turbo | 512×512 | 约 20s | **0.8s** |
+| 文生图 · Turbo | 1024×1024 | 32.8s | **2.1s** |
+| 文生图 · Turbo | 2016×1152 | 约 33s | **5.3s** |
+| 文生图 · Turbo | 2752×1536 | — | **12.3s** |
 | 文生图 · 默认 25 步 | 2048×2048 | — | 约 25s |
 
 > 对照：同一台机器、同一份权重与 LoRA，ComfyUI 的日志是
-> `Prompt executed in 4.95 seconds`（2016×1152）—— 2K 档基本持平，1MP 档本项目明显更快
-> （2.7s vs ComfyUI 同尺寸约 5s）。冷启动差距来自权重要上卡（一次性）。
+> `Prompt executed in 4.95 seconds`（2016×1152）。注意口径：2.3MP 的**全量** VAE 解码在本机
+> 即使不挂 LoRA 也会 OOM（峰值 >28GB），所以任何实现都逃不掉约 1.1s 的分块解码；
+> 本项目 5.25s 已在此基础上，1MP 档更是 2.1s（ComfyUI 同尺寸约 5s）。
 > 详细拆解（编码/采样/解码/PNG/free）与调参过程见 [docs/INFERENCE.md](docs/INFERENCE.md) 第 4.0、5.2、6.4 节。
 
-### 四个已修复的性能坑（都实测过，别踩回去）
+### 七个已修复的性能坑（都实测过，别踩回去）
 
 | 现象 | 根因 | 修法 |
 |---|---|---|
@@ -400,6 +456,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | 2MP 以上解码 6 秒 | 全量 VAE 解码既 OOM 又慢（latent 2.3MP 的空间注意力超线性） | 大图**直接**分块解码，`vae_tile_size=1024`（比默认 512 快 2.3 倍：1.3s vs 3.0s） |
 | 每张图重新挂 18GB LoRA | `apply_loras` 每次从基座重挂 | 加签名缓存，同一组 LoRA 直接返回（0ms） |
 | 1MP 出图慢一倍、日志反复 OOM | 阈值按"CLIP 已让位"估的（1.5MP），实际 CLIP 常驻时 1024² 全量解码必 OOM，回退分块要 3.4s | 文本编码器**常驻**显存 + `tiled_decode_threshold=600000`（1024² 从 7.4s → 2.7s） |
+| 每张多花 0.3~0.5s | 每单 `soft_empty_cache` + `gc.collect`（0.22s）、PNG lv6（0.31s）、缩略图把刚编码的 PNG 又解码一遍（0.15s） | 只清 `empty_cache`；`png_compress_level` 默认 1；缩略图直接从内存 PIL 图缩放（1024² 再降到 2.1s） |
+| 同提示词连抽多张，每张都重算一遍文本编码 | `encode_text` 每单都跑一次 CLIP 前向；编辑链路还要重做参考图 VAE 编码（1.4s） | 加 LRU 缓存（`encode_cache_size`，默认 8）：纯文本省 145ms/张，带参考图的编辑省 1.4s/张 |
 
 显存占用：
 
@@ -428,7 +486,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 **Q：出图很慢？**
 先看启动日志里的 `[env] torch ... (CUDA x)`：不是 13.x 就是用了 cu128 的 torch（慢约 3 倍）。
 其次看是不是刚冷启动（权重要上卡，20~25s）；模型空闲 30 分钟会被自动卸载，下一次再上卡。
-热态参考值：512² ≈ 0.9s、1024² ≈ 2.7s、2016×1152 ≈ 5.7s（引擎层/端到端，含落盘）。
+热态参考值：512² ≈ 0.8s、1024² ≈ 2.1s、2016×1152 ≈ 5.3s（端到端，含落盘）。
 
 **Q：Turbo 出图糊？**
 必须用官方 sigma（本文第二节）。本项目默认已注入；如果你手改过 `sigmas` 或换了调度器，请恢复。

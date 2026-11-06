@@ -1,20 +1,30 @@
-# 提示词润色（Ollama + Qwen 官方 PE）
+# 提示词润色（Ollama + 每模型官方 PE）
 
-用 Qwen-Image 官方 Prompt-Enhancer（PE）系统提示词，把用户随手写的中文/短提示词
-改写成官方风格的完整提示词，同时返回宽高比建议；由本机 Ollama 吐模型，不联网。
+用**目标图像模型自己的** Prompt-Enhancer（PE）系统提示词，把用户随手写的中文/短提示词
+改写成该模型的原生写法，同时返回宽高比建议；由本机 Ollama 吐模型，不联网。
+
+| 图像模型 | PE 文件 | 输出形态 |
+|---|---|---|
+| Qwen-Image 2.1 | `data/pe_system_prompt_t2i.txt` / `pe_system_prompt_edit.txt` | `{"rewritten_prompt","wh_ratio","ratio_follow"}` |
+| MOSS-Image | `data/pe_system_prompt_moss_t2i.txt` | `{"caption": "..."}` 或完整 Layout 对象（`width/height/bbox_coord_space/bbox_format/summary/items`） |
 
 - 服务端实现：`server/ollama.py`（HTTP 客户端）、`server/prompt_polish.py`（润色逻辑）
-- 静态数据：`data/pe_system_prompt_t2i.txt`、`data/pe_system_prompt_edit.txt`
-  （**只读**，10KB 左右，官方 PE 原文，逐字作为 system message，不要修改/覆盖）
+- 静态数据：`data/pe_system_prompt_*.txt`
+  （**只读**，官方 PE 原文，逐字作为 system message，不要修改/覆盖）
 - 对外接口：`POST /api/polish`（由 Lead 在 `server/main.py` 实现路由，原样透传本模块返回）
 
 ## 1. 契约要点（BUILD_CONTRACT 2.3 / 4.4）
 
 ```text
 POST /api/polish
-body {"prompt": str, "mode": "t2i"|"edit", "model": str|null, "language": str|null}
+body {"prompt": str, "mode": "t2i"|"edit", "model": str|null, "language": str|null,
+      "image_model": "qwen"|"moss"|null,          # 目标图像模型，决定用哪份 PE
+      "target_size": [w, h] | {"width","height"} | "1024x1024",   # 目标画布
+      "references": [{"name":"image1","size":[w,h],"description":"..."}],  # 参考图尺寸/描述
+      "images": ["data:image/png;base64,..."]}    # 可选，真正附图给视觉模型
 -> {"rewritten_prompt", "wh_ratio", "ratio_follow",
-    "model", "elapsed_ms", "fallback", "raw", "mode"}
+    "model", "elapsed_ms", "fallback", "raw", "mode", "parse",
+    "image_model", "vision"}
 ```
 
 | 项 | 值 |
@@ -22,8 +32,9 @@ body {"prompt": str, "mode": "t2i"|"edit", "model": str|null, "language": str|nu
 | Ollama 地址 | `http://127.0.0.1:11434` |
 | 默认模型 | `qwen3.5:9b`（T2I 与编辑同一个，`DEFAULT_T2I_MODEL` / `DEFAULT_EDIT_MODEL`） |
 | 默认超时 | 300s（首次加载模型 30~60s 很正常） |
-| 端点 | `GET /api/tags`、`POST /api/chat`，`stream: false` |
+| 端点 | `GET /api/tags`、`POST /api/show`（能力探测）、`POST /api/chat`，`stream: false` |
 | 空提示词 | 不发请求，直接 `fallback=True` |
+| 未知 `image_model` | 退回 `qwen`（不报错，前端传旧值不会 500） |
 
 ## 2. system / user 消息的组装
 
@@ -32,8 +43,44 @@ body {"prompt": str, "mode": "t2i"|"edit", "model": str|null, "language": str|nu
 
 | 角色 | 内容 |
 | --- | --- |
-| `system` | `data/pe_system_prompt_*.txt` **原文逐字**（见 `load_system_prompt()`；测试里逐字比对） |
-| `user` | 用户原始提示词 + 空行 + `JSON_OUTPUT_CONTRACT`（声明工作台输出约定优先于上文 Output format，要求只输出 `{"rewritten_prompt","wh_ratio","ratio_follow"}`） |
+| `system` | **目标模型**的 PE 原文逐字（`load_system_prompt(mode, image_model)`；测试里逐字比对） |
+| `user` | `[上下文块]`（有数据才加）+ 用户原始提示词 + 空行 + JSON 输出约定 |
+
+JSON 约定按模型二选一：
+
+- `qwen`：`JSON_OUTPUT_CONTRACT`，要求只输出 `{"rewritten_prompt","wh_ratio","ratio_follow"}`；
+- `moss`：`MOSS_JSON_CONTRACT`，要求只输出 JSON 本体。普通场景 `{"caption":"..."}`；
+  需要边界框/海报/分栏时输出完整 Layout 对象。有 `target_size` 时会额外插一句
+  「画布固定为 W×H，Layout 的 width/height 必须等于该值，bbox 落在 0..W / 0..H 内」。
+
+### 2.1 为什么要把「目标尺寸 + 参考图尺寸」写进 user message
+
+润色 LLM 看不到图片、也不知道目标画布时，会按训练数据的默认比例瞎猜（例如把方图写成 16:9），
+生成阶段再硬套尺寸就必然跑偏。所以 `build_messages()` 会在 user 最前面拼一段上下文：
+
+```text
+[目标画布] 1024×1024 px（宽高比约 1.000），生成结果将按这个尺寸输出。
+[参考图] 共 2 张，顺序与 <image1>…<image2> 一致：
+  <image1>：1024×1024 px，内容：陶瓷茶壶放在原木桌上
+  <image2>：768×1024 px
+参考图内容以随消息附上的图片为准；没有附图时不要臆造画面细节。
+```
+
+`target_size` 接受 `[w,h]` / `{"width","height"}` / `"1024x1024"`；`references` 接受
+`[{"name","size","description"}]` 或纯字符串列表。**system 提示词永远不掺这些内容**——
+它必须是官方原文，否则测试逐字比对会失败。
+
+### 2.2 视觉模型：能读图就附图，不能读图就显式降级
+
+1. `POST /api/polish` 的 `images`（data URL）在 `server/main.py` 里解码成 PIL；
+2. `polish()` 调 `_client_supports_vision()` → `GET /api/show`，看 `capabilities` 是否含 `vision`
+   （老版本 Ollama 没有 `capabilities` 时退看 `details.families` 是否含 `vl` / `vision`）；
+3. 支持 → 每张图压到最长边 **448px**、转 PNG、base64 放进 `messages[1]["images"]`，返回 `vision=true`；
+4. 不支持 → 在 user content 最前面加一句
+   「[注意] 当前润色模型不支持读图，只能按参考图的尺寸与文字描述工作，不要臆造画面细节。」，
+   返回 `vision=false`。
+
+能力探测抛任何异常都按「不支持」处理，**不允许因为探测失败让润色 500**。
 
 配套两个 Ollama 请求参数（`OllamaClient.chat(..., format=..., think=...)`）：
 
@@ -70,6 +117,18 @@ body {"prompt": str, "mode": "t2i"|"edit", "model": str|null, "language": str|nu
 
 按模式收口：**T2I 只返回 `wh_ratio`，编辑只返回 `ratio_follow`**——模型偶尔跨模式多填，
 这里统一清空另一端，前端不会拿错字段。
+
+`image_model="moss"` 时字段映射换成 `_from_moss_mapping()`：
+
+| 模型输出 | `rewritten_prompt` |
+|---|---|
+| `{"caption":"..."}` | `caption` 原文（`wh_ratio` / `ratio_follow` 为空） |
+| 带 `items` 且含 `bbox_coord_space` / `bbox_format` 的 Layout | `json.dumps(..., ensure_ascii=False, separators=(",",":"))` 的**紧凑 JSON 字符串** |
+| 其他（模型没按约定输出） | 退回通用映射（`rewritten_prompt` / `prompt` / `text`…） |
+
+Layout 之所以原样序列化，是因为 MOSS 的布局节点吃的就是这个紧凑 JSON 字符串；
+再包一层 `{"rewritten_prompt": ...}` 反而要二次解包。**`wh_ratio` 对 MOSS 恒为空**，
+画幅由 `target_size` 直接决定。
 
 ## 5. fallback 语义（契约要求：Ollama 挂了不许 500）
 
@@ -139,14 +198,31 @@ from server.prompt_polish import polish, available_models, pick_default_model
 
 models = available_models()               # Ollama 挂了返回 []，不抛异常
 model = pick_default_model()              # 优先 qwen3.5:9b，否则任一 qwen 模型
+
+# Qwen：拿长提示词 + 画幅建议
 result = polish("一只猫", mode="t2i", model=model, timeout=300)
 print(result["rewritten_prompt"], result["wh_ratio"], result["fallback"], result["elapsed_ms"])
+
+# MOSS：拿 caption 或 Layout JSON，并告诉它目标画布与参考图尺寸
+moss = polish(
+    "做一张清凉一夏的夏日海报，少女在草地上跳跃",
+    mode="t2i", model=model, image_model="moss",
+    target_size=(1024, 1536),
+    references=[{"name": "image1", "size": (1024, 1024), "description": "蓝白条纹的连衣裙"}],
+    reference_images=[pil_image],         # 可选；视觉模型才会真正看到图
+)
+print(moss["rewritten_prompt"], moss["parse"], moss["vision"])
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:8700/api/polish \
   -H "Content-Type: application/json" \
   -d '{"prompt":"一只戴墨镜的橘猫","mode":"t2i","model":null,"language":null}'
+
+# MOSS + 目标画布
+curl -X POST http://127.0.0.1:8700/api/polish \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"清凉一夏海报","mode":"t2i","image_model":"moss","target_size":[1024,1536]}'
 ```
 
 `GET /api/health` 里的 `ollama.models` 可直接用 `available_models()` / `OllamaClient.model_names()`；
@@ -156,19 +232,26 @@ curl -X POST http://127.0.0.1:8700/api/polish \
 
 ```bash
 $PY -m pytest tests/test_prompt_polish.py -q        # 40 passed
+$PY -m pytest tests/test_moss_profile.py -q         # MOSS PE 独立 + 尺寸注入 + caption/Layout 解析
 $PY tests/test_prompt_polish.py                     # 无 pytest 时也可直接跑（文件末尾自跑块）
 ```
 
 覆盖点：官方 system 原文逐字比对、三级降级、JSON 围栏/别名/比例清洗、按模式收口、
 两种模式的采样参数（含 edit `presence_penalty=0`）、`think=false`/`format=json` 请求体、
 各种失败 fallback、`fallback=False` 抛错、非法 mode、空提示词不发请求、契约签名、
-`OllamaClient` 的请求体/错误收敛/`/api/tags` 规整。**所有测试都用注入的假 client /
-假 session，不发真实网络请求。**
+`OllamaClient` 的请求体/错误收敛/`/api/tags` 规整。
+
+MOSS 额外覆盖：两份 PE 互相独立（`load_system_prompt("t2i","moss") != ("t2i","qwen")`）、
+`build_messages` 注入 `[目标画布]`、`{"caption":...}` 与 Layout 两种输出的解析。
+**所有测试都用注入的假 client / 假 session，不发真实网络请求。**
 
 ## 10. 边界
 
 - 不修改 `data/pe_system_prompt_*.txt`（只读，测试会逐字比对文件与 `load_system_prompt()`）。
 - 不调用 ComfyUI、不生成图片（显存留给端到端测试）。
-- `language` 参数目前是预留位（透传不报错）：输出语言由官方 PE 自己判定——T2I 恒英文、
+- `language` 参数目前是预留位（透传不报错）：输出语言由官方 PE 自己判定——Qwen T2I 恒英文、
   编辑按指令语言判定，强改会和 PE 规则冲突。
+- MOSS 只有 `pe_system_prompt_moss_t2i.txt` 一份 PE，`mode="edit"` 也复用它；
+  但 MOSS 的参考图编辑本轮未接入，前端不应把 `edit` + `moss` 组合当可用能力。
+- `MOSS_JSON_CONTRACT` 里的画布规则只有拿到 `target_size` 才会插入；没传就别指望模型自己给出正确 `width/height`。
 - 模型可换：`qwen3.5:27b` 质量更高但更慢；换非 qwen 模型时 `think=false` 一般也无害。

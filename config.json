@@ -23,6 +23,32 @@
   "vae": "vae/Qweniamge2.1/qwen_image_2.1_vae_bf16.safetensors",
   "turbo_lora": "loras/qwen2.1加速/qwen_image_2.1_turbo_lora_hifi_T8_v001.safetensors",
   "consistency_lora": "loras/Qwen-功能2.1/qwen-image-2.1-consistency-2000.safetensors",
+  "model": "qwen",
+  "moss": {
+    "unet": "diffusion_models/moss/moss_image_sft_bf16.safetensors",
+    "clip": "text_encoders/moss/qwen3.5_9b_int8_convrot.safetensors",
+    "vae": "vae/moss/flux2-vae.safetensors",
+    "turbo_lora": "loras/moss8step/moss-8steps.safetensors",
+    "turbo_lora_strength": 1.0,
+    "steps": 50,
+    "cfg": 3.5,
+    "sampler": "er_sde",
+    "scheduler": "simple",
+    "negative_prompt": "bad quality,",
+    "turbo_steps": 8,
+    "turbo_cfg": 1.0,
+    "turbo_sampler": "euler",
+    "turbo_scheduler": "simple",
+    "width": 1024,
+    "height": 1024,
+    "megapixels": 2.0,
+    "slg": {
+      "single_layers": "22",
+      "double_layers": "",
+      "start_percent": 0.0,
+      "end_percent": 0.5
+    }
+  },
   "host": "127.0.0.1",
   "port": 8700,
   "ollama_url": "http://127.0.0.1:11434",
@@ -43,5 +69,7 @@
   "warmup_on_load": false,
   "vae_tile_size": 1024,
   "vae_tile_overlap": 64,
-  "tiled_decode_threshold": 600000
+  "tiled_decode_threshold": 600000,
+  "png_compress_level": 1,
+  "encode_cache_size": 8
 }

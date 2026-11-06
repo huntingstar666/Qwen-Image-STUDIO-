@@ -36,6 +36,12 @@ TURBO_SIGMAS: list[float] = [
     1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568,
 ]
 
+#: 仓库里现成的 Turbo 底模（权重本身已蒸馏，不需要再挂加速 LoRA）。
+#: 可在 config.json 用 ``turbo_unet`` 覆盖。
+TURBO_CKPT_UNET = (
+    "diffusion_models/QwenImage2.1/qwen_image_2.1_turbo_int8_convrot.safetensors"
+)
+
 #: 官方推荐的 7 种比例（README「Supported Aspect Ratios」，均为 32 的倍数）
 RATIOS: list[dict[str, Any]] = [
     {"id": "1:1", "label": "1:1 方形", "w": 2048, "h": 2048, "mp": 4.0},
@@ -72,12 +78,16 @@ DEFAULTS: dict[str, Any] = {
         "vae": ["vae"],
         "lora": ["loras"],
     },
+    # 默认使用的模型档案（见 server/models.py：qwen / moss）
+    "model": "qwen",
     # 默认使用的模型（相对 model_root 的路径，需带子目录前缀；也可写绝对路径）
     "unet": "diffusion_models/QwenImage2.1/qwen_image_2.1_int8_convrot.safetensors",
     "clip": "text_encoders/Qweniamge2.1/qwen3vl_8b_int8_convrot.safetensors",
     "vae": "vae/Qweniamge2.1/qwen_image_2.1_vae_bf16.safetensors",
     # 常用 LoRA
     "turbo_lora": "loras/qwen2.1加速/qwen_image_2.1_turbo_lora_hifi_T8_v001.safetensors",
+    # Turbo 预设「自动切底模」使用的权重（仓库里现成的 Turbo 版本）
+    "turbo_unet": TURBO_CKPT_UNET,
     "consistency_lora": "loras/Qwen-功能2.1/qwen-image-2.1-consistency-2000.safetensors",
     # 服务
     "host": "127.0.0.1",
@@ -114,12 +124,22 @@ DEFAULTS: dict[str, Any] = {
     "vae_tile_size": 1024,
     "vae_tile_overlap": 64,
     "tiled_decode_threshold": 600000,
+    # 输出 PNG 压缩档位：只影响编码耗时/文件体积，不影响画质。
+    # 6 是 PIL 默认；1 在 2MP 图上编码快约 3.3 倍、文件大约 1.6 倍。
+    "png_compress_level": 1,
+    # 文本编码结果缓存条数：同提示词连抽多张时省掉一次 CLIP 前向（热态约 0.15s/张，
+    # 带参考图的编辑再抽时还能省掉整段参考图 VAE 编码）。0 = 关闭。
+    "encode_cache_size": 8,
 }
 
+#: Turbo 加速预设：用户只选方案，调度 / 加速 LoRA / 底模全部由预设决定。
+#: kind = "lora" → 自动挂载 profile.lora_name（且只挂这一个加速 LoRA）；
+#: kind = "ckpt" → 自动把扩散模型换成 unet 指向的 Turbo 权重，不挂加速 LoRA。
 TURBO_PROFILES: list[dict[str, Any]] = [
     {
         "id": "turbo8_official",
-        "label": "官方 Turbo 8 步（需挂 Turbo LoRA）",
+        "label": "官方 Turbo 8 步（自动挂 Turbo LoRA）",
+        "kind": "lora",
         "sigmas": TURBO_SIGMAS + [0.0],
         "steps": 8,
         "cfg": 1.0,
@@ -128,11 +148,13 @@ TURBO_PROFILES: list[dict[str, Any]] = [
         "lora": True,
         "lora_name": "loras/qwen2.1加速/qwen_image_2.1_turbo_lora_hifi_T8_v001.safetensors",
         "strength": 1.0,
-        "note": "官方 sample_sigmas 原样注入；cfg=1，euler。可换别的 8 步加速 LoRA。",
+        "unet": None,
+        "note": "使用官方 8 步 sigma 调度，并自动挂载 8 步加速 LoRA。",
     },
     {
         "id": "turbo8_ckpt",
-        "label": "官方 Turbo 8 步（权重本身是 Turbo，不挂 LoRA）",
+        "label": "官方 Turbo 8 步（自动切换 Turbo 底模）",
+        "kind": "ckpt",
         "sigmas": TURBO_SIGMAS + [0.0],
         "steps": 8,
         "cfg": 1.0,
@@ -141,11 +163,13 @@ TURBO_PROFILES: list[dict[str, Any]] = [
         "lora": False,
         "lora_name": None,
         "strength": 1.0,
-        "note": "用于 diffusion_models 里本身就是 Turbo 的权重；sigma 相同。",
+        "unet": TURBO_CKPT_UNET,
+        "note": "自动把底模换成仓库里的 Turbo 权重，不加载加速 LoRA。",
     },
     {
         "id": "turbo6_viggle",
-        "label": "viggle turbo 6 步（对应 6 步 LoRA）",
+        "label": "viggle turbo 6 步（自动挂 6 步 LoRA）",
+        "kind": "lora",
         "sigmas": [1.0, 0.9735, 0.9326, 0.8587, 0.7484, 0.5652, 0.0],
         "steps": 6,
         "cfg": 1.0,
@@ -154,7 +178,8 @@ TURBO_PROFILES: list[dict[str, Any]] = [
         "lora": True,
         "lora_name": "loras/Qwen-功能2.1/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
         "strength": 1.0,
-        "note": "6 步 sigma 必须配合 viggle 6 步 LoRA；别的加速 LoRA 请选上面的 8 步档。",
+        "unet": None,
+        "note": "6 步 sigma 必须配合 viggle 6 步加速 LoRA，开启后自动挂载。",
     },
 ]
 
@@ -389,6 +414,85 @@ def turbo_lora_candidates(cfg: dict[str, Any] | None = None) -> list[dict[str, A
         it["label"],
     ))
     return items
+
+
+def turbo_plan(cfg: dict[str, Any] | None = None,
+               profile_id: str | None = None) -> dict[str, Any]:
+    """把 Turbo 预设解析成可直接执行的计划（采样参数 + 加速 LoRA / 底模）。
+
+    预设是唯一权威：调用方不需要（也不应该）再让用户改 sigma、LoRA 或强度。
+    """
+    cfg = cfg or load_config()
+    profile = turbo_profile(profile_id)
+    kind = str(profile.get("kind") or ("lora" if profile.get("lora") else "none"))
+
+    lora = None
+    if profile.get("lora") and profile.get("lora_name"):
+        name = str(profile["lora_name"])
+        path = resolve_model(cfg, "lora", name)
+        lora = {
+            "name": name,
+            "path": path,
+            "file": name.replace("\\", "/").rsplit("/", 1)[-1],
+            "strength": float(profile.get("strength") or 1.0),
+            "missing": path is None,
+        }
+
+    unet = None
+    unet_name = profile.get("unet")
+    if kind == "ckpt":
+        unet_name = cfg.get("turbo_unet") or unet_name
+    if unet_name:
+        name = str(unet_name)
+        path = resolve_model(cfg, "unet", name)
+        unet = {
+            "name": name,
+            "path": path,
+            "file": name.replace("\\", "/").rsplit("/", 1)[-1],
+            "missing": path is None,
+        }
+
+    return {
+        "id": profile["id"],
+        "label": profile["label"],
+        "kind": kind,
+        "sigmas": [float(v) for v in profile["sigmas"]],
+        "steps": int(profile["steps"]),
+        "cfg": float(profile["cfg"]),
+        "sampler": str(profile["sampler"]),
+        "scheduler": str(profile["scheduler"]),
+        "lora": lora,
+        "unet": unet,
+        "note": profile.get("note") or "",
+    }
+
+
+def turbo_profiles_public(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """供 /api/options 的 Turbo 预设列表（只给文件名与缺失标记，不暴露绝对路径）。"""
+    cfg = cfg or load_config()
+    out: list[dict[str, Any]] = []
+    for profile in TURBO_PROFILES:
+        plan = turbo_plan(cfg, profile["id"])
+        out.append({
+            key: plan[key]
+            for key in ("id", "label", "kind", "sigmas", "steps", "cfg",
+                        "sampler", "scheduler", "note")
+        } | {
+            "lora": ({k: plan["lora"][k] for k in ("name", "file", "strength", "missing")}
+                     if plan["lora"] else None),
+            "unet": ({k: plan["unet"][k] for k in ("name", "file", "missing")}
+                     if plan["unet"] else None),
+        })
+    return out
+
+
+def is_accel_lora(value: str | None) -> bool:
+    """判断一个 LoRA 路径/文件名是否属于「加速 LoRA」（用于保证同时只挂一个）。"""
+    if not value:
+        return False
+    low = str(value).replace("\\", "/").lower()
+    filename = low.rsplit("/", 1)[-1]
+    return any(k in filename for k in _TURBO_LORA_NAME_KEYWORDS)
 
 
 def pick_turbo_lora(cfg: dict[str, Any], profile: dict[str, Any] | None,

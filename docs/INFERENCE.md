@@ -11,10 +11,15 @@
 | 权重 | `<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI\models\`（**只读**，不复制、不修改） |
 | 依赖 | `torch 2.11.0+cu128`、`PIL 11.3.0`、`numpy 2.3.5`（`<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe` 自带，零安装） |
 | 硬件 | RTX 5090 31.82GB（实测机） |
-| 单测 | `tests/test_native_backend.py`（40 项，纯逻辑，不加载模型） |
+| 单测 | `tests/test_native_backend.py`（40 项）、`tests/test_moss_profile.py`（15 项），纯逻辑，不加载模型 |
 | 验收脚本 | `scripts/verify_native_engine.py`、`scripts/bench_native_engine.py` |
 
-**状态**：t2i 1024 turbo 8 步 / t2i 2048 默认 25 步 / 单图编辑 `resolution=0` 三组已真实出图并人眼确认（见第 6 节）；LoRA 通路已用 320MB LoRA 验证；**官方 18.22GB turbo LoRA 在本机无法加载**（见第 7.1 节，这是环境问题，影响 pipeline 默认 turbo 档位，必须改配置）。
+**状态**：Qwen-Image 2.1 的 t2i 1024 turbo 8 步 / t2i 2048 默认 25 步 / 单图编辑 `resolution=0` 三组已真实出图并人眼确认（见第 6 节）；LoRA 通路已用 320MB LoRA 验证；**官方 18.22GB turbo LoRA 在本机无法加载**（见第 7.1 节，这是环境问题，影响 pipeline 默认 turbo 档位，必须改配置）。
+
+**MOSS-Image 已接入同一个引擎**（2026-11-06）：模型差异集中在 `server/models.py` 的档案里，引擎通过
+`EngineConfig` 的 4 个新字段区分（`clip_type` / `text_backend` / `latent_channels` / `latent_downscale`）。
+边界框布局（`server/moss.py`，逐行移植 ComfyUI 三个节点）与 SLG（`sample(slg=...)`）是可选能力。
+实测见 6.5，差异清单见 4.5。
 
 ---
 
@@ -86,6 +91,10 @@ engine.free(unload=False)                    # 模型留在显存给下一单用
 | `unet` / `clip` / `vae` | str \| None | None | 默认模型**绝对路径**；`ensure_loaded()` 可逐个覆盖 |
 | `vram_reserve` | float | 0.15 | 显存安全余量（占总显存比例），供上层策略参考 |
 | `dtype` | str | `"default"` | 与 ComfyUI `UNETLoader.weight_dtype` 同义，映射见下 |
+| `clip_type` | str | `"qwen_image"` | CLIPType 名（大小写不敏感）。MOSS 用 `"moss_image"`；未知值在 `ensure_loaded()` 时抛 `EngineError` |
+| `text_backend` | str | `"qwen"` | `"qwen"` 走 `TextEncodeQwenImage21`（vision + VAE 参考图）；`"moss"` 走纯 `clip.tokenize` + `encode_from_tokens_scheduled`（不读图） |
+| `latent_channels` | int | `64` | 空 latent 通道数。Qwen 64 / MOSS 128 |
+| `latent_downscale` | int | `16` | latent ↔ 像素下采样倍数。Qwen 16 / MOSS 16（但像素只需 16 对齐，不是 32） |
 | `comfy_root` | str \| None | None | **旧字段名兼容别名**，等价 `engine_dir`；两者都给时 **`engine_dir` 优先** |
 
 `dtype` → `model_options` 映射（与 `nodes.py::UNETLoader` 完全一致）：
@@ -150,18 +159,31 @@ engine.apply_loras([])          # 还原基座模型
 - 同一张缩放后的图**同时喂 VLM 和 VAE**；有 alpha 时 VLM 看白底合成（`rgb*alpha + (1-alpha)`），VAE 保留 4 通道。
 - `keep_vision = (len(ref_latents) == 0)`；有参考图时用 `node_helpers.conditioning_set_values(..., append=True)` 追加 `reference_latents` 到正负条件。
 - 输入 PIL 一律按 **RGBA** 处理（无 alpha 视为全不透明），保证可复现。
+- **结果带 LRU 缓存**（`encode_cache_size`，默认 8 条）：键 = 权重代号 + 提示词 + 负向 + `resolution`
+  + 参考图像素摘要。同提示词连抽多张直接复用，换模型/LoRA 自动失效。返回的是浅拷贝，
+  可以放心交给 `sample()`。见 4.0 ⑤。
+
+`text_backend="moss"` 时（MOSS-Image）：
+
+- 走 `clip.tokenize(text)` + `encode_from_tokens_scheduled()`，**完全不读参考图**；
+  传了 `images` 会直接抛 `EngineError("MOSS 参考图编辑尚未接入")`，不会静默忽略。
+- `canvas` 仍返回 `(resolution or 1024)²`，纯为接口一致性；MOSS 的 t2i 不消费它。
+- LRU 缓存键同样是「权重 + 提示词 + 负向 + resolution」。
 
 ### 3.6 `encode_latent(image) -> torch.Tensor`
 
 VAE 编码画布 → `[1, 64, H/16, W/16]`（局部编辑方案 A 用）。
 
-### 3.7 `sample(*, positive, negative, latent=None, sigmas=None, steps, cfg, sampler="euler", scheduler="simple", seed=0, denoise=1.0, width=None, height=None, batch=1, noise_mask=None, callback=None)`
+### 3.7 `sample(*, positive, negative, latent=None, sigmas=None, steps, cfg, sampler="euler", scheduler="simple", seed=0, denoise=1.0, width=None, height=None, batch=1, noise_mask=None, slg=None, callback=None)`
 
-- `latent=None` + `width/height/batch` → 引擎内部造 `torch.zeros([batch, 64, h//16, w//16])`（t2i 用，pipeline 不必 import torch）。
-- `sigmas` 给定 → 显式 sigma 路径（Turbo），**忽略 `steps`/`scheduler`**（`steps` 仍用于进度总数）。
-- `sigmas=None` → `comfy.samplers.calculate_sigmas(model_sampling, scheduler, steps)` 默认路径。
+- `latent=None` + `width/height/batch` → 引擎内部造 `torch.zeros([batch, latent_channels, h//16, w//16])`（t2i 用，pipeline 不必 import torch）。
+- `sigmas` 给定 → 显式 sigma 路径（Qwen Turbo），**忽略 `steps`/`scheduler`**（`steps` 仍用于进度总数）。
+- `sigmas=None` → `comfy.samplers.calculate_sigmas(model_sampling, scheduler, steps)` 默认路径（MOSS 50 步与 8 步都走这条）。
 - `denoise<1` → 两条路径都按 `KSampler.set_steps` 的规则截尾（见 4.2）。
 - `noise_mask` → 等价 `SetLatentNoiseMask`；接受 **numpy `(H,W) float32` 像素尺寸 0..1**（1=重绘）、PIL `L` 图、或 tensor，引擎内部按 latent 形状插值。
+- `slg` → 可选 `SkipLayerGuidanceDiTSimple`（仅 MOSS 用，默认 `None` 即关闭）。
+  字段 `{single_layers:"22", double_layers:"", start_percent:0.0, end_percent:0.5}`，
+  层号字符串用 `\d+` 解析；只对**本次采样**生效（`model.clone()`，不改基座）。
 - `callback(step, total_steps, current_latent)` 用于进度（`total_steps = len(sigmas)-1`）；**在回调里抛异常即取消**，该异常原样抛给上层，不会被包成 `EngineError`。
 - 每次采样前自动把文本编码器挪出显存（第 5.2 节）。
 
@@ -171,7 +193,8 @@ VAE 编码画布 → `[1, 64, H/16, W/16]`（局部编辑方案 A 用）。
 
 ### 3.9 `free(*, unload=False)`
 
-- `unload=False`：只 `soft_empty_cache()` + `gc`，模型留在显存给下一单（pipeline 每单结束调它）。
+- `unload=False`：只 `torch.cuda.empty_cache()`，模型留在显存给下一单（pipeline 每单结束调它）。
+  实测不需要 `soft_empty_cache` / `gc.collect`（每单多花 0.2s、对下一单零收益），见 6.4。
 - `unload=True`：卸载全部模型 + `model_management.unload_all_models()` 归还显存。
 
 ---
@@ -212,6 +235,19 @@ CLIP 留在显存后 1024² 引擎层 **2.3s**、2016×1152 **5.3s**；让位方
 
 **④ LoRA 要按签名缓存。** `apply_loras` 每次会从基座模型重新 patch 所有层，
 18GB 的 HiFi 适配器每张图重来一次是灾难。现在同一组 `(路径, 强度)` 直接秒返回。
+
+**⑤ 文本编码结果要缓存（同提示词晒图）。** 用户「多抽几张」时提示词、负向、参考图都不变，
+`encode_text` 是纯函数，可以整段复用。缓存键 = 权重代号 + 提示词 + 负向 + resolution
++ 每张参考图的**像素内容摘要**（blake2b），所以同图重新上传也能命中；换模型 / 换 LoRA
+时代号自增并清空，不会串味。条数由 `encode_cache_size` 控制（默认 8，0 = 关）。
+
+| 场景 | 未命中 | 命中 |
+|---|---|---|
+| 文生图（纯文本） | 145ms | **<1ms** |
+| 编辑 + 1 张 1024² 参考图 | 1446ms | **4ms** |
+
+编辑链路收益大得多，因为未命中那次要额外做**参考图 VAE 编码**（占了 1.3s）。
+命中时连「把文本编码器装回显存」都跳过了。
 
 热态实测（RTX 5090 32GB，cu130，Turbo 8 步 + HiFi 18GB LoRA，CLIP 常驻 + 阈值 0.6MP）：
 
@@ -276,7 +312,48 @@ pipeline 传的是 `np.float32 (H, W)`（像素尺寸，0..1）。引擎把它�
 
 ### 4.4 空 latent
 
-`[batch, 64, h//16, w//16]`，device 取 `comfy.model_management.intermediate_device()`（默认 CPU，与节点行为一致），采样时由 `outer_sample` 搬上卡。
+`[batch, 64, h//16, w//16]`（MOSS 为 `128` 通道），device 取 `comfy.model_management.intermediate_device()`（默认 CPU，与节点行为一致），采样时由 `outer_sample` 搬上卡。
+
+### 4.5 MOSS-Image 与 Qwen 的差异清单
+
+同一个 `NativeEngine`，差异只在 `EngineConfig` + 档案（`server/models.py`）：
+
+| 项 | Qwen-Image 2.1 | MOSS-Image (sft) |
+|---|---|---|
+| `CLIPType` | `qwen_image` | `moss_image` |
+| 文本编码 | `TextEncodeQwenImage21`（VLM + VAE 参考图） | 纯 `clip.tokenize` + `encode_from_tokens_scheduled` |
+| latent | 64 通道 / 16 倍 | **128 通道** / 16 倍 |
+| 像素对齐 | 32 倍 | **16 倍** |
+| 默认采样 | 25 步 / cfg 1.0 / euler / simple | **50 步 / cfg 3.5 / er_sde / simple**，负向 `bad quality,` |
+| 加速 | 显式 sigma 表 + 官方 turbo LoRA | **8 步 LoRA** → 8 步 / cfg 1.0 / euler / simple |
+| 边界框 | 不支持 | 支持（`server/moss.py`） |
+| SLG | 不支持 | 支持（可选，默认关） |
+| RGBA | 支持（`rgba=true`） | 不支持（按白底合成） |
+| 参考图编辑 | 支持（1~10 张） | 未接入（`generate_edit` 直接报错） |
+
+**边界框链路**（逐行移植 ComfyUI 三个节点，纯 Python 无 torch）：
+
+```
+请求 bbox（像素框 x/y/w/h 或 0..1000 element）
+  → pixels_to_fractions / normalize_incoming_boxes
+  → boxes_to_regions           # 0..1000 的 [ymin,xmin,ymax,xmax]
+  → build_elements             # type/text/desc/palette → metadata
+  → MOSSImageLayoutPrompt      # 按目标尺寸换像素、floor/ceil、减画布中心
+  → abs_centralized + yxyx 紧凑 JSON 字符串 → 直接当 prompt
+```
+
+三个实现细节，改代码时别丢：
+
+1. `item["bbox"]` 必须是
+   `[floor(round(y0*h/1000,9))-h//2, floor(round(x0*w/1000,9))-w//2, ceil(round(y1*h/1000,9))-h//2, ceil(round(x1*w/1000,9))-w//2]`
+   （`floor` 管前两位、`ceil` 管后两位，和原节点一字不差）。
+2. 输出用 `json.dumps(..., ensure_ascii=False, separators=(",", ":"))`，**不能有空格**（节点解析靠这个）。
+3. `items` 为空时**原样返回 prompt**，不要拼空 JSON。
+
+**SLG 实现**：`model.clone()` 后 `set_model_sampler_calc_cond_batch_function(...)`，
+区间内对 `double_block` / `single_block` 调 `set_model_options_patch_replace(slg_options, skip, "dit", ..., layer)`，
+用 `[cond, None]` 与 `[None, uncond]` 各算一次；区间外原样 `calc_cond_batch`。
+`start_percent/end_percent` 经 `model_sampling.percent_to_sigma()` 转成 sigma 阈值比较。
 
 ---
 
@@ -423,26 +500,65 @@ GPU 只有一个，pipeline 是单 worker 串行，这与引擎的 `self._gen_lo
 **另外 7~8s 是 18GB HiFi LoRA 的首次烘焙**（换 0.31GB 小 LoRA 后同尺寸首采样只要 5.2s）。
 这两块都只付一次；`warmup_on_load` 只是把它前移到启动阶段，不减少总量，所以默认仍关。
 
-**热态矩阵（引擎层，warm 后 3 次中位数）**
+**热态矩阵（端到端 `POST /api/generate` → 轮询到 done，取样 100ms）**
 
-| 尺寸 | 编码 | 采样 | 解码 | PNG(6) | free | 合计 |
-|---|---|---|---|---|---|---|
-| 512² | 0.16 | 0.38 | 0.07 | 0.03 | 0.20 | 0.90 |
-| 768² | 0.18 | 0.66 | 0.15 | 0.06 | 0.21 | 1.34 |
-| 896² | 0.14 | 0.91 | 0.38 | 0.08 | 0.19 | 1.71 |
-| 1024² | 0.16 | 1.28 | 0.52 | 0.12 | 0.24 | 2.32 |
-| 2016×1152 | 0.18 | 3.73 | 1.16 | 0.27 | 0.22 | 5.34 |
-| 2752×1536 | 0.23 | 9.70 | 2.48 | 0.48 | 0.25 | 12.92 |
+| 尺寸 | 采样 | 解码 | 端到端 |
+|---|---|---|---|
+| 512² | 0.38s | 0.07s（全量） | **0.78s** |
+| 1024² | 1.30s | 0.50s | **2.13s** |
+| 2016×1152 | 3.73s | 1.13s | **5.25s** |
+| 2752×1536 | 9.30s | 2.35s | **12.3s** |
+
+（采样/解码取自引擎 INFO 日志；端到端与两者之和的差额 ≈ 0.35~0.45s，含 PNG 编码、缩略图、落盘、HTTP 与轮询量化误差。）
 
 其它已验证结论：
 
-- `free(unload=False)` 每单 0.19~0.25s，**不要去掉**：去掉后下一单会慢 0.2~0.3s（2.51s vs 2.32s），碎片反而更差。
-- PNG 编码（真实 2K 图，非纯色测试图）：`compress_level=6` 每张 **309ms / 5.2MB**，
-  `compress_level=1` 只要 **101ms / 8.2MB**（+58% 体积）。默认仍用 6；要极限速度可切 1。
+- **`free(unload=False)` 只做 `torch.cuda.empty_cache()`**：原先的 `soft_empty_cache`
+  （synchronize + empty_cache + ipc_collect）再加 `gc.collect()` 每单要 0.19~0.25s，实测只清 empty_cache
+  就够（2K：free 从 0.22s 降到 0.03s，下一单不退化）。**不要改成完全不清**——那样下一单反而慢 0.2~0.3s。
+- **PNG 压缩档位做成配置 `png_compress_level`，默认 1**（真实 2K 图：lv6 = 309ms / 5.2MB，
+  lv1 = 101ms / 8.2MB，体积 +58%，画质无损）。
+- **缩略图不再二次解码 PNG**：`save_output(..., image=已解码的 PIL 图)` 直接从内存缩放，
+  4.3MP 图从 149ms 降到 24ms；同时省掉 `probe_image` 的又一次全图解码（37ms）。
+- **2.3MP 全量 VAE 解码在本机根本不可能**：即使**完全不挂 LoRA**、显存全空，依旧
+  `Ran out of memory when regular VAE decoding` → 说明 Qwen VAE 在 2.3MP 的峰值 >28GB。
+  所以分块 1.13s 就是地板，不存在「先全量再回退」的更优解。
 - **编辑链路有 0.3~1.1s 的纯 CPU 后处理**（`imaging.composite`：羽化 + Reinhard 配色）：
   1024² 274ms、2016×1152 602ms、2752×1536 1116ms。t2i 不受影响；编辑任务调参时要把这块算进去。
-- 采样已是硬件边界：1MP 8 步 = 1.28s（160ms/步），换任何 attention 后端都是噪声级差异（见 4.0）。
-- 端到端比引擎层多约 0.4s（队列 + 落盘 + HTTP），其中约 0.2s 是测试脚本 200ms 轮询带来的量化误差。
+- 采样是硬件边界：1MP 8 步 = 1.30s（≈160ms/步），换任何 attention 后端都是噪声级差异（见 4.0）。
+- **文本编码缓存（2026-11-06 端到端验证）**：同一提示词连发 3 次
+  `POST /api/generate`（1024² Turbo），第 1 次未命中 2.16s、之后命中稳定 **2.00~2.05s**；
+  换一句提示词回到 2.16s，再换回又回到 2.01s。`/api/health` 的
+  `engine.encode_cache` 会给出 `{size, max, hits, misses}`，便于前端/脚本确认是否命中。
+  2016×1152 档命中与否都是 ~5.0s（编码只占 0.18s，被采样淹没）——这是正常的。
+- **和 ComfyUI 4.95s 的对照不是同口径**：2.3MP 全量解码既然不可能，任何 2016×1152 + 8 步的实现
+  都得付 1.1s 左右的分块解码；本项目 5.25s 已在此基础上。1MP 档本项目 2.13s，ComfyUI 同尺寸约 5s。
+
+### 6.5 MOSS-Image 实测（2026-11-06）
+
+环境同上（RTX 5090 31.82GB、cu130、`python -s`、引擎内跑，不启动 ComfyUI）。
+权重：`moss_image_sft_bf16` + `qwen3.5_9b_int8_convrot` + `flux2-vae`。
+
+| 档位 | 尺寸 | 采样参数 | encode | 采样 | 解码 | 备注 |
+|---|---|---|---|---|---|---|
+| 8 步 LoRA | 1024×1024 | 8 步 / cfg 1.0 / euler / simple | 1.4s（热） | **3.73s** | 0.30s | 首图 decode 4.91s（autotune） |
+| 无加速 + SLG | 1024×1024 | 50 步 / cfg 3.5 / er_sde / simple | — | **28.5s** | — | SLG `single_layers=22`、0~0.5 |
+| 无加速 + SLG | 1248×1664 | 50 步 / cfg 3.5 / er_sde / simple | — | **66.7~72.6s** | 0.9s | 请求 1256×1672，16 对齐后实际 1248×1664 |
+
+三条已验证的行为（改代码时容易回退）：
+
+- **尺寸对齐不是 bug**：请求 1256×1672 输出 1248×1664。ComfyUI `EmptyLatentImage` 返回
+  `downscale_ratio_spacial=8`，Flux2 latent 是 16 倍下采样，`fix_empty_latent_channels` 会做 0.5 倍缩放；
+  与本项目的 `//16` 完全一致。
+- **LoRA 真的在生效**：`apply_loras` 本身只 0.04s（只建 patch），采样时才应用。核对过
+  `model_lora_keys_unet` 覆盖 252/252 键、`load_lora` 生成 252 个 patch。
+- **边界框文字准确**：`清凉一夏` 海报用例，4 个框（蓝天白云 / 跳跃少女 / 草地树木 / 顶部标题）
+  位置与文字都对，说明 `type/text/desc` → `metadata` → `text` 整条链路通了。
+
+管线级（`Pipeline.generate_t2i`，`model=moss` + `turbo.enabled` + `bbox`）：
+`steps=8, cfg=1.0, euler`，`job.meta.bbox.enabled=true`、`items=1`，
+`job.params.layout_prompt` 是 `abs_centralized/yxyx` 紧凑 JSON，输出 832×832，
+文件名前缀 `moss-t2i-…`（Qwen 仍为 `qwen21-…`）。
 
 
 
@@ -557,16 +673,33 @@ images = engine.decode(samples)
 engine.free(unload=False)                     # 每单结束，模型留在显存
 ```
 
+**模型档案与引擎实例**：`pipeline` 不再只持有一个引擎，而是 `self._engines: dict[model_id, NativeEngine]`，
+按 `profile["id"]` 惰性创建（`_engine_for(profile)`）。切换模型时对**其它已加载引擎**执行
+`free(unload=True)`——32GB 放不下 Qwen + MOSS 两套权重，必须让位。每个引擎的
+`EngineConfig` 由 `_make_engine_config()` 按档案填 `clip_type / text_backend / latent_channels / latent_downscale`。
+
+MOSS 的 t2i 调用与上面完全同形，只多两个可选入参：
+
+```python
+profile = models.get(cfg, params.get("model"))        # "qwen" | "moss"
+width, height = _t2i_size(cfg, params, profile)       # moss：按 ratio + megapixels + 16 对齐
+prompt, info = moss.build_layout_prompt(prompt, params.get("bbox"), width, height)
+cond = engine.encode_text(prompt, sampling["negative_prompt"])   # text_backend="moss"
+samples = engine.sample(..., sigmas=None, steps=8, cfg=1.0, sampler="euler",
+                        scheduler="simple", slg=sampling["slg"], ...)
+```
+
 需要 pipeline 注意的点：
 
 | 点 | 说明 |
 |---|---|
 | **取消** | 采样 `callback` 里抛异常即可中断；引擎会**原样抛出**该异常（不包成 `EngineError`）。`job.check_cancel()` 建议在采样前 + 回调里都做 |
 | **错误类型** | 引擎所有失败都是 `EngineError(RuntimeError)`，pipeline 把它记成任务 error 即可；**不会让进程退出** |
-| **模型切换** | `ensure_loaded()` 传不同路径会整体重载（~10s + 首次编码 ~16s），所以同一次服务会话内尽量别频繁切模型 |
-| **LoRA** | 空列表 = 还原基座；切换 LoRA 会重新读盘（小 LoRA 快，18GB 见 7.1） |
+| **模型切换** | 同一个引擎内 `ensure_loaded()` 传不同路径会整体重载（~10s + 首次编码 ~16s）；**跨模型切换会卸载另一套权重**（见上） |
+| **LoRA** | 空列表 = 还原基座；切换 LoRA 会重新读盘（小 LoRA 快，18GB 见 7.1）。MOSS 的 8 步 LoRA 用 `turbo.lora="none"` 可关 |
 | **`batch`** | `sample(batch>1)` 只在 `latent=None` 时生效；`decode` 返回同长度 list |
 | **canvas 守卫** | edit 时必须 `resolution=0` 且画布 32 对齐，否则 `cond["canvas"] != canvas.size`，pipeline 已抛 `PipelineError` |
+| **能力开关** | 只按 `profile["capabilities"]` 走分支：`bbox`/`slg` 仅 MOSS，`rgba`/`edit` 仅 Qwen。MOSS 收到 `bbox` 以外的能力请求要写 `job.meta` 说明被忽略，不要静默丢弃 |
 
 ---
 
@@ -578,6 +711,7 @@ $PY = '<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe'
 
 # 纯逻辑单测（0.03s，不加载模型）
 & $PY -m pytest tests/test_native_backend.py -q
+& $PY -m pytest tests/test_moss_profile.py -q      # MOSS 档案 / 布局换算 / SLG 开关
 
 # 全量测试（含其它模块）
 & $PY -m pytest tests -q
@@ -612,5 +746,13 @@ $PY = '<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe'
 5. **`batch>1`** 实测（多图一次采样）。
 6. ~~18.22GB turbo LoRA 加载失败~~ —— 已可加载，见 7.1；剩余只是首次烘焙 7~8s 的成本。
 7. ~~多参考图（≥3）编辑报 inference tensor 错~~ —— **已修并验证**，见 7.2；如需补更多图数（4~10 张）的显存压力测试，用 `scripts/repro_multi_ref.py --refs N` 扩展。
-8. **未验证的剩余优化点**（收益递减，按需再做）：prompt embedding 缓存（同提示词省 0.16s/张）、
-   PNG `compress_level=1`（省 0.07~0.17s/张，文件变大）、VAE 量化/`torch.compile`（风险高，先不做）。
+8. ~~prompt embedding 缓存~~ —— **已完成**，见 4.0 ⑤ 与 6.4（`encode_cache_size`，默认 8 条；
+   纯文本省 145ms/张，编辑带参考图省 1.4s/张）。
+   PNG 压缩档位与缩略图快路径**已完成**，见 6.4。
+9. ~~VAE 量化 / `torch.compile`~~ —— **不做**（2026-11-06 决定）：项目目标是速度与质量跟 ComfyUI
+   平齐，不追额外加速。现状已达标：同权重同 sigma 同种子，模型/采样器代码就是 vendored 的
+   ComfyUI 本体，唯一的实现差异是解码分块（我们 1024 tile 比 ComfyUI OOM 回退的 512 tile 接缝更少）。
+10. **MOSS 参考图编辑**：本轮只做文生图 + 边界框。`encode_text(text_backend="moss")` 收到 `images`
+    会直接报错；下一轮要补 VAE 参考图编码与 `reference_latents` 条件拼接（对照 ComfyUI MOSS 编辑节点）。
+11. **MOSS 8 步 LoRA 之外的加速方式**：目前只认 LoRA；若要接 sigma 表或蒸馏底模，在档案
+    `accelerator.kind` 里加新分支即可，引擎侧不用改。

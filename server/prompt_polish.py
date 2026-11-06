@@ -21,6 +21,7 @@ thinking，长思考会把 ``num_predict`` 吃光导致 content 为空，因此�
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -43,6 +44,25 @@ DEFAULT_TIMEOUT = 300.0
 SYSTEM_PROMPT_FILES = {
     "t2i": "pe_system_prompt_t2i.txt",
     "edit": "pe_system_prompt_edit.txt",
+}
+
+#: 每个图像模型自己的 PE 系统提示词（润色 LLM 必须按目标模型的写作规范输出）。
+MODEL_SYSTEM_PROMPT_FILES: dict[str, dict[str, str]] = {
+    "qwen": SYSTEM_PROMPT_FILES,
+    # MOSS 的 PE 同时定义 Caption / Layout 两种输出模式，编辑模式也先复用这一份。
+    "moss": {
+        "t2i": "pe_system_prompt_moss_t2i.txt",
+        "edit": "pe_system_prompt_moss_t2i.txt",
+    },
+}
+
+IMAGE_MODEL_ALIASES = {
+    "qwen21": "qwen",
+    "qwen-image": "qwen",
+    "qwen_image": "qwen",
+    "qwen2.1": "qwen",
+    "moss-image": "moss",
+    "moss_image": "moss",
 }
 
 #: 官方 PE 采样参数（契约 4.4）。字段名即 Ollama /api/chat options 名。
@@ -81,6 +101,22 @@ RATIO_RE = re.compile(r"^\d{1,3}:\d{1,3}$")
 RATIO_FOLLOW_RE = re.compile(r"^<image\d+>$")
 CODE_FENCE_RE = re.compile(r"^```[a-zA-Z0-9_-]*\s*|\s*```$")
 
+#: MOSS PE 自己就要求「只输出纯 JSON」（Caption 或 Layout 两种形态），
+#: 所以这里的约定只补画布尺寸与两种形态的最小骨架，不再要求 rewritten_prompt 字段。
+MOSS_JSON_CONTRACT = (
+    "---\n"
+    "工作台输出约定（优先于上文 Hard Output Format Constraints）：只输出 JSON 本体，"
+    "不要 markdown 代码块、不要任何解释文字。\n"
+    '- 普通文生图：{"caption": "..."}（caption 为完整画面描述）。\n'
+    "- 需要边界框 / 海报 / 分栏排版：输出上文 Layout 模式的完整对象"
+    '（width / height / bbox_coord_space:"abs" / bbox_format:"xyxy" / summary / items）。\n'
+    "{canvas_rule}"
+    "所有可见文字必须逐字写出，不要用占位符。"
+)
+
+#: 视觉模型单张参考图的最长边（Ollama 官方建议 448 左右，过大会拖慢且无收益）
+VISION_MAX_SIDE = 448
+
 
 # --------------------------------------------------------------------------- 工具
 def _as_text(value: Any) -> str:
@@ -95,6 +131,65 @@ def normalize_mode(mode: Any) -> str:
     if key not in SYSTEM_PROMPT_FILES:
         raise ValueError(f"mode 必须是 't2i' 或 'edit'，收到 {mode!r}")
     return key
+
+
+def normalize_image_model(image_model: Any) -> str:
+    """规整目标图像模型名（决定用哪份 PE）；未知值退回 ``qwen``。"""
+    key = _as_text(image_model).strip().lower()
+    key = IMAGE_MODEL_ALIASES.get(key, key)
+    return key if key in MODEL_SYSTEM_PROMPT_FILES else "qwen"
+
+
+def _size_tuple(value: Any) -> tuple[int, int] | None:
+    """把 ``(w, h)`` / ``{"width","height"}`` / ``"1920x1088"`` 统一成整数对。"""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, dict):
+            w, h = int(value.get("width")), int(value.get("height"))
+        elif isinstance(value, str):
+            match = re.match(r"^\s*(\d+)\s*[x×*]\s*(\d+)\s*$", value)
+            if not match:
+                return None
+            w, h = int(match.group(1)), int(match.group(2))
+        else:
+            w, h = int(value[0]), int(value[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def _context_block(target_size: Any, references: Any) -> str:
+    """把「目标画布 + 参考图尺寸」写进 user message。
+
+    润色 LLM 看不到图片本身时也能知道比例是否要沿用、参考图长什么样，
+    避免它按训练数据的默认比例瞎猜（这是之前最容易出错的地方）。
+    """
+    lines: list[str] = []
+    target = _size_tuple(target_size)
+    if target:
+        w, h = target
+        lines.append(f"[目标画布] {w}×{h} px（宽高比约 {w / h:.3f}），生成结果将按这个尺寸输出。")
+    refs = references or []
+    if isinstance(refs, dict):
+        refs = [refs]
+    if refs and isinstance(refs, (list, tuple)):
+        lines.append(f"[参考图] 共 {len(refs)} 张，顺序与 <image1>…<image{len(refs)}> 一致：")
+        for index, ref in enumerate(refs, start=1):
+            if isinstance(ref, dict):
+                name = _as_text(ref.get("name")).strip() or f"image{index}"
+                size = _size_tuple(ref.get("size") or ref)
+                desc = _as_text(ref.get("description") or ref.get("desc")).strip()
+            else:
+                name = f"image{index}"
+                size = None
+                desc = _as_text(ref).strip()
+            detail = f"{size[0]}×{size[1]} px" if size else "尺寸未知"
+            if desc:
+                detail += f"，内容：{desc}"
+            lines.append(f"  <{name}>：{detail}")
+        lines.append("参考图内容以随消息附上的图片为准；没有附图时不要臆造画面细节。")
+    return "\n".join(lines)
 
 
 def _strip_code_fence(text: str) -> str:
@@ -145,37 +240,74 @@ def _from_mapping(data: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- 系统提示词
-def load_system_prompt(mode: str) -> str:
-    """读取官方 PE 系统提示词原文（UTF-8）。``mode ∈ {"t2i","edit"}``。"""
+def load_system_prompt(mode: str, image_model: Any = "qwen") -> str:
+    """读取目标模型自己的 PE 系统提示词原文（UTF-8）。
+
+    ``mode ∈ {"t2i","edit"}``；``image_model ∈ {"qwen","moss"}``（未知值退回 qwen）。
+    """
     key = normalize_mode(mode)
-    path = DATA_DIR / SYSTEM_PROMPT_FILES[key]
+    model_key = normalize_image_model(image_model)
+    path = DATA_DIR / MODEL_SYSTEM_PROMPT_FILES[model_key][key]
     return path.read_text(encoding="utf-8")
 
 
-def build_messages(prompt: str, mode: str = "t2i") -> list[dict]:
-    """构造 Ollama messages：官方 PE 原文作 system，用户请求 + JSON 约定作 user。"""
+def build_messages(prompt: str, mode: str = "t2i", *, image_model: Any = "qwen",
+                   target_size: Any = None, references: Any = None) -> list[dict]:
+    """构造 Ollama messages：目标模型 PE 原文作 system，用户请求 + 上下文 + JSON 约定作 user。
+
+    ``target_size`` / ``references`` 只影响 user message 里的上下文块（不改变 system）。
+    """
     key = normalize_mode(mode)
+    model_key = normalize_image_model(image_model)
     text = _as_text(prompt).strip()
-    system = load_system_prompt(key)
-    user = f"{text}\n\n{JSON_OUTPUT_CONTRACT}" if text else JSON_OUTPUT_CONTRACT
+    system = load_system_prompt(key, model_key)
+    if model_key == "moss":
+        target = _size_tuple(target_size)
+        rule = (f"画布固定为 {target[0]}×{target[1]} px；若输出 Layout，width/height 必须等于该值，"
+                f"所有 bbox 必须落在 0..{target[0]} / 0..{target[1]} 内。\n" if target else "")
+        contract = MOSS_JSON_CONTRACT.replace("{canvas_rule}", rule)
+    else:
+        contract = JSON_OUTPUT_CONTRACT
+    context = _context_block(target_size, references)
+    head = f"{context}\n\n" if context else ""
+    user = f"{head}{text}\n\n{contract}" if text else f"{head}{contract}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 # --------------------------------------------------------------------------- 解析
-def parse_polish_output(raw: Any) -> dict:
+def _from_moss_mapping(data: dict) -> dict:
+    """MOSS PE 的两种输出形态：``{"caption": ...}`` 或完整 Layout 对象。"""
+    caption = data.get("caption")
+    if isinstance(caption, str) and caption.strip():
+        return {"rewritten_prompt": caption.strip(), "wh_ratio": "", "ratio_follow": ""}
+    if (isinstance(data.get("items"), list)
+            and ("bbox_coord_space" in data or "bbox_format" in data)):
+        # Layout 模式：原样紧凑序列化后直接当提示词（MOSS 的 layout 节点吃的就是这个字符串）
+        return {
+            "rewritten_prompt": json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            "wh_ratio": "",
+            "ratio_follow": "",
+        }
+    return _from_mapping(data)
+
+
+def parse_polish_output(raw: Any, image_model: Any = "qwen") -> dict:
     """三级降级解析模型输出。
 
     返回 ``{"rewritten_prompt","wh_ratio","ratio_follow","parse"}``，
     ``parse`` ∈ ``{"json","braces","text"}`` 表示最终落在哪一级。
+
+    ``image_model="moss"`` 时额外识别 MOSS PE 的 ``caption`` / Layout 两种输出。
     """
     text = _strip_code_fence(_as_text(raw))
     if not text:
         return {"rewritten_prompt": "", "wh_ratio": "", "ratio_follow": "", "parse": "text"}
+    mapper = _from_moss_mapping if normalize_image_model(image_model) == "moss" else _from_mapping
 
     # 一级：整段就是 JSON（含被 model 包了一层 JSON 字符串的情况）。
     parsed = _try_json(text)
     if isinstance(parsed, dict):
-        result = _from_mapping(parsed)
+        result = mapper(parsed)
         if result["rewritten_prompt"]:
             return {**result, "parse": "json"}
     elif isinstance(parsed, str) and parsed.strip():
@@ -191,7 +323,7 @@ def parse_polish_output(raw: Any) -> dict:
     if 0 <= start < end:
         parsed = _try_json(text[start : end + 1])
         if isinstance(parsed, dict):
-            result = _from_mapping(parsed)
+            result = mapper(parsed)
             if result["rewritten_prompt"]:
                 return {**result, "parse": "braces"}
 
@@ -235,6 +367,38 @@ def _elapsed_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
 
 
+def _client_supports_vision(client: Any, model: str) -> bool:
+    checker = getattr(client, "supports_vision", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(model))
+    except Exception:  # noqa: BLE001 - 能力探测失败一律当不支持
+        return False
+
+
+def _image_b64(value: Any) -> str | None:
+    """把 PIL 图压到 ``VISION_MAX_SIDE`` 内再转 base64（Ollama images 字段格式）。"""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow 是项目依赖
+        return None
+    image = value.get("image") if isinstance(value, dict) else value
+    if not isinstance(image, Image.Image):
+        return None
+    image = image.convert("RGB")
+    width, height = image.size
+    scale = min(1.0, float(VISION_MAX_SIDE) / max(width, height))
+    if scale < 1.0:
+        image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))),
+                             Image.LANCZOS)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", optimize=False)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 def polish(
     prompt: str,
     *,
@@ -245,6 +409,10 @@ def polish(
     fallback: bool = True,
     language: str | None = None,
     json_mode: bool = True,
+    image_model: Any = "qwen",
+    target_size: Any = None,
+    references: Any = None,
+    reference_images: Any = None,
 ) -> dict:
     """润色一条提示词。
 
@@ -252,7 +420,12 @@ def polish(
 
         {"rewritten_prompt": str, "wh_ratio": str, "ratio_follow": str,
          "model": str, "elapsed_ms": int, "fallback": bool, "raw": str,
-         "mode": str, "parse": str, "error": str | None}
+         "mode": str, "parse": str, "error": str | None,
+         "image_model": str, "vision": bool}
+
+    ``image_model`` 决定用哪份 PE 系统提示词（qwen / moss）；``target_size`` 与
+    ``references`` 会写进 user message，``reference_images``（PIL 图）在 Ollama 模型
+    支持视觉时以 base64 附图形式一起发送。
 
     * Ollama 不可用 / 超时 / 任意调用异常：``fallback=True``，``rewritten_prompt``
       为原 prompt，``raw=""``（``fallback=False`` 时抛出 ``OllamaError``）。
@@ -260,11 +433,13 @@ def polish(
     * 非法 ``mode``：``ValueError``（任何情况下都抛）。
     """
     mode_key = normalize_mode(mode)
+    model_key = normalize_image_model(image_model)
     started = _empty_timer()
     text = _as_text(prompt).strip()
     resolved_model = _as_text(model).strip() or (
         DEFAULT_T2I_MODEL if mode_key == "t2i" else DEFAULT_EDIT_MODEL
     )
+    vision_used = False
 
     def _result(
         rewritten: str,
@@ -287,6 +462,8 @@ def polish(
             "mode": mode_key,
             "parse": parse,
             "error": error,
+            "image_model": model_key,
+            "vision": vision_used,
         }
 
     # 空提示词没有可润色的内容，也绝不发网络请求。
@@ -297,7 +474,17 @@ def polish(
         client = OllamaClient(timeout=timeout)
 
     try:
-        messages = build_messages(text, mode_key)
+        messages = build_messages(text, mode_key, image_model=model_key,
+                                  target_size=target_size, references=references)
+        if reference_images:
+            encoded = [b64 for b64 in (_image_b64(item) for item in reference_images) if b64]
+            if encoded and _client_supports_vision(client, resolved_model):
+                messages[1]["images"] = encoded
+                vision_used = True
+            elif encoded:
+                messages[1]["content"] = (
+                    "[注意] 当前润色模型不支持读图，只能按参考图的尺寸与文字描述工作，"
+                    "不要臆造画面细节。\n" + messages[1]["content"])
         sampling = T2I_SAMPLING if mode_key == "t2i" else EDIT_SAMPLING
         raw = _call_model(client, resolved_model, messages, sampling, json_mode=json_mode)
     except Exception as exc:  # noqa: BLE001 - 契约要求：除 mode 外都不抛异常
@@ -307,7 +494,7 @@ def polish(
             raise OllamaError(f"提示词润色失败：{exc}") from exc
         return _result(text, fallback_flag=True, error=str(exc))
 
-    parsed = parse_polish_output(raw)
+    parsed = parse_polish_output(raw, model_key)
     if not parsed["rewritten_prompt"]:
         return _result(
             text,
@@ -359,10 +546,13 @@ __all__ = [
     "DEFAULT_EDIT_MODEL",
     "DEFAULT_TIMEOUT",
     "SYSTEM_PROMPT_FILES",
+    "MODEL_SYSTEM_PROMPT_FILES",
     "T2I_SAMPLING",
     "EDIT_SAMPLING",
     "JSON_OUTPUT_CONTRACT",
+    "MOSS_JSON_CONTRACT",
     "normalize_mode",
+    "normalize_image_model",
     "load_system_prompt",
     "build_messages",
     "parse_polish_output",

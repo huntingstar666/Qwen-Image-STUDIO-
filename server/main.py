@@ -22,8 +22,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    __version__, config, imageops, imaging, jobs, materials, pipeline, prompt_polish, storage, styles,
+    __version__, config, imageops, imaging, jobs, materials, pipeline, prompt_polish,
+    storage, styles,
 )
+from . import models as image_models
 
 # --------------------------------------------------------------------------- 单例
 
@@ -282,11 +284,14 @@ def api_options() -> dict[str, Any]:
     models["turbo_lora"] = config.turbo_lora_candidates(cfg)
     return {
         "models": models,
+        # 图像模型档案（协议 + 每模型 profile）：前端据此切换模型 / 步数 / 加速 / 边界框
+        "model_profiles": image_models.public_list(cfg),
+        "default_model": image_models.normalize_model(cfg.get("model")),
         "samplers": config.SAMPLERS,
         "schedulers": config.SCHEDULERS,
         "ratios": config.RATIOS,
         "megapixels": [1.0, 2.0, 2.2, 4.0],
-        "turbo_profiles": config.TURBO_PROFILES,
+        "turbo_profiles": config.turbo_profiles_public(cfg),
         "steps_presets": config.STEPS_PRESETS,
         "defaults": {
             "unet": cfg.get("unet"),
@@ -315,10 +320,9 @@ def api_options() -> dict[str, Any]:
             "ollama": _ollama_health().get("connected", False),
         },
         "turbo_sigmas_help": (
-            "Turbo 使用官方保存的 8 步 sigma："
-            + ", ".join(f"{v:g}" for v in config.TURBO_SIGMAS)
-            + "，采样时追加 0.0。配 cfg=1、sampler=euler；"
-            "普通模式用 scheduler 生成等距 sigma。"
+            "Turbo 加速按预设执行：选「自动挂 Turbo LoRA」会挂载对应的加速 LoRA；"
+            "选「自动切换 Turbo 底模」会把扩散模型换成仓库里的 Turbo 权重且不挂加速 LoRA。"
+            "开启后自动沿用上次选择的预设，其他 LoRA 仍可手动叠加。"
         ),
     }
 
@@ -334,12 +338,30 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     mode = str(payload.get("mode") or "t2i")
     if mode not in ("t2i", "edit"):
         raise ApiError("mode 只能是 t2i 或 edit")
+    # 目标模型决定 system prompt（qwen / moss 各有一份 PE 写作规范）
+    image_model = payload.get("image_model") or payload.get("model_profile") or "qwen"
+    target_size = payload.get("target_size") or payload.get("target")
+    if not target_size and payload.get("width") and payload.get("height"):
+        target_size = [payload.get("width"), payload.get("height")]
+    references = payload.get("references") or payload.get("images_info")
+    # 参考图本体（data URL）：润色模型支持视觉时随消息发过去，让它真的"看到"图
+    reference_images: list[Any] = []
+    for entry in (payload.get("images") or []):
+        try:
+            reference_images.append(imaging.decode_image(pipeline._entry_bytes(entry),
+                                                        keep_alpha=False))
+        except Exception:  # noqa: BLE001 - 单张图坏了不影响润色
+            continue
     try:
         result = prompt_polish.polish(
             prompt,
             mode=mode,
             model=payload.get("model") or None,
             fallback=bool(payload.get("fallback", True)),
+            image_model=image_model,
+            target_size=target_size,
+            references=references,
+            reference_images=reference_images or None,
         )
     except Exception as exc:  # noqa: BLE001
         raise ApiError(f"提示词润色失败：{exc}", code="polish_failed", status=502) from exc
@@ -388,13 +410,23 @@ def _submit(kind: str, payload: dict[str, Any], *, prompt: str) -> dict[str, Any
 def api_generate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     prompt = str(_require(payload, "prompt", label="提示词") or "").strip()
     cfg = config.load_config()
-    width = int(payload.get("width") or cfg["width"])
-    height = int(payload.get("height") or cfg["height"])
-    if width > int(cfg["max_side"]) or height > int(cfg["max_side"]):
-        raise ApiError(f"尺寸超限：最大单边 {cfg['max_side']}")
+    try:
+        profile = image_models.get(cfg, payload.get("model"))
+    except ValueError as exc:
+        raise ApiError(str(exc), code="bad_model") from exc
+    # 只给 ratio（MOSS 的 ResolutionSelector 用法）时不要塞默认宽高，交给管线算
     payload["prompt"] = prompt
-    payload["width"] = width
-    payload["height"] = height
+    payload["model"] = profile["id"]
+    if payload.get("ratio") and not payload.get("width") and not payload.get("height"):
+        payload.pop("width", None)
+        payload.pop("height", None)
+    else:
+        width = int(payload.get("width") or profile["width"])
+        height = int(payload.get("height") or profile["height"])
+        if width > int(cfg["max_side"]) or height > int(cfg["max_side"]):
+            raise ApiError(f"尺寸超限：最大单边 {cfg['max_side']}")
+        payload["width"] = width
+        payload["height"] = height
     return _submit("t2i", payload, prompt=prompt)
 
 

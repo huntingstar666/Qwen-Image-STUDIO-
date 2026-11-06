@@ -21,6 +21,32 @@ from . import config
 # --------------------------------------------------------------------------- 数据结构
 
 
+#: data URL 超过这个长度就视为图片二进制，轮询/历史里不原样回传。
+_INLINE_DATA_PREFIX = "data:"
+_SLIM_DATA_LIMIT = 256
+
+
+def slim_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """把请求参数里的内联图片替换成占位符。
+
+    前端每 700ms 轮询 ``/api/jobs/{id}``，一张 4K 图的 data URL 就有十几 MB；
+    原样回传会让浏览器每轮都解析十几 MB JSON，界面直接卡死。
+    图片本身已经落在 ``meta.input_urls``（历史回看）和输出文件里，不需要再回传。
+    """
+    def _slim(value: Any) -> Any:
+        if isinstance(value, str):
+            if value.startswith(_INLINE_DATA_PREFIX) and len(value) > _SLIM_DATA_LIMIT:
+                return "<inline data omitted>"
+            return value
+        if isinstance(value, list):
+            return [_slim(item) for item in value]
+        if isinstance(value, dict):
+            return {key: _slim(item) for key, item in value.items()}
+        return value
+
+    return _slim(dict(params or {}))
+
+
 @dataclass
 class Job:
     """一次生成任务。`fn(job)` 在 worker 线程里执行，通过 job.set_progress 上报进度。"""
@@ -80,7 +106,7 @@ class Job:
             "quality": self.quality,
             "error": self.error,
             "prompt": self.prompt,
-            "params": self.params,
+            "params": slim_params(self.params),
             "meta": self.meta,
             "elapsed_ms": self.elapsed_ms(),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.created_at)),
@@ -193,6 +219,9 @@ class JobQueue:
             job.status = "error"
         finally:
             self._running_id = None
+            # 任务结束后请求参数里不再需要 base64 图片（占内存、且会随历史常驻），
+            # 换成占位符；输出图与 input_urls 已经各自落盘。
+            job.params = slim_params(job.params)
             self._finish(job, status=None)
             self._queue.task_done()
 

@@ -511,9 +511,51 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 raise ApiError("preprocess.max_side 必须是整数")
             if not 256 <= max_side <= 8192:
                 raise ApiError("preprocess.max_side 必须在 256~8192")
+            try:
+                min_side = int(pre.get("min_side") or 768)
+            except (TypeError, ValueError):
+                raise ApiError("preprocess.min_side 必须是整数")
+            if not 256 <= min_side <= 8192:
+                raise ApiError("preprocess.min_side 必须在 256~8192")
+            if min_side > max_side:
+                raise ApiError("preprocess.min_side 不能大于 max_side")
+            if pre.get("multiple") is not None:
+                try:
+                    multiple = int(pre["multiple"])
+                except (TypeError, ValueError):
+                    raise ApiError("preprocess.multiple 必须是整数")
+                if not 8 <= multiple <= 256:
+                    raise ApiError("preprocess.multiple 必须在 8~256")
             mode = str(pre.get("mode") or "downscale_only")
             if mode not in ("downscale_only", "clamp_range"):
                 raise ApiError(f"未知 preprocess.mode：{mode!r}")
+
+    # 采样参数：非法值会让管线在 worker 里抛 ValueError（前端只看到 500）。
+    if payload.get("steps") is not None:
+        try:
+            steps = int(payload["steps"])
+        except (TypeError, ValueError):
+            raise ApiError("steps 必须是整数")
+        if not 1 <= steps <= 200:
+            raise ApiError("steps 必须在 1~200")
+    if payload.get("cfg") is not None:
+        try:
+            cfg_value = float(payload["cfg"])
+        except (TypeError, ValueError):
+            raise ApiError("cfg 必须是数字")
+        if not 0 <= cfg_value <= 30:
+            raise ApiError("cfg 必须在 0~30")
+    if payload.get("denoise") is not None:
+        try:
+            denoise = float(payload["denoise"])
+        except (TypeError, ValueError):
+            raise ApiError("denoise 必须是数字")
+        if not 0 < denoise <= 1:
+            raise ApiError("denoise 必须在 0~1")
+    if payload.get("sampler") and str(payload["sampler"]) not in config.SAMPLERS:
+        raise ApiError(f"未知采样器：{payload['sampler']!r}")
+    if payload.get("scheduler") and str(payload["scheduler"]) not in config.SCHEDULERS:
+        raise ApiError(f"未知调度器：{payload['scheduler']!r}")
 
     task = payload.get("task")
     if task is not None and not isinstance(task, dict):

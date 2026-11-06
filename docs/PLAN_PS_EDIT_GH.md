@@ -833,6 +833,7 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
   "hint_mode": "green_overlay",
   "task_mode": "remove",             // 实际生效值（可能由 inpaint/replace 归一）
   "task_requested": "remove",        // 前端原始请求值，便于排查
+  "seed": 1938472011,                // 实际生效 seed（前端传 null 时后端随机，供复现）
   "warnings": [                      // 不阻断出图，只解释"为什么结果和预期不一样"
     "未圈选区域，本次将按整图重绘"
   ],
@@ -847,7 +848,7 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 | `size_mode` | `follow` | follow / custom / ratio | 跟随主图分辨率 |
 | `preprocess.enabled` | `true` | — | 大图保护 |
 | `preprocess.max_side` | `2048` | 1024 / 1536 / 2048 / 2560 | 预处理尺寸 |
-| `local.scheme` | `auto` | auto / a / b | auto：有遮罩且画布 > 1024² → b，否则 a |
+| `local.scheme` | `auto` | auto / a / b | auto：有遮罩且覆盖率 2%~45% → b，否则 a（与前端 `resolveScheme` 同口径） |
 | `local.expand_*` | 1.3 / 1.4 / 1.4 / 1.4 | 1.0 ~ 2.0 | 上略小，保头部/天空 |
 | `local.fills` | `true` | — | 孔洞填充 |
 | `feather` | `32` | 0 ~ 96 | px（遮罩内） |
@@ -1274,6 +1275,11 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 稳定性护栏：编辑画布 `max_side` 上限 + CUDA OOM 中文提示 | ✅ 已落地（e2e 覆盖） | `server/pipeline.py` |
 | 输入限流：单张上传 64MB / 内联图片 48M 字符 / 最多 10 张 | ✅ 已落地（单测覆盖） | `server/main.py` |
 | 任务指令兜底（remove/outpaint 自动补训练提示词） | ✅ 已落地（e2e 覆盖 3 条） | `server/pipeline.py` |
+| 进度条单调（采样 offset）+ 采样中即时取消 | ✅ 已落地（2 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
+| 编辑任务回写生效采样参数（seed/steps/cfg/sampler/sigmas） | ✅ 已落地（历史可复现） | `server/pipeline.py` |
+| 轮询/历史剔除内联图片（`slim_params`） | ✅ 已落地（2 条单测） | `server/jobs.py`、`tests/test_jobs.py` |
+| 解码像素上限 120MP + `preprocess`/采样参数校验 | ✅ 已落地（4 条单测） | `server/imaging.py`、`server/main.py`、`tests/` |
+| `local.scheme=auto` 后端解析（2%~45% 阈值） | ✅ 已落地（2 条 e2e） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1309,6 +1315,11 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 16. **编辑与文生图共用 `cfg["max_side"]`（默认 4096）**：`custom/ratio` 或用户关掉预处理时，画布可能远超显存；在 VAE 编码前抛 `PipelineError`，不要等 CUDA OOM。采样异常里只翻译 `out of memory`，其它异常原样上抛，避免掩盖真实 bug。
 17. **输入必须先限流再解码**：`/api/upload` 单张 64MB，`/api/edit` 内联图片文本 48M 字符（约 36MB 原图）、最多 10 张。`images[i]` 允许 `{data}` / `{url}` / 裸字符串三种形态，只校验"有没有数据 + 大不大"，不做格式猜测。
 18. **训练约定由后端兜底，不指望前端拼提示词**：`remove` / `outpaint` 的指令句是 LoRA 效果的一部分；用户提示词里已含关键词时不重复追加，保证幂等。
+19. **采样进度必须带 offset**：采样前已占 3~4 格（准备/编码/VAE），回调从 `offset + n` 递增；直接写 `n/total` 会让进度条从 4/15 退回 1/15。文案用真实 `steps`，不拿 `total` 当分母。
+20. **采样参数必须回写 `job.params`**：前端通常传 `seed=null`，若不在任务里落一份生效值（seed/steps/cfg/sampler/sigmas），历史与 `replay.json` 永远无法复现同一张图。
+21. **轮询/历史接口不得回传内联图片**：`/api/jobs/{id}` 每 700ms 一次，一张 4K 图 data URL 十几 MB；`slim_params` 统一替换成占位符，原图看 `meta.input_urls`。任务结束后同样瘦身，避免历史常驻大字符串。
+22. **解码前按文件头尺寸拦截**：`MAX_DECODE_PIXELS = 120MP`，在 `load()` 之前判断，否则小体积 PNG 能把服务端内存打爆；`preprocess.min_side` / `multiple`、`steps/cfg/denoise`、`sampler/scheduler` 一律入队前 400。
+23. **`auto` 方案前后端同口径**：有遮罩且覆盖率在 2%~45% 才走方案 B，避免大遮罩裁出超大块反而更慢；阈值改动必须两边一起改。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1355,4 +1366,9 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 15. ~~稳定性护栏：编辑画布 `max_side` 上限、CUDA OOM 中文提示~~ ✅ 已完成（e2e 覆盖 2 条）
 16. ~~输入限流：上传体积、内联图片体积、参考图张数~~ ✅ 已完成（单测覆盖 3 条）
 17. ~~任务指令兜底：remove/outpaint 自动补训练提示词（幂等）~~ ✅ 已完成（e2e 覆盖 3 条）
+18. ~~进度条倒退修复 + 采样中即时取消~~ ✅ 已完成（`_make_callback(offset, steps)`，2 条单测）
+19. ~~编辑任务回写生效采样参数（seed/steps/cfg/sampler/sigmas）~~ ✅ 已完成（`quality.seed` 同步输出）
+20. ~~轮询/历史剔除内联图片（`jobs.slim_params`）~~ ✅ 已完成（2 条单测）
+21. ~~解码像素上限 120MP + `preprocess`/采样参数入队前校验~~ ✅ 已完成（4 条单测）
+22. ~~`local.scheme=auto` 后端解析（与前端同阈值）~~ ✅ 已完成（2 条 e2e）
 

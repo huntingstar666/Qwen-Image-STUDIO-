@@ -782,3 +782,17 @@ def test_imaging_does_not_import_torch_or_cv2():
     source = (ROOT / "server" / "imaging.py").read_text(encoding="utf-8")
     for forbidden in ("import torch", "import cv2", "from torch", "comfy.utils"):
         assert forbidden not in source, f"server/imaging.py 不允许出现 {forbidden!r}"
+
+
+def test_decode_rejects_oversized_pixels_before_load():
+    """几百 KB 的 PNG 也能解压成几十 GB：必须按文件头尺寸在 load 之前拦下。"""
+    data = imaging.encode_png(_rgba(8, 8, seed=26))
+    old_limit = imaging.MAX_DECODE_PIXELS
+    imaging.MAX_DECODE_PIXELS = 16
+    try:
+        _raises(ValueError, "百万像素", lambda: imaging.decode_image(data))
+        _raises(ValueError, "百万像素", lambda: imaging.decode_mask(data, 8, 8))
+    finally:
+        imaging.MAX_DECODE_PIXELS = old_limit
+
+    assert imaging.decode_image(data).size == (8, 8)

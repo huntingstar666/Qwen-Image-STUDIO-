@@ -98,13 +98,23 @@ def _flatten_on_white(image: Image.Image) -> Image.Image:
     return base
 
 
-def _make_callback(job, total: int, *, label: str = "采样") -> Callable[..., None]:
-    """把引擎的采样回调转成任务进度（对回调参数形态不敏感，只数次数）。"""
+def _make_callback(job, total: int, *, label: str = "采样",
+                   offset: int = 0, steps: int | None = None) -> Callable[..., None]:
+    """把引擎的采样回调转成任务进度（对回调参数形态不敏感，只数次数）。
+
+    * ``offset``：采样前已占用的进度格数。不加它的话进度会从 4/N 跳回 1/N
+      （前端进度条肉眼可见地倒退）。
+    * ``steps``：只用于文案里的 ``n/步数``，缺省按 ``total - offset`` 估算。
+    * 每次回调都检查取消：用户点「取消」后不必等整轮采样跑完。
+    """
     counter = {"n": 0}
+    span = max(1, int(steps if steps is not None else total - offset))
 
     def _cb(*_args, **_kwargs) -> None:
+        job.check_cancel()
         counter["n"] += 1
-        job.set_progress(counter["n"], max(1, total), f"{label} {counter['n']}/{total}")
+        value = min(offset + counter["n"], max(1, total))
+        job.set_progress(value, max(1, total), f"{label} {counter['n']}/{span}")
 
     return _cb
 
@@ -588,7 +598,7 @@ class Pipeline:
             job.meta["slg"] = {k: sampling["slg"].get(k) for k in
                                ("single_layers", "double_layers", "start_percent", "end_percent")}
 
-        total = sampling["steps"] + 3
+        total = sampling["steps"] + 5
         engine = self._engine_for(profile)
         _signal_progress(job, 1, total, "准备模型")
         self._prepare_engine(engine, model_paths, loras, job)
@@ -653,7 +663,7 @@ class Pipeline:
             denoise=sampling["denoise"],
             noise_mask=None,
             slg=sampling["slg"],
-            callback=_make_callback(job, sampling["steps"]),
+            callback=_make_callback(job, total, offset=3, steps=sampling["steps"]),
         )
         job.check_cancel()
 
@@ -785,6 +795,7 @@ class Pipeline:
             mask_canvas = op_mask if mask_canvas is None else np.maximum(mask_canvas, op_mask)
 
         # 产品提示：让用户知道这次到底改了多少（不阻断，只解释）
+        coverage: float | None = None
         if mask_canvas is not None:
             coverage = float((mask_canvas > 0.01).mean())
             if task_mode != "outpaint" and coverage > 0.9:
@@ -813,8 +824,24 @@ class Pipeline:
         if op_info is not None:
             job.align["outpaint"] = dataclasses.asdict(op_info)
 
-        scheme = str(local.get("scheme") or "a") if _truthy(local.get("enabled")) else "none"
+        scheme = (str(local.get("scheme") or "a").strip().lower()
+                  if _truthy(local.get("enabled")) else "none")
+        if scheme == "auto":
+            # 与前端 resolveScheme 同口径：小遮罩走整画布（接缝最稳），
+            # 中等遮罩才裁局部（省显存）；无遮罩/超大遮罩一律回整画布。
+            scheme = "b" if coverage is not None and 0.02 < coverage < 0.45 else "a"
         sampling = _sampling_plan(params, cfg, profile)
+        # 记录真正生效的采样参数：前端通常传 seed=null，历史/回放要靠这里才能复现。
+        job.params.update({
+            "model": profile["id"],
+            "steps": sampling["steps"], "cfg": sampling["cfg"],
+            "sampler": sampling["sampler"], "scheduler": sampling["scheduler"],
+            "seed": sampling["seed"], "denoise": sampling["denoise"],
+            "turbo": sampling["turbo"], "negative_prompt": sampling["negative_prompt"],
+            "sigmas": sampling["sigmas"],
+        })
+        if sampling.get("slg"):
+            job.params["slg"] = sampling["slg"]
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
         model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
         # 显式任务模式但没带 LoRA 时，按任务自动挂预设：
@@ -832,7 +859,7 @@ class Pipeline:
             job.meta["turbo_unet"] = os.path.basename(turbo_unet)
 
         engine = self._engine_for(profile)
-        total = sampling["steps"] + 4
+        total = sampling["steps"] + 6
         _signal_progress(job, 1, total, "准备模型")
         self._prepare_engine(engine, model_paths, loras, job)
         job.check_cancel()
@@ -953,7 +980,7 @@ class Pipeline:
                 denoise=sampling["denoise"],
                 noise_mask=noise_mask,
                 slg=sampling["slg"],
-                callback=_make_callback(job, sampling["steps"]),
+                callback=_make_callback(job, total, offset=4, steps=sampling["steps"]),
             )
         except Exception as exc:  # noqa: BLE001 - 只翻译 OOM，其它异常原样抛出
             if "out of memory" not in str(exc).lower():
@@ -1060,6 +1087,7 @@ class Pipeline:
             "hint_mode": hint_mode,
             "task_mode": task_mode,
             "task_requested": requested_task,
+            "seed": sampling["seed"],
             "warnings": warnings,
             "outpaint": dataclasses.asdict(op_info) if op_info is not None else None,
             "preprocess": {

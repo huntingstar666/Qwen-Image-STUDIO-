@@ -90,6 +90,23 @@ SNAP = align.MULTIPLE
 _FITS = ("pad", "crop", "stretch")
 _MODES = ("follow", "custom", "ratio", "fixed_point")
 
+#: 单张图解码上限（像素数）。120MP ≈ 12000×10000，远大于 4K/8K 编辑需求，
+#: 但能挡住「几百 KB 的 PNG 解压成几十 GB 位图」这类解压炸弹。
+MAX_DECODE_PIXELS = 120_000_000
+
+
+def _guard_pixels(im: Image.Image, *, limit: int | None = None,
+                  label: str = "图片") -> None:
+    """在 ``load()`` 之前按头部尺寸拦住超大图（避免先分配几十 GB 再报错）。"""
+    limit = MAX_DECODE_PIXELS if limit is None else int(limit)
+    width, height = im.size
+    total = int(width) * int(height)
+    if total > limit:
+        raise ValueError(
+            f"{label}尺寸 {width}×{height}（约 {total / 1_000_000:.0f} 百万像素）"
+            f"超过上限 {limit / 1_000_000:.0f} 百万像素，请先缩小后再上传"
+        )
+
 _PIL_RESAMPLE = {
     "lanczos": Image.Resampling.LANCZOS,
     "bicubic": Image.Resampling.BICUBIC,
@@ -420,7 +437,12 @@ def decode_image(data: bytes, *, keep_alpha: bool = True) -> Image.Image:
         raise ValueError("图片数据为空")
     try:
         im = Image.open(io.BytesIO(data))
+        _guard_pixels(im)
         im.load()
+    except Image.DecompressionBombError as exc:  # pragma: no cover - 需超大文件才能触发
+        raise ValueError("图片像素过大，已拒绝解码；请先缩小后再上传") from exc
+    except ValueError:
+        raise
     except Exception as exc:  # pragma: no cover - 依赖损坏文件才能触发
         raise ValueError(f"无法解码图片: {exc}") from exc
 
@@ -454,7 +476,12 @@ def decode_mask(
     width, height = max(1, int(width)), max(1, int(height))
     try:
         im = Image.open(io.BytesIO(data))
+        _guard_pixels(im, label="遮罩")
         im.load()
+    except Image.DecompressionBombError as exc:  # pragma: no cover
+        raise ValueError("遮罩像素过大，已拒绝解码") from exc
+    except ValueError:
+        raise
     except Exception as exc:  # pragma: no cover
         raise ValueError(f"无法解码遮罩: {exc}") from exc
     im = ImageOps.exif_transpose(im)

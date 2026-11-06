@@ -211,3 +211,36 @@ def test_stats_shape():
         assert set(stats) >= {"pending", "running", "running_id", "queue_size", "history"}
         assert stats["pending"] == 0
         assert stats["running"] is False
+
+
+def test_job_dict_hides_inline_image_data():
+    """轮询接口不能回传 base64 图片：一张 4K 图就能让每 700ms 的轮询卡死。"""
+    big = "data:image/png;base64," + "A" * 4096
+    job = jobs.Job(id="x", kind="edit", prompt="p", params={
+        "images": [{"name": "a.png", "data": big}],
+        "mask": {"data": big},
+        "seed": 42,
+    })
+    data = job.to_dict()
+
+    assert data["params"]["images"][0]["data"] == "<inline data omitted>"
+    assert data["params"]["images"][0]["name"] == "a.png"
+    assert data["params"]["mask"]["data"] == "<inline data omitted>"
+    assert data["params"]["seed"] == 42
+    # 原参数不被改写，管线/回放仍拿得到完整数据
+    assert job.params["images"][0]["data"] == big
+
+
+def test_finished_job_drops_inline_binary():
+    """任务结束后释放 base64 图片，历史常驻不再占几十 MB 内存。"""
+    with _tmpdir() as tmp:
+        q = _queue(tmp)
+        q.start()
+        big = "data:image/png;base64," + "A" * 4096
+        job = q.submit("edit", lambda j: None, prompt="x", params={"images": [big]})
+        deadline = time.time() + 5
+        while time.time() < deadline and job.finished_at is None:
+            time.sleep(0.02)
+        assert job.finished_at is not None
+        assert job.params["images"][0] == "<inline data omitted>"
+        q.stop()

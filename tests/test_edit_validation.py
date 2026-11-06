@@ -47,6 +47,34 @@ def test_rejects_unknown_preprocess_mode():
         main._validate_edit_params({"preprocess": {"enabled": True, "mode": "upscale"}})
 
 
+def test_rejects_preprocess_min_side_over_max_side():
+    with pytest.raises(main.ApiError, match="min_side"):
+        main._validate_edit_params({
+            "preprocess": {"enabled": True, "max_side": 1024, "min_side": 2048}})
+
+
+def test_rejects_bad_preprocess_multiple():
+    with pytest.raises(main.ApiError, match="multiple"):
+        main._validate_edit_params({"preprocess": {"enabled": True, "multiple": "x"}})
+    with pytest.raises(main.ApiError, match="multiple"):
+        main._validate_edit_params({"preprocess": {"enabled": True, "multiple": 3}})
+
+
+def test_rejects_bad_sampling_params():
+    with pytest.raises(main.ApiError, match="steps"):
+        main._validate_edit_params({"steps": "many"})
+    with pytest.raises(main.ApiError, match="steps"):
+        main._validate_edit_params({"steps": 0})
+    with pytest.raises(main.ApiError, match="cfg"):
+        main._validate_edit_params({"cfg": "high"})
+    with pytest.raises(main.ApiError, match="denoise"):
+        main._validate_edit_params({"denoise": 0})
+    with pytest.raises(main.ApiError, match="采样器"):
+        main._validate_edit_params({"sampler": "magic"})
+    with pytest.raises(main.ApiError, match="调度器"):
+        main._validate_edit_params({"scheduler": "magic"})
+
+
 def test_rejects_non_object_task():
     with pytest.raises(main.ApiError, match="task"):
         main._validate_edit_params({"task": "remove"})

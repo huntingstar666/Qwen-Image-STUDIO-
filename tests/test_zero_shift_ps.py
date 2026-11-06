@@ -451,3 +451,94 @@ def test_generate_edit_empty_mask_reports_friendly_error():
             "images": [{"data": _src_url(src)}],
             "mask": imaging.data_url("image/png", black),
         }, fake)
+
+
+# ---------------------------------------------------------------------------
+# 采样进度 / 可复现参数 / auto 方案
+# ---------------------------------------------------------------------------
+
+
+class _ProgressJob:
+    """只记录进度与取消状态的最小 Job 替身。"""
+
+    def __init__(self) -> None:
+        self.values: list[tuple[int, int, str]] = []
+        self.cancel_requested = False
+
+    def set_progress(self, value, maximum=None, label=None):
+        self.values.append((int(value), int(maximum or 1), str(label or "")))
+
+    def check_cancel(self):
+        if self.cancel_requested:
+            raise jobs.JobCanceled()
+
+
+def test_progress_callback_never_goes_backwards():
+    """采样进度必须从 offset 继续往上走，且文案显示真实步数（9 步不写成 1/15）。"""
+    job = _ProgressJob()
+    job.set_progress(4, 15, "扩散采样")
+    cb = pipeline._make_callback(job, 15, offset=4, steps=9)
+    for _ in range(9):
+        cb()
+
+    values = [item[0] for item in job.values]
+    assert values == list(range(4, 14))
+    assert job.values[1][2] == "采样 1/9"
+    assert job.values[-1][2] == "采样 9/9"
+
+
+def test_progress_callback_cancels_during_sampling():
+    """用户在采样中取消要立刻生效，不必等整轮采样跑完。"""
+    job = _ProgressJob()
+    job.cancel_requested = True
+    cb = pipeline._make_callback(job, 15, offset=4, steps=9)
+    with pytest.raises(jobs.JobCanceled):
+        cb()
+
+
+def test_generate_edit_records_resolved_sampling_params():
+    """前端传 seed=null，任务里必须落一份真正生效的参数，否则历史无法复现。"""
+    src = _noise_image(640, 480, seed=67)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "seed": None,
+        "steps": 4,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "denoise": 1,
+    }, fake)
+
+    assert isinstance(job.params["seed"], int)
+    assert job.params["seed"] == job.quality["seed"]
+    assert job.params["steps"] == 4
+    assert job.params["sampler"] == "euler"
+    assert job.params["sigmas"] is None
+
+
+def test_generate_edit_auto_scheme_uses_crop_for_small_mask():
+    """后端也要认 local.scheme=auto（与前端 resolveScheme 同口径）。"""
+    src = _noise_image(1000, 700, seed=71)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(1000, 700, (400, 250, 600, 450))),
+        "local": {"enabled": True, "scheme": "auto"},
+    }, fake)
+
+    assert job.quality["scheme"] == "b"
+    assert job.align.get("crop")
+    assert job.quality["outside_max_abs"] == 0
+
+
+def test_generate_edit_auto_scheme_falls_back_to_canvas_without_mask():
+    src = _noise_image(640, 480, seed=73)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "local": {"enabled": True, "scheme": "auto"},
+    }, fake)
+
+    assert job.quality["scheme"] == "a"
+    assert job.align.get("crop") is None

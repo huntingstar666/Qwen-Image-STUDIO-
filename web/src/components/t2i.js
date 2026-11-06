@@ -63,12 +63,6 @@ export function createT2IPage(host) {
 
   host.innerHTML = `
     <div class="page wb-page page-t2i-v2">
-      <div class="wb-art" aria-hidden="true">
-        <div class="wb-art-glyph">把想象画进现实</div>
-        <div class="wb-art-sub">IMAGINE · THEN CREATE</div>
-        <div class="wb-art-foot">一念起 · 万物生</div>
-        <div class="wb-art-seal">绘</div>
-      </div>
       <div class="wb-layout" data-ref="layout">
         <aside class="wb-adv" data-ref="advDrawer" aria-label="文生图高级设置">
           <div class="wb-adv-head">
@@ -166,6 +160,14 @@ export function createT2IPage(host) {
               <div class="wb-feed-title">生成结果 <span data-ref="resultState">等待任务</span></div>
               <span class="spacer"></span>
               <button class="btn ghost sm" type="button" data-ref="feedClear">清空记录</button>
+            </div>
+            <div class="wb-art" aria-hidden="true">
+              <div class="wb-art-text">
+                <div class="wb-art-glyph">把想象画进现实</div>
+                <div class="wb-art-sub">IMAGINE · THEN CREATE</div>
+                <div class="wb-art-foot">一念起 · 万物生</div>
+              </div>
+              <div class="wb-art-seal">绘</div>
             </div>
             <div class="wb-feed-body" data-ref="resultHost"></div>
           </section>

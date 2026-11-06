@@ -54,12 +54,6 @@ export function createEditPage(host) {
 
   host.innerHTML = `
     <div class="page wb-page page-edit-v2">
-      <div class="wb-art" aria-hidden="true">
-        <div class="wb-art-glyph">让每一笔都有回响</div>
-        <div class="wb-art-sub">REFINE · THEN BLOOM</div>
-        <div class="wb-art-foot">一图一世界 · 一笔一呼吸</div>
-        <div class="wb-art-seal">修</div>
-      </div>
       <div class="wb-layout with-lib" data-ref="layout">
         <aside class="wb-adv" data-ref="advDrawer" aria-label="图生图高级设置">
           <div class="wb-adv-head">
@@ -258,6 +252,14 @@ export function createEditPage(host) {
               <div class="wb-feed-title">生成结果 <span data-ref="resultState">等待任务</span></div>
               <span class="spacer"></span>
               <button class="btn ghost sm" type="button" data-ref="feedClear">清空记录</button>
+            </div>
+            <div class="wb-art" aria-hidden="true">
+              <div class="wb-art-text">
+                <div class="wb-art-glyph">让每一笔都有回响</div>
+                <div class="wb-art-sub">REFINE · THEN BLOOM</div>
+                <div class="wb-art-foot">一图一世界 · 一笔一呼吸</div>
+              </div>
+              <div class="wb-art-seal">修</div>
             </div>
             <div class="wb-feed-body" data-ref="resultHost"></div>
           </section>

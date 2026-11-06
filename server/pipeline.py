@@ -564,14 +564,35 @@ class Pipeline:
             decoded.append(imaging.decode_image(data))
         src = decoded[0]
         size_mode = str(params.get("size_mode") or "follow")
-        zs_spec = _zero_shift_spec(params, profile, size_mode)
+        local = params.get("local") or {}
+        task_mode = str((params.get("task") or {}).get("mode") or "edit")
+        if task_mode == "outpaint":
+            # 扩图输出的是"外扩后的大图"，零偏移语义不适用（尺寸本就要变）。
+            zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
+        else:
+            zs_spec = _zero_shift_spec(params, profile, size_mode)
+
+        # 扩图：先补灰边画板，模型把灰色去掉，最后保留整张外扩图。
+        op_info: imaging.OutpaintInfo | None = None
+        op_canvas: Image.Image | None = None
+        if task_mode == "outpaint":
+            op = params.get("outpaint") or {}
+            op_canvas, op_info = imaging.outpaint_canvas(
+                src,
+                left=float(op.get("left") or 0),
+                right=float(op.get("right") or 0),
+                top=float(op.get("top") or 0),
+                bottom=float(op.get("bottom") or 0),
+                multiple=int(profile.get("snap") or 32),
+            )
 
         # 大图预处理：只缩不放，出图后还原。仅 follow 模式启用（custom/ratio 是
-        # 用户指定新尺寸，预处理会把这条路径搅乱）。
+        # 用户指定新尺寸，预处理会把这条路径搅乱）；扩图自身已决定画布大小。
         pp_params = params.get("preprocess") or {}
         pp = imaging.preprocess_plan(
             src.width, src.height,
-            enabled=_truthy(pp_params.get("enabled")) and size_mode == "follow",
+            enabled=_truthy(pp_params.get("enabled")) and size_mode == "follow"
+            and task_mode != "outpaint",
             max_side=int(pp_params.get("max_side") or 2048),
             min_side=int(pp_params.get("min_side") or 768),
             multiple=int(pp_params.get("multiple") or profile.get("snap") or 32),
@@ -579,10 +600,15 @@ class Pipeline:
         )
         # 没真正缩小就不走预处理：对齐补边交给 plan_canvas 即可，少一条路径。
         use_pp = pp.enabled and (pp.work_w, pp.work_h) != (pp.src_w, pp.src_h)
-        src_work = imaging.apply_preprocess(src, pp) if use_pp else src
+        if op_canvas is not None:
+            src_work = op_canvas
+            use_pp = False
+        else:
+            src_work = imaging.apply_preprocess(src, pp) if use_pp else src
 
         # 画布规划（32 对齐）——零像素偏移的第一步
-        plan = _plan_canvas_for(src_work, params, multiple=int(profile.get("snap") or 32))
+        plan_params = {**params, "size_mode": "follow"} if op_canvas is not None else params
+        plan = _plan_canvas_for(src_work, plan_params, multiple=int(profile.get("snap") or 32))
         canvas = imaging.compose_canvas(src_work, plan, pad_mode=str(params.get("pad_mode") or "edge"))
         if canvas.size != (plan.width, plan.height):
             raise PipelineError(
@@ -594,6 +620,9 @@ class Pipeline:
             mask_bytes = _entry_bytes(params["mask"])
             mask_src = imaging.decode_mask(mask_bytes, src_work.width, src_work.height)
             mask_canvas = imaging.map_mask_to_canvas(mask_src, plan)
+        if op_info is not None:
+            op_mask = imaging.outpaint_mask(op_info)
+            mask_canvas = op_mask if mask_canvas is None else np.maximum(mask_canvas, op_mask)
 
         # 记录输入图，供历史回看
         input_urls: list[str] = []
@@ -612,8 +641,9 @@ class Pipeline:
             "preprocess": {**dataclasses.asdict(pp), "applied": bool(use_pp)},
             "zero_shift": dict(zs_spec),
         }
+        if op_info is not None:
+            job.align["outpaint"] = dataclasses.asdict(op_info)
 
-        local = params.get("local") or {}
         scheme = str(local.get("scheme") or "a") if _truthy(local.get("enabled")) else "none"
         sampling = _sampling_plan(params, cfg, profile)
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
@@ -663,18 +693,21 @@ class Pipeline:
             ref_images = [canvas] + decoded[1:]
 
         # 提示图（green overlay）：移除任务默认开启，让 LoRA 看到的输入分布与训练一致。
-        task_mode = str((params.get("task") or {}).get("mode") or "edit")
+        # 扩图不需要绿提示——灰边本身就是提示。
         hint_mode = str(local.get("hint") or "none").strip().lower()
-        if hint_mode in ("", "auto") and task_mode == "remove":
-            hint_mode = "green_overlay"
-        if hint_mode not in ("none", "green_overlay"):
-            hint_mode = "none"
-        if hint_mode == "green_overlay" and mask_canvas is not None:
-            if scheme == "b" and crop_info is not None:
-                hint_mask = imaging.crop_mask_for_region(crop_info, mask_canvas)
-            else:
-                hint_mask = mask_canvas
-            ref_images[0] = imaging.mask_hint_overlay(ref_images[0], hint_mask)
+        if task_mode == "outpaint":
+            hint_mode = "gray_fill"
+        else:
+            if hint_mode in ("", "auto") and task_mode == "remove":
+                hint_mode = "green_overlay"
+            if hint_mode not in ("none", "green_overlay"):
+                hint_mode = "none"
+            if hint_mode == "green_overlay" and mask_canvas is not None:
+                if scheme == "b" and crop_info is not None:
+                    hint_mask = imaging.crop_mask_for_region(crop_info, mask_canvas)
+                else:
+                    hint_mask = mask_canvas
+                ref_images[0] = imaging.mask_hint_overlay(ref_images[0], hint_mask)
 
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         cond = engine.encode_text(
@@ -774,8 +807,12 @@ class Pipeline:
             diff_stats = {}
 
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
-        # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸。
-        if size_mode in ("custom", "ratio"):
+        # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸；
+        # 扩图同理——输出的就是外扩后的大图。
+        if task_mode == "outpaint":
+            final = composed
+            expected_size = (plan.width, plan.height)
+        elif size_mode in ("custom", "ratio"):
             final = composed
             expected_size = (plan.width, plan.height)
         else:
@@ -807,6 +844,7 @@ class Pipeline:
             "color": color_report,
             "hint_mode": hint_mode,
             "task_mode": task_mode,
+            "outpaint": dataclasses.asdict(op_info) if op_info is not None else None,
             "preprocess": {
                 "applied": bool(use_pp),
                 "scale": round(float(pp.scale), 6),

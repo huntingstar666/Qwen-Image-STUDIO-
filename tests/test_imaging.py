@@ -659,6 +659,47 @@ def test_crop_mask_for_region_matches_crop_geometry():
 
 
 # ---------------------------------------------------------------------------
+# 扩图外补画板
+# ---------------------------------------------------------------------------
+
+
+def test_outpaint_canvas_pads_by_percent_and_snaps():
+    src = _rgba(1000, 700, seed=30)
+    canvas, info = imaging.outpaint_canvas(src, left=20, right=10, top=10, bottom=20)
+    assert canvas.size == (info.canvas_w, info.canvas_h)
+    assert info.canvas_w % 32 == 0 and info.canvas_h % 32 == 0
+    assert info.left == 200 and info.top == 70
+    assert info.right >= 100 and info.bottom >= 140
+    assert info.left + info.src_w + info.right == info.canvas_w
+    assert info.top + info.src_h + info.bottom == info.canvas_h
+    arr = np.asarray(canvas)
+    assert tuple(int(v) for v in arr[0, 0][:3]) == (128, 128, 128)
+    src_arr = np.asarray(src)
+    assert np.array_equal(
+        arr[info.top:info.top + 700, info.left:info.left + 1000], src_arr)
+
+
+def test_outpaint_mask_marks_only_new_area():
+    src = _rgba(320, 224, seed=31)
+    _canvas, info = imaging.outpaint_canvas(src, left=10, right=10, top=10, bottom=10)
+    mask = imaging.outpaint_mask(info)
+    assert mask.shape == (info.canvas_h, info.canvas_w)
+    inner = mask[info.top:info.top + info.src_h, info.left:info.left + info.src_w]
+    assert float(inner.max()) == 0.0
+    assert float(mask[0, 0]) == 1.0
+    assert int((mask > 0.5).sum()) == (
+        info.canvas_w * info.canvas_h - info.src_w * info.src_h)
+
+
+def test_outpaint_canvas_without_padding_is_identity():
+    src = _rgba(320, 224, seed=32)
+    canvas, info = imaging.outpaint_canvas(src)
+    assert (info.left, info.top) == (0, 0)
+    assert canvas.size == (320, 224)
+    assert np.array_equal(np.asarray(canvas), np.asarray(src.convert("RGBA")))
+
+
+# ---------------------------------------------------------------------------
 # compare / 端到端
 # ---------------------------------------------------------------------------
 

@@ -55,6 +55,7 @@ __all__ = [
     "ImageMeta",
     "CropInfo",
     "PreprocessPlan",
+    "OutpaintInfo",
     "decode_image",
     "decode_mask",
     "encode_png",
@@ -67,6 +68,8 @@ __all__ = [
     "preprocess_plan",
     "apply_preprocess",
     "restore_preprocess",
+    "outpaint_canvas",
+    "outpaint_mask",
     "compose_canvas",
     "map_mask_to_canvas",
     "map_mask_from_canvas",
@@ -180,6 +183,21 @@ class PreprocessPlan:
     pad_x: int
     pad_y: int
     max_side: int
+
+
+@dataclass
+class OutpaintInfo:
+    """扩图外补画板的几何：源图在外扩画布中的整数位置。"""
+
+    src_w: int
+    src_h: int
+    left: int
+    right: int
+    top: int
+    bottom: int
+    canvas_w: int
+    canvas_h: int
+    fill: tuple[int, int, int]
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +976,61 @@ def restore_preprocess(
     if im.size != (plan.src_w, plan.src_h):
         im = im.resize((plan.src_w, plan.src_h), _resample(method))
     return im
+
+
+# ---------------------------------------------------------------------------
+# 扩图：外补画板（灰边）→ 模型去灰 → 输出大图
+# ---------------------------------------------------------------------------
+
+_OUTPAINT_FILL = (128, 128, 128)
+
+
+def outpaint_canvas(
+    im: Image.Image,
+    *,
+    left: float = 0.0,
+    right: float = 0.0,
+    top: float = 0.0,
+    bottom: float = 0.0,
+    multiple: int = 32,
+    fill: tuple[int, int, int] = _OUTPAINT_FILL,
+) -> tuple[Image.Image, OutpaintInfo]:
+    """按百分比外扩画布，外补区域填 ``#808080``（孤海扩图约定）。
+
+    ``left/right`` 是**宽度**的百分比，``top/bottom`` 是**高度**的百分比。
+    画布向上取整到 ``multiple``，多出来的像素统一补到右/下，保证源图坐标仍是
+    整数偏移（贴回时不需要重采样）。
+    """
+    src = im.convert("RGBA")
+    sw, sh = src.size
+    left_px = max(0, int(round(sw * float(left) / 100.0)))
+    right_px = max(0, int(round(sw * float(right) / 100.0)))
+    top_px = max(0, int(round(sh * float(top) / 100.0)))
+    bottom_px = max(0, int(round(sh * float(bottom) / 100.0)))
+    multiple = max(1, int(multiple))
+    canvas_w = _snap_up(sw + left_px + right_px, multiple)
+    canvas_h = _snap_up(sh + top_px + bottom_px, multiple)
+    right_px += canvas_w - (sw + left_px + right_px)
+    bottom_px += canvas_h - (sh + top_px + bottom_px)
+
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (*fill, 255))
+    canvas.paste(src, (left_px, top_px))
+    info = OutpaintInfo(
+        src_w=sw, src_h=sh,
+        left=left_px, right=right_px, top=top_px, bottom=bottom_px,
+        canvas_w=canvas_w, canvas_h=canvas_h,
+        fill=tuple(int(v) for v in fill),
+    )
+    return canvas, info
+
+
+def outpaint_mask(info: OutpaintInfo, *, feather: int = 0) -> np.ndarray:
+    """外补区域遮罩：源图范围内为 0，灰边为 1。"""
+    mask = np.ones((info.canvas_h, info.canvas_w), dtype=np.float32)
+    mask[info.top:info.top + info.src_h, info.left:info.left + info.src_w] = 0.0
+    if feather > 0:
+        mask = align.feather_mask(mask, int(feather))
+    return mask
 
 
 # ---------------------------------------------------------------------------

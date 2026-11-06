@@ -692,6 +692,15 @@ def mask_hint_overlay(canvas, mask, color=(0, 200, 80), opacity=0.4):
 
 **输出尺寸：** 扩图默认 `size_mode=custom`（画布尺寸 = 外扩后尺寸），不再裁回源尺寸。
 
+**已落地（`server/imaging.py` + `server/pipeline.py`）：**
+
+- `imaging.outpaint_canvas(src, left/right/top/bottom=百分比)` → `(画布, OutpaintInfo)`：
+  左右按宽度百分比、上下按高度百分比；画布向上对齐 32，余量补到右/下，源图仍是整数偏移（贴回零重采样）；
+- `imaging.outpaint_mask(info)`：外补区 = 1，源图区 = 0；用户 mask 存在时取 `np.maximum` 并集；
+- `pipeline`：`task.mode == "outpaint"` 时跳过预处理、强制 follow 规划（画布 = 外扩画布）、
+  输出不裁回、`hint_mode = "gray_fill"`（灰边即提示，不再叠加绿提示）、`zero_shift` 自动关闭；
+- `job.align.outpaint` / `job.quality.outpaint` 记录几何；单测覆盖百分比/32 对齐/贴入像素/遮罩面积。
+
 ### 5.8 API 契约（`POST /api/edit`）
 
 ```jsonc
@@ -1236,7 +1245,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | zero_shift 强制（resolution/snap 校验 + 出图前硬验收） | ✅ 已落地（8 条单测） | `server/pipeline.py`、`tests/test_zero_shift_ps.py` |
 | `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地 | `server/main.py` |
 | 过渡带 IGN 抖动（`align.ign_dither`，默认开） | ✅ 已落地 | `server/align.py`、`server/imaging.py`、`server/pipeline.py` |
-| 扩图（outpaint） | ⏳ 待做 | — |
+| 扩图（灰边画板 / 外补遮罩 / 不裁回输出） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1302,6 +1311,6 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 7. ~~`zero_shift` 强制：前端传入后按 `align.plan` 校验，不对直接拒绝~~ ✅ 已完成
 8. ~~`server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）~~ ✅ 已完成
 9. ~~`align.robust_color_match` / `ign_dither`（低频抖动，防色带）~~ ✅ `ign_dither` 已落地；`robust_color_match` 由 `anchor_affine` 取代，不再单独实现
-10. 扩图（outpaint）：灰边画布 → 重绘 → 裁回
+10. ~~扩图（outpaint）：灰边画布 → 重绘 → 裁回~~ ✅ 已完成（输出不裁回，保留外扩尺寸）
 11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 已有几何守卫单测（端到端待真实出图）
 

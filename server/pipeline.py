@@ -694,7 +694,8 @@ class Pipeline:
 
         # 提示图（green overlay）：移除任务默认开启，让 LoRA 看到的输入分布与训练一致。
         # 扩图不需要绿提示——灰边本身就是提示。
-        hint_mode = str(local.get("hint") or "none").strip().lower()
+        # 默认留空 → 下面按任务自动决定（remove 自动上绿提示）；显式传 "none" 才关闭。
+        hint_mode = str(local.get("hint") or "").strip().lower()
         if task_mode == "outpaint":
             hint_mode = "gray_fill"
         else:

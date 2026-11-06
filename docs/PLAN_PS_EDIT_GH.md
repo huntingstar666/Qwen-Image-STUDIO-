@@ -1246,6 +1246,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | `/api/edit` 参数边界校验（size_mode/preprocess/task/loras/zero_shift） | ✅ 已落地 | `server/main.py` |
 | 过渡带 IGN 抖动（`align.ign_dither`，默认开） | ✅ 已落地 | `server/align.py`、`server/imaging.py`、`server/pipeline.py` |
 | 扩图（灰边画板 / 外补遮罩 / 不裁回输出） | ✅ 已落地 | `server/imaging.py`、`server/pipeline.py` |
+| 端到端零偏移/零色差回归（假引擎，不占显存） | ✅ 5 条全链路（follow / 预处理 / 裁切越界 / 扩图 / 移除提示） | `tests/test_zero_shift_ps.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1273,6 +1274,8 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 8. **锚区仿射是 `color_match` 的子模式**：`color_match=False` 时连锚区仿射也不做，否则"关闭颜色匹配"关不干净（`test_composite_inside_mask_comes_from_edited` 会红）。
 9. **诊断不预模糊**：`changed_stats` 的 `preblur=0`，否则边界外 1~2px 会被算成假泄漏；8bit 噪声本就低于阈值下限 0.02。
 10. **诊断必须 try/except**：`pipeline` 里 `changed_stats` 失败只打印，不拖垮出图。
+11. **提示模式默认值必须是空字符串，不能是 `"none"`**：`local.hint` 缺省时留空，才能走到「`remove` 自动上绿提示」分支；显式传 `"none"` 才关闭。写成 `or "none"` 会让自动分支永久失效（已修，勿回退）。
+12. **端到端测试用假引擎，不加载真实权重**：`Pipeline(engine=fake)` 直接注入，`_resolve_models` / `_build_loras` / `storage.save_*` 在测试内临时替换并在 `finally` 复原。断言落盘 PNG 的遮罩外 `max_abs == 0`，而不是只看 `job.quality` 中间值。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1312,5 +1315,5 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 8. ~~`server/main.py`：`preprocess / task / loras.preset` 参数校验（`/api/options` 已暴露 LoRA 预设）~~ ✅ 已完成
 9. ~~`align.robust_color_match` / `ign_dither`（低频抖动，防色带）~~ ✅ `ign_dither` 已落地；`robust_color_match` 由 `anchor_affine` 取代，不再单独实现
 10. ~~扩图（outpaint）：灰边画布 → 重绘 → 裁回~~ ✅ 已完成（输出不裁回，保留外扩尺寸）
-11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 已有几何守卫单测（端到端待真实出图）
+11. ~~`tests/test_zero_shift_ps.py`：端到端零偏移/零色差回归~~ ✅ 几何守卫 8 条 + 假引擎端到端 5 条（`generate_edit` 全链路；真实权重的出图回归仍由本机环境另跑）
 

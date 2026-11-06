@@ -89,9 +89,43 @@ async function collectSource(item) {
   }
 }
 
-/** 已收藏进素材仓库的作品 id（按 source=gallery + sourceRef 反查）。 */
-const FAVORITED = new Set();
+/**
+ * 已收藏进素材仓库的作品：sourceRef → 收藏时的提示词 / 尺寸快照。
+ * 只认 sourceRef 会把历史错位的数据误判成已收藏，所以要再看提示词或尺寸是否对得上。
+ */
+const FAVORITED = new Map();
 let favoritesLoading = null;
+
+const ITEM_BY_ID = new Map(GALLERY_ITEMS.map((item) => [String(item.id), item]));
+
+function normalizePrompt(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function rememberFavorite(entry) {
+  const ref = String(entry?.sourceRef || '');
+  if (!ref) return;
+  const list = FAVORITED.get(ref) || [];
+  list.push({
+    prompt: normalizePrompt(entry.prompt),
+    width: Number(entry?.params?.width) || 0,
+    height: Number(entry?.params?.height) || 0,
+  });
+  FAVORITED.set(ref, list);
+}
+
+function isFavorited(item) {
+  const list = FAVORITED.get(String(item?.id));
+  if (!list?.length) return false;
+  const prompt = normalizePrompt(item.prompt);
+  const width = Number(item?.params?.width) || 0;
+  const height = Number(item?.params?.height) || 0;
+  return list.some(
+    (entry) =>
+      (width > 0 && height > 0 && entry.width === width && entry.height === height) ||
+      (prompt && entry.prompt === prompt),
+  );
+}
 
 function loadFavorited() {
   if (favoritesLoading) return favoritesLoading;
@@ -101,7 +135,7 @@ function loadFavorited() {
       const list = Array.isArray(data?.items) ? data.items : [];
       FAVORITED.clear();
       for (const entry of list) {
-        if (entry?.source === 'gallery' && entry.sourceRef) FAVORITED.add(String(entry.sourceRef));
+        if (entry?.source === 'gallery' && entry.sourceRef) rememberFavorite(entry);
       }
     })
     .catch(() => {})
@@ -162,7 +196,7 @@ export function createGalleryPage(host) {
   function cardMarkup(item) {
     const width = item.params?.width || 0;
     const height = item.params?.height || 0;
-    const faved = FAVORITED.has(String(item.id));
+    const faved = isFavorited(item);
     return `
       <article class="gallery-card" data-id="${escapeHtml(item.id)}" tabindex="0" role="button">
         <div class="gallery-cover${item.image ? ' has-image' : ''}" style="${coverStyle(item)}">
@@ -252,7 +286,7 @@ export function createGalleryPage(host) {
     for (const button of refs.grid.querySelectorAll('[data-action="favorite"]')) {
       const card = button.closest('.gallery-card');
       if (!card) continue;
-      const faved = FAVORITED.has(String(card.dataset.id));
+      const faved = isFavorited(ITEM_BY_ID.get(String(card.dataset.id)));
       button.disabled = faved;
       button.classList.toggle('is-faved', faved);
       button.textContent = faved ? '已收藏' : '收藏';
@@ -297,7 +331,7 @@ export function createGalleryPage(host) {
       title: item.title,
     });
     if (saved) {
-      FAVORITED.add(String(item.id));
+      rememberFavorite({ sourceRef: item.id, prompt: item.prompt, params: item.params });
       if (button) {
         button.textContent = done;
         button.classList.add('is-faved');
@@ -389,11 +423,11 @@ export function createGalleryPage(host) {
           },
         },
         {
-          label: FAVORITED.has(String(item.id)) ? '已收藏到素材仓库' : '收藏到素材仓库',
+          label: isFavorited(item) ? '已收藏到素材仓库' : '收藏到素材仓库',
           kind: 'ghost',
           close: false,
           onClick: async () => {
-            if (FAVORITED.has(String(item.id))) return false;
+            if (isFavorited(item)) return false;
             const ok = await collect(item, null, {
               idle: '收藏到素材仓库',
               busy: '收藏中…',

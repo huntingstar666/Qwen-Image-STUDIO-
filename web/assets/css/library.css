@@ -906,18 +906,18 @@ html[data-theme="dark"] .lib-detail-media {
 
 .mat-basket {
   position: fixed;
-  top: 86px;
-  right: 18px;
+  right: 20px;
+  bottom: 20px;
   z-index: 40;
   display: flex;
   flex-direction: column;
-  width: 296px;
-  max-height: calc(100vh - 112px);
+  width: 292px;
+  max-height: min(58vh, calc(100vh - 160px));
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-float);
   animation: mat-basket-in var(--dur) var(--ease);
 }
 
@@ -928,7 +928,7 @@ html[data-theme="dark"] .lib-detail-media {
 @keyframes mat-basket-in {
   from {
     opacity: 0;
-    transform: translateX(14px);
+    transform: translateY(16px);
   }
   to {
     opacity: 1;
@@ -1042,7 +1042,6 @@ html[data-theme="dark"] .lib-detail-media {
 
 @media (max-width: 720px) {
   .mat-basket {
-    top: auto;
     right: 10px;
     bottom: 10px;
     left: 10px;
@@ -1050,3 +1049,4 @@ html[data-theme="dark"] .lib-detail-media {
     max-height: 52vh;
   }
 }
+

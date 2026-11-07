@@ -259,7 +259,7 @@ export function createImageToolsPage(host) {
     resize: { width: 0, height: 0, lock: true, fit: 'contain' },
     format: 'png',
     quality: 92,
-    outpaint: { direction: 'right', amount: 0.5, active: false, result: null, busy: false },
+    outpaint: { direction: 'right', amount: 0.5, panoramaAspect: '', active: false, result: null, busy: false },
     results: [],
   };
 
@@ -396,6 +396,16 @@ export function createImageToolsPage(host) {
               <details class="fold tool-fold">
                 <summary>扩图（outpaint）</summary>
                 <div class="fold-body">
+                  <div class="field">
+                    <span class="field-label">全景比例 <span class="tag-hint">自动算方向与幅度</span></span>
+                    <div class="chips" data-ref="outpaintPano">
+                      <button class="chip active" type="button" data-pano="">不限</button>
+                      ${['2:1', '3:1', '4:1', '21:9'].map(
+                        (aspect) =>
+                          `<button class="chip" type="button" data-pano="${aspect}">${aspect}</button>`,
+                      ).join('')}
+                    </div>
+                  </div>
                   <div class="chips" data-ref="outpaintDirs">
                     ${OUTPAINT_DIRECTIONS.map(
                       (direction) =>
@@ -515,6 +525,7 @@ export function createImageToolsPage(host) {
     estimate: ref('estimate'),
     processApply: ref('processApply'),
     outpaintDirs: ref('outpaintDirs'),
+    outpaintPano: ref('outpaintPano'),
     outpaintAmount: ref('outpaintAmount'),
     outpaintAmountVal: ref('outpaintAmountVal'),
     outpaintPlan: ref('outpaintPlan'),
@@ -606,6 +617,7 @@ export function createImageToolsPage(host) {
     state.adjust = { ...NEUTRAL_ADJUST };
     state.outpaint.active = false;
     state.outpaint.result = null;
+    state.outpaint.panoramaAspect = '';
     state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
     state.resize.width = width;
@@ -616,6 +628,7 @@ export function createImageToolsPage(host) {
     renderAdjustFields();
     refs.outpaintGo.disabled = true;
     refs.outpaintCancel.classList.add('hidden');
+    syncPanoramaUi();
     refs.stageEmpty.classList.add('hidden');
     await loadSourceImage();
     // 注意：这里不要提前 resetCrop()。此时 render() 还没跑，currentWorkDims 仍是 0，
@@ -1101,10 +1114,12 @@ export function createImageToolsPage(host) {
     state.adjust = { ...NEUTRAL_ADJUST };
     state.outpaint.active = false;
     state.outpaint.result = null;
+    state.outpaint.panoramaAspect = '';
     state.crop.rect = null;
     state.crop.ratioLabel = 'Free';
     refs.outpaintGo.disabled = true;
     refs.outpaintCancel.classList.add('hidden');
+    syncPanoramaUi();
     renderRatios();
     renderAdjustFields();
     renderOps();
@@ -1429,6 +1444,39 @@ export function createImageToolsPage(host) {
   /* ============================================================
    * 扩图
    * ============================================================ */
+  /** 按目标全景比例反推扩图方向与幅度（与后端 outpaint-plan 的 amount 语义一致）。 */
+  function panoramaDirectionAmount(dims, aspect) {
+    const [aw, ah] = String(aspect).split(':').map(Number);
+    if (!aw || !ah || !dims?.width || !dims?.height) return null;
+    const target = aw / ah;
+    const current = dims.width / dims.height;
+    if (Math.abs(current - target) < 0.002) return { direction: 'horizontal', amount: 0.05 };
+    if (current < target) {
+      const extra = (target * dims.height - dims.width) / dims.width;
+      return { direction: 'horizontal', amount: Math.max(0.05, extra / 2) };
+    }
+    const extra = (dims.width / target - dims.height) / dims.height;
+    return { direction: 'vertical', amount: Math.max(0.05, extra / 2) };
+  }
+
+  function syncPanoramaUi() {
+    const active = Boolean(state.outpaint.panoramaAspect);
+    for (const chip of refs.outpaintPano.querySelectorAll('[data-pano]')) {
+      chip.classList.toggle('active', (chip.dataset.pano || '') === state.outpaint.panoramaAspect);
+    }
+    refs.outpaintAmount.disabled = active;
+    for (const chip of refs.outpaintDirs.querySelectorAll('[data-dir]')) chip.disabled = active;
+    refs.outpaintGo.textContent = active ? '带到编辑 · 全景' : '去局部重绘';
+  }
+
+  refs.outpaintPano.querySelectorAll('[data-pano]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.outpaint.panoramaAspect = button.dataset.pano || '';
+      syncPanoramaUi();
+      updateOutpaintSummary();
+    });
+  });
+
   refs.outpaintDirs.querySelectorAll('[data-dir]').forEach((button) => {
     button.addEventListener('click', () => {
       state.outpaint.direction = button.dataset.dir;
@@ -1448,11 +1496,29 @@ export function createImageToolsPage(host) {
       refs.outpaintSummary.textContent = '上传图片后可规划扩图。';
       return;
     }
+    const aspect = state.outpaint.panoramaAspect;
     if (state.outpaint.active && state.outpaint.result) {
       const result = state.outpaint.result;
-      refs.outpaintSummary.textContent = `已规划：新画布 ${fmtNum(result.width)} × ${fmtNum(result.height)}，原图位于 (${Math.round(
-        result.sourceRect.x,
-      )}, ${Math.round(result.sourceRect.y)})，新增区域已生成遮罩。`;
+      refs.outpaintSummary.textContent = `${aspect ? `全景 ${aspect} · ` : ''}已规划：新画布 ${fmtNum(
+        result.width,
+      )} × ${fmtNum(result.height)}，原图位于 (${Math.round(result.sourceRect.x)}, ${Math.round(
+        result.sourceRect.y,
+      )})，新增区域已生成遮罩。`;
+      return;
+    }
+    if (aspect) {
+      const dims = {
+        width: currentWorkDims.width || state.source.width,
+        height: currentWorkDims.height || state.source.height,
+      };
+      const resolved = panoramaDirectionAmount(dims, aspect);
+      if (!resolved) {
+        refs.outpaintSummary.textContent = `全景 ${aspect}：图片尺寸无效，无法规划。`;
+        return;
+      }
+      refs.outpaintSummary.textContent = `全景 ${aspect}：自动${
+        resolved.direction === 'horizontal' ? '向左右' : '向上下'
+      }外扩（左右/上下各约 ${Math.round(resolved.amount * 100)}%），点击「规划扩图」预览；确认后带到图像编辑页生成。`;
       return;
     }
     refs.outpaintSummary.textContent = `方向「${OUTPAINT_DIRECTION_LABELS[state.outpaint.direction]}」· 幅度 ${Math.round(
@@ -1472,12 +1538,19 @@ export function createImageToolsPage(host) {
     button.disabled = true;
     button.innerHTML = '<span class="spin"></span>规划中…';
     try {
-      const result = await planOutpaint({
-        srcDataUrl: state.source.dataUrl,
+      const dims = {
         width: currentWorkDims.width || state.source.width,
         height: currentWorkDims.height || state.source.height,
-        direction: state.outpaint.direction,
-        amount: state.outpaint.amount,
+      };
+      const resolved = state.outpaint.panoramaAspect
+        ? panoramaDirectionAmount(dims, state.outpaint.panoramaAspect)
+        : null;
+      const result = await planOutpaint({
+        srcDataUrl: state.source.dataUrl,
+        width: dims.width,
+        height: dims.height,
+        direction: resolved?.direction || state.outpaint.direction,
+        amount: resolved?.amount ?? state.outpaint.amount,
       });
       state.outpaint.result = result;
       state.outpaint.active = true;
@@ -1506,10 +1579,49 @@ export function createImageToolsPage(host) {
     render();
   });
 
+  /** 把当前处理状态（已应用的操作 + 待应用裁剪）落成一张图片。 */
+  async function exportCurrentImage() {
+    const ops = [...state.stagedOps];
+    const pending = pendingCropPixelRect();
+    if (pending) ops.push(pending);
+    let dataUrl = '';
+    let name = 'from-tools.png';
+    try {
+      const result = await api.processImage({ image: state.source.dataUrl, ops, format: 'png', quality: 92, prefix: 'to-edit' });
+      const first = result?.images?.[0];
+      if (!first?.url) throw new Error('后端未返回图片');
+      dataUrl = await urlToDataUrl(first.url);
+      name = first.filename || name;
+    } catch (err) {
+      console.warn('[imageTools] 后端处理不可用，使用本地预览结果', err);
+      const image = await loadSourceImage();
+      const canvas = ops.length ? applyOpsToCanvas(image, ops) : canvasFromImage(image);
+      dataUrl = canvas.toDataURL('image/png');
+      toastWarn('后端图像处理接口未就绪，已使用本地预览结果送入编辑');
+    }
+    return { dataUrl, name };
+  }
+
   async function goOutpaintEdit() {
     const result = state.outpaint.result;
     if (!result) {
       toastWarn('请先点击「规划扩图」');
+      return;
+    }
+    // 全景：把当前处理图交给编辑页的「全景」任务重新规划，
+    // 不用预览画布，避免编辑页把已扩好的画布再当成源图。
+    if (state.outpaint.panoramaAspect) {
+      const { dataUrl, name } = await exportCurrentImage();
+      setHandoff({
+        images: [{ dataUrl, name }],
+        mask: null,
+        prompt: null,
+        localEnabled: false,
+        taskMode: 'panorama',
+        panorama: { aspect: state.outpaint.panoramaAspect, long_side: 3072, wrap: false, seam_blend: 24 },
+        toast: `已把图片送入图像编辑并选中「全景 ${state.outpaint.panoramaAspect}」`,
+      });
+      goToEditPage();
       return;
     }
     setHandoff({
@@ -1542,24 +1654,7 @@ export function createImageToolsPage(host) {
         await goOutpaintEdit();
         return;
       }
-      const ops = [...state.stagedOps];
-      const pending = pendingCropPixelRect();
-      if (pending) ops.push(pending);
-      let dataUrl = '';
-      let name = 'from-tools.png';
-      try {
-        const result = await api.processImage({ image: state.source.dataUrl, ops, format: 'png', quality: 92, prefix: 'to-edit' });
-        const first = result?.images?.[0];
-        if (!first?.url) throw new Error('后端未返回图片');
-        dataUrl = await urlToDataUrl(first.url);
-        name = first.filename || name;
-      } catch (err) {
-        console.warn('[imageTools] 后端处理不可用，使用本地预览结果', err);
-        const image = await loadSourceImage();
-        const canvas = ops.length ? applyOpsToCanvas(image, ops) : canvasFromImage(image);
-        dataUrl = canvas.toDataURL('image/png');
-        toastWarn('后端图像处理接口未就绪，已使用本地预览结果送入编辑');
-      }
+      const { dataUrl, name } = await exportCurrentImage();
       setHandoff({
         images: [{ dataUrl, name }],
         mask: null,
@@ -1600,6 +1695,7 @@ export function createImageToolsPage(host) {
 
   renderResults();
   renderOps();
+  syncPanoramaUi();
   updateOutpaintSummary();
   updateEstimate();
 

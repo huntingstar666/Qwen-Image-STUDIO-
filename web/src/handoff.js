@@ -18,6 +18,8 @@ let pendingStudio = null;
  *   mask?: string|null,
  *   prompt?: string|null,
  *   localEnabled?: boolean|null,
+ *   taskMode?: string|null,
+ *   panorama?: {aspect?:string, long_side?:number, wrap?:boolean, seam_blend?:number}|null,
  *   toast?: string
  * }} payload
  */
@@ -30,6 +32,8 @@ export function setHandoff(payload) {
     mask: payload.mask || null,
     prompt: payload.prompt ?? null,
     localEnabled: payload.localEnabled ?? null,
+    taskMode: payload.taskMode || null,
+    panorama: payload.panorama && typeof payload.panorama === 'object' ? payload.panorama : null,
     toast: payload.toast || '已接收图像处理结果',
   };
 }

@@ -2914,6 +2914,26 @@ export function createEditPage(host) {
         patchSettings({ edit: { localEnabled: edit.localEnabled } });
         syncLocalUi();
       }
+      if (payload.taskMode) {
+        const mode = String(payload.taskMode);
+        if (['edit', 'inpaint', 'remove', 'outpaint', 'panorama'].includes(mode)) {
+          edit.taskMode = mode;
+          if (findPreset(presetList, mode)) edit.preset = mode;
+          patchSettings({ edit: { taskMode: mode, preset: edit.preset } });
+        }
+      }
+      if (payload.panorama && typeof payload.panorama === 'object') {
+        const preset = findPreset(presetList, 'panorama') || currentPreset();
+        for (const [key, value] of Object.entries(payload.panorama)) {
+          if (value === undefined || value === null) continue;
+          edit.overrides = withOverride(preset, edit.overrides || {}, `panorama.${key}`, value);
+        }
+        patchSettings({ edit: { overrides: edit.overrides } });
+      }
+      renderTaskMode();
+      renderPresets();
+      syncLocalControls();
+      advanced.refresh();
       updateMaskStatus();
       toastSuccess(payload.toast || '已接收图像处理结果');
     } catch (err) {

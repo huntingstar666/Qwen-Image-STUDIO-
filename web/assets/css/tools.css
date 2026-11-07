@@ -440,3 +440,32 @@
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
+
+/* ------------------------------------------------------------- 高清放大 */
+
+.upscale-progress {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.upscale-bar {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.upscale-bar > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.35s ease;
+}
+
+.upscale-progress .field-hint {
+  margin: 0;
+}

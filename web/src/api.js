@@ -208,6 +208,30 @@ export const api = {
     return request('/api/image/outpaint-plan', { method: 'POST', body: payload, timeout: 20000 });
   },
 
+  /** GET /api/image/upscale/models —— 放大引擎与模型扫描结果 */
+  upscaleModels() {
+    return request('/api/image/upscale/models', { timeout: 20000 });
+  },
+
+  /** POST /api/image/upscale —— 提交高清放大任务（返回 job_id） */
+  upscale(payload) {
+    return request('/api/image/upscale', { method: 'POST', body: payload, timeout: 30000 });
+  },
+
+  /** GET /api/jobs/{id} —— 任务状态 */
+  job(jobId) {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}`, { timeout: 20000 });
+  },
+
+  /** POST /api/jobs/{id}/cancel —— 取消任务 */
+  cancelJob(jobId) {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+      body: {},
+      timeout: 20000,
+    });
+  },
+
   /** POST /api/engine/free —— 释放显存（unload=true 卸载模型） */
   engineFree({ unload = true } = {}) {
     return request('/api/engine/free', { method: 'POST', body: { unload }, timeout: 60000 });

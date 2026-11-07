@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -26,6 +27,8 @@ from . import (
     ollama as ollama_client, pipeline, presets, prompt_polish, storage, styles,
 )
 from . import models as image_models
+from .upscalers import manager as upscale_manager
+from .upscalers import registry as upscale_registry
 
 #: 单张上传上限：4K PNG 约 20~30MB，64MB 足够且能挡住误传的超大文件。
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
@@ -80,20 +83,21 @@ def _start_idle_watchdog() -> None:
             time.sleep(30)
             try:
                 cfg = config.load_config()
+                queue = get_queue()
+                idle = time.time() - queue.last_activity()
+
                 minutes = float(cfg.get("idle_unload_minutes") or 0)
-                if minutes <= 0:
-                    continue
                 pipe = get_pipeline()
                 engine = getattr(pipe, "_engine", None)
-                if engine is None:
-                    continue
-                loaded = (engine.status() or {}).get("loaded") or {}
-                if not any(loaded.get(k) for k in ("unet", "clip", "vae")):
-                    continue
-                idle = time.time() - get_queue().last_activity()
-                if idle >= minutes * 60:
-                    engine.free(unload=True)
-                    print(f"[idle] 空闲 {idle / 60:.0f} 分钟，已卸载模型释放显存", flush=True)
+                if minutes > 0 and engine is not None:
+                    loaded = (engine.status() or {}).get("loaded") or {}
+                    if any(loaded.get(k) for k in ("unet", "clip", "vae")) and idle >= minutes * 60:
+                        engine.free(unload=True)
+                        print(f"[idle] 空闲 {idle / 60:.0f} 分钟，已卸载模型释放显存", flush=True)
+
+                freed = upscale_manager.get_manager().maybe_unload(idle, cfg)
+                if freed:
+                    print(f"[idle] 空闲 {idle / 60:.0f} 分钟，已卸载放大模型 {','.join(freed)}", flush=True)
             except Exception as exc:  # noqa: BLE001 - 看护线程绝不能死
                 print(f"[idle] 看护线程异常（已忽略）：{type(exc).__name__}: {exc}", flush=True)
 
@@ -320,6 +324,12 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True)),
             "idle_unload_minutes": int(cfg.get("idle_unload_minutes") or 0),
             "vram_reserve": float(cfg.get("vram_reserve") or 0),
+        },
+        "upscale": {
+            **(cfg.get("upscale") or {}),
+            "dirs": upscale_registry.resolve_dirs(cfg),
+            "scan": upscale_registry.scan_all(cfg),
+            "status": upscale_manager.get_manager().status(),
         },
         "scan": scan,
         "model_defaults": model_slots.audit(cfg),
@@ -944,18 +954,160 @@ def api_outpaint_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return imageops.outpaint_plan(width, height, direction=direction, amount=amount)
 
 
+@app.get("/api/image/upscale/models")
+def api_upscale_models() -> dict[str, Any]:
+    """放大模型扫描结果：目录、候选 DiT/VAE、可用性、默认引擎。"""
+    data = upscale_registry.scan_all()
+    data["status"] = upscale_manager.get_manager().status()
+    return data
+
+
+#: 单批最多同时放大的图片数（前端胶片条多选上限）
+MAX_UPSCALE_BATCH = 8
+
+
+def _upscale_room_mb() -> int:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free, _total = torch.cuda.mem_get_info()
+            return int(free / (1024 ** 2))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _ensure_upscale_room(engine: str) -> None:
+    """放大前腾显存：先尝试释放生成引擎，不够再报错。"""
+    need = 12000 if engine == "seedvr2" else 7000
+    if _upscale_room_mb() >= need:
+        return
+    pipe = get_pipeline()
+    gen = getattr(pipe, "_engine", None)
+    if gen is not None:
+        try:
+            gen.free(unload=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if _upscale_room_mb() < need:
+        raise upscale_manager.UpscaleError(
+            f"显存不足：{engine} 约需 {need // 1000}GB 可用显存，当前仅 {_upscale_room_mb()}MB"
+        )
+
+
+@app.post("/api/image/upscale")
+def api_image_upscale(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """提交高清放大任务（走单 worker 队列，支持进度与取消）。"""
+    raw_images = payload.get("images")
+    if raw_images is None and payload.get("image"):
+        raw_images = [payload.get("image")]
+    if not isinstance(raw_images, list) or not raw_images:
+        raise ApiError("缺少 images（data URL 或 /files/ 路径数组）", code="missing_field")
+    if len(raw_images) > MAX_UPSCALE_BATCH:
+        raise ApiError(f"一次最多放大 {MAX_UPSCALE_BATCH} 张", code="too_many_images")
+
+    cfg = config.load_config()
+    up = upscale_registry.section(cfg)
+    params: dict[str, Any] = {}
+    for key in (
+        "scale", "seed", "target_short_edge", "max_resolution", "batch_size",
+        "color_correction", "vae_tiled", "dit", "vae",
+        "tile_size", "tile_overlap", "topk_ratio", "kv_ratio", "local_range", "color_fix",
+    ):
+        if payload.get(key) is not None:
+            params[key] = payload.get(key)
+
+    scan = upscale_registry.scan_all(cfg)
+    engine = str(payload.get("engine") or scan.get("default_engine") or "seedvr2")
+    if engine not in scan["engines"]:
+        raise ApiError(f"未知的放大引擎：{engine}", code="invalid_field")
+    if not scan["engines"][engine].get("ready"):
+        missing = ", ".join(scan["engines"][engine].get("missing") or []) or "模型文件"
+        raise ApiError(
+            f"{scan['engines'][engine]['label']} 不可用，缺少：{missing}",
+            code="model_missing",
+        )
+    if params.get("scale") is not None and int(params["scale"]) not in (2, 4):
+        raise ApiError("scale 只能是 2 或 4", code="invalid_field")
+
+    params.setdefault("scale", int((up.get("defaults") or {}).get("scale") or 2))
+    params["engine"] = engine
+    total = len(raw_images)
+
+    def _run(job: jobs.Job) -> None:
+        from io import BytesIO
+
+        from PIL import Image, ImageOps
+
+        _ensure_upscale_room(engine)
+        manager = upscale_manager.get_manager()
+        results: list[dict[str, Any]] = []
+        job.meta.update({"engine": engine, "total": total})
+        for index, raw in enumerate(raw_images):
+            job.check_cancel()
+            data = _decode_image_payload(raw)
+            with Image.open(BytesIO(data)) as probe:
+                image = ImageOps.exif_transpose(probe)
+                image.load()
+            if max(image.size) * int(params["scale"]) > imageops.MAX_SIDE:
+                raise ApiError(
+                    f"放大后尺寸超出上限 {imageops.MAX_SIDE}px", code="image_too_large"
+                )
+
+            def _progress(value: float, label: str, _i: int = index) -> None:
+                done = _i + max(0.0, min(1.0, value / 100.0))
+                job.set_progress(int(done * 1000), total * 1000,
+                                 f"[{_i + 1}/{total}] {label}")
+
+            job.set_progress(index * 1000, total * 1000, f"[{index + 1}/{total}] 准备中")
+            result = manager.upscale(
+                image,
+                engine=engine,
+                params=params,
+                progress=_progress,
+                should_cancel=lambda: job.cancel_requested,
+            )
+            buf = BytesIO()
+            result.save(buf, format="PNG", compress_level=1)
+            saved = storage.save_output(
+                buf.getvalue(), prefix=f"upscale-{engine}", ext="png", image=result
+            )
+            results.append(saved)
+            job.images = list(results)
+
+        job.set_progress(total * 1000, total * 1000, "完成")
+        job.meta["engine"] = engine
+
+    job = get_queue().submit(
+        "upscale",
+        _run,
+        prompt=f"放大 {total} 张（{engine} ×{params['scale']}）",
+        params=params,
+        meta={"engine": engine, "total": total},
+    )
+    return {"ok": True, "job_id": job.id, "status": job.status, "engine": engine}
+
+
 # --------------------------------------------------------------------------- 引擎/文件
 
 
 @app.post("/api/engine/free")
 def api_engine_free(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """释放显存：unload=False 只清缓存，True 卸载模型。"""
+    """释放显存：unload=False 只清缓存，True 卸载模型（生成引擎 + 放大引擎）。"""
+    unload = bool(payload.get("unload"))
+    freed = []
+    try:
+        upscale_manager.get_manager().free(unload=unload)
+        freed.append("upscale")
+    except Exception:  # noqa: BLE001
+        pass
     pipe = get_pipeline()
     engine = getattr(pipe, "_engine", None)
     if engine is None:
-        return {"ok": True, "note": "引擎尚未加载"}
-    engine.free(unload=bool(payload.get("unload")))
-    return {"ok": True, "unload": bool(payload.get("unload"))}
+        return {"ok": True, "unload": unload, "note": "引擎尚未加载", "freed": freed}
+    engine.free(unload=unload)
+    return {"ok": True, "unload": unload, "freed": freed}
 
 
 @app.get("/api/settings")
@@ -1028,10 +1180,39 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
         # 生效值同步回旧顶层键，保持 turbo_plan / 历史脚本兼容
         patch.update(model_slots.legacy_patch({**cfg, "model_defaults": merged}))
 
+    if "upscale" in payload:
+        raw = payload.get("upscale")
+        if not isinstance(raw, dict):
+            raise ApiError("upscale 必须是对象", code="invalid_field")
+        current = json.loads(json.dumps(cfg.get("upscale") or {}))
+        if "dirs" in raw:
+            if not isinstance(raw.get("dirs"), dict):
+                raise ApiError("upscale.dirs 必须是对象", code="invalid_field")
+            dirs = dict(current.get("dirs") or {})
+            for name in ("seedvr2", "flashvsr"):
+                if name in raw["dirs"]:
+                    text = str(raw["dirs"].get(name) or "").strip()
+                    dirs[name] = (
+                        os.path.normpath(os.path.expandvars(os.path.expanduser(text)))
+                        if text else ""
+                    )
+            current["dirs"] = dirs
+        for section in ("seedvr2", "flashvsr", "defaults"):
+            if section in raw:
+                if not isinstance(raw.get(section), dict):
+                    raise ApiError(f"upscale.{section} 必须是对象", code="invalid_field")
+                current[section] = {**(current.get(section) or {}), **raw[section]}
+        for key in ("default_engine", "idle_unload_minutes", "enabled"):
+            if key in raw:
+                current[key] = raw[key]
+        patch["upscale"] = current
+
     if not patch:
         raise ApiError("没有可修改的设置项", code="missing_field")
 
     updated = config.update_config(patch)
+    if "upscale" in patch:
+        upscale_manager.get_manager().free(unload=True)
     if any(key in patch for key in ("ollama_url", "ollama_model")):
         _OLLAMA_CACHE["data"] = None
     released = 0
@@ -1044,7 +1225,9 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
 @app.post("/api/models/scan")
 def api_models_scan() -> dict[str, Any]:
     """按当前配置重新扫描所有模型目录（设置页的「重新扫描」）。"""
-    return config.scan_summary()
+    data = config.scan_summary()
+    data["upscale"] = upscale_registry.scan_all()
+    return data
 
 
 @app.post("/api/ollama/test")

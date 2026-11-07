@@ -124,3 +124,87 @@ vendor 位置：`web/vendor/image-tools-kit/`（原样复制，不改）。
 覆盖：裁剪尺寸/越界收敛/非法参数、宫格数量与格子尺寸（含间隔）、旋转翻转、三种 fit、
 调色改变像素且保持尺寸、色温方向（暖色抬红压蓝）、`pad32` 对齐、alpha 去边、未知操作报错、
 落盘与 JPEG 质量、扩图规划（单方向/全方向/amount 收敛）。
+
+## 7. 高清放大（SeedVR2 / FlashVSR）
+
+### 7.1 为什么是 vendor 原算法
+
+重写推理代码无法保证与原模型蒸馏一致的画质，所以两套引擎都是**原样 vendor、零算法改动**：
+
+| 引擎 | 代码位置 | 来源 |
+|---|---|---|
+| SeedVR2 7B | `server/upscalers/vendor/seedvr2/`（`src/` + `configs_7b/` + `configs_3b/` + `pos_emb.pt` / `neg_emb.pt`） | ComfyUI-SeedVR2_VideoUpscaler |
+| FlashVSR 1.1 | `server/upscalers/vendor/flashvsr/`（`flashvsr_core/` + `te_runtime/`） | FlashVSR 官方实现 |
+
+`server/upscalers/seedvr2_runner.py`、`flashvsr_runner.py` 只做原本由 ComfyUI 节点负责的接线：
+模型加载、静图补帧、显存/分块、进度、取消。运行时不 import `comfy*`、不读 ComfyUI 目录代码。
+模型是**数据**，路径来自 `config.json` 的 `upscale.dirs`。
+
+SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` 的调用序列
+（encode → upscale → decode → postprocess），参数默认值也一致；只把上游 `force=True`
+的阶段日志静音，避免服务端控制台被刷屏。
+
+### 7.2 接口
+
+`GET /api/image/upscale/models`：目录、候选 DiT/VAE、就绪状态、默认引擎、已加载状态。
+
+```jsonc
+{
+  "engines": {
+    "seedvr2": {"dir": "...", "ready": true, "dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+                "vae": "ema_vae_fp16.safetensors", "dits": [...], "vaes": [...], "missing": []},
+    "flashvsr": {"dir": "...", "ready": true, "files": [...], "missing": []}
+  },
+  "default_engine": "seedvr2",
+  "defaults": {"scale": 2, "seed": 42},
+  "ready": true,
+  "status": {"loaded": {"seedvr2": true}}
+}
+```
+
+`POST /api/image/upscale`：提交后台任务，返回 `job_id`；进度与取消复用 `/api/jobs/{id}`
+和 `/api/jobs/{id}/cancel`。
+
+```jsonc
+{
+  "image": "data:image/png;base64,...",  // 或 "images": [...]，最多 8 张
+  "engine": "seedvr2|flashvsr",
+  "scale": 2,                            // 2 / 4
+  "seed": 42,
+  "target_short_edge": 1024,             // 可选：直接指定短边（覆盖 scale）
+  "vae_tiled": true,                     // SeedVR2：4K 输出建议开
+  "dit": "seedvr2_ema_7b-Q8_0.gguf",     // 可选：临时换权重
+  "tile_size": 256, "tile_overlap": 24,  // FlashVSR 分块
+  "topk_ratio": 2.0, "kv_ratio": 3.0, "local_range": 11,
+  "color_fix": true
+}
+```
+
+### 7.3 内存与耗时（本机 RTX 5090 / 32GB，实测）
+
+| 任务 | 耗时 | 峰值显存 |
+|---|---|---|
+| SeedVR2 512→1024（2×） | 3.7s | — |
+| FlashVSR 256→512（2×） | 15.8s | 5.38GB |
+| FlashVSR 256→512 冷启动（含加载权重） | 16.2s | — |
+
+- 同一时刻只保留一个放大引擎的权重；切换引擎会先卸载旧的（`server/upscalers/manager.py`）。
+- 放大前会检查可用显存（SeedVR2 ≈12GB / FlashVSR ≈7GB），不够时先卸载生成引擎。
+- 空闲 `upscale.idle_unload_minutes`（默认 10 分钟）后自动卸载；`POST /api/engine/free`
+  也会一并释放放大模型。
+- SeedVR2 单帧按 t2i 处理（`batch_size=1`），保留 RGBA（alpha 走同一管线）。
+
+### 7.4 设置
+
+设置页「图像放大」分区可改：两个模型目录、DiT/VAE 选择、VAE 分块、FlashVSR 精度、
+默认引擎、默认倍率、空闲卸载分钟。保存后立即生效（会卸载已加载的放大模型），
+点「重新扫描」刷新候选文件。
+
+### 7.5 测试
+
+```powershell
+& "<python>" -m pytest tests/test_upscalers.py -q      # 7 项，纯 CPU，0.1s
+```
+
+覆盖：目录推断与显式覆盖、SeedVR2 就绪/缺失判定、FlashVSR 五个权重齐全判定、
+默认引擎回退到可用引擎、管理器空状态与默认配置。

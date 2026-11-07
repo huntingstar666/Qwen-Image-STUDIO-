@@ -14,6 +14,7 @@ const SECTIONS = [
   { id: 'appearance', icon: 'palette', label: () => t('settings.nav.appearance') },
   { id: 'models', icon: 'folder', label: () => t('settings.nav.models') },
   { id: 'defaults', icon: 'spark', label: () => t('settings.nav.defaults') },
+  { id: 'upscale', icon: 'image', label: () => t('settings.nav.upscale') },
   { id: 'llm', icon: 'spark', label: () => t('settings.nav.llm') },
   { id: 'runtime', icon: 'gauge', label: () => t('settings.nav.runtime') },
   { id: 'about', icon: 'info', label: () => t('settings.nav.about') },
@@ -28,6 +29,8 @@ const ICONS = {
     '<path d="M12 4l1.6 4.1 4.1 1.6-4.1 1.6L12 15.4l-1.6-4.1-4.1-1.6 4.1-1.6z"/><path d="M18 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
   gauge:
     '<path d="M4.5 17a8 8 0 1115 0"/><path d="M12 13l3.2-3.6"/><circle cx="12" cy="14" r="1.4"/>',
+  image:
+    '<rect x="3.5" y="5" width="17" height="14" rx="2.2"/><circle cx="9" cy="10" r="1.4"/><path d="M4.5 17l4.6-4.4 3.2 2.9 2.5-2.2 4.7 4.1"/>',
   info: '<circle cx="12" cy="12" r="8.2"/><path d="M12 11v5.2M12 7.9v.2"/>',
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
 };
@@ -82,6 +85,14 @@ function emptyForm() {
       idle_unload_minutes: 0,
       vram_reserve: 0,
     },
+    upscale: {
+      dirs: { seedvr2: '', flashvsr: '' },
+      seedvr2: { dit: '', vae: '', vae_tiled: true },
+      flashvsr: { precision: 'bf16' },
+      default_engine: 'seedvr2',
+      idle_unload_minutes: 10,
+      defaults: { scale: 2 },
+    },
   };
 }
 
@@ -111,6 +122,25 @@ function formFromData(data) {
       idle_unload_minutes: Number(data?.runtime?.idle_unload_minutes) || 0,
       vram_reserve: Number(data?.runtime?.vram_reserve) || 0,
     },
+    upscale: upscaleFormFromData(data?.upscale),
+  };
+}
+
+function upscaleFormFromData(up = {}) {
+  const dirs = up.dirs || {};
+  const seedvr2 = up.seedvr2 || {};
+  const flashvsr = up.flashvsr || {};
+  return {
+    dirs: { seedvr2: dirs.seedvr2 || '', flashvsr: dirs.flashvsr || '' },
+    seedvr2: {
+      dit: seedvr2.dit || '',
+      vae: seedvr2.vae || '',
+      vae_tiled: seedvr2.vae_tiled !== false,
+    },
+    flashvsr: { precision: flashvsr.precision || 'bf16' },
+    default_engine: up.default_engine || 'seedvr2',
+    idle_unload_minutes: Number(up.idle_unload_minutes ?? 10),
+    defaults: { scale: Number(up.defaults?.scale) || 2 },
   };
 }
 
@@ -703,6 +733,117 @@ function renderRuntime() {
     )}`;
 }
 
+function renderUpscaleScan() {
+  const scan = state.data?.upscale?.scan;
+  if (!scan) return `<p class="set-note">${t('upscale.scanning')}</p>`;
+  const engines = scan.engines || {};
+  const rows = Object.values(engines)
+    .map((engine) => {
+      const chip = engine.ready
+        ? `<span class="set-chip ok">${t('upscale.ready')}</span>`
+        : `<span class="set-chip warn">${t('upscale.notReady')}</span>`;
+      const missing = (engine.missing || []).length
+        ? `<span class="set-mono-note">${t('upscale.missing')}：${escapeHtml((engine.missing || []).join(', '))}</span>`
+        : '';
+      return `
+        <div class="scan-row">
+          <span class="scan-label">${escapeHtml(engine.label || engine.id)}</span>
+          <span class="scan-count">${chip}</span>
+        </div>
+        <div class="scan-dir-row">
+          <span class="scan-dir-kind">${t('upscale.dir')}</span>
+          <span class="scan-dir-paths mono">${escapeHtml(engine.dir || '—')}</span>
+        </div>
+        ${missing ? `<div class="scan-dir-row">${missing}</div>` : ''}`;
+    })
+    .join('');
+  return `
+    <div class="scan-summary">
+      <div class="scan-total">
+        <strong>${scan.ready ? t('upscale.anyReady') : t('upscale.noneReady')}</strong>
+        <button class="set-mini-btn" type="button" data-action="rescan">${t('models.rescan')}</button>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+function renderUpscale() {
+  const form = state.form.upscale;
+  const scan = state.data?.upscale?.scan || {};
+  const engines = scan.engines || {};
+  const sd = engines.seedvr2 || {};
+
+  const selectInput = (field, value, options, fallback = '') => {
+    if (!options.length) return textInput(field, value || fallback, { placeholder: fallback });
+    return `<select class="set-input mono" data-field="${field}">
+      ${options
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.value)}" ${option.value === value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`,
+        )
+        .join('')}
+    </select>`;
+  };
+
+  const ditOptions = (sd.dits || []).map((file) => ({
+    value: file.name,
+    label: `${file.name}（${file.size_gb} GB）`,
+  }));
+  const vaeOptions = (sd.vaes || []).map((file) => ({
+    value: file.name,
+    label: `${file.name}（${file.size_gb} GB）`,
+  }));
+  const engineOptions = Object.values(engines).map((engine) => ({
+    value: engine.id,
+    label: engine.label || engine.id,
+  }));
+
+  const dirsCard =
+    row(t('upscale.seedvr2Dir'), t('upscale.dirDesc'),
+      textInput('upscale.dirs.seedvr2', form.dirs.seedvr2, { placeholder: 'D:\\ComfyUI\\models\\SEEDVR2' })) +
+    row(t('upscale.flashvsrDir'), t('upscale.dirDesc'),
+      textInput('upscale.dirs.flashvsr', form.dirs.flashvsr, { placeholder: 'D:\\ComfyUI\\models\\FlashVSR-v1.1' }));
+
+  const seedCard =
+    row(t('upscale.dit'), t('upscale.ditDesc'),
+      selectInput('upscale.seedvr2.dit', form.seedvr2.dit, ditOptions,
+        'seedvr2_ema_7b_fp8_e4m3fn.safetensors')) +
+    row(t('upscale.vae'), '', selectInput('upscale.seedvr2.vae', form.seedvr2.vae, vaeOptions,
+      'ema_vae_fp16.safetensors')) +
+    row(t('upscale.vaeTiled'), t('upscale.vaeTiledDesc'),
+      `<label class="set-switch">
+         <input type="checkbox" data-field="upscale.seedvr2.vae_tiled"
+           ${form.seedvr2.vae_tiled ? 'checked' : ''} />
+         <span class="set-switch-track"></span>
+       </label>`) +
+    row(t('upscale.precision'), t('upscale.precisionDesc'),
+      selectInput('upscale.flashvsr.precision', form.flashvsr.precision, [
+        { value: 'bf16', label: 'bfloat16' },
+        { value: 'fp16', label: 'float16' },
+      ]));
+
+  const defaultsCard =
+    row(t('upscale.engine'), t('upscale.engineDesc'),
+      selectInput('upscale.default_engine', form.default_engine, engineOptions)) +
+    row(t('upscale.scale'), t('upscale.scaleDesc'),
+      selectInput('upscale.defaults.scale', String(form.defaults.scale), [
+        { value: '2', label: '2×' },
+        { value: '4', label: '4×' },
+      ], '2')) +
+    row(t('upscale.idle'), t('upscale.idleDesc'),
+      `<div class="set-inline">
+         ${textInput('upscale.idle_unload_minutes', form.idle_unload_minutes, { type: 'number' })}
+         <span class="set-unit">${t('runtime.minutes')}</span>
+       </div>`);
+
+  return `
+    ${group(t('upscale.dirs'), dirsCard, t('upscale.dirsDesc'))}
+    ${group(t('upscale.models'), seedCard)}
+    ${group(t('upscale.defaults'), defaultsCard)}
+    ${group(t('upscale.scan'), renderUpscaleScan(), t('upscale.scanDesc'))}
+  `;
+}
+
 function renderAbout() {
   const app = state.data?.app || {};
   const storage = app.storage || {};
@@ -725,6 +866,7 @@ const RENDERERS = {
   appearance: renderAppearance,
   models: renderModels,
   defaults: renderDefaults,
+  upscale: renderUpscale,
   llm: renderLlm,
   runtime: renderRuntime,
   about: renderAbout,
@@ -839,6 +981,21 @@ function buildPayload() {
     keep_text_encoder_resident: Boolean(state.form.runtime.keep_text_encoder_resident),
     idle_unload_minutes: Number(state.form.runtime.idle_unload_minutes) || 0,
     vram_reserve: Number(state.form.runtime.vram_reserve) || 0,
+    upscale: {
+      dirs: {
+        seedvr2: state.form.upscale.dirs.seedvr2.trim(),
+        flashvsr: state.form.upscale.dirs.flashvsr.trim(),
+      },
+      seedvr2: {
+        dit: state.form.upscale.seedvr2.dit,
+        vae: state.form.upscale.seedvr2.vae,
+        vae_tiled: Boolean(state.form.upscale.seedvr2.vae_tiled),
+      },
+      flashvsr: { precision: state.form.upscale.flashvsr.precision },
+      default_engine: state.form.upscale.default_engine,
+      idle_unload_minutes: Number(state.form.upscale.idle_unload_minutes) || 0,
+      defaults: { scale: Number(state.form.upscale.defaults.scale) || 2 },
+    },
   };
   const slots = collectSlotPatch();
   if (slots) payload.model_defaults = slots;
@@ -929,7 +1086,10 @@ async function recheckDefaults() {
 async function rescan() {
   try {
     const scan = await api.scanModels();
-    if (state.data) state.data.scan = scan;
+    if (state.data) {
+      state.data.scan = scan;
+      if (scan.upscale && state.data.upscale) state.data.upscale.scan = scan.upscale;
+    }
     render();
     toastSuccess(`已重新扫描：${scan.total} 个模型文件`);
   } catch (err) {

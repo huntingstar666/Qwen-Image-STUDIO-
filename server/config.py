@@ -139,6 +139,32 @@ DEFAULTS: dict[str, Any] = {
     # 文本编码结果缓存条数：同提示词连抽多张时省掉一次 CLIP 前向（热态约 0.15s/张，
     # 带参考图的编辑再抽时还能省掉整段参考图 VAE 编码）。0 = 关闭。
     "encode_cache_size": 8,
+    # 图像高清放大（SeedVR2 / FlashVSR）。模型目录留空时按 model_root 下的
+    # 约定目录自动推断；模型文件从设置页扫描结果里选。
+    "upscale": {
+        "dirs": {"seedvr2": "", "flashvsr": ""},
+        "default_engine": "seedvr2",
+        "seedvr2": {
+            "dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+            "vae": "ema_vae_fp16.safetensors",
+            "vae_tiled": True,
+            "attention_mode": "sdpa",
+            "offload_device": "cpu",
+        },
+        "flashvsr": {
+            "precision": "bf16",
+            "seed": 6,
+            "color_fix": True,
+            "tile_size": 256,
+            "tile_overlap": 24,
+            "topk_ratio": 2.0,
+            "kv_ratio": 3.0,
+            "local_range": 11,
+        },
+        "defaults": {"scale": 2, "seed": 42},
+        # 放大模型空闲多少分钟后自动卸载（0 = 不自动卸载）
+        "idle_unload_minutes": 10,
+    },
 }
 
 #: Turbo 加速预设：用户只选方案，调度 / 加速 LoRA / 底模全部由预设决定。

@@ -260,6 +260,7 @@ export function createImageToolsPage(host) {
     format: 'png',
     quality: 92,
     outpaint: { direction: 'right', amount: 0.5, panoramaAspect: '', active: false, result: null, busy: false },
+    upscale: { models: null, engine: '', scale: 2, jobId: '', polling: false, touchedScale: false },
     results: [],
   };
 
@@ -427,6 +428,34 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
+              <details class="fold tool-fold">
+                <summary>高清放大 <span class="tag-hint">SeedVR2 / FlashVSR</span></summary>
+                <div class="fold-body">
+                  <div class="field">
+                    <span class="field-label">放大引擎</span>
+                    <div class="chips" data-ref="upscaleEngines">
+                      <span class="field-hint" data-ref="upscaleEnginesHint">正在读取模型…</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <span class="field-label">倍率</span>
+                    <div class="chips" data-ref="upscaleScales">
+                      <button class="chip active" type="button" data-scale="2">2×</button>
+                      <button class="chip" type="button" data-scale="4">4×</button>
+                    </div>
+                  </div>
+                  <div class="upscale-progress hidden" data-ref="upscaleProgress">
+                    <div class="upscale-bar"><span data-ref="upscaleBar"></span></div>
+                    <div class="field-hint mono" data-ref="upscaleStatus">排队中…</div>
+                  </div>
+                  <div class="row">
+                    <button class="btn primary sm" type="button" data-ref="upscaleGo" disabled>开始放大</button>
+                    <button class="btn ghost sm hidden" type="button" data-ref="upscaleCancel">取消</button>
+                  </div>
+                  <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快。</div>
+                </div>
+              </details>
+
               <button class="btn ghost block" type="button" data-ref="sendEdit">→ 送入图生图</button>
             </div>
           </section>
@@ -532,6 +561,15 @@ export function createImageToolsPage(host) {
     outpaintGo: ref('outpaintGo'),
     outpaintCancel: ref('outpaintCancel'),
     outpaintSummary: ref('outpaintSummary'),
+    upscaleEngines: ref('upscaleEngines'),
+    upscaleEnginesHint: ref('upscaleEnginesHint'),
+    upscaleScales: ref('upscaleScales'),
+    upscaleProgress: ref('upscaleProgress'),
+    upscaleBar: ref('upscaleBar'),
+    upscaleStatus: ref('upscaleStatus'),
+    upscaleGo: ref('upscaleGo'),
+    upscaleCancel: ref('upscaleCancel'),
+    upscaleHint: ref('upscaleHint'),
     sendEdit: ref('sendEdit'),
     undo: ref('undo'),
     resetAll: ref('resetAll'),
@@ -639,6 +677,7 @@ export function createImageToolsPage(host) {
     renderSourceMeta();
     renderOps();
     updateOutpaintSummary();
+    syncUpscaleButton();
   }
 
   async function loadSourceImage() {
@@ -1307,6 +1346,193 @@ export function createImageToolsPage(host) {
   });
 
   /* ============================================================
+   * 高清放大（SeedVR2 / FlashVSR 任务队列）
+   * ============================================================ */
+  const UPSCALE_LABELS = {
+    seedvr2: 'SeedVR2 7B · 质量优先',
+    flashvsr: 'FlashVSR · 速度优先',
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  initUpscale();
+
+  async function initUpscale() {
+    try {
+      const data = await api.upscaleModels();
+      if (disposed) return;
+      state.upscale.models = data;
+      renderUpscaleEngines();
+    } catch (err) {
+      if (disposed) return;
+      refs.upscaleEngines.innerHTML =
+        '<span class="field-hint">读取放大模型失败，请确认服务已启动。</span>';
+      refs.upscaleHint.textContent = err?.message || String(err);
+    }
+    syncUpscaleButton();
+  }
+
+  function renderUpscaleEngines() {
+    const data = state.upscale.models || {};
+    const engines = Object.values(data.engines || {}).filter((engine) => engine.ready);
+    if (!engines.length) {
+      refs.upscaleEngines.innerHTML =
+        '<span class="field-hint">没有可用的放大模型，请到「设置 → 图像放大」配置模型目录并扫描。</span>';
+      state.upscale.engine = '';
+      syncUpscaleButton();
+      return;
+    }
+    const preferred = data.default_engine || engines[0].id;
+    if (!engines.some((engine) => engine.id === state.upscale.engine)) {
+      state.upscale.engine = preferred;
+    }
+    refs.upscaleEngines.innerHTML = engines
+      .map(
+        (engine) => `<button class="chip ${engine.id === state.upscale.engine ? 'active' : ''}"
+          type="button" data-engine="${escapeHtml(engine.id)}">${escapeHtml(
+          UPSCALE_LABELS[engine.id] || engine.label || engine.id,
+        )}</button>`,
+      )
+      .join('');
+    for (const chip of refs.upscaleEngines.querySelectorAll('[data-engine]')) {
+      chip.addEventListener('click', () => {
+        state.upscale.engine = chip.dataset.engine;
+        renderUpscaleEngines();
+      });
+    }
+    if (!state.upscale.touchedScale && [2, 4].includes(Number(data.defaults?.scale))) {
+      state.upscale.scale = Number(data.defaults.scale);
+      syncScaleChips();
+    }
+  }
+
+  function syncScaleChips() {
+    for (const chip of refs.upscaleScales.querySelectorAll('[data-scale]')) {
+      chip.classList.toggle('active', Number(chip.dataset.scale) === state.upscale.scale);
+    }
+  }
+
+  function syncUpscaleButton() {
+    refs.upscaleGo.disabled =
+      state.upscale.polling || !state.source || !state.upscale.engine;
+  }
+
+  function setUpscaleProgress(percent, label) {
+    const value = Math.max(0, Math.min(100, Math.round(percent)));
+    refs.upscaleBar.style.width = `${value}%`;
+    refs.upscaleStatus.textContent = label ? `${label}（${value}%）` : `${value}%`;
+  }
+
+  function finishUpscale() {
+    state.upscale.polling = false;
+    state.upscale.jobId = '';
+    refs.upscaleCancel.classList.add('hidden');
+    syncUpscaleButton();
+  }
+
+  function addUpscaleResults(job) {
+    for (const image of job.images || []) {
+      state.results.unshift({
+        id: `up-${job.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+        url: image.url,
+        thumbUrl: image.thumb_url || image.url,
+        width: image.width,
+        height: image.height,
+        filename: image.filename,
+        kind: 'upscale',
+        at: Date.now(),
+      });
+    }
+    renderResults();
+  }
+
+  refs.upscaleScales.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-scale]');
+    if (!chip) return;
+    state.upscale.scale = Number(chip.dataset.scale) || 2;
+    state.upscale.touchedScale = true;
+    syncScaleChips();
+  });
+
+  refs.upscaleGo.addEventListener('click', async () => {
+    if (!state.source) {
+      toastWarn('请先上传图片');
+      return;
+    }
+    if (!state.upscale.engine) {
+      toastWarn('没有可用的放大引擎，请先在设置里配置模型');
+      return;
+    }
+    state.upscale.polling = true;
+    refs.upscaleProgress.classList.remove('hidden');
+    refs.upscaleCancel.classList.remove('hidden');
+    setUpscaleProgress(0, '提交任务');
+    syncUpscaleButton();
+    try {
+      const resp = await api.upscale({
+        image: state.source.dataUrl,
+        engine: state.upscale.engine,
+        scale: state.upscale.scale,
+      });
+      state.upscale.jobId = resp.job_id;
+      setUpscaleProgress(0, '排队中');
+      await pollUpscaleJob(resp.job_id);
+    } catch (err) {
+      toastError(err, '放大失败');
+      finishUpscale();
+    }
+  });
+
+  refs.upscaleCancel.addEventListener('click', async () => {
+    const jobId = state.upscale.jobId;
+    if (!jobId) return;
+    try {
+      await api.cancelJob(jobId);
+      toastWarn('已请求取消放大');
+    } catch (err) {
+      toastError(err, '取消失败');
+    }
+  });
+
+  async function pollUpscaleJob(jobId) {
+    while (!disposed && state.upscale.jobId === jobId) {
+      let job;
+      try {
+        job = await api.job(jobId);
+      } catch (err) {
+        await sleep(1500);
+        continue;
+      }
+      const progress = job.progress || {};
+      const percent = progress.max
+        ? (Number(progress.value) / Number(progress.max)) * 100
+        : 0;
+      const stage = progress.label || (job.status === 'queued' ? '排队中' : '放大中');
+      setUpscaleProgress(percent, stage);
+
+      if (job.status === 'done') {
+        addUpscaleResults(job);
+        const count = (job.images || []).length;
+        setUpscaleProgress(100, '完成');
+        toastSuccess(`放大完成：${count} 张已加入结果`);
+        finishUpscale();
+        return;
+      }
+      if (job.status === 'error') {
+        const message = job.error?.message || job.error || '放大失败';
+        toastError(new Error(message), '放大失败');
+        finishUpscale();
+        return;
+      }
+      if (job.status === 'canceled') {
+        toastWarn('已取消放大');
+        finishUpscale();
+        return;
+      }
+      await sleep(1000);
+    }
+  }
+
+  /* ============================================================
    * 导出 / 结果
    * ============================================================ */
   refs.format.addEventListener('change', () => {
@@ -1378,7 +1604,7 @@ export function createImageToolsPage(host) {
           <div class="tool-result-thumb"><img src="${escapeHtml(item.thumbUrl)}" alt="" loading="lazy" /></div>
           <div class="tool-result-meta">
             <span class="mono">${fmtNum(item.width)}×${fmtNum(item.height)}</span>
-            <span class="kind">${item.kind === 'grid' ? '宫格' : '处理'}</span>
+            <span class="kind">${item.kind === 'grid' ? '宫格' : item.kind === 'upscale' ? '放大' : '处理'}</span>
           </div>
         </div>`,
       )

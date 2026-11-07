@@ -630,7 +630,7 @@ export function createImageToolsPage(host) {
                     <button class="btn primary sm" type="button" data-ref="upscaleGo" disabled>开始放大</button>
                     <button class="btn ghost sm hidden" type="button" data-ref="upscaleCancel">取消</button>
                   </div>
-                  <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快，VOSR2 需 ComfyUI 在线。</div>
+                  <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快，VOSR2 单步细节恢复。</div>
                 </div>
               </details>
 
@@ -2068,7 +2068,7 @@ export function createImageToolsPage(host) {
   const UPSCALE_LABELS = {
     seedvr2: 'SeedVR2 7B · 质量优先',
     flashvsr: 'FlashVSR · 速度优先',
-    vosr2: 'VOSR2 · ComfyUI',
+    vosr2: 'VOSR2 · 1.4B',
   };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

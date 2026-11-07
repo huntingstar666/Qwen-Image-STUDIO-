@@ -1,0 +1,15 @@
+VOSR2 vendored code
+===================
+
+This directory contains code derived from ComfyUI-VOSR2
+(https://github.com/ylchen333/ComfyUI-VOSR2), Copyright (c) ylchen333,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository only replaces the ComfyUI host interfaces:
+  - comfy.ops            -> ops_compat.py (plain torch.nn layers)
+  - comfy.utils.ProgressBar -> progress.py
+  - comfy.model_management / comfy.model_patcher / folder_paths /
+    Hugging Face auto-download -> loader.py (minimal patcher, explicit root)
+
+The network architecture, forward passes, tiling logic, and color
+alignment are kept identical to the upstream implementation.

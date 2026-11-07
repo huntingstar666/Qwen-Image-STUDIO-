@@ -6,12 +6,12 @@
 > 前端已补：左侧工具轨分组、尺寸多模式/导出增强、水印面板（含画布拖动定位/吸附/方向键微调）、
 > 动图面板、导入菜单（素材仓库 / 最近结果 / 剪贴板 + 粘贴）、
 > 结果「收藏素材 / 加入 GIF / 送入图像编辑」、**Apple 三栏 Inspector 重排 + 底部胶片条（多选批量操作）**。
-> 本方案全部阶段已落地；后续追加 VOSR2 作为第三个放大引擎（闭源节点 → 走本机 ComfyUI HTTP API）。
+> 本方案全部阶段已落地；后续追加 VOSR2 作为第三个放大引擎（vendor 自 ComfyUI-VOSR2，Apache-2.0，纯本地推理）。
 > 日期：2026-11-07
 > 范围：`web/src/components/imageTools.js`、`web/assets/css/tools.css`、`server/imageops.py`、新增 `server/mediaops.py`、新增 `server/upscalers/`、`server/config.py`、`server/main.py`、`server/jobs.py`、设置页
 > 目标：把「图像处理」从单页工具堆叠，升级为可商用的本地图像工作台：基础处理 + 水印 + GIF + 三套高清放大，并与素材仓库、图像编辑、结果历史打通。
-> SeedVR2 / FlashVSR 的推理完全在本仓库内完成；VOSR2 节点包闭源（`inference.pyd` / `nodes.pyd`），
-> 因此通过本机 ComfyUI HTTP API（默认 `http://127.0.0.1:8188`，设置页可改）推理，是本模块唯一的外部服务依赖。
+> 三套放大引擎全部在本仓库内推理：SeedVR2 / FlashVSR / VOSR2 的代码均 vendor 进 `server/upscalers/vendor/`，
+> 运行时不 import `comfy*`、不依赖 ComfyUI 服务（VOSR2 的宿主接口由 `vendor/vosr2/ops_compat.py` 等最小兼容层替换）。
 
 ---
 
@@ -41,11 +41,11 @@ HEAD：5b10db7 docs(panorama): 回写全景方案落地状态与使用说明
 - 后端新增三层：
   1. `server/imageops.py` 增强：无损/有损导出、目标体积、EXIF、智能尺寸；
   2. `server/mediaops.py` 新增：水印、GIF、视频探测与取帧；
-  3. `server/upscalers/` 新增：SeedVR2 7B 与 FlashVSR 的本地推理适配器、模型扫描、显存管理、分块/融合；VOSR2 通过 `vosr2_api.py` 走本机 ComfyUI HTTP API。
+  3. `server/upscalers/` 新增：SeedVR2 7B、FlashVSR、VOSR2 1.4B 的本地推理适配器、模型扫描、显存管理、分块/融合。
 - 前端把当前「左中右三列 + 折叠面板」重构为 **Apple 工作台三栏**：左侧工具轨（固定宽度）、中央画布（缩放/平移/前后对比/播放）、右侧 Inspector（按工具切换参数）+ 底部结果胶片条。
 - 工具从「一屏全塞」改为 6 个上下文工作区：`调整`、`尺寸`、`水印`、`动图`、`放大`、`导出`。
-- 放大默认策略：**单图质量优先走 SeedVR2 7B fp8；动图/序列/速度优先走 FlashVSR 4×；已开 ComfyUI 可选 VOSR2**。三套都可在设置页改默认。
-- 设置页新增「图像放大」分区：三个模型目录、默认引擎、默认 DiT/VAE/模型包、推理默认值、VOSR2 的 ComfyUI 地址与质量档位、扫描与完整性校验。保存写 `config.json` 的 `upscale` 字段，立即生效。
+- 放大默认策略：**单图质量优先走 SeedVR2 7B fp8；动图/序列/速度优先走 FlashVSR 4×；细节恢复可选 VOSR2 1.4B**。三套都可在设置页改默认。
+- 设置页新增「图像放大」分区：三个模型目录、默认引擎、默认 DiT/VAE/模型包、推理默认值、VOSR2 的精度/颜色对齐/分块、扫描与完整性校验。保存写 `config.json` 的 `upscale` 字段，立即生效。
 - 所有异步重活（放大、GIF、视频取帧）走现有单 worker 任务队列；进度、取消、错误提示复用 `server/jobs.py`，不新造并发模型。
 
 ---
@@ -464,7 +464,8 @@ server/
     common.py                 # 读写、tiling、羽化融合、颜色校正、进度、取消
     seedvr2_runner.py         # SeedVR2 适配器
     flashvsr_runner.py        # FlashVSR 适配器
-    vosr2_api.py              # VOSR2 适配器（ComfyUI HTTP API 客户端 + 工作流生成）
+    vosr2_runner.py           # VOSR2 1.4B 适配器（vendor 自 ComfyUI-VOSR2，纯本地）
+    vendor/vosr2/             # inference.py / loader.py / models/ + ops_compat + LICENSE(NOTICE)
     sparse_attention.py       # LCSA：spas_sage_attn 适配 + 纯 torch 回退
     vendor/
       seedvr2/                # Apache-2.0，保留 LICENSE/NOTICE 与上游文件头

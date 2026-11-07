@@ -152,22 +152,22 @@ vendor 位置：`web/vendor/image-tools-kit/`（原样复制，不改）。
 
 ### 7.1 为什么是 vendor 原算法
 
-重写推理代码无法保证与原模型蒸馏一致的画质，所以两套本地引擎都是**原样 vendor、零算法改动**：
+重写推理代码无法保证与原模型蒸馏一致的画质，所以三套引擎都是**原样 vendor、零算法改动**：
 
 | 引擎 | 代码位置 | 来源 |
 |---|---|---|
 | SeedVR2 7B | `server/upscalers/vendor/seedvr2/`（`src/` + `configs_7b/` + `configs_3b/` + `pos_emb.pt` / `neg_emb.pt`） | ComfyUI-SeedVR2_VideoUpscaler |
 | FlashVSR 1.1 | `server/upscalers/vendor/flashvsr/`（`flashvsr_core/` + `te_runtime/`） | FlashVSR 官方实现 |
-| VOSR2 | `server/upscalers/vosr2_api.py`（不 vendor 代码，走 ComfyUI HTTP API） | TE-Speed-VOSR2 自定义节点 |
+| VOSR2 1.4B | `server/upscalers/vendor/vosr2/`（`inference.py` + `loader.py` + `models/`） | ComfyUI-VOSR2（Apache-2.0） |
 
-`server/upscalers/seedvr2_runner.py`、`flashvsr_runner.py` 只做原本由 ComfyUI 节点负责的接线：
+`server/upscalers/seedvr2_runner.py`、`flashvsr_runner.py`、`vosr2_runner.py` 只做原本由 ComfyUI 节点负责的接线：
 模型加载、静图补帧、显存/分块、进度、取消。运行时不 import `comfy*`、不读 ComfyUI 目录代码。
 模型是**数据**，路径来自 `config.json` 的 `upscale.dirs`。
 
-VOSR2 的节点包是闭源的（`inference.pyd` / `nodes.pyd`），无法像前两者一样移植进本仓库，
-因此改为「把本机 ComfyUI 当推理后端」：上传图片 → 提交 API 格式工作流 → 轮询 history → 取回结果。
-好处是不复制权重、不重复实现分块/缓存逻辑，ComfyUI 升级节点包后本仓库无需改动；
-代价是必须另开一个 ComfyUI 服务（默认 `http://127.0.0.1:8188`），且显存由 ComfyUI 进程管理。
+VOSR2 原节点包依赖 `comfy.ops` / `comfy.model_management` / `folder_paths` / `comfy.utils.ProgressBar`，
+vendor 时用最小兼容层替换：`vendor/vosr2/ops_compat.py`（`torch.nn` 别名层）、`progress.py`、
+`loader.py` 内的 `_Patcher`（`.to(device)` 代替 ModelPatcher）。网络结构、单步采样、
+tile/颜色对齐逻辑与上游逐行一致；许可证与出处见 `vendor/vosr2/LICENSE`、`vendor/vosr2/NOTICE`。
 
 SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` 的调用序列
 （encode → upscale → decode → postprocess），参数默认值也一致；只把上游 `force=True`
@@ -184,7 +184,7 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
                 "vae": "ema_vae_fp16.safetensors", "dits": [...], "vaes": [...], "missing": []},
     "flashvsr": {"dir": "...", "ready": true, "files": [...], "missing": []},
     "vosr2": {"dir": "...", "ready": true, "model_bundle": "VOSR2", "bundles": ["VOSR2"],
-              "url": "http://127.0.0.1:8188", "missing": []}
+              "missing": []}
   },
   "default_engine": "seedvr2",
   "defaults": {"scale": 2, "seed": 42},
@@ -211,10 +211,9 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
 }
 ```
 
-VOSR2 的其余参数（ComfyUI 地址、模型包、质量档位、分块、批大小、超时）都在设置页里配置，
-请求只接受 `scale` / `seed`；工作流由 `build_workflow()` 按 ComfyUI 的 API 格式生成，
-上传的 JSON 里用于前后对比的 UI 节点（编号 18）在提交前会被剔除。
-取消任务时会先 `POST /queue {"delete": [...]}`，若已在执行再 `POST /interrupt`。
+VOSR2 的其余参数（模型包、精度、颜色对齐、分块与 VAE 分块）都在设置页里配置，
+请求只接受 `scale` / `seed`；`vosr2_runner.py` 负责 PIL ⇄ tensor 与进度的归一化，
+取消由任务队列的 `should_cancel` 传入 vendor 的分块循环，命中后抛 `UpscaleCancelled`。
 
 ### 7.3 内存与耗时（本机 RTX 5090 / 32GB，实测）
 
@@ -223,11 +222,10 @@ VOSR2 的其余参数（ComfyUI 地址、模型包、质量档位、分块、批
 | SeedVR2 512→1024（2×） | 3.7s | — |
 | FlashVSR 256→512（2×） | 15.8s | 5.38GB |
 | FlashVSR 256→512 冷启动（含加载权重） | 16.2s | — |
-| VOSR2 96×64→192×128（2×，speed） | 22.4s | 由 ComfyUI 管理 |
+| VOSR2 96×64→192×128（2×，wavelet） | 16.4s（含首次加载 7s） | 3.5GB |
 
 - 同一时刻只保留一个放大引擎的权重；切换引擎会先卸载旧的（`server/upscalers/manager.py`）。
-- 放大前会检查可用显存（SeedVR2 ≈12GB / FlashVSR ≈7GB），不够时先卸载生成引擎；
-  VOSR2 只释放生成引擎，显存由 ComfyUI 进程自行调度。
+- 放大前会检查可用显存（SeedVR2 ≈12GB / FlashVSR ≈7GB / VOSR2 ≈8GB），不够时先卸载生成引擎。
 - 空闲 `upscale.idle_unload_minutes`（默认 10 分钟）后自动卸载；`POST /api/engine/free`
   也会一并释放放大模型。
 - SeedVR2 单帧按 t2i 处理（`batch_size=1`），保留 RGBA（alpha 走同一管线）。
@@ -235,18 +233,18 @@ VOSR2 的其余参数（ComfyUI 地址、模型包、质量档位、分块、批
 ### 7.4 设置
 
 设置页「图像放大」分区可改：三个模型目录、DiT/VAE 选择、VAE 分块、FlashVSR 精度、
-VOSR2 的 ComfyUI 地址 / 模型包 / 质量档位 / 分块尺寸 / 超时、
+VOSR2 的模型包 / 精度 / 颜色对齐 / 分块尺寸 / 分块重叠 / VAE 分块、
 默认引擎、默认倍率、空闲卸载分钟。保存后立即生效（会卸载已加载的放大模型），
-点「重新扫描」刷新候选文件。VOSR2 引擎不缓存状态，改完地址下一次任务就会用新地址。
+点「重新扫描」刷新候选文件。
 
 ### 7.5 测试
 
 ```powershell
-& "<python>" -m pytest tests/test_upscalers.py tests/test_vosr2_api.py -q   # 10 项，纯 CPU，0.2s
+& "<python>" -m pytest tests/test_upscalers.py tests/test_vosr2.py -q   # 10 项，纯 CPU，0.2s
 ```
 
 覆盖：目录推断与显式覆盖、SeedVR2 就绪/缺失判定、FlashVSR 五个权重齐全判定、
-VOSR2 工作流形状/未知参数过滤/倍率夹取/目录扫描、
+VOSR2 三件套模型包完整性判定与引擎构造、非法倍率拒绝、
 默认引擎回退到可用引擎、管理器空状态与默认配置。
 
 ## 8. 水印（`server/mediaops.py`）

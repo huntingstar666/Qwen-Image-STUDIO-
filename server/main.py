@@ -1152,17 +1152,7 @@ def _upscale_room_mb() -> int:
 
 def _ensure_upscale_room(engine: str) -> None:
     """放大前腾显存：先尝试释放生成引擎，不够再报错。"""
-    if engine == "vosr2":
-        # VOSR2 由 ComfyUI 进程管理显存，本进程只需要把生成引擎让出来
-        pipe = get_pipeline()
-        gen = getattr(pipe, "_engine", None)
-        if gen is not None:
-            try:
-                gen.free(unload=True)
-            except Exception:  # noqa: BLE001
-                pass
-        return
-    need = 12000 if engine == "seedvr2" else 7000
+    need = {"seedvr2": 12000, "flashvsr": 7000, "vosr2": 8000}.get(engine, 7000)
     if _upscale_room_mb() >= need:
         return
     pipe = get_pipeline()

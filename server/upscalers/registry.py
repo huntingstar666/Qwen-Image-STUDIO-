@@ -19,8 +19,15 @@ FLASHVSR_REQUIRED = (
     "posi_prompt.pth",
     "TCDecoder.ckpt",
 )
-#: VOSR2 由 ComfyUI 进程加载；这里只检查模型包目录是否齐全。
-VOSR2_CHECKPOINT = os.path.join("checkpoints", "ema_model.safetensors")
+#: VOSR2 一套 bundle 由 DiT / Qwen-Image VAE / DINOv2-L 三件套组成，缺一不可。
+VOSR2_VAE_SUBDIR = "Qwen-Image-vae-2d"
+VOSR2_VAE_FILES = ("config.json", "diffusion_pytorch_model.safetensors")
+VOSR2_VISION_FILE = "dinov2_vitl14.safetensors"
+VOSR2_DIT_CANDIDATES = (
+    os.path.join("clean_weights", "ema_model.safetensors"),
+    os.path.join("checkpoints", "ema_model.safetensors"),
+    "ema_model.safetensors",
+)
 
 
 def section(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -109,6 +116,19 @@ def scan_flashvsr(directory: str, cfg: dict[str, Any] | None = None) -> dict[str
     }
 
 
+def _vosr2_bundle_ok(bundle_dir: str) -> bool:
+    if not os.path.isfile(os.path.join(bundle_dir, "args.json")):
+        return False
+    if not any(
+        os.path.isfile(os.path.join(bundle_dir, name)) for name in VOSR2_DIT_CANDIDATES
+    ):
+        return False
+    vae_dir = os.path.join(bundle_dir, VOSR2_VAE_SUBDIR)
+    if not all(os.path.isfile(os.path.join(vae_dir, name)) for name in VOSR2_VAE_FILES):
+        return False
+    return os.path.isfile(os.path.join(bundle_dir, VOSR2_VISION_FILE))
+
+
 def scan_vosr2(directory: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """扫描 VOSR2 模型包（每个子目录是一套 bundle，如 ``VOSR2/``）。"""
     up = section(cfg)
@@ -123,7 +143,7 @@ def scan_vosr2(directory: str, cfg: dict[str, Any] | None = None) -> dict[str, A
             names = []
         for name in names:
             sub = os.path.join(directory, name)
-            if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, VOSR2_CHECKPOINT)):
+            if os.path.isdir(sub) and _vosr2_bundle_ok(sub):
                 bundles.append(name)
     ready = exists and bundle in bundles
     missing: list[str] = []
@@ -135,12 +155,11 @@ def scan_vosr2(directory: str, cfg: dict[str, Any] | None = None) -> dict[str, A
         missing.append(f"{bundle} 模型包")
     return {
         "id": "vosr2",
-        "label": "VOSR2（ComfyUI API）",
+        "label": "VOSR2 1.4B（单步 / 细节优先）",
         "dir": directory,
         "exists": exists,
         "bundles": bundles,
         "model_bundle": bundle,
-        "url": str(pref.get("url") or ""),
         "ready": ready,
         "missing": missing,
     }

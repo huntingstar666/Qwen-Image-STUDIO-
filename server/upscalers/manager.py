@@ -15,7 +15,7 @@ from . import registry
 from .base import UpscaleCancelled, UpscaleError
 from .flashvsr_runner import FlashVSREngine
 from .seedvr2_runner import SeedVR2Engine
-from .vosr2_api import VOSR2ComfyEngine
+from .vosr2_runner import VOSR2Engine
 
 __all__ = [
     "UpscalerManager",
@@ -53,13 +53,15 @@ class UpscalerManager:
             )
         if name == "vosr2":
             pref = up.get("vosr2") or {}
-            return VOSR2ComfyEngine(
-                url=str(pref.get("url") or "http://127.0.0.1:8188"),
-                settings=pref,
+            return VOSR2Engine(
+                dirs["vosr2"],
                 bundle=str(pref.get("model_bundle") or "VOSR2"),
                 precision=str(pref.get("precision") or "auto"),
-                memory_policy=str(pref.get("memory_policy") or "auto"),
-                timeout_seconds=float(pref.get("timeout_seconds") or 1800),
+                color_alignment=str(pref.get("color_alignment") or "wavelet"),
+                tile_size=int(pref.get("tile_size") or 512),
+                tile_overlap=int(pref.get("tile_overlap") or 64),
+                vae_tile_size=int(pref.get("vae_tile_size") or 512),
+                vae_tile_overlap=int(pref.get("vae_tile_overlap") or 64),
             )
         raise UpscaleError(f"未知的放大引擎：{name}")
 
@@ -71,11 +73,6 @@ class UpscalerManager:
                 if other != name and engine.loaded:
                     engine.unload()
                     self._engines.pop(other, None)
-            if name == "vosr2":
-                # 远程引擎本身不持有状态，每次按最新配置重建，设置页改 URL 后立即生效
-                engine = self._build(name, cfg)
-                self._engines[name] = engine
-                return engine
             engine = self._engines.get(name)
             if engine is None:
                 engine = self._build(name, cfg)
@@ -131,11 +128,18 @@ class UpscalerManager:
                 "kv_ratio": float(merged.get("kv_ratio") or 3.0),
                 "local_range": int(merged.get("local_range") or 11),
             }
-        else:  # vosr2：参数在构造引擎时已读取，这里只传本次推理参数
+        elif name == "vosr2":
+            defaults = up.get("vosr2") or {}
+            merged = {**defaults, **{k: v for k, v in params.items() if v is not None}}
             kwargs = {
-                "scale": int(params.get("scale") or up.get("defaults", {}).get("scale") or 2),
+                "scale": int(merged.get("scale") or up.get("defaults", {}).get("scale") or 2),
                 "seed": int(params.get("seed") if params.get("seed") is not None
                             else up.get("defaults", {}).get("seed", 42)),
+                "color_alignment": str(merged.get("color_alignment") or "wavelet"),
+                "tile_size": int(merged.get("tile_size") or 512),
+                "tile_overlap": int(merged.get("tile_overlap") or 64),
+                "vae_tile_size": int(merged.get("vae_tile_size") or 512),
+                "vae_tile_overlap": int(merged.get("vae_tile_overlap") or 64),
             }
 
         kwargs.update(options)

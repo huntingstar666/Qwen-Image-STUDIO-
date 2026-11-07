@@ -90,12 +90,13 @@ function emptyForm() {
       seedvr2: { dit: '', vae: '', vae_tiled: true },
       flashvsr: { precision: 'bf16' },
       vosr2: {
-        url: 'http://127.0.0.1:8188',
         model_bundle: 'VOSR2',
         precision: 'auto',
-        quality_profile: 'speed',
+        color_alignment: 'wavelet',
         tile_size: 512,
-        timeout_seconds: 1800,
+        tile_overlap: 64,
+        vae_tile_size: 512,
+        vae_tile_overlap: 64,
       },
       default_engine: 'seedvr2',
       idle_unload_minutes: 10,
@@ -159,12 +160,13 @@ function upscaleFormFromData(up = {}) {
     },
     flashvsr: { precision: flashvsr.precision || 'bf16' },
     vosr2: {
-      url: vosr2.url || 'http://127.0.0.1:8188',
       model_bundle: vosr2.model_bundle || 'VOSR2',
       precision: vosr2.precision || 'auto',
-      quality_profile: vosr2.quality_profile || 'speed',
+      color_alignment: vosr2.color_alignment || 'wavelet',
       tile_size: Number(vosr2.tile_size) || 512,
-      timeout_seconds: Number(vosr2.timeout_seconds) || 1800,
+      tile_overlap: Number(vosr2.tile_overlap) || 64,
+      vae_tile_size: Number(vosr2.vae_tile_size) || 512,
+      vae_tile_overlap: Number(vosr2.vae_tile_overlap) || 64,
     },
     default_engine: up.default_engine || 'seedvr2',
     idle_unload_minutes: Number(up.idle_unload_minutes ?? 10),
@@ -1222,29 +1224,28 @@ function renderUpscale() {
   const vosr2Engines = engines.vosr2 || {};
   const bundleOptions = (vosr2Engines.bundles || []).map((name) => ({ value: name, label: name }));
   const vosr2Card =
-    row(t('upscale.vosr2Url'), t('upscale.vosr2UrlDesc'),
-      textInput('upscale.vosr2.url', form.vosr2.url, { placeholder: 'http://127.0.0.1:8188' })) +
     row(t('upscale.vosr2Bundle'), t('upscale.vosr2BundleDesc'),
       selectInput('upscale.vosr2.model_bundle', form.vosr2.model_bundle, bundleOptions, 'VOSR2')) +
-    row(t('upscale.quality'), t('upscale.qualityDesc'),
-      selectInput('upscale.vosr2.quality_profile', form.vosr2.quality_profile, [
-        { value: 'speed', label: t('upscale.qualitySpeed') },
-        { value: 'balanced', label: t('upscale.qualityBalanced') },
-        { value: 'quality', label: t('upscale.qualityQuality') },
-      ])) +
     row(t('upscale.precision'), t('upscale.precisionDesc'),
       selectInput('upscale.vosr2.precision', form.vosr2.precision, [
         { value: 'auto', label: 'auto' },
         { value: 'bf16', label: 'bfloat16' },
         { value: 'fp16', label: 'float16' },
       ])) +
+    row(t('upscale.colorAlign'), t('upscale.colorAlignDesc'),
+      selectInput('upscale.vosr2.color_alignment', form.vosr2.color_alignment, [
+        { value: 'wavelet', label: t('upscale.colorWavelet') },
+        { value: 'adain', label: t('upscale.colorAdain') },
+        { value: 'none', label: t('upscale.colorNone') },
+      ])) +
     row(t('upscale.tileSize'), t('upscale.tileSizeDesc'),
       textInput('upscale.vosr2.tile_size', form.vosr2.tile_size, { type: 'number' })) +
-    row(t('upscale.timeout'), t('upscale.timeoutDesc'),
-      `<div class="set-inline">
-         ${textInput('upscale.vosr2.timeout_seconds', form.vosr2.timeout_seconds, { type: 'number' })}
-         <span class="set-unit">${t('upscale.seconds')}</span>
-       </div>`);
+    row(t('upscale.tileOverlap'), t('upscale.tileOverlapDesc'),
+      textInput('upscale.vosr2.tile_overlap', form.vosr2.tile_overlap, { type: 'number' })) +
+    row(t('upscale.vaeTileSize'), t('upscale.vaeTileSizeDesc'),
+      textInput('upscale.vosr2.vae_tile_size', form.vosr2.vae_tile_size, { type: 'number' })) +
+    row(t('upscale.vaeTileOverlap'), t('upscale.vaeTileOverlapDesc'),
+      textInput('upscale.vosr2.vae_tile_overlap', form.vosr2.vae_tile_overlap, { type: 'number' }));
 
   return `
     ${group(t('upscale.dirs'), dirsCard, t('upscale.dirsDesc'))}
@@ -1405,12 +1406,13 @@ function buildPayload() {
       },
       flashvsr: { precision: state.form.upscale.flashvsr.precision },
       vosr2: {
-        url: state.form.upscale.vosr2.url.trim(),
         model_bundle: state.form.upscale.vosr2.model_bundle,
         precision: state.form.upscale.vosr2.precision,
-        quality_profile: state.form.upscale.vosr2.quality_profile,
+        color_alignment: state.form.upscale.vosr2.color_alignment,
         tile_size: Number(state.form.upscale.vosr2.tile_size) || 512,
-        timeout_seconds: Number(state.form.upscale.vosr2.timeout_seconds) || 1800,
+        tile_overlap: Number(state.form.upscale.vosr2.tile_overlap) || 64,
+        vae_tile_size: Number(state.form.upscale.vosr2.vae_tile_size) || 512,
+        vae_tile_overlap: Number(state.form.upscale.vosr2.vae_tile_overlap) || 64,
       },
       default_engine: state.form.upscale.default_engine,
       idle_unload_minutes: Number(state.form.upscale.idle_unload_minutes) || 0,

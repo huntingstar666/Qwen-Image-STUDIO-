@@ -2128,6 +2128,7 @@ settings.edit = {
 - **P14-3 ✅** 预设模式数据流落地：`studio/payload.js` 新增 `nestOverrides`，传 `settings.preset` 时只发 `preset` + 覆盖项（+ 关闭的保护开关），未改高级项时 payload 里除 `preset` 外不多任何字段；`local.scheme/feather/mask_expand/preprocess` 未覆盖时不落字段，由后端预设补全。不带 `preset` 的旧调用保持原 payload（回归零变化）。任务约定优先：`task=remove` 强制 `fills=true + green_overlay`，`task=outpaint` 强制 `gray_fill + fills=false`。
 - **P14-1 ✅** 新增 `studio/advanced.js`（7 组可调 + 1 条只读约定）：裁切与上下文 / 接缝与羽化 / 合成策略 / 色彩还原 / 一致性 / 大图预处理 / 扩图；每项带单位、范围、作用提示（行内 hint + `title`），生效值 = 覆盖项 > 预设 > 显示兜底。恢复分三级：单项 ↺、分组 ↺（标题旁显示「N 项已改」）、全部恢复。`aiPanel` 的旧内联参数（羽化/外扩/局部策略/预处理）已并入高级设置，提交时只有覆盖项进 payload。
 - **P14-4 ✅** 新增 `studio/outpaintPanel.js` 并接入 `studio.js`：左栏工具 `X`、右栏「扩图」页签、AI 面板「扩图 / 外补画布 →」三处入口，进入即套 `outpaint` 预设（任务同步切 `outpaint`）。画布上一层 DOM 幽灵预览（`.studio-outpaint`）：四边灰色斜纹外补区 + 虚线整框 + 4 个边中点圆点手柄 + 4 个角手柄，位置按 `view.x + imageX * view.scale` 实时跟随缩放/平移；拖动手柄实时改 `outpaint.*` 覆盖项并显示 `+N%` 胶囊，双击手柄清零，按住 Shift 拖动临时反转「对边同步」。面板含四边 % 输入、对边同步、快捷比例（1:1 / 4:3 / 3:4 / 16:9 / 9:16）、最大输出长边（默认 5120）、目标尺寸实时预览；四边全 0 或超长边上限时按钮前拦截并高亮提示。提交前不改 `doc`、不写历史；Esc 退出工具只隐藏幽灵层，覆盖项保留（符合决策 49）。验证：浏览器实测 `512 × 512 → 686 × 512`（点 4:3 前后尺寸变化）、8 个手柄与斜纹外补区正常；全量 **391 passed**。
+- **P14-5 ✅** 结果回流：结果区新增「载入为新底图」（`adoptBtn`）+ 尺寸提示（`载入后 W×H 成为新底图…`）；点击后 `studio.ctx.adoptResult()` 解码结果图并新建 `StudioDoc`，文件名按任务加后缀（扩图 `-扩图.png`、其余 `-精修.png`），顶栏尺寸 / 缩放随解码后的真实像素刷新，蒙版、叠加层、撤销历史随新文档清空，可继续精修或再次扩图。`setDoc()` 同时调用 `ai.resetResult()` 清掉旧结果态（预览标记、尺寸标签），避免打开新图后仍指向上一张结果。全量 **391 passed**。
 
 ### 14.10 决策（钉死）
 

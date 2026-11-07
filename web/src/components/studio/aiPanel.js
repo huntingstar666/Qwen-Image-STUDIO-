@@ -172,7 +172,9 @@ export function mountAiPanel(host, ctx) {
         <div class="ai-row" data-ref="resultActions" hidden>
           <button class="btn ghost sm" type="button" data-ref="previewBtn">画布预览</button>
           <button class="btn ghost sm" type="button" data-ref="compareBtn">与底图对比</button>
+          <button class="btn primary sm" type="button" data-ref="adoptBtn">载入为新底图</button>
         </div>
+        <div class="ai-hint" data-ref="adoptHint" hidden>载入后结果图成为新的主图，蒙版与历史会清空，可继续精修或再次扩图。</div>
         <div class="ai-quality" data-ref="quality" hidden></div>
       </section>
     </div>`;
@@ -224,6 +226,8 @@ export function mountAiPanel(host, ctx) {
     resultActions: ref('resultActions'),
     previewBtn: ref('previewBtn'),
     compareBtn: ref('compareBtn'),
+    adoptBtn: ref('adoptBtn'),
+    adoptHint: ref('adoptHint'),
     quality: ref('quality'),
   };
 
@@ -234,6 +238,7 @@ export function mountAiPanel(host, ctx) {
     customLoras: [],
     resultUrl: '',
     previewOn: false,
+    resultInfo: null,
     busy: false,
     options: null,
     turboProfiles: [],
@@ -782,6 +787,7 @@ export function mountAiPanel(host, ctx) {
     state.previewOn = false;
     syncBusy();
     refs.resultActions.hidden = true;
+    refs.adoptHint.hidden = true;
     refs.quality.hidden = true;
 
     await runner
@@ -801,8 +807,13 @@ export function mountAiPanel(host, ctx) {
           const image = job?.images?.[0];
           if (!image) return;
           state.resultUrl = api.fileUrl(image.url || image.path || '');
+          state.resultInfo = { width: image.width, height: image.height, task: refs.task.value };
           refs.resultActions.hidden = false;
           renderQuality(job);
+          if (state.resultInfo.width && state.resultInfo.height) {
+            refs.adoptHint.textContent = `载入后 ${state.resultInfo.width}×${state.resultInfo.height} 成为新底图：蒙版与历史清空，可继续精修或再次扩图。`;
+            refs.adoptHint.hidden = false;
+          }
           state.previewOn = true;
           refs.previewBtn.textContent = '回到主图';
           ctx.showResult?.(state.resultUrl);
@@ -1031,6 +1042,21 @@ export function mountAiPanel(host, ctx) {
     ctx.showResult?.(state.previewOn ? state.resultUrl : null);
   });
 
+  refs.adoptBtn.addEventListener('click', async () => {
+    if (!state.resultUrl || state.busy) return;
+    refs.adoptBtn.disabled = true;
+    try {
+      const info = await ctx.adoptResult?.(state.resultUrl, {
+        task: state.resultInfo?.task || refs.task.value,
+        width: state.resultInfo?.width,
+        height: state.resultInfo?.height,
+      });
+      if (info) toastSuccess(`已载入新底图 ${info.width} × ${info.height}，可继续精修`);
+    } finally {
+      refs.adoptBtn.disabled = false;
+    }
+  });
+
   refs.compareBtn.addEventListener('click', () => {
     const source = ctx.getSource?.();
     if (!source) return;
@@ -1057,6 +1083,17 @@ export function mountAiPanel(host, ctx) {
       renderMeta();
       renderRefs();
       renderLayers();
+    },
+    /** 底图被替换（载入结果 / 打开新图）：清空结果态，避免旧预览残留 */
+    resetResult() {
+      state.resultUrl = '';
+      state.previewOn = false;
+      state.resultInfo = null;
+      refs.previewBtn.textContent = '画布预览';
+      refs.resultActions.hidden = true;
+      refs.adoptHint.hidden = true;
+      refs.quality.hidden = true;
+      refs.quality.innerHTML = '';
     },
     /** studio 端画完蒙版后调用：更新任务识别与提示 */
     onMaskChanged(coverage) {

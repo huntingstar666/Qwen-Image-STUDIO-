@@ -377,6 +377,21 @@ export function createStudioPage(host) {
     showResult(url) {
       setPreview(url);
     },
+    /** 结果回流：把结果图载入为新底图（蒙版与历史随新文档清空），可继续精修 / 再次扩图。 */
+    async adoptResult(url, meta = {}) {
+      if (!url) return null;
+      try {
+        const image = await loadImage(url);
+        const stem = (doc?.name || 'result').replace(/\.[^.]+$/, '') || 'result';
+        const suffix = meta.task === 'outpaint' ? '-扩图' : '-精修';
+        const next = new StudioDoc(image, `${stem}${suffix}.png`);
+        setDoc(next);
+        return { width: next.size.width, height: next.size.height, name: next.name };
+      } catch (err) {
+        toastError(err, '载入结果失败');
+        return null;
+      }
+    },
     compare(referenceUrl, results) {
       openCompareDialog({
         references: [{ url: referenceUrl, label: '底图（主图）' }],
@@ -1083,6 +1098,7 @@ export function createStudioPage(host) {
     updateMaskStatus();
     setTool(tool === 'view' ? 'view' : tool);
     setPreview(null);
+    ai?.resetResult?.();
     ai?.refresh?.();
     requestAnimationFrame(() => {
       fitView();

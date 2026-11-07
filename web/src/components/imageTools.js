@@ -378,6 +378,11 @@ export function createImageToolsPage(host) {
                 <small>PNG / JPG / WebP；像素越大处理越慢</small>
               </div>
               <input type="file" accept="image/*" hidden data-ref="fileInput" />
+              <div class="row tools-import">
+                <button class="btn ghost sm" type="button" data-ref="importMaterials">素材仓库</button>
+                <button class="btn ghost sm" type="button" data-ref="importRecent">最近结果</button>
+                <button class="btn ghost sm" type="button" data-ref="importPaste">剪贴板</button>
+              </div>
               <div class="source-meta" data-ref="sourceMeta">
                 <span class="dim">尚未选择图片</span>
               </div>
@@ -790,6 +795,9 @@ export function createImageToolsPage(host) {
     fileInput: ref('fileInput'),
     newSource: ref('newSource'),
     sourceMeta: ref('sourceMeta'),
+    importMaterials: ref('importMaterials'),
+    importRecent: ref('importRecent'),
+    importPaste: ref('importPaste'),
     ratios: ref('ratios'),
     cropApply: ref('cropApply'),
     cropReset: ref('cropReset'),
@@ -1143,6 +1151,153 @@ export function createImageToolsPage(host) {
     event.preventDefault();
     await handleFiles(event.dataTransfer?.files);
   });
+
+  /* ============================================================
+   * 导入菜单：素材仓库 / 最近结果 / 剪贴板
+   * ============================================================ */
+  function pickFromItems({ title, subtitle, items, emptyHint }) {
+    return new Promise((resolve) => {
+      if (!items.length) {
+        toastWarn(emptyHint || '没有可导入的图片');
+        resolve(null);
+        return;
+      }
+      let picked = null;
+      const wrap = document.createElement('div');
+      wrap.className = 'tools-pick';
+      wrap.innerHTML = `
+        <div class="tools-pick-grid">
+          ${items
+            .map(
+              (item, index) => `
+            <button class="tools-pick-card" type="button" data-index="${index}">
+              <span class="tools-pick-thumb"><img src="${escapeHtml(item.thumbUrl || item.url)}" alt="" loading="lazy" /></span>
+              <span class="tools-pick-cap" title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || '图片')}</span>
+            </button>`,
+            )
+            .join('')}
+        </div>`;
+      const cards = [...wrap.querySelectorAll('[data-index]')];
+      cards.forEach((card) => {
+        card.addEventListener('click', () => {
+          cards.forEach((node) => node.classList.remove('active'));
+          card.classList.add('active');
+          picked = items[Number(card.dataset.index)];
+        });
+      });
+      const modal = openModal({
+        title,
+        subtitle,
+        size: 'lg',
+        content: wrap,
+        actions: [
+          { label: '取消', kind: 'ghost' },
+          {
+            label: '载入为源图',
+            kind: 'primary',
+            close: false,
+            onClick: () => {
+              if (!picked) {
+                toastWarn('请先选择一张图片');
+                return false;
+              }
+              resolve(picked);
+              modal.close();
+            },
+          },
+        ],
+        onClose: () => resolve(null),
+      });
+    });
+  }
+
+  async function loadPickedSource(picked) {
+    try {
+      await setSourceFromDataUrl(picked.url, picked.name || 'imported.png');
+      toastSuccess(`已载入 ${picked.name || '图片'}`);
+    } catch (err) {
+      toastError(err, '载入图片失败');
+    }
+  }
+
+  async function openMaterialsPicker() {
+    try {
+      const data = await api.materials({ limit: 200 });
+      const items = (data.items || [])
+        .filter((item) => item.image?.url)
+        .map((item) => ({
+          url: item.image.url,
+          thumbUrl: item.image.thumbUrl || item.image.url,
+          name: item.title || item.image.filename || '素材图片',
+        }));
+      const picked = await pickFromItems({
+        title: '从素材仓库导入',
+        subtitle: `${items.length} 张素材`,
+        items,
+        emptyHint: '素材仓库还没有图片，可先在「素材仓库」页收藏或上传',
+      });
+      if (picked) await loadPickedSource(picked);
+    } catch (err) {
+      toastError(err, '读取素材仓库失败');
+    }
+  }
+
+  async function openRecentPicker() {
+    const items = state.results.slice(0, 24).map((item) => ({
+      url: item.url,
+      thumbUrl: item.thumbUrl,
+      name: item.filename || `${item.kind || 'result'}.png`,
+    }));
+    const picked = await pickFromItems({
+      title: '从最近结果导入',
+      subtitle: '本次会话的处理结果',
+      items,
+      emptyHint: '还没有处理结果',
+    });
+    if (picked) await loadPickedSource(picked);
+  }
+
+  async function importBlob(blob) {
+    const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const file = new File([blob], `clipboard-${Date.now()}.${ext}`, { type: blob.type || 'image/png' });
+    await handleFiles([file]);
+  }
+
+  async function importFromClipboard() {
+    if (!navigator.clipboard?.read) {
+      toastWarn('当前浏览器不支持读取剪贴板，请在页面上按 Ctrl+V 粘贴图片');
+      return;
+    }
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      for (const item of clipboardItems) {
+        const type = item.types.find((value) => value.startsWith('image/'));
+        if (!type) continue;
+        await importBlob(await item.getType(type));
+        return;
+      }
+      toastWarn('剪贴板里没有图片');
+    } catch {
+      toastWarn('无法读取剪贴板，请在页面上按 Ctrl+V 粘贴图片');
+    }
+  }
+
+  function onPaste(event) {
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+    }
+    const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    handleFiles(files);
+  }
+
+  refs.importMaterials.addEventListener('click', openMaterialsPicker);
+  refs.importRecent.addEventListener('click', openRecentPicker);
+  refs.importPaste.addEventListener('click', importFromClipboard);
+  document.addEventListener('paste', onPaste);
 
   /* ============================================================
    * 渲染：几何预览 + CSS 调色 + 裁剪/宫格/扩图叠加
@@ -2768,6 +2923,7 @@ export function createImageToolsPage(host) {
       disposed = true;
       resizeObserver?.disconnect();
       window.removeEventListener('resize', onStageResize);
+      document.removeEventListener('paste', onPaste);
     },
   };
 }

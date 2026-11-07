@@ -572,3 +572,63 @@
 .gif-frame-remove:hover {
   background: var(--danger, #d64545);
 }
+
+/* ------------------------------------------------------------- 导入选择器 */
+
+.tools-import {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tools-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.tools-pick-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tools-pick-card:hover {
+  border-color: var(--line);
+}
+
+.tools-pick-card.active {
+  border-color: var(--accent, #5b8def);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #5b8def) 28%, transparent);
+}
+
+.tools-pick-thumb {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--bg-1, #111);
+}
+
+.tools-pick-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tools-pick-cap {
+  font-size: 11px;
+  color: var(--text-2, #b4b8c0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

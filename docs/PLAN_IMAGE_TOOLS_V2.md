@@ -4,8 +4,9 @@
 > 尺寸多模式 + WebP/目标体积/EXIF、水印（`server/mediaops.py` + `/api/image/watermark*`）、
 > GIF（图片序列 + 视频两遍调色板 + 拆帧）、SeedVR2 / FlashVSR 与设置分区。
 > 前端已补：左侧工具轨分组、尺寸多模式/导出增强、水印面板、动图面板、
+> 导入菜单（素材仓库 / 最近结果 / 剪贴板 + 粘贴）、
 > 结果「收藏素材 / 加入 GIF / 送入图像编辑」。
-> **仍待实施：导入菜单（素材仓库/最近结果/剪贴板）、画布拖动水印定位、完整 Apple 三栏 Inspector 重排与底部胶片条。**
+> **仍待实施：画布拖动水印定位、完整 Apple 三栏 Inspector 重排与底部胶片条。**
 > 日期：2026-11-07
 > 范围：`web/src/components/imageTools.js`、`web/assets/css/tools.css`、`server/imageops.py`、新增 `server/mediaops.py`、新增 `server/upscalers/`、`server/config.py`、`server/main.py`、`server/jobs.py`、设置页
 > 目标：把「图像处理」从单页工具堆叠，升级为可商用的本地图像工作台：基础处理 + 水印 + GIF + 两套高清放大，并与素材仓库、图像编辑、结果历史打通。全部能力在本仓库内实现，不请求 ComfyUI 或任何其他项目的后端服务。

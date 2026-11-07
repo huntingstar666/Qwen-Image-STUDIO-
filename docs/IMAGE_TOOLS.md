@@ -344,3 +344,20 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
 - 视频：选择后自动上传并探测，回填时长/分辨率/fps，双输入截取起止、目标 fps 与宽度；
 - 生成走任务队列：进度条 + 阶段文案 + 取消按钮，完成后结果进入右侧列表（kind=`gif`）；
 - 「把当前 GIF 拆帧」把源图拆成最多 60 张 PNG 结果（kind=`gif-frame`），可直接继续编辑。
+
+## 10. 导入菜单与结果联动
+
+源图面板提供三个导入入口（本地文件仍是点击/拖拽投放区）：
+
+| 入口 | 行为 |
+|---|---|
+| 素材仓库 | `GET /api/materials?limit=200` → 弹窗网格单选 → 「载入为源图」 |
+| 最近结果 | 当前会话 `state.results` 前 24 条 → 同样弹窗选择 |
+| 剪贴板 | 优先 `navigator.clipboard.read()`；不支持或未授权时提示用 `Ctrl+V` |
+
+- 页面在 `document` 上监听 `paste`，仅当剪贴板含图片且焦点不在输入框/文本域时接管，
+  统一走 `handleFiles` → `readFileAsDataURL` → `setSourceFromDataUrl`；
+- 素材仓库返回的 `/files/...` URL 可直接作为 `src` 载入，避免 base64 膨胀；
+- `destroy()` 会移除 `paste` 监听，避免离开页面后误导入。
+
+结果弹窗动作：下载 / 收藏素材 / 加入 GIF / 继续编辑（设为源图）/ 送入图像编辑。

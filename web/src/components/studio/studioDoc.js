@@ -22,6 +22,7 @@ export const ADJUST_DEFAULTS = {
 };
 
 const HISTORY_LIMIT = 30;
+const HISTORY_BUDGET = 256 * 1024 * 1024;
 
 export function makeCanvas(width, height) {
   const canvas = document.createElement('canvas');
@@ -34,6 +35,12 @@ export function cloneCanvas(source) {
   const next = makeCanvas(source.width, source.height);
   next.getContext('2d').drawImage(source, 0, 0);
   return next;
+}
+
+export function canvasToBlob(canvas, type = 'image/png', quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('图片编码失败'))), type, quality);
+  });
 }
 
 function clamp(value, min, max) {
@@ -82,13 +89,23 @@ export class StudioDoc {
   /* ---------------------------------------------------------- 状态快照 */
 
   snapshot() {
-    this.history.push({
+    const bytes = this.mask.width * this.mask.height * 4;
+    const state = {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       adjust: { ...this.adjust },
       mask: cloneCanvas(this.mask),
       layers: this.layers.map((layer) => layer.clone()),
-    });
-    if (this.history.length > HISTORY_LIMIT) this.history.shift();
+      bytes,
+    };
+    this.history.push(state);
+    this._historyBytes = (this._historyBytes || 0) + bytes;
+    while (this.history.length > HISTORY_LIMIT) {
+      this._historyBytes -= this.history.shift().bytes || 0;
+    }
+    // 4K 蒙版单张约 33MB，按总预算淘汰比单纯限制步数更能避免内存爆掉。
+    while (this.history.length > 2 && this._historyBytes > HISTORY_BUDGET) {
+      this._historyBytes -= this.history.shift().bytes || 0;
+    }
     this.future.length = 0;
     this._base = null;
     return this;
@@ -113,7 +130,9 @@ export class StudioDoc {
 
   undo() {
     if (!this.canUndo) return false;
-    this.future.push(this.history.pop());
+    const state = this.history.pop();
+    this._historyBytes = Math.max(0, (this._historyBytes || 0) - (state.bytes || 0));
+    this.future.push(state);
     this.restore(this.history[this.history.length - 1]);
     return true;
   }
@@ -122,6 +141,7 @@ export class StudioDoc {
     if (!this.future.length) return false;
     const state = this.future.pop();
     this.history.push(state);
+    this._historyBytes = (this._historyBytes || 0) + (state.bytes || 0);
     this.restore(state);
     return true;
   }
@@ -217,27 +237,28 @@ export class StudioDoc {
   }
 
   _computeHasMask() {
-    const { width, height } = this.mask;
-    if (!width || !height) return false;
-    const data = this.mask.getContext('2d').getImageData(0, 0, width, height).data;
-    const step = 4 * 4;
-    for (let i = 3; i < data.length; i += step) {
-      if (data[i] > 4) return true;
-    }
-    return false;
+    return this.maskStats().has;
   }
 
-  maskCoverage() {
+  /** 一次扫描同时得到「是否有蒙版」与覆盖率，供状态栏和 AI 面板复用。 */
+  maskStats() {
     const { width, height } = this.mask;
-    if (!width || !height) return 0;
+    if (!width || !height) return { has: false, coverage: 0 };
     const data = this.mask.getContext('2d').getImageData(0, 0, width, height).data;
     let hit = 0;
     let total = 0;
+    let has = false;
     for (let i = 3; i < data.length; i += 4 * 4) {
       total += 1;
-      if (data[i] > 8) hit += 1;
+      const alpha = data[i];
+      if (alpha > 4) has = true;
+      if (alpha > 8) hit += 1;
     }
-    return total ? hit / total : 0;
+    return { has, coverage: total ? hit / total : 0 };
+  }
+
+  maskCoverage() {
+    return this.maskStats().coverage;
   }
 
   maskCanvas() {
@@ -369,14 +390,21 @@ export class StudioDoc {
   renderBase() {
     if (this._base) return this._base;
     const oriented = this.oriented;
-    let canvas = makeCanvas(oriented.width, oriented.height);
+    const crop = this.transform.crop;
+    const baseWidth = crop ? crop.width : oriented.width;
+    const baseHeight = crop ? crop.height : oriented.height;
+    const canvas = makeCanvas(baseWidth, baseHeight);
     const ctx = canvas.getContext('2d');
     const img = this.image;
     const { rotate, flipH, flipV } = this.transform;
     const adjust = this.adjust;
 
     ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
+    // 裁剪后直接以裁剪尺寸为目标画布，避免先分配整张原图再复制一份。
+    ctx.translate(
+      oriented.width / 2 - (crop ? crop.x : 0),
+      oriented.height / 2 - (crop ? crop.y : 0),
+    );
     ctx.rotate((rotate * Math.PI) / 180);
     ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
     if (ctx.filter !== undefined) {
@@ -409,13 +437,6 @@ export class StudioDoc {
       }
     }
 
-    const crop = this.transform.crop;
-    if (crop) {
-      const cropped = makeCanvas(crop.width, crop.height);
-      cropped.getContext('2d').drawImage(canvas, -crop.x, -crop.y);
-      canvas = cropped;
-    }
-
     // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移
     if (this.layers.length) {
       const ctx2 = canvas.getContext('2d');
@@ -429,15 +450,25 @@ export class StudioDoc {
     return canvas;
   }
 
-  /** 蒙版着色图（红色 35%），用于画布叠加显示。 */
+  /** 蒙版着色图（红色 35%），用于画布叠加显示。复用画布，尺寸变化时才重新分配。 */
   renderMaskTint() {
-    const mask = this.maskCanvas();
-    const tint = makeCanvas(mask.width, mask.height);
+    const oriented = this.oriented;
+    const crop = this.transform.crop;
+    const width = crop ? crop.width : oriented.width;
+    const height = crop ? crop.height : oriented.height;
+    if (!this._tint || this._tint.width !== width || this._tint.height !== height) {
+      this._tint = makeCanvas(width, height);
+    }
+    const tint = this._tint;
     const ctx = tint.getContext('2d');
-    ctx.drawImage(mask, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(this.mask, crop ? -crop.x : 0, crop ? -crop.y : 0);
     ctx.globalCompositeOperation = 'source-in';
     ctx.fillStyle = '#ff3b30';
-    ctx.fillRect(0, 0, tint.width, tint.height);
+    ctx.fillRect(0, 0, width, height);
+    ctx.globalCompositeOperation = 'source-over';
     return tint;
   }
 
@@ -445,23 +476,38 @@ export class StudioDoc {
 
   /**
    * @param {'image/png'|'image/jpeg'} type
+   */
+  exportCanvas(type = 'image/png') {
+    const base = this.renderBase();
+    if (type !== 'image/jpeg') return base;
+    const flat = makeCanvas(base.width, base.height);
+    const ctx = flat.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, flat.width, flat.height);
+    ctx.drawImage(base, 0, 0);
+    return flat;
+  }
+
+  /**
+   * @param {'image/png'|'image/jpeg'} type
    * @param {number} [quality]
    */
   bake(type = 'image/png', quality = 0.92) {
-    const base = this.renderBase();
-    if (type === 'image/jpeg') {
-      const flat = makeCanvas(base.width, base.height);
-      const ctx = flat.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, flat.width, flat.height);
-      ctx.drawImage(base, 0, 0);
-      return flat.toDataURL(type, quality);
-    }
-    return base.toDataURL(type);
+    return this.exportCanvas(type).toDataURL(type, quality);
+  }
+
+  /** 异步编码，避免 4K 导出时同步 toDataURL 冻结主线程。 */
+  bakeBlob(type = 'image/png', quality = 0.92) {
+    return canvasToBlob(this.exportCanvas(type), type, quality);
   }
 
   maskPng() {
     if (!this.hasMask()) return null;
     return this.maskCanvas().toDataURL('image/png');
+  }
+
+  async maskBlob() {
+    if (!this.hasMask()) return null;
+    return canvasToBlob(this.maskCanvas(), 'image/png');
   }
 }

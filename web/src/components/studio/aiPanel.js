@@ -1115,11 +1115,9 @@ export function mountAiPanel(host, ctx) {
       controller.resetResult();
       renderMeta();
     },
-    /** studio 端画完蒙版后调用：更新任务识别与提示 */
+    /** studio 端画完蒙版后调用：只更新任务识别与提示，不做整图编码 */
     onMaskChanged(coverage) {
-      const source = ctx.getSource?.();
-      if (!source) return;
-      const task = detectTask(refs.prompt.value, Boolean(source.hasMask));
+      const task = detectTask(refs.prompt.value, coverage > 0);
       refs.submitHint.textContent = `已圈选 ${(coverage * 100).toFixed(1)}% · 自动识别：${
         TASK_LABELS[task] || task
       }`;

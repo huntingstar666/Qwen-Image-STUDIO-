@@ -13,7 +13,7 @@
  * 文档模型见 studioDoc.js：原图不变，所有操作是状态，渲染与导出共用一条管线。
  */
 
-import { downloadUrl, fmtNum } from '../utils.js';
+import { downloadUrl, fmtNum, readFileAsDataURL } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
@@ -115,6 +115,7 @@ const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 
 export function createStudioPage(host) {
   let doc = null;
+  let thumbCache = { doc: null, base: null, url: '' };
   let tool = 'view';
   let brush = { size: 64, hardness: 0.7, opacity: 1 };
   let view = { scale: 1, x: 0, y: 0 };
@@ -355,13 +356,16 @@ export function createStudioPage(host) {
       if (!doc) return '';
       try {
         const base = doc.renderBase();
+        if (thumbCache.doc === doc && thumbCache.base === base && thumbCache.url) return thumbCache.url;
         const size = 168;
         const k = Math.min(1, size / Math.max(base.width, base.height));
         const thumb = document.createElement('canvas');
         thumb.width = Math.max(1, Math.round(base.width * k));
         thumb.height = Math.max(1, Math.round(base.height * k));
         thumb.getContext('2d').drawImage(base, 0, 0, thumb.width, thumb.height);
-        return thumb.toDataURL('image/jpeg', 0.72);
+        const url = thumb.toDataURL('image/jpeg', 0.72);
+        thumbCache = { doc, base, url };
+        return url;
       } catch {
         return '';
       }
@@ -369,13 +373,13 @@ export function createStudioPage(host) {
     getSource() {
       if (!doc) return null;
       const size = doc.size;
-      const hasMask = doc.hasMask();
+      const stats = doc.maskStats();
       return {
         main: { data: doc.bake('image/png'), name: doc.name, width: size.width, height: size.height },
-        mask: hasMask ? doc.maskPng() : null,
+        mask: stats.has ? doc.maskPng() : null,
         maskSize: doc.maskSize,
-        coverage: hasMask ? doc.maskCoverage() : 0,
-        hasMask,
+        coverage: stats.has ? stats.coverage : 0,
+        hasMask: stats.has,
       };
     },
     showResult(url) {
@@ -1171,12 +1175,11 @@ export function createStudioPage(host) {
       refs.maskExport.disabled = true;
       return;
     }
-    const coverage = doc.maskCoverage();
-    refs.statusMask.textContent = `蒙版 ${(coverage * 100).toFixed(1)}%`;
-    const has = doc.hasMask();
-    refs.maskClear.disabled = !has;
-    refs.maskExport.disabled = !has;
-    ai?.onMaskChanged?.(coverage);
+    const stats = doc.maskStats();
+    refs.statusMask.textContent = `蒙版 ${(stats.coverage * 100).toFixed(1)}%`;
+    refs.maskClear.disabled = !stats.has;
+    refs.maskExport.disabled = !stats.has;
+    ai?.onMaskChanged?.(stats.coverage);
   }
 
   function syncAdjustInputs() {
@@ -1232,7 +1235,7 @@ export function createStudioPage(host) {
     if (!doc) return;
     if (previewBlocked('复制')) return;
     try {
-      const blob = await (await fetch(doc.bake('image/png'))).blob();
+      const blob = await doc.bakeBlob('image/png');
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
         throw new Error('当前浏览器不支持剪贴板图片写入');
       }
@@ -1249,25 +1252,34 @@ export function createStudioPage(host) {
     refs.favoriteBtn.disabled = true;
     const original = refs.favoriteBtn.textContent;
     refs.favoriteBtn.textContent = '收藏中…';
-    await favoriteImage({
-      image: doc.bake('image/png'),
-      kind: 'studio',
-      category: '精修',
-      prompt: '',
-      seed: null,
-      source: 'studio',
-      title: baseName(doc.name),
-    });
-    refs.favoriteBtn.disabled = false;
-    refs.favoriteBtn.textContent = original;
+    try {
+      const blob = await doc.bakeBlob('image/png');
+      await favoriteImage({
+        image: await readFileAsDataURL(blob),
+        kind: 'studio',
+        category: '精修',
+        prompt: '',
+        seed: null,
+        source: 'studio',
+        title: baseName(doc.name),
+      });
+    } catch (err) {
+      toastError(err, '收藏失败');
+    } finally {
+      refs.favoriteBtn.disabled = false;
+      refs.favoriteBtn.textContent = original;
+    }
   }
 
-  function sendToEdit() {
+  async function sendToEdit() {
     if (!doc) return;
     if (previewBlocked('送入图像编辑')) return;
     try {
-      const dataUrl = doc.bake('image/png');
-      const mask = doc.maskPng();
+      const [blob, maskBlob] = await Promise.all([doc.bakeBlob('image/png'), doc.maskBlob()]);
+      const [dataUrl, mask] = await Promise.all([
+        readFileAsDataURL(blob),
+        maskBlob ? readFileAsDataURL(maskBlob) : Promise.resolve(null),
+      ]);
       setHandoff({
         images: [{ dataUrl, name: `${baseName(doc.name)}-edited.png` }],
         mask,
@@ -1278,6 +1290,23 @@ export function createStudioPage(host) {
       goToEditPage();
     } catch (err) {
       toastError(err, '送入失败');
+    }
+  }
+
+  async function exportImage(type, name) {
+    if (!doc) return;
+    if (previewBlocked('导出')) return;
+    const buttons = [refs.jpgBtn, refs.pngBtn];
+    for (const button of buttons) button.disabled = true;
+    try {
+      const blob = await doc.bakeBlob(type, 0.92);
+      const url = URL.createObjectURL(blob);
+      downloadUrl(url, name);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (err) {
+      toastError(err, '导出失败');
+    } finally {
+      for (const button of buttons) button.disabled = false;
     }
   }
 
@@ -1327,13 +1356,11 @@ export function createStudioPage(host) {
   refs.copyBtn.addEventListener('click', copyToClipboard);
   refs.jpgBtn.addEventListener('click', () => {
     if (!doc) return;
-    if (previewBlocked('导出')) return;
-    downloadDataUrl(doc.bake('image/jpeg', 0.92), `${baseName(doc.name)}-edited.jpg`);
+    exportImage('image/jpeg', `${baseName(doc.name)}-edited.jpg`);
   });
   refs.pngBtn.addEventListener('click', () => {
     if (!doc) return;
-    if (previewBlocked('导出')) return;
-    downloadDataUrl(doc.bake('image/png'), `${baseName(doc.name)}-edited.png`);
+    exportImage('image/png', `${baseName(doc.name)}-edited.png`);
   });
   refs.sendBtn.addEventListener('click', sendToEdit);
 

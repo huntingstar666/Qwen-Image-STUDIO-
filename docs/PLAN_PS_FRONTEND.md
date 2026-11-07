@@ -709,6 +709,9 @@ DOM 结构：
   4. **结论与遗留**：DPR 2 下叠加层拖动帧间隔 25.92ms 明显高于 `draw()` 5.94ms，差异在合成器侧（4 倍像素的软件光栅化），不在 JS 渲染管线；真实 HiDPI GPU 浏览器需人工目检。若后续要再降延迟，调色代理可从 1024 降到 720，叠加层拖动可暂停非必要 DOM 层刷新（均未落地，只作备注）。
   数据与复测步骤写入 §17.6 / §17.6.1，台账 §14.12 收口；本轮只改 `perf.js` 与本文档，未触碰 `studio.js` / `imageTools.js` / `maskEditor.js`，工作区无冲突。
 
+- **D0.1 预检与基线（已完成·补记）** —— 该项在 M0 阶段已随 D6.1 / D18.1 实际完成，本轮补齐证据与记录：工作区快照见 §0 与 §14.2（他人未提交文件每次开工前复核）；三页基线截图本轮重新采集到 `.cache/shots/baseline-2026-11-07-{t2i,edit,studio}-*.png`（1440×900、Chromium headless），文生图 / 图像编辑 / 图片精修均正常渲染，`exception` 日志为空；测试基线 `python -m pytest tests` → **497 passed（46.33s）**（计划编写时 419，D6.1 时 488）；`node -v` → **v24.13.0**（≥18，可用内置 `node --test`）；浏览器基线以 Chromium 为准，Safari 抽检未做（不阻塞验收）。原计划目录 `.cache/shots/` 此前未落地，本轮已创建并补齐。
+- **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -867,10 +870,12 @@ DOM 结构：
 | --- | --- |
 | 工作区快照 | 开工前 `git status` 记录他人未提交文件：`server/upscalers/*`、`config.py`、`main.py`、`imageTools.js`、`settings.js`、`i18n.js`；实施期间不碰 |
 | 基线 | 8722 打开文生图 / 图像编辑 / 图片精修，各存一张截图与 console 日志到 `.cache/shots/` |
-| 测试基线 | `python -m pytest tests -q` 全绿；记录数量（当前 419） |
+| 测试基线 | `python -m pytest tests -q` 全绿；记录数量（计划编写时 419 → 本轮 497） |
 | Node 测试 | 确认 `node -v`；若 ≥ 18，用内置 `node --test` 跑纯函数测试，不引入依赖 |
-| 开关 | `studio/flags.js` 导出 `studioV2`，默认 `true`，`localStorage.wb.studio.v2='0'` 可回退旧面板 |
+| 开关 | ~~`studio/flags.js` 导出 `studioV2`~~ 不实施；运行时开关统一用 `localStorage['wb.studio.perf']`（D18.1） |
 | 浏览器 | 以 Chrome/Edge 为主；Safari 仅在 M1 后抽检，不阻塞 |
+
+> **收口说明（本轮补记）**：D0.1 已按上表逐项核对并留存证据（`pytest` 497 passed、Node v24.13.0、三页基线截图 `.cache/shots/`），详见 §12.11；D0.2 **不实施**——工作室自 D1 起即为 `studio.js` 原地增量扩展，计划中的「旧面板」已不存在，加 `studioV2` 开关没有回退目标，运行时开关统一收敛到 `localStorage['wb.studio.perf']`（D18.1）。若 §13 D7 引入并行渲染路径，再重新设计开关。
 
 ### 14.3 模块蓝图
 
@@ -878,7 +883,7 @@ DOM 结构：
 
 | 模块 | 对外 API | 依赖 | 步骤 |
 | --- | --- | --- | --- |
-| `flags.js` | `isEnabled(name)` | 无 | D0 |
+| `flags.js` | `isEnabled(name)` | 无 | 不实施（D0.2 已合并进 D18.1 探针开关） |
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`、`docToJSON/fromJSON` | 无 | D7 |
@@ -1157,8 +1162,8 @@ DOM 结构：
 
 | 编号 | 交付项 | 状态 | 提交 | 备注 |
 | --- | --- | --- | --- | --- |
-| D0.1 | 预检与基线 | 未开始 | — | — |
-| D0.2 | 功能开关 | 未开始 | — | — |
+| D0.1 | 预检与基线 | 已完成（补记） | — | 497 passed / Node v24.13.0 / 三页基线截图 `.cache/shots/baseline-2026-11-07-*`；详见 §12.11 |
+| D0.2 | 功能开关 | 不实施（合并 D18.1） | — | 无旧面板可回退；运行时开关为 `wb.studio.perf`；D7 若引入并行渲染再重新设计 |
 | D17.1 | IndexedDB 存储 + 自动保存 | 已完成 | 本次提交 | 方案 §16；恢复流程见 D17.2 |
 | D17.2 | 恢复流程与横幅 | 已完成 | 本次提交 | 横幅内联在 `studio.js`，最近工程列表落地时再抽 `panels/recovery.js` |
 | D17.3 | 配额、清理与多标签 | 已完成 | 本次提交 | 方案 §16；设置页「关于」新增本机工程占用与清理入口 |
@@ -1218,7 +1223,7 @@ DOM 结构：
 
 ### 14.13 启动顺序（等通知后）
 
-1. D0.1 预检 → D0.2 开关 → D17.1 存储层 → D17.2 恢复流程 → D17.3 配额与多标签。
+1. D0.1 预检（已完成·补记）→ D0.2 开关（不实施，见 §12.11）→ D17.1 存储层 → D17.2 恢复流程 → D17.3 配额与多标签。
 2. 按 D1.1 → D1.2 → … → D6.1 完成 M1，每项提交一次。
 3. M1 后依次 D16.1 → D16.2 → D18.1 → D18.2 → D18.3 → D18.4；D18.3 开工前已确认同事 WIP（`91eb15a` / `0af4c87`）提交完毕。
 4. M1B 完成后即可并行启动 D19.1 → D19.2；M1C 后收口 D19.3 → D19.4 → D19.5 → D19.6。

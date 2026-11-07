@@ -759,7 +759,7 @@ class Pipeline:
 
         # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
         encode_negative = not (
-            abs(float(sampling["cfg"]) - 1.0) < 1e-3
+            abs(float(sampling["cfg"]) - 1.0) < 1e-6
             and not str(sampling["negative_prompt"] or "").strip()
         )
 
@@ -1158,7 +1158,7 @@ class Pipeline:
 
         # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
         encode_negative = not (
-            abs(float(sampling["cfg"]) - 1.0) < 1e-3
+            abs(float(sampling["cfg"]) - 1.0) < 1e-6
             and not str(sampling["negative_prompt"] or "").strip()
         )
 

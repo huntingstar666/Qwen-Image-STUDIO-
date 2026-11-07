@@ -21,6 +21,9 @@ import { escapeHtml, fmtNum } from '../utils.js';
  * @param {Array<{id:string,w:number,h:number}>} [options.ratios] 可匹配的比例表
  * @param {{width:number,height:number}} [options.targetSize] 目标尺寸，供模型判断构图
  * @param {{image:string,summary?:string,label?:string}} [options.pose] 姿态参考图（会一并交给视觉模型）
+ * @param {Array<{data:string,name?:string}>} [options.images] 参考图本体（会一并交给视觉模型）
+ * @param {Array<{name:string,role?:string,size?:number[],description?:string}>} [options.references]
+ *   参考图清单（仅文字描述，让模型知道有几张、各自是什么角色）
  * @param {(text: string, result: object) => void} options.onAccept 采用润色结果
  */
 export async function polishWithDialog({
@@ -34,6 +37,8 @@ export async function polishWithDialog({
   ratios = [],
   targetSize = null,
   pose = null,
+  images = [],
+  references = [],
   onAccept,
 }) {
   const text = String(prompt || '').trim();
@@ -61,6 +66,18 @@ export async function polishWithDialog({
         label: pose.label || '',
       };
     }
+    // 参考图本体：润色模型只有真的看到图，才能把「做第 2 张的动作」写成可执行描述。
+    // 上限 6 张，避免 10 张大图把本地视觉模型拖慢。
+    const refImages = (Array.isArray(images) ? images : [])
+      .filter((item) => item?.data)
+      .slice(0, 6);
+    if (refImages.length) {
+      payload.images = refImages.map((item) => ({
+        data: item.data,
+        name: item.name || '',
+      }));
+    }
+    if (Array.isArray(references) && references.length) payload.references = references;
     const result = await api.polish(payload);
     showCompareDialog({
       result,
@@ -69,6 +86,7 @@ export async function polishWithDialog({
       onAccept,
       mode,
       poseAttached: Boolean(pose?.image),
+      refCount: refImages.length,
     });
   } catch (err) {
     toastError(err, '提示词润色失败');
@@ -80,7 +98,7 @@ export async function polishWithDialog({
   }
 }
 
-function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttached = false }) {
+function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttached = false, refCount = 0 }) {
   const rewritten = String(result?.rewritten_prompt || '').trim();
   const whRatio = String(result?.wh_ratio || '').trim();
   const fallback = Boolean(result?.fallback);
@@ -91,6 +109,7 @@ function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttac
     meta.push(`<span class="badge">耗时 ${(Number(result.elapsed_ms) / 1000).toFixed(1)}s</span>`);
   }
   if (poseAttached) meta.push('<span class="badge info">已附带姿态参考</span>');
+  if (refCount) meta.push(`<span class="badge info">已附带 ${refCount} 张参考图</span>`);
   if (whRatio) meta.push(`<span class="badge info">建议比例 ${escapeHtml(whRatio)}</span>`);
   if (result?.ratio_follow != null) {
     meta.push(`<span class="badge">${result.ratio_follow ? '会跟随建议比例' : '保持原比例'}</span>`);

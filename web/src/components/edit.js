@@ -699,6 +699,17 @@ export function createEditPage(host) {
       pose: poseState
         ? { image: poseState.dataUrl, summary: poseState.summary, label: poseState.label }
         : null,
+      // 参考图本体：润色模型看到图才能把「做 <image2> 的动作」展开成可执行描述，
+      // 否则只能闭着眼睛改措辞（实测 1 张 vs 2 张差的正是这一步）。
+      images: images.map((image) => ({ data: image.dataUrl, name: image.name })),
+      // 清单走文字：让模型知道第几张是编辑目标、各自的尺寸
+      references: images.map((image, index) => ({
+        name: `image${index + 1}`,
+        description: `${index === 0 ? '编辑目标（要保留的主体）' : '参考图'}${
+          image.name ? `：${image.name}` : ''
+        }`,
+        size: image.width && image.height ? [image.width, image.height] : undefined,
+      })),
       onAccept: (text) => {
         promptEditor.setText(text);
         edit.prompt = text;
@@ -1060,7 +1071,11 @@ export function createEditPage(host) {
       const canvas = document.createElement('canvas');
       canvas.width = Math.max(1, Math.round(width * scale));
       canvas.height = Math.max(1, Math.round(height * scale));
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      const ctx = canvas.getContext('2d');
+      // JPEG 没有透明通道：先铺白底，否则带 alpha 的 PNG 缩略图会变黑
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       return canvas.toDataURL('image/jpeg', 0.82);
     } catch {
       return dataUrl;
@@ -2627,6 +2642,11 @@ export function createEditPage(host) {
           refreshHealthSoon();
         },
       });
+    } catch (err) {
+      // 提交前任何异常（预设/风格模块、payload 组装、后端 4xx）都必须可见，
+      // 否则按钮只是静默复位，看起来像「点了没反应」。
+      toastError(`提交失败：${err?.message || err}`);
+      refs.resultState.textContent = '提交失败';
     } finally {
       refs.submit.disabled = false;
       refs.submit.textContent = '开始编辑';

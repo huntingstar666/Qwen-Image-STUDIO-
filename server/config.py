@@ -418,8 +418,10 @@ def clean_llm_profile(raw: Any) -> dict[str, Any]:
         "max_tokens": _clamp_int(item.get("max_tokens"), 2048, 64, 8192),
         "json_mode": _as_bool(item.get("json_mode"), True),
         "vision": vision,
-        # 云端默认不随请求发送参考图（避免额外 token 费用）
-        "send_reference_images": _as_bool(item.get("send_reference_images"), kind == "ollama"),
+        # 参考图默认随请求发送：现在云端档案基本都是视觉模型，
+        # 润色要看到图才能把「做第 N 张的动作」展开成可执行描述。
+        # 用纯文本模型或想省 token 时，在档案里显式关掉即可。
+        "send_reference_images": _as_bool(item.get("send_reference_images"), True),
         "extra_headers": headers,
     }
 

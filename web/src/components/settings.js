@@ -468,7 +468,7 @@ function newLlmProfile() {
     max_tokens: 2048,
     json_mode: true,
     vision: 'auto',
-    send_reference_images: false,
+    send_reference_images: true,
     extra_headers: {},
     extra_headers_text: '',
     has_key: false,
@@ -1657,7 +1657,8 @@ function handleAction(action, element = null) {
           profile.base_url = profile.kind === 'ollama' ? 'http://127.0.0.1:11434' : '';
         }
         if (!profile.api_key_touched) {
-          profile.send_reference_images = profile.kind === 'ollama';
+          // 切换服务商不再自动关掉参考图：云端视觉模型是当前主流用法
+          profile.send_reference_images = true;
         }
         profile.connected = null;
         profile.error = null;

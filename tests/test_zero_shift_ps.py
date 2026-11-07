@@ -93,12 +93,24 @@ def _mask_bytes(w: int, h: int, box: tuple[int, int, int, int]) -> bytes:
     return imaging.encode_png(canvas)
 
 
+class _ReusedLatent:
+    """模拟 encode_text 返回的 latent：只实现管线用到的 .clone()。"""
+
+    def __init__(self, image: Image.Image):
+        self._image = image
+
+    def clone(self) -> Image.Image:
+        return self._image
+
+
 class _FakeEngine:
     """把「模型」换成一个确定性的像素变换，只验证管线几何/合成。"""
 
-    def __init__(self, transform=None, error: Exception | None = None):
+    def __init__(self, transform=None, error: Exception | None = None,
+                 provide_latent: bool = False):
         self.transform = transform or (lambda im: ImageOps.invert(im.convert("RGB")))
         self.error = error
+        self.provide_latent = provide_latent
         self.seen: dict = {}
 
     def status(self):
@@ -119,11 +131,14 @@ class _FakeEngine:
         self.seen["images"] = list(images or [])
         self.seen["resolution"] = int(resolution)
         self.seen["encode_negative"] = bool(encode_negative)
-        return {
+        result = {
             "positive": [prompt],
             "negative": [negative],
             "canvas": images[0].size,
         }
+        if self.provide_latent:
+            result["latent"] = _ReusedLatent(images[0])
+        return result
 
     def encode_latent(self, image):
         self.seen["latent_size"] = image.size
@@ -216,6 +231,24 @@ def test_generate_edit_follow_is_pixel_exact_outside_mask():
     final = imaging.decode_image(sink["png"])
     assert final.size == (1000, 700)
     assert _outside_diff(src, final, box) == 0
+
+
+def test_generate_edit_reuses_reference_latent():
+    """有参考图时直接复用它的 latent，不再调一次 encode_latent（省一次 VAE 前向）。"""
+    src = _noise_image(1000, 700, seed=31)
+    box = (400, 250, 600, 450)
+    fake = _FakeEngine(provide_latent=True)
+    job, sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(1000, 700, box)),
+    }, fake)
+
+    assert "latent_size" not in fake.seen, "复用了参考图 latent 就不应再调用 encode_latent"
+    assert job.quality["size_match"] is True
+    assert (job.quality["output"]["w"], job.quality["output"]["h"]) == (1000, 700)
+    assert job.quality["outside_max_abs"] == 0
+    final = imaging.decode_image(sink["png"])
+    assert final.size == (1000, 700)
 
 
 def test_generate_edit_panorama_keeps_source_pixels_and_expands_canvas():

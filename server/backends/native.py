@@ -447,13 +447,16 @@ def _image_digest(im: Any, hasher: Any) -> None:
 
 
 def cond_cache_key(prompt: str, negative: str, resolution: int,
-                   images: Sequence[Any], generation: int) -> str:
+                   images: Sequence[Any], generation: int,
+                   encode_negative: bool = True) -> str:
     """文本编码缓存的键（纯逻辑，不 import torch）。
 
     参考图按**像素内容**摘要，所以同一张图重新上传也能命中；提示词只做整串哈希。
+    ``encode_negative`` 参与哈希：跳过负向编码时 negative 复用正向，缓存不能与完整编码混用。
     """
     h = hashlib.blake2b(digest_size=16)
-    h.update(f"{int(generation)}\x00{int(resolution)}\x00".encode("ascii"))
+    h.update(f"{int(generation)}\x00{int(resolution)}\x00{int(bool(encode_negative))}\x00"
+             .encode("ascii"))
     # 文本带长度前缀，避免 a+"\x00"+b 与 a\x00b 这类拼接歧义
     for text in (prompt, negative):
         raw = (text or "").encode("utf-8")
@@ -1027,14 +1030,19 @@ class NativeEngine:
 
     def encode_text(self, prompt: str, negative_prompt: str = "",
                     images: list | None = None,
-                    resolution: int = 0) -> dict:
+                    resolution: int = 0, *,
+                    encode_negative: bool = True) -> dict:
         """文本 + 参考图编码，**逐行复刻** `TextEncodeQwenImage21.execute`。
 
         :param prompt: 正向提示词
         :param negative_prompt: 负向提示词（可为空串）
         :param images: 0..N 张 PIL Image；第 1 张决定 canvas 尺寸
         :param resolution: >0 按面积 resolution² 缩放参考图并 32 对齐；0 各自保持原尺寸
-        :return: ``{"positive": COND, "negative": COND, "canvas": (w, h)}``
+        :param encode_negative: ``False`` 时跳过负向的 CLIP 前向，负向直接复用正向。
+            仅供 ``cfg≈1``（Turbo）使用：此时 comfy 的 ``sampling_function`` 根本不会读取
+            uncond，跳过编码结果不变，但省掉一次 8B 文本/视觉前向。
+        :return: ``{"positive": COND, "negative": COND, "canvas": (w, h)}``；
+            有参考图时额外返回 ``latent``（第 1 张参考图的 VAE latent，可直接当初始 latent 用）。
         """
         if prompt is None or not isinstance(prompt, str):
             raise EngineError("prompt 必须是字符串")
@@ -1070,13 +1078,18 @@ class NativeEngine:
             cache_key = None
             if self._encode_cache.enabled:
                 cache_key = cond_cache_key(prompt, negative_prompt, resolution,
-                                           images, self._weights_generation)
+                                           images, self._weights_generation,
+                                           encode_negative=encode_negative)
                 cached = self._encode_cache.get(cache_key)
                 if cached is not None:
                     logger.info("文本编码命中缓存，跳过 CLIP 前向")
-                    return {"positive": copy_conditioning(cached["positive"]),
-                            "negative": copy_conditioning(cached["negative"]),
-                            "canvas": tuple(cached["canvas"])}
+                    result = {"positive": copy_conditioning(cached["positive"]),
+                              "negative": copy_conditioning(cached["negative"]),
+                              "canvas": tuple(cached["canvas"])}
+                    if cached.get("latent") is not None:
+                        # 调用方会 clone 后当初始 latent 用；这里给副本，避免多个任务共享同一张量
+                        result["latent"] = cached["latent"].clone()
+                    return result
 
             libs = self._load_libs()
             self._ensure_text_encoder_loaded()
@@ -1112,7 +1125,12 @@ class NativeEngine:
 
             keep_vision = len(ref_latents) == 0
             positive = self._encode_one(libs, prompt, images_vl, keep_vision)
-            negative = self._encode_one(libs, negative_prompt, images_vl, keep_vision)
+            if encode_negative:
+                negative = self._encode_one(libs, negative_prompt, images_vl, keep_vision)
+            else:
+                # cfg=1 时采样器不读 uncond（见 comfy/samplers.py::sampling_function），
+                # 复用正向条件即可省掉一次完整 CLIP 前向。
+                negative = copy_conditioning(positive)
 
             if ref_latents:
                 values = {"reference_latents": ref_latents}
@@ -1122,6 +1140,10 @@ class NativeEngine:
             self._text_encoder_offloaded = False
             result = {"positive": positive, "negative": negative,
                       "canvas": (int(canvas_w), int(canvas_h))}
+            if ref_latents:
+                # 第 1 张参考图就是编辑画布，pipeline 可直接拿它当初始 latent，
+                # 省掉紧随其后的 encode_latent() 重复 VAE 前向。
+                result["latent"] = ref_latents[0]
             if cache_key is not None:
                 self._encode_cache.put(cache_key, result)
             return result

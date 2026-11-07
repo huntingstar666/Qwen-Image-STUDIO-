@@ -27,7 +27,7 @@ import { openPoseStudio } from './poseStudio.js';
 import { openCompareDialog } from './compare.js';
 import { consumeHandoff } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
-import { escapeHtml, fmtNum, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
+import { escapeHtml, fmtNum, loadImage, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
 import {
   defaultPresetId,
   effectiveValue,
@@ -878,6 +878,11 @@ export function createEditPage(host) {
     images.push(entry);
     syncImages();
     toastSuccess(`已加入参考图区域（${imageLabel(images.indexOf(entry))}）`);
+    makeThumbnail(entry.dataUrl).then((url) => {
+      if (url === entry.dataUrl || !images.includes(entry)) return;
+      entry.previewUrl = url;
+      renderUploadList();
+    });
     if (!entry.width || !entry.height) {
       probeImageSize(entry.dataUrl)
         .then(({ width, height }) => {
@@ -1040,6 +1045,28 @@ export function createEditPage(host) {
     void modal;
   }
 
+  /**
+   * 列表缩略图：长边缩到 160px 的 JPEG。
+   * 直接把原图 data URL 塞进 <img> 会让浏览器按原分辨率解码，多张大图时滚动/重排明显卡顿；
+   * 提交给后端的仍是原始 dataUrl，不影响画质。
+   */
+  async function makeThumbnail(dataUrl, maxSide = 160) {
+    try {
+      const img = await loadImage(dataUrl);
+      const width = img.naturalWidth || img.width;
+      const height = img.naturalHeight || img.height;
+      const scale = Math.min(1, maxSide / Math.max(width, height));
+      if (scale >= 1) return dataUrl;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.82);
+    } catch {
+      return dataUrl;
+    }
+  }
+
   function renderUploadList() {
     refs.uploadCount.textContent = `${images.length} / ${MAX_IMAGES}`;
     refs.uploadList.innerHTML = images
@@ -1047,7 +1074,7 @@ export function createEditPage(host) {
         const hasMask = Boolean(image.mask?.dataUrl);
         return `
         <div class="upload-item ${hasMask ? 'has-mask' : ''}" draggable="true" data-image-index="${index}" title="${escapeHtml(image.name)}">
-          <img src="${escapeHtml(image.dataUrl)}" alt="${imageLabel(index)}" />
+          <img src="${escapeHtml(image.previewUrl || image.dataUrl)}" alt="${imageLabel(index)}" loading="lazy" />
           <span class="upload-badge">${imageLabel(index)}</span>
           ${hasMask ? `<span class="upload-mask-flag">遮罩 ${Math.round((image.mask.coverage || 0) * 100)}%</span>` : ''}
           <button class="upload-del" type="button" data-delete="${index}" title="删除这张">×</button>
@@ -1096,6 +1123,7 @@ export function createEditPage(host) {
           id: `img-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           name: file.name,
           dataUrl,
+          previewUrl: await makeThumbnail(dataUrl),
           width,
           height,
         });

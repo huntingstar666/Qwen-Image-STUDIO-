@@ -220,8 +220,30 @@ def _pose_payload(params: dict[str, Any]) -> dict[str, Any] | None:
     return pose
 
 
+def _cap_reference_images(images: list[Image.Image], max_side: int) -> list[Image.Image]:
+    """给第 2 张起的参考图设长边上限（32 对齐）。
+
+    第 1 张是编辑画布，直接决定输出尺寸，不能动；其余参考图只提供内容参考，
+    超过画布分辨率的部分模型也用不上，却会让 VAE 编码与注意力序列随原图线性变大。
+    """
+    if max_side <= 0 or len(images) <= 1:
+        return images
+    out = [images[0]]
+    for image in images[1:]:
+        width, height = image.size
+        long_side = max(width, height)
+        if long_side <= max_side:
+            out.append(image)
+            continue
+        scale = max_side / float(long_side)
+        new_w = max(32, int(round(width * scale / 32.0)) * 32)
+        new_h = max(32, int(round(height * scale / 32.0)) * 32)
+        out.append(image.resize((new_w, new_h), Image.LANCZOS))
+    return out
+
+
 def _pose_reference(pose: dict[str, Any], size: tuple[int, int]) -> Image.Image:
-    """把姿态图等比放进黑底画布，尺寸与采样画布严格一致。"""
+    """把姿态图等比放黑底画布，尺寸与采样画布严格一致。"""
     raw = pose.get("image") or pose.get("data") or pose.get("dataURL")
     try:
         image = imaging.decode_image(_entry_bytes(raw))
@@ -735,6 +757,12 @@ class Pipeline:
             prompt = (f"This is an RGBA image with transparency. {prompt} "
                       f"The image has an alpha channel and a transparent background.")
 
+        # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
+        encode_negative = not (
+            abs(float(sampling["cfg"]) - 1.0) < 1e-3
+            and not str(sampling["negative_prompt"] or "").strip()
+        )
+
         # 姿态参考：作为 image1 交给文本编码器，latent 仍是空画布
         pose = _pose_payload(params) if profile["id"] == "qwen" else None
         if pose:
@@ -745,6 +773,7 @@ class Pipeline:
                 sampling["negative_prompt"],
                 images=[pose_ref],
                 resolution=0,
+                encode_negative=encode_negative,
             )
             job.meta["pose"] = {
                 "preset": pose.get("preset"),
@@ -754,7 +783,8 @@ class Pipeline:
             }
             job.params["pose_prompt"] = prompt
         else:
-            cond = engine.encode_text(prompt, sampling["negative_prompt"])
+            cond = engine.encode_text(
+                prompt, sampling["negative_prompt"], encode_negative=encode_negative)
 
         job.check_cancel()
         _signal_progress(job, 3, total, "扩散采样")
@@ -828,6 +858,7 @@ class Pipeline:
             data = _entry_bytes(entry)
             decoded.append(imaging.decode_image(data))
         src = decoded[0]
+        timings: dict[str, float] = {"decode_input": round(time.time() - t_start, 2)}
         size_mode = str(params.get("size_mode") or "follow")
         local = params.get("local") or {}
         warnings: list[str] = []
@@ -1054,6 +1085,7 @@ class Pipeline:
         total = sampling["steps"] + 6
         _signal_progress(job, 1, total, "准备模型")
         self._prepare_engine(engine, model_paths, loras, job)
+        timings["prepare"] = round(time.time() - t_start, 2)
         job.check_cancel()
 
         # ---- 方案 B：先裁切局部，只采样这一块（省显存）
@@ -1120,6 +1152,16 @@ class Pipeline:
         # 采样画布 / latent 的基准始终是「编辑目标」（或方案 B 的裁切块）
         work_image = ref_images[0]
 
+        # 第 2 张起的参考图不需要比输出画布更清晰：按画布长边设上限。
+        # 否则 4K/8K 参考图会按原分辨率做 VAE 编码，耗时和显存都随原图尺寸暴涨。
+        ref_images = _cap_reference_images(ref_images, max(max(work_image.size), 1024))
+
+        # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
+        encode_negative = not (
+            abs(float(sampling["cfg"]) - 1.0) < 1e-3
+            and not str(sampling["negative_prompt"] or "").strip()
+        )
+
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         prompt_text = job.prompt or ""
         # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
@@ -1166,7 +1208,9 @@ class Pipeline:
             sampling["negative_prompt"],
             images=ref_images,
             resolution=int(params.get("resolution") or 0),
+            encode_negative=encode_negative,
         )
+        timings["encode"] = round(time.time() - t_start, 2)
 
         # 零偏移守卫：采样画布必须与参考图画布同尺寸
         cond_canvas = cond.get("canvas")
@@ -1177,7 +1221,11 @@ class Pipeline:
 
         job.check_cancel()
         _signal_progress(job, 3, total, "VAE 编码")
-        latent = engine.encode_latent(work_image)
+        # 没有姿态参考时，encode_text 的 image1 就是编辑目标：它已经做过一次 VAE 编码，
+        # 直接 clone 出来当初始 latent，省掉同样一张图的第二次 VAE 前向。
+        reused = None if pose else cond.get("latent")
+        latent = reused.clone() if reused is not None else engine.encode_latent(work_image)
+        timings["latent"] = round(time.time() - t_start, 2)
         noise_mask = mask_canvas if scheme == "a" else None
 
         job.check_cancel()
@@ -1205,10 +1253,12 @@ class Pipeline:
                 "显存不足：请开启大图预处理、降低编辑画布/扩图比例，"
                 "或关闭其它占用显卡的程序后重试"
             ) from exc
+        timings["sample"] = round(time.time() - t_start, 2)
         job.check_cancel()
 
         _signal_progress(job, total - 1, total, "解码与合成")
         edited_list = self._decode(engine, samples)
+        timings["decode"] = round(time.time() - t_start, 2)
         edited = edited_list[0]
 
         feather = int(local.get("feather") if local.get("feather") is not None else 32)
@@ -1390,7 +1440,9 @@ class Pipeline:
             "prompt_augmented": job.meta.get("prompt_augmented"),
             "watermark_prompt": bool(job.meta.get("watermark_prompt")),
             "model": profile["id"],
-            "elapsed_encode_s": round(time.time() - t_start, 1),
+            # 分阶段耗时（累计时间戳，含解码输入/读权重）：用来定位到底慢在哪一段
+            "timings": {**timings, "total": round(time.time() - t_start, 1)},
+            "elapsed_s": round(time.time() - t_start, 1),
         }
         _signal_progress(job, total, total, "完成")
         engine.free(unload=False)

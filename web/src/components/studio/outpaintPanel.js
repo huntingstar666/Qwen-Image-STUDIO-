@@ -387,7 +387,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     setEdges(zero);
   });
 
-  store.subscribe(() => {
+  const unsubscribe = store.subscribe(() => {
     if (drag) return;
     paint();
     syncGhost();
@@ -423,5 +423,11 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
       syncGhost();
     },
     isActive: () => active,
+    /** 弹窗销毁时解除订阅，避免重复打开累积监听 */
+    destroy() {
+      active = false;
+      layerHost.hidden = true;
+      unsubscribe();
+    },
   };
 }

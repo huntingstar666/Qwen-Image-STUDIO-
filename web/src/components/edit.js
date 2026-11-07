@@ -42,6 +42,7 @@ import {
 import { nestOverrides } from './studio/payload.js';
 import { mountGuards } from './studio/guards.js';
 import { mountAdvanced } from './studio/advanced.js';
+import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 
 const MAX_IMAGES = 10;
 
@@ -254,7 +255,7 @@ export function createEditPage(host) {
               <span class="refbox-title">参考图</span>
               <span class="refbox-count mono" data-ref="uploadCount">0 / ${MAX_IMAGES}</span>
               <span class="spacer"></span>
-              <button class="refbox-link" type="button" data-ref="outpaintBtn" title="先规划扩图画布，再自动生成「新增区域」遮罩">⤢ 扩图</button>
+              <button class="refbox-link" type="button" data-ref="outpaintBtn" title="按四边百分比直接扩图（灰边延展），内可切换旧流程">⤢ 扩图</button>
               <button class="refbox-link" type="button" data-ref="clearImages">清空</button>
             </div>
             <div class="refbox-body">
@@ -2384,7 +2385,102 @@ export function createEditPage(host) {
   /* ============================================================
    * 扩图入口（与「图像处理」页共用同一套规划逻辑）
    * ============================================================ */
-  function openOutpaintDialog() {
+  /**
+   * 扩图（新路径）：四边百分比 → 提交 `task=outpaint`，由后端补灰边并延展。
+   * 复用图片精修同一块 `outpaintPanel`，数值写到共享的 `outpaint.*` 覆盖项。
+   */
+  function openOutpaintPanelDialog() {
+    const first = images[0];
+    if (!first) {
+      toastWarn('请先上传第 1 张编辑目标图，再使用扩图');
+      return;
+    }
+    const content = document.createElement('div');
+    content.className = 'op-dialog';
+    content.innerHTML = `
+      <div class="op-dialog-body">
+        <div class="op-dialog-stage">
+          <div class="op-stage-box" data-ref="stageBox">
+            <img data-ref="stageImg" alt="扩图预览" />
+            <div class="studio-outpaint" data-ref="opLayer" hidden>
+              <div class="so-shade" data-shade="top"></div>
+              <div class="so-shade" data-shade="bottom"></div>
+              <div class="so-shade" data-shade="left"></div>
+              <div class="so-shade" data-shade="right"></div>
+              <div class="so-frame" data-so="frame"></div>
+              <span class="so-halo" data-edge="top"></span>
+              <span class="so-halo" data-edge="bottom"></span>
+              <span class="so-halo" data-edge="left"></span>
+              <span class="so-halo" data-edge="right"></span>
+              <span class="so-handle" data-edge="nw"></span>
+              <span class="so-handle" data-edge="ne"></span>
+              <span class="so-handle" data-edge="sw"></span>
+              <span class="so-handle" data-edge="se"></span>
+              <span class="so-cap" data-cap="top" hidden></span>
+              <span class="so-cap" data-cap="bottom" hidden></span>
+              <span class="so-cap" data-cap="left" hidden></span>
+              <span class="so-cap" data-cap="right" hidden></span>
+            </div>
+          </div>
+        </div>
+        <div class="op-dialog-side" data-ref="panelHost"></div>
+      </div>
+      <div class="op-dialog-foot">
+        <button class="btn ghost sm" type="button" data-ref="legacyBtn">改用旧流程：先扩画布再涂遮罩（legacy）</button>
+      </div>`;
+    let panel = null;
+    const previousPreset = edit.preset;
+    let applied = false;
+    const modal = openModal({
+      title: '扩图 / 外补画布',
+      subtitle: '按四边百分比外补，提交时直接走 task=outpaint（灰边延展，遮罩外逐字节保留）',
+      dialogClass: 'op-modal',
+      hideFooter: true,
+      content,
+      onClose: () => {
+        panel?.destroy?.();
+        panel = null;
+        // 取消时回到原预设，避免后续普通编辑被当成扩图提交
+        if (!applied) {
+          edit.preset = previousPreset;
+          patchSettings({ edit: { preset: previousPreset } });
+        }
+        renderPresets();
+        syncLocalControls();
+        advanced.refresh();
+      },
+    });
+    const ref = (name) => content.querySelector(`[data-ref="${name}"]`);
+    const stageImg = ref('stageImg');
+    const stageBox = ref('stageBox');
+    stageImg.src = first.dataUrl;
+    panel = mountOutpaintPanel(ref('panelHost'), ref('opLayer'), {
+      getSize: () => ({ width: first.width, height: first.height }),
+      getView: () => {
+        const width = stageBox.getBoundingClientRect().width;
+        return { scale: first.width ? width / first.width : 1, x: 0, y: 0 };
+      },
+      onApply: () => {
+        applied = true;
+        modal.close();
+        handleSubmit();
+      },
+    });
+    panel.init();
+    panel.activate();
+    // 图片尺寸就绪后再对齐幽灵层（否则 getView 拿到 0 宽）
+    if (stageImg.complete) requestAnimationFrame(() => panel?.syncGhost());
+    else stageImg.addEventListener('load', () => requestAnimationFrame(() => panel?.syncGhost()), { once: true });
+    ref('legacyBtn').addEventListener('click', () => {
+      modal.close();
+      openLegacyOutpaintDialog();
+    });
+  }
+
+  /**
+   * 扩图（旧流程 · legacy）：先把原图贴到新画布并生成新增区域遮罩，再走局部重绘。
+   */
+  function openLegacyOutpaintDialog() {
     const first = images[0];
     if (!first) {
       toastWarn('请先上传第 1 张编辑目标图，再使用扩图');
@@ -2409,6 +2505,7 @@ export function createEditPage(host) {
         <input class="range" type="range" min="10" max="200" step="5" value="50" data-ref="amount" />
         <div class="field-hint">相对原图对应边长；四周方向会向四边同时扩展。</div>
       </div>
+      <div class="notice info">旧流程（legacy）：先扩画布再生成遮罩，仍可用，但需要多一次「贴图 + 缩回」。新流程直接按四边百分比扩图，模型输出即为最终尺寸，遮罩外逐字节保留。</div>
       <div class="notice info">点击「生成画布」后：第 1 张图会被贴到新画布上，自动生成「新增区域」白色遮罩并预填扩图提示词；原图内容保持不变。</div>
       <div class="outpaint-actions">
         <button class="btn ghost" type="button" data-ref="cancel">取消</button>
@@ -2418,7 +2515,7 @@ export function createEditPage(host) {
     let amount = 0.5;
     let busy = false;
     const modal = openModal({
-      title: '扩图',
+      title: '扩图（旧流程 · legacy）',
       subtitle: '规划新画布 → 生成新增区域遮罩 → 进入局部重绘',
       dialogClass: 'outpaint-modal',
       hideFooter: true,
@@ -2478,6 +2575,12 @@ export function createEditPage(host) {
         updatePromptCount();
         edit.localEnabled = true;
         refs.localEnabled.checked = true;
+        // 旧流程产出了新画布 + 遮罩，落回局部编辑预设
+        edit.preset = 'mask_edit';
+        patchSettings({ edit: { prompt: result.prompt, localEnabled: true, preset: 'mask_edit' } });
+        renderPresets();
+        syncLocalControls();
+        advanced.refresh();
         syncLocalUi();
         updateMaskStatus();
         toastSuccess(
@@ -2491,7 +2594,7 @@ export function createEditPage(host) {
     });
   }
 
-  refs.outpaintBtn.addEventListener('click', openOutpaintDialog);
+  refs.outpaintBtn.addEventListener('click', openOutpaintPanelDialog);
 
   /* ============================================================
    * 接收「图像处理」页的交接（送入图生图 / 扩图去局部重绘）

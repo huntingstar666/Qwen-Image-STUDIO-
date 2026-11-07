@@ -1866,6 +1866,71 @@
   padding: 12px 14px 18px;
 }
 
+/* 图生图「扩图 / 外补画布」弹窗：左侧原图 + 幽灵预览，右侧共用 op-panel */
+.op-modal {
+  width: min(1080px, 94vw);
+  max-width: min(1080px, 94vw);
+}
+
+.op-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.op-dialog-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.op-dialog-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.op-stage-box {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.op-stage-box > img {
+  display: block;
+  max-width: 100%;
+  max-height: 58vh;
+  border-radius: 4px;
+}
+
+.op-dialog-side {
+  flex: 0 0 320px;
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.op-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 860px) {
+  .op-dialog-body {
+    flex-direction: column;
+  }
+
+  .op-dialog-side {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
+
 .op-head {
   display: flex;
   align-items: baseline;

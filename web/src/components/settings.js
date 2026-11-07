@@ -79,7 +79,7 @@ function emptyForm() {
       extra_model_paths_yaml: '',
       model_dirs: { unet: '', clip: '', vae: '', lora: '' },
     },
-    llm: { ollama_url: '', ollama_model: '' },
+    llm: { active: '', profiles: [] },
     runtime: {
       keep_text_encoder_resident: true,
       idle_unload_minutes: 0,
@@ -114,8 +114,15 @@ function formFromData(data) {
       },
     },
     llm: {
-      ollama_url: data?.llm?.ollama_url || '',
-      ollama_model: data?.llm?.ollama_model || '',
+      active: data?.llm?.active || '',
+      profiles: (data?.llm?.profiles || []).map((profile) => ({
+        ...profile,
+        // 明文 Key 不回显：只有用户重新输入才提交 api_key
+        api_key: '',
+        api_key_touched: false,
+        use_env: Boolean(profile.api_key_env),
+        extra_headers_text: headersToText(profile.extra_headers),
+      })),
     },
     runtime: {
       keep_text_encoder_resident: data?.runtime?.keep_text_encoder_resident !== false,
@@ -178,8 +185,9 @@ function ensureState() {
       loading: false,
       saving: false,
       error: '',
-      testResult: null,
-      testing: false,
+      llmEditing: null,
+      llmTest: { id: null, testing: false, result: null },
+      llmShowKey: false,
     };
   }
   return state;
@@ -252,6 +260,14 @@ function bindEvents() {
   });
 
   overlay.addEventListener('input', (event) => {
+    const llmField = event.target.closest('[data-llm-field]');
+    if (llmField) {
+      const name = llmField.dataset.llmField;
+      applyLlmField(name, llmField.type === 'checkbox' ? llmField.checked : llmField.value);
+      markDirty();
+      if (name === 'use_env') render();
+      return;
+    }
     const field = event.target.closest('[data-field]');
     if (!field) return;
     writeField(field.dataset.field, field.type === 'checkbox' ? field.checked : field.value);
@@ -259,6 +275,15 @@ function bindEvents() {
   });
 
   overlay.addEventListener('change', (event) => {
+    const llmField = event.target.closest('[data-llm-field]');
+    if (llmField) {
+      const name = llmField.dataset.llmField;
+      applyLlmField(name, llmField.type === 'checkbox' ? llmField.checked : llmField.value);
+      markDirty();
+      // 失焦后同步列表里的名称 / 模型
+      if (name === 'name' || name === 'model') render();
+      return;
+    }
     const slot = event.target.closest('[data-slot]');
     if (slot) {
       state.slotDraft = { ...state.slotDraft, [slot.dataset.slot]: slot.value };
@@ -277,7 +302,6 @@ function bindEvents() {
     if (!field) return;
     writeField(field.dataset.field, field.type === 'checkbox' ? field.checked : field.value);
     markDirty();
-    if (field.dataset.field === 'llm.ollama_url') state.testResult = null;
     if (field.dataset.field.startsWith('runtime.')) render();
   });
 
@@ -321,6 +345,162 @@ function splitComma(text) {
     .split(/[,，;；]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+/* ============================================================
+ * AI 模型服务（本机 Ollama / OpenAI 兼容云端）
+ * ============================================================ */
+
+const LLM_MAX_PROFILES = 6;
+
+function headersToText(headers) {
+  return Object.entries(headers || {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\n');
+}
+
+function textToHeaders(text) {
+  const out = {};
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const index = line.indexOf(':');
+    if (index <= 0) continue;
+    const key = line.slice(0, index).trim();
+    if (key) out[key] = line.slice(index + 1).trim();
+  }
+  return out;
+}
+
+function llmEditingProfile() {
+  return (state.form.llm.profiles || []).find((item) => item.id === state.llmEditing) || null;
+}
+
+function llmKindLabel(kind) {
+  return kind === 'openai' ? t('llm.kind.openai') : t('llm.kind.ollama');
+}
+
+function applyLlmField(field, value) {
+  const profile = llmEditingProfile();
+  if (!profile) return;
+  if (field === 'api_key') {
+    profile.api_key = value;
+    profile.api_key_touched = true;
+  } else if (field === 'use_env') {
+    profile.use_env = Boolean(value);
+    if (!profile.use_env) profile.api_key_env = '';
+  } else if (field === 'extra_headers_text') {
+    profile.extra_headers = textToHeaders(value);
+  } else if (field === 'timeout_s' || field === 'max_tokens') {
+    profile[field] = value === '' ? '' : Number(value);
+  } else {
+    profile[field] = value;
+  }
+  if (['base_url', 'model', 'api_key', 'kind', 'api_key_env'].includes(field)) {
+    profile.connected = null;
+    profile.error = null;
+    state.llmTest = { id: null, testing: false, result: null };
+  }
+}
+
+/** 单条服务的提交表单：未改过 Key 就不带 api_key（后端保持原值）。 */
+function llmPayload(profile) {
+  const payload = {
+    id: profile.id,
+    name: profile.name || t('llm.newName'),
+    kind: profile.kind,
+    base_url: String(profile.base_url || '').trim(),
+    model: String(profile.model || '').trim(),
+    timeout_s: Number(profile.timeout_s) || 300,
+    max_tokens: Number(profile.max_tokens) || 2048,
+    json_mode: Boolean(profile.json_mode),
+    vision: profile.vision || 'auto',
+    send_reference_images: Boolean(profile.send_reference_images),
+    api_key_env: profile.use_env ? String(profile.api_key_env || '').trim() : '',
+    extra_headers: profile.extra_headers || {},
+  };
+  if (profile.api_key_touched) payload.api_key = profile.api_key || '';
+  return payload;
+}
+
+function newLlmProfile() {
+  const profiles = state.form.llm.profiles || [];
+  if (profiles.length >= LLM_MAX_PROFILES) {
+    toastWarn(t('llm.maxProfiles'));
+    return;
+  }
+  const id = (
+    window.crypto?.randomUUID?.() || `llm-${Date.now().toString(36)}`
+  ).toLowerCase();
+  const profile = {
+    id,
+    name: t('llm.newName'),
+    kind: 'openai',
+    base_url: '',
+    api_key: '',
+    api_key_touched: false,
+    api_key_env: '',
+    use_env: false,
+    model: '',
+    timeout_s: 300,
+    max_tokens: 2048,
+    json_mode: true,
+    vision: 'auto',
+    send_reference_images: false,
+    extra_headers: {},
+    extra_headers_text: '',
+    has_key: false,
+    key_hint: '',
+    models: [],
+    connected: null,
+    error: null,
+    error_code: null,
+  };
+  state.form.llm.profiles = [...profiles, profile];
+  if (!state.form.llm.active) state.form.llm.active = id;
+  state.llmEditing = id;
+  state.llmShowKey = false;
+  state.llmTest = { id: null, testing: false, result: null };
+  markDirty();
+  render();
+}
+
+function deleteLlmProfile() {
+  const profile = llmEditingProfile();
+  if (!profile) return;
+  const profiles = state.form.llm.profiles || [];
+  if (profiles.length <= 1) {
+    toastWarn(t('llm.lastProfile'));
+    return;
+  }
+  if (!window.confirm(t('llm.deleteConfirm', { name: profile.name || t('llm.untitled') }))) return;
+  const remaining = profiles.filter((item) => item.id !== profile.id);
+  state.form.llm.profiles = remaining;
+  if (state.form.llm.active === profile.id) state.form.llm.active = remaining[0].id;
+  state.llmEditing = remaining[0].id;
+  state.llmTest = { id: null, testing: false, result: null };
+  markDirty();
+  render();
+}
+
+async function testCurrentLlm() {
+  const profile = llmEditingProfile();
+  if (!profile || state.llmTest.testing) return;
+  state.llmTest = { id: profile.id, testing: true, result: null };
+  render();
+  let result = null;
+  try {
+    result = await api.testLlm({
+      profile: llmPayload(profile),
+      api_key_unchanged: !profile.api_key_touched,
+    });
+  } catch (err) {
+    result = { ok: false, error: err?.message || String(err), hint: '' };
+  }
+  if (Array.isArray(result?.models) && result.models.length) profile.models = result.models;
+  profile.connected = Boolean(result?.ok);
+  profile.error = result?.ok ? null : result?.error || null;
+  profile.error_code = result?.ok ? null : result?.error_code || null;
+  state.llmTest = { id: profile.id, testing: false, result };
+  render();
 }
 
 /* ============================================================
@@ -650,48 +830,228 @@ function renderDefaults() {
   `;
 }
 
+function llmStatus(profile) {
+  if (profile.connected === true) return { cls: 'ok', text: t('llm.status.connected') };
+  if (profile.connected === false) {
+    return {
+      cls: 'bad',
+      text: profile.error_code === 'auth_failed' ? t('llm.status.auth') : t('llm.status.error'),
+    };
+  }
+  return { cls: 'idle', text: t('llm.status.untested') };
+}
+
+function renderLlmTest(profile) {
+  const test = state.llmTest || {};
+  if (test.id !== profile.id) return '';
+  if (test.testing) return `<p class="llm-test-result">${escapeHtml(t('llm.testing'))}</p>`;
+  const result = test.result;
+  if (!result) return '';
+  if (result.ok) {
+    const summary = t('llm.testOk', {
+      n: result.models?.length || 0,
+      ms: result.latency_ms ?? 0,
+    });
+    return `
+      <div class="llm-test-result ok">
+        <strong>${escapeHtml(summary)}</strong>
+        <span>${escapeHtml(t('llm.chatOk'))}${result.reply ? ` · ${escapeHtml(result.reply)}` : ''}</span>
+      </div>`;
+  }
+  return `
+    <div class="llm-test-result bad">
+      <strong>${escapeHtml(t('llm.testFail'))}${result.error_code ? ` · ${escapeHtml(result.error_code)}` : ''}</strong>
+      <span>${escapeHtml(result.error || '')}</span>
+      ${result.hint ? `<span class="llm-test-hint">${escapeHtml(result.hint)}</span>` : ''}
+    </div>`;
+}
+
+function renderLlmEditor(profile, isActive, canDelete) {
+  const datalistId = `llm-models-${profile.id}`;
+  const models = [...new Set([profile.model, ...(profile.models || [])].filter(Boolean))];
+  const options = ['auto', 'on', 'off']
+    .map(
+      (value) => `<option value="${value}" ${profile.vision === value ? 'selected' : ''}>
+        ${escapeHtml(t(`llm.vision.${value}`))}</option>`,
+    )
+    .join('');
+  const keyHint = profile.api_key_touched
+    ? profile.api_key
+      ? t('llm.keyPending')
+      : t('llm.keyWillClear')
+    : profile.has_key
+      ? profile.key_hint
+        ? t('llm.apiKeySaved', { hint: profile.key_hint })
+        : t('llm.keyFromEnv')
+      : t('llm.keyMissing');
+  const envRow = profile.use_env
+    ? row(
+        t('llm.apiKeyEnv'),
+        t('llm.apiKeyEnvDesc'),
+        `<input class="set-input mono" type="text" data-llm-field="api_key_env"
+          value="${escapeHtml(profile.api_key_env || '')}" placeholder="OPENAI_API_KEY"
+          spellcheck="false" autocomplete="off" />`,
+      )
+    : '';
+
+  return group(
+    t('llm.editTitle', { name: profile.name || t('llm.untitled') }),
+    row(
+      t('llm.kind'),
+      '',
+      `<div class="set-seg" role="group">
+        ${['ollama', 'openai']
+          .map(
+            (kind) => `
+          <button class="set-seg-item ${profile.kind === kind ? 'active' : ''}" type="button"
+            data-action="llm-kind" data-kind="${kind}">${escapeHtml(llmKindLabel(kind))}</button>`,
+          )
+          .join('')}
+      </div>`,
+    ) +
+      row(
+        t('llm.name'),
+        t('llm.nameDesc'),
+        `<input class="set-input" type="text" data-llm-field="name" maxlength="40"
+          value="${escapeHtml(profile.name || '')}" autocomplete="off" />`,
+      ) +
+      row(
+        t('llm.baseUrl'),
+        profile.kind === 'openai' ? t('llm.baseUrlOpenai') : t('llm.baseUrlOllama'),
+        `<input class="set-input mono" type="text" data-llm-field="base_url"
+          value="${escapeHtml(profile.base_url || '')}"
+          placeholder="${profile.kind === 'openai' ? 'https://api.deepseek.com/v1' : 'http://127.0.0.1:11434'}"
+          spellcheck="false" autocomplete="off" />`,
+      ) +
+      row(
+        t('llm.apiKey'),
+        keyHint,
+        `<div class="llm-field">
+          <div class="llm-key-row">
+            <input class="set-input mono" type="${state.llmShowKey ? 'text' : 'password'}"
+              data-llm-field="api_key" value="${escapeHtml(profile.api_key || '')}"
+              placeholder="${escapeHtml(t('llm.apiKeyPlaceholder'))}"
+              autocomplete="new-password" spellcheck="false" />
+            <button class="set-mini-btn" type="button" data-action="llm-show-key">
+              ${escapeHtml(state.llmShowKey ? t('llm.hideKey') : t('llm.showKey'))}
+            </button>
+          </div>
+          <label class="llm-env-toggle">
+            <input type="checkbox" data-llm-field="use_env" ${profile.use_env ? 'checked' : ''} />
+            <span>${escapeHtml(t('llm.useEnv'))}</span>
+          </label>
+          ${profile.has_key && profile.key_hint ? `<span class="llm-key-hint">${escapeHtml(profile.key_hint)}</span>` : ''}
+        </div>`,
+      ) +
+      envRow +
+      row(
+        t('llm.model'),
+        t('llm.modelDesc'),
+        `<input class="set-input mono" type="text" data-llm-field="model" list="${datalistId}"
+          value="${escapeHtml(profile.model || '')}"
+          placeholder="${escapeHtml(t('llm.modelPlaceholder'))}" spellcheck="false" autocomplete="off" />
+        <datalist id="${datalistId}">
+          ${models.map((name) => `<option value="${escapeHtml(name)}"></option>`).join('')}
+        </datalist>`,
+      ) +
+      `<details class="set-details llm-advanced">
+        <summary>${escapeHtml(t('llm.advanced'))}</summary>
+        <div class="set-details-body">
+          ${row(
+            t('llm.timeout'),
+            t('llm.timeoutDesc'),
+            `<div class="set-inline">
+              <input class="set-input mono" type="number" min="5" max="600" data-llm-field="timeout_s"
+                value="${escapeHtml(String(profile.timeout_s ?? 300))}" />
+              <span class="set-unit">s</span>
+            </div>`,
+          )}
+          ${row(
+            t('llm.maxTokens'),
+            t('llm.maxTokensDesc'),
+            `<input class="set-input mono" type="number" min="64" max="8192" data-llm-field="max_tokens"
+              value="${escapeHtml(String(profile.max_tokens ?? 2048))}" />`,
+          )}
+          ${row(
+            t('llm.jsonMode'),
+            t('llm.jsonModeDesc'),
+            `<label class="set-switch">
+              <input type="checkbox" data-llm-field="json_mode" ${profile.json_mode ? 'checked' : ''} />
+              <span class="set-switch-track"></span>
+            </label>`,
+          )}
+          ${row(
+            t('llm.vision'),
+            t('llm.visionDesc'),
+            `<select class="set-input set-select" data-llm-field="vision">${options}</select>`,
+          )}
+          ${row(
+            t('llm.sendImages'),
+            t('llm.sendImagesDesc'),
+            `<label class="set-switch">
+              <input type="checkbox" data-llm-field="send_reference_images"
+                ${profile.send_reference_images ? 'checked' : ''} />
+              <span class="set-switch-track"></span>
+            </label>`,
+          )}
+          ${row(
+            t('llm.headers'),
+            t('llm.headersDesc'),
+            `<textarea class="set-input set-textarea mono llm-headers" rows="3" data-llm-field="extra_headers_text"
+              placeholder="X-Api-Version: 2024-01-01"
+              spellcheck="false">${escapeHtml(profile.extra_headers_text || '')}</textarea>`,
+          )}
+        </div>
+      </details>
+      <div class="llm-actions">
+        <button class="set-mini-btn" type="button" data-action="llm-test"
+          ${state.llmTest.testing && state.llmTest.id === profile.id ? 'disabled' : ''}>
+          ${escapeHtml(state.llmTest.testing && state.llmTest.id === profile.id ? t('llm.testing') : t('llm.test'))}
+        </button>
+        <button class="set-mini-btn" type="button" data-action="llm-activate" ${isActive ? 'disabled' : ''}>
+          ${escapeHtml(t('llm.setActive'))}
+        </button>
+        <button class="set-mini-btn danger" type="button" data-action="llm-delete" ${canDelete ? '' : 'disabled'}>
+          ${escapeHtml(t('llm.delete'))}
+        </button>
+      </div>
+      ${renderLlmTest(profile)}`,
+    isActive ? t('llm.activateHint') : t('llm.privacy'),
+  );
+}
+
 function renderLlm() {
   const form = state.form.llm;
-  const models = state.data?.llm?.models || [];
-  const options = [...models];
-  if (form.ollama_model && !options.includes(form.ollama_model)) options.unshift(form.ollama_model);
-  const modelSelect = `
-    <select class="set-input set-select mono" data-field="llm.ollama_model">
-      ${options.length ? '' : `<option value="">${t('llm.noModels')}</option>`}
-      ${options
-        .map(
-          (name) =>
-            `<option value="${escapeHtml(name)}" ${name === form.ollama_model ? 'selected' : ''}>${escapeHtml(name)}</option>`,
-        )
-        .join('')}
-    </select>`;
+  const profiles = form.profiles || [];
+  if (!state.llmEditing || !profiles.some((item) => item.id === state.llmEditing)) {
+    state.llmEditing = form.active || profiles[0]?.id || null;
+  }
+  const rows = profiles
+    .map((profile) => {
+      const status = llmStatus(profile);
+      return `
+        <button class="llm-profile-row ${profile.id === state.llmEditing ? 'editing' : ''}"
+          type="button" data-action="llm-edit" data-profile="${escapeHtml(profile.id)}">
+          <span class="llm-status-dot ${status.cls}" title="${escapeHtml(status.text)}"></span>
+          <span class="llm-profile-main">
+            <strong>${escapeHtml(profile.name || t('llm.untitled'))}</strong>
+            <span class="llm-badge">${escapeHtml(llmKindLabel(profile.kind))}</span>
+            ${profile.id === form.active ? `<span class="llm-badge active">${escapeHtml(t('llm.active'))}</span>` : ''}
+          </span>
+          <span class="llm-profile-model set-mono-note">${escapeHtml(profile.model || '—')}</span>
+          <span class="llm-profile-state">${escapeHtml(status.text)}</span>
+        </button>`;
+    })
+    .join('');
+  const addButton = `
+    <button class="llm-add" type="button" data-action="llm-new"
+      ${profiles.length >= LLM_MAX_PROFILES ? 'disabled' : ''}>+ ${escapeHtml(t('llm.add'))}</button>`;
 
-  const test = state.testResult;
-  const testText = state.testing
-    ? t('llm.testing')
-    : test
-      ? test.ok
-        ? t('llm.ok', { n: test.models?.length || 0, ms: test.latency_ms ?? 0 })
-        : `${t('llm.fail')}：${test.error || ''}`
-      : state.data?.llm?.connected
-        ? t('llm.connected')
-        : t('llm.offline');
-
+  const editing = llmEditingProfile();
   return `
-    ${group(
-      t('llm.title'),
-      row(t('llm.url'), t('llm.urlDesc'), textInput('llm.ollama_url', form.ollama_url, { placeholder: 'http://127.0.0.1:11434' })) +
-        row(t('llm.model'), t('llm.modelDesc'), modelSelect),
-      t('llm.desc'),
-    )}
-    ${group(
-      t('llm.test'),
-      `<div class="llm-test-row">
-         <span class="llm-status ${test && !test.ok ? 'bad' : state.data?.llm?.connected ? 'ok' : ''}">${escapeHtml(testText)}</span>
-         <button class="set-mini-btn" type="button" data-action="test-ollama"
-           ${state.testing ? 'disabled' : ''}>${state.testing ? t('llm.testing') : t('llm.test')}</button>
-       </div>`,
-    )}`;
+    ${group(t('llm.services'), rows + addButton, t('llm.desc'))}
+    ${editing ? renderLlmEditor(editing, editing.id === form.active, profiles.length > 1) : ''}
+  `;
 }
 
 function renderRuntime() {
@@ -931,7 +1291,7 @@ async function load() {
     state.t2iModelDraft = defaultsT2iModel(data);
     state.t2iModelSaved = state.t2iModelDraft;
     state.dirty = false;
-    state.testResult = null;
+    state.llmTest = { id: null, testing: false, result: null };
   } catch (err) {
     state.error = t('settings.loadFailed', { msg: err?.message || err });
   } finally {
@@ -976,8 +1336,8 @@ function buildPayload() {
       vae: splitComma(state.form.model.model_dirs.vae),
       lora: splitComma(state.form.model.model_dirs.lora),
     },
-    ollama_url: state.form.llm.ollama_url.trim(),
-    ollama_model: state.form.llm.ollama_model,
+    llm_active: state.form.llm.active,
+    llm_profiles: (state.form.llm.profiles || []).map(llmPayload),
     keep_text_encoder_resident: Boolean(state.form.runtime.keep_text_encoder_resident),
     idle_unload_minutes: Number(state.form.runtime.idle_unload_minutes) || 0,
     vram_reserve: Number(state.form.runtime.vram_reserve) || 0,
@@ -1039,8 +1399,11 @@ async function save() {
     state.t2iModelDraft = defaultsT2iModel(result);
     state.t2iModelSaved = state.t2iModelDraft;
     state.dirty = false;
-    state.testResult = null;
+    state.llmTest = { id: null, testing: false, result: null };
     toastSuccess(t('settings.savedToast'));
+    if (Array.isArray(result.llm_warnings) && result.llm_warnings.length) {
+      toastWarn(result.llm_warnings.join('；'));
+    }
     render();
     // 模型目录变了：通知壳层刷新参数并重建页面
     window.dispatchEvent(
@@ -1097,26 +1460,6 @@ async function rescan() {
   }
 }
 
-async function testOllama() {
-  if (state.testing) return;
-  state.testing = true;
-  state.testResult = null;
-  render();
-  try {
-    const result = await api.testOllama({ url: state.form.llm.ollama_url.trim() });
-    state.testResult = result;
-    if (result.ok && state.data?.llm) {
-      state.data.llm.models = result.models || [];
-      state.data.llm.connected = Boolean(result.connected);
-    }
-  } catch (err) {
-    state.testResult = { ok: false, error: err?.message || String(err) };
-  } finally {
-    state.testing = false;
-    render();
-  }
-}
-
 async function freeVram() {
   try {
     await api.engineFree({ unload: true });
@@ -1152,8 +1495,51 @@ function handleAction(action, element = null) {
     case 'recheck-defaults':
       recheckDefaults();
       break;
-    case 'test-ollama':
-      testOllama();
+    case 'llm-edit':
+      state.llmEditing = element?.dataset?.profile || null;
+      state.llmShowKey = false;
+      state.llmTest = { id: null, testing: false, result: null };
+      render();
+      break;
+    case 'llm-new':
+      newLlmProfile();
+      break;
+    case 'llm-kind': {
+      const profile = llmEditingProfile();
+      if (profile) {
+        profile.kind = element?.dataset?.kind === 'openai' ? 'openai' : 'ollama';
+        if (!profile.base_url) {
+          profile.base_url = profile.kind === 'ollama' ? 'http://127.0.0.1:11434' : '';
+        }
+        if (!profile.api_key_touched) {
+          profile.send_reference_images = profile.kind === 'ollama';
+        }
+        profile.connected = null;
+        profile.error = null;
+        state.llmTest = { id: null, testing: false, result: null };
+        markDirty();
+      }
+      render();
+      break;
+    }
+    case 'llm-show-key':
+      state.llmShowKey = !state.llmShowKey;
+      render();
+      break;
+    case 'llm-test':
+      testCurrentLlm();
+      break;
+    case 'llm-activate': {
+      const profile = llmEditingProfile();
+      if (profile) {
+        state.form.llm.active = profile.id;
+        markDirty();
+        render();
+      }
+      break;
+    }
+    case 'llm-delete':
+      deleteLlmProfile();
       break;
     case 'free-vram':
       freeVram();

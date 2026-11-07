@@ -24,8 +24,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    __version__, config, imageops, imaging, jobs, materials, mediaops, model_slots,
-    ollama as ollama_client, pipeline, presets, prompt_polish, storage, styles,
+    __version__, config, imageops, imaging, jobs, llm_client, materials, mediaops,
+    model_slots, ollama as ollama_client, pipeline, presets, prompt_polish, storage, styles,
 )
 from . import models as image_models
 from .upscalers import manager as upscale_manager
@@ -41,7 +41,13 @@ MAX_INLINE_IMAGE_CHARS = 48 * 1024 * 1024
 
 _QUEUE: jobs.JobQueue | None = None
 _PIPELINE: pipeline.Pipeline | None = None
-_OLLAMA_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+#: LLM 健康检查缓存：{profile_id: {"at": 时间戳, "data": {...}}}
+_LLM_CACHE: dict[str, dict[str, Any]] = {}
+#: 鉴权失败熔断：{profile_id: 截止时间戳}（5 分钟内不再请求上游）
+_LLM_BREAKER: dict[str, float] = {}
+LLM_LOCAL_TTL = 10.0
+LLM_CLOUD_TTL = 60.0
+LLM_AUTH_BREAK_SECONDS = 300.0
 
 
 class Utf8JSONResponse(JSONResponse):
@@ -221,22 +227,87 @@ def _vram() -> dict[str, Any]:
     return {"device": "", "vram_free_mb": 0, "vram_total_mb": 0}
 
 
-def _ollama_health(ttl: float = 10.0) -> dict[str, Any]:
-    now = time.time()
-    if _OLLAMA_CACHE["data"] is not None and now - _OLLAMA_CACHE["at"] < ttl:
-        return _OLLAMA_CACHE["data"]
-    cfg = config.load_config()
-    data: dict[str, Any]
-    base_url = str(cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL)
+def _llm_probe(profile: dict[str, Any]) -> dict[str, Any]:
+    """真正请求一次「列模型」，返回 {connected, models, error, error_code}。"""
+    pid = str(profile.get("id") or "")
+    if _LLM_BREAKER.get(pid, 0.0) > time.time():
+        return {
+            "connected": False,
+            "models": [],
+            "error": "鉴权失败，已暂停自动探测（5 分钟后重试）",
+            "error_code": "auth_failed",
+        }
     try:
-        models = prompt_polish.available_models(base_url=base_url)
-        data = {"connected": bool(models), "models": models}
-    except Exception as exc:  # noqa: BLE001
-        data = {"connected": False, "models": [], "error": str(exc)}
-    data["url"] = base_url
-    data["model"] = str(cfg.get("ollama_model") or "")
-    _OLLAMA_CACHE.update({"at": now, "data": data})
-    return data
+        client = llm_client.client_from_profile(profile)
+        return {
+            "connected": True,
+            "models": list(client.model_names()),
+            "error": None,
+            "error_code": None,
+        }
+    except Exception as exc:  # noqa: BLE001 - 健康检查不能因为上游挂掉而 500
+        code = getattr(exc, "code", None)
+        if code == "auth_failed":
+            _LLM_BREAKER[pid] = time.time() + LLM_AUTH_BREAK_SECONDS
+        message = llm_client.scrub_secrets(
+            str(exc), llm_client.resolve_api_key(profile), profile.get("api_key"))
+        return {"connected": False, "models": [], "error": message, "error_code": code}
+
+
+def _llm_health(profile: dict[str, Any] | None = None, *, probe: bool = True) -> dict[str, Any]:
+    """单个服务档案的健康状态（带缓存）。
+
+    * 本机 Ollama 缓存 10s，云端 60s；
+    * ``probe=False`` 时不发请求：只回缓存，没有缓存则 ``connected=None``（未测试）。
+    """
+    cfg = config.load_config()
+    profile = profile or config.active_llm_profile(cfg)
+    pid = str(profile.get("id") or "")
+    now = time.time()
+    ttl = LLM_CLOUD_TTL if profile.get("kind") == "openai" else LLM_LOCAL_TTL
+    cached = _LLM_CACHE.get(pid)
+    if cached and now - cached["at"] < ttl:
+        status = cached["data"]
+    elif not probe:
+        status = cached["data"] if cached else {
+            "connected": None, "models": [], "error": None, "error_code": None,
+        }
+    else:
+        status = _llm_probe(profile)
+        _LLM_CACHE[pid] = {"at": now, "data": status}
+    return {
+        "id": pid,
+        "name": str(profile.get("name") or ""),
+        "kind": str(profile.get("kind") or "ollama"),
+        "model": str(profile.get("model") or ""),
+        "base_url": str(profile.get("base_url") or ""),
+        **status,
+    }
+
+
+def _llm_summary() -> dict[str, Any]:
+    """激活服务的摘要（``/api/health`` 的 llm 字段，兼容旧的 ollama 字段）。"""
+    info = _llm_health()
+    return {
+        "active": info["id"],
+        "name": info["name"],
+        "kind": info["kind"],
+        "model": info["model"],
+        "url": info["base_url"],
+        "connected": bool(info.get("connected")),
+        "models": list(info.get("models") or []),
+        "error": info.get("error"),
+    }
+
+
+def _llm_error_fields(exc: Exception, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    code = getattr(exc, "code", None) or "unreachable"
+    hint = getattr(exc, "hint", None) or None
+    message = str(exc)
+    if profile:
+        message = llm_client.scrub_secrets(
+            message, llm_client.resolve_api_key(profile), profile.get("api_key"))
+    return {"error_code": code, "error": message, "hint": hint}
 
 
 def _engine_health() -> dict[str, Any]:
@@ -301,11 +372,102 @@ def _clean_paths(value: Any, *, field: str) -> list[str]:
     return out
 
 
+def _clean_llm_profiles(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """校验并合并 ``llm_profiles``；返回可直接写盘的 patch。
+
+    ``api_key`` 语义：字段缺省 / ``null`` = 保留原值，``""`` = 清除，其他 = 覆盖。
+    """
+    raw = payload.get("llm_profiles")
+    if not isinstance(raw, list):
+        raise ApiError("llm_profiles 必须是数组", code="invalid_field")
+    if not raw:
+        raise ApiError("至少保留一个模型服务", code="invalid_field")
+    if len(raw) > config.LLM_MAX_PROFILES:
+        raise ApiError(f"最多只能配置 {config.LLM_MAX_PROFILES} 个模型服务", code="invalid_field")
+    existing = {item["id"]: item for item in (cfg.get("llm_profiles") or [])}
+    profiles: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ApiError("llm_profiles 里的每一项必须是对象", code="invalid_field")
+        label = str(item.get("name") or "").strip() or "模型服务"
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind not in config.LLM_KINDS:
+            raise ApiError(f"「{label}」的服务类型只能是 ollama 或 openai", code="invalid_field")
+        base_url = str(item.get("base_url") or "").strip()
+        if base_url and not base_url.startswith(("http://", "https://")):
+            raise ApiError(f"「{label}」的接口地址必须以 http:// 或 https:// 开头",
+                           code="invalid_field")
+        if kind == "openai" and not base_url:
+            raise ApiError(f"「{label}」缺少接口地址", code="invalid_field")
+        for key, low, high in (("timeout_s", 5, 600), ("max_tokens", 64, 8192)):
+            if item.get(key) in (None, ""):
+                continue
+            try:
+                number = int(item.get(key))
+            except (TypeError, ValueError) as exc:
+                raise ApiError(f"「{label}」的 {key} 必须是整数", code="invalid_field") from exc
+            if not low <= number <= high:
+                raise ApiError(f"「{label}」的 {key} 必须在 {low}–{high} 之间",
+                               code="invalid_field")
+        headers = item.get("extra_headers")
+        if headers not in (None, {}) and not isinstance(headers, dict):
+            raise ApiError(f"「{label}」的自定义 Header 必须是对象", code="invalid_field")
+        if isinstance(headers, dict) and len(headers) > 6:
+            raise ApiError(f"「{label}」的自定义 Header 最多 6 条", code="invalid_field")
+        wanted_id = config.slug_profile_id(item.get("id") or item.get("name") or label)
+        old = existing.get(wanted_id) or {}
+        profile = config.clean_llm_profile({**old, **item})
+        if profile["id"] in seen:
+            raise ApiError(f"服务 id 重复：{profile['id']}", code="invalid_field")
+        seen.add(profile["id"])
+        if "api_key" not in item or item.get("api_key") is None:
+            profile["api_key"] = str(old.get("api_key") or "")
+        profiles.append(profile)
+
+    active = str(payload.get("llm_active") or cfg.get("llm_active") or "").strip()
+    if not any(profile["id"] == active for profile in profiles):
+        active = profiles[0]["id"]
+    return {"llm_profiles": profiles, "llm_active": active}
+
+
+def _public_llm_profile(profile: dict[str, Any], *, probe: bool) -> dict[str, Any]:
+    """设置页用的单条服务视图：Key 只回 has_key / key_hint，永不回明文。"""
+    health = _llm_health(profile, probe=probe)
+    stored_key = str(profile.get("api_key") or "")
+    return {
+        "id": health["id"],
+        "name": health["name"],
+        "kind": health["kind"],
+        "base_url": health["base_url"],
+        "model": health["model"],
+        "timeout_s": int(profile.get("timeout_s") or 300),
+        "max_tokens": int(profile.get("max_tokens") or 2048),
+        "json_mode": bool(profile.get("json_mode", True)),
+        "vision": str(profile.get("vision") or "auto"),
+        "send_reference_images": bool(profile.get("send_reference_images")),
+        "api_key_env": str(profile.get("api_key_env") or ""),
+        "extra_headers": dict(profile.get("extra_headers") or {}),
+        "has_key": bool(llm_client.resolve_api_key(profile)),
+        "key_hint": llm_client.mask_key(stored_key),
+        "models": list(health.get("models") or []),
+        "connected": health.get("connected"),
+        "error": health.get("error"),
+        "error_code": health.get("error_code"),
+    }
+
+
 def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """设置页读取的完整（已脱敏）配置视图。"""
     cfg = cfg or config.load_config()
     scan = config.scan_summary(cfg)
-    llm = _ollama_health()
+    active_id = str(cfg.get("llm_active") or "")
+    profiles = [
+        _public_llm_profile(profile, probe=profile.get("id") == active_id)
+        for profile in (cfg.get("llm_profiles") or [])
+    ]
+    active = next((item for item in profiles if item["id"] == active_id),
+                  profiles[0] if profiles else {})
     return {
         "model": {
             "comfy_root": str(cfg.get("comfy_root") or ""),
@@ -315,11 +477,14 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "model_dirs": cfg.get("model_dirs") or {},
         },
         "llm": {
+            "active": active_id,
+            "profiles": profiles,
+            # 兼容字段：旧前端与脚本仍读这几个键
             "ollama_url": str(cfg.get("ollama_url") or ""),
             "ollama_model": str(cfg.get("ollama_model") or ""),
-            "connected": bool(llm.get("connected")),
-            "models": list(llm.get("models") or []),
-            "error": llm.get("error"),
+            "connected": bool(active.get("connected")),
+            "models": list(active.get("models") or []),
+            "error": active.get("error"),
         },
         "runtime": {
             "keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True)),
@@ -350,12 +515,14 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 def api_health() -> dict[str, Any]:
     cfg = config.load_config()
     queue = get_queue()
-    ollama_info = _ollama_health()
+    llm_info = _llm_summary()
     return {
         "ok": True,
         "version": __version__,
         "engine": _engine_health(),
-        "ollama": ollama_info,
+        # 旧字段保留（结构不变），新前端读 llm
+        "ollama": llm_info,
+        "llm": llm_info,
         "queue": queue.stats(),
         "storage": config.disk_usage(),
         "outputs": storage.count_outputs(),
@@ -428,7 +595,7 @@ def api_options() -> dict[str, Any]:
             "preprocess_max_side": {"min": 256, "max": 8192},
             "feather": {"min": 0, "max": 256},
             "context_factor": {"min": 1.0, "max": 4.0},
-            "ollama": _ollama_health().get("connected", False),
+            "ollama": _llm_health().get("connected", False),
         },
         "turbo_sigmas_help": (
             "Turbo 加速按预设执行：选「自动挂 Turbo LoRA」会挂载对应的加速 LoRA；"
@@ -485,23 +652,27 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             pose = {k: v for k, v in pose.items() if k != "image"}
     try:
         cfg = config.load_config()
-        client = ollama_client.OllamaClient(
-            base_url=str(cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL))
+        provider = str(payload.get("provider") or "").strip() or None
+        profile = config.active_llm_profile(cfg, provider)
+        client = llm_client.client_from_profile(profile)
+        # 参考图是否随请求发送由档案开关决定（云端默认关闭，避免额外费用）
+        send_images = bool(profile.get("send_reference_images"))
         result = prompt_polish.polish(
             prompt,
             mode=mode,
-            model=payload.get("model") or cfg.get("ollama_model") or None,
+            model=payload.get("model") or profile.get("model") or None,
             client=client,
             fallback=bool(payload.get("fallback", True)),
             image_model=image_model,
             target_size=target_size,
             references=references,
-            reference_images=reference_images or None,
+            reference_images=reference_images if send_images else None,
             pose=pose,
         )
     except Exception as exc:  # noqa: BLE001
         raise ApiError(f"提示词润色失败：{exc}", code="polish_failed", status=502) from exc
-    _OLLAMA_CACHE["data"] = None  # 下次 health 重新探测
+    result = {**result, "provider": profile.get("id"), "profile_name": profile.get("name")}
+    _LLM_CACHE.pop(str(profile.get("id") or ""), None)  # 下次健康检查重新探测
     return result
 
 
@@ -1430,6 +1601,32 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
         # 生效值同步回旧顶层键，保持 turbo_plan / 历史脚本兼容
         patch.update(model_slots.legacy_patch({**cfg, "model_defaults": merged}))
 
+    if "llm_profiles" in payload:
+        patch.update(_clean_llm_profiles(cfg, payload))
+    elif "llm_active" in payload:
+        active = str(payload.get("llm_active") or "").strip()
+        if not any(item["id"] == active for item in (cfg.get("llm_profiles") or [])):
+            raise ApiError("llm_active 指向不存在的模型服务", code="invalid_field")
+        patch["llm_active"] = active
+
+    # 旧前端 / 脚本只提交 ollama_url / ollama_model：同步到本机档案，
+    # 否则顶层旧键会与 llm_profiles 漂移（润色实际读的是档案）。
+    if ("ollama_url" in payload or "ollama_model" in payload) and "llm_profiles" not in payload:
+        profiles = [dict(item) for item in (cfg.get("llm_profiles") or [])]
+        target = next((item for item in profiles if item.get("id") == cfg.get("llm_active")), None)
+        if target is None or target.get("kind") != "ollama":
+            target = next((item for item in profiles if item.get("kind") == "ollama"), None)
+        if target is not None:
+            if patch.get("ollama_url"):
+                target["base_url"] = patch["ollama_url"]
+            if "ollama_model" in patch:
+                target["model"] = patch["ollama_model"]
+            patch["llm_profiles"] = profiles
+
+    if any(key in patch for key in ("llm_profiles", "llm_active")):
+        # 激活的是本机 Ollama 时回写旧键（云端不回写，避免脚本误读）
+        patch.update(config.legacy_llm_patch({**cfg, **patch}))
+
     if "upscale" in payload:
         raw = payload.get("upscale")
         if not isinstance(raw, dict):
@@ -1463,13 +1660,20 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     updated = config.update_config(patch)
     if "upscale" in patch:
         upscale_manager.get_manager().free(unload=True)
-    if any(key in patch for key in ("ollama_url", "ollama_model")):
-        _OLLAMA_CACHE["data"] = None
+    if any(key in patch for key in ("ollama_url", "ollama_model", "llm_profiles", "llm_active")):
+        _LLM_CACHE.clear()
+        _LLM_BREAKER.clear()
     released = 0
     if patch.get("keep_text_encoder_resident") is False:
         # 切到「让位」时立即归还显存，不用等下一次采样
         released = get_pipeline().release_text_encoder()
-    return {"ok": True, "released": released, **_settings_view(updated)}
+    warnings = [
+        f"「{item.get('name')}」还没有填写 API Key"
+        for item in (updated.get("llm_profiles") or [])
+        if item.get("kind") == "openai" and not llm_client.resolve_api_key(item)
+    ]
+    return {"ok": True, "released": released, "llm_warnings": warnings,
+            **_settings_view(updated)}
 
 
 @app.post("/api/models/scan")
@@ -1480,33 +1684,124 @@ def api_models_scan() -> dict[str, Any]:
     return data
 
 
+@app.post("/api/llm/test")
+def api_llm_test(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """测试一个模型服务：列模型 + 一次 8 token 的最小对话。
+
+    * 已保存的服务：``{"profile_id": "..."}``
+    * 未保存的表单：``{"profile": {...}, "api_key_unchanged": true}``
+
+    失败统一返回 HTTP 200 + ``ok=false``，让设置页按同一套样式渲染。
+    """
+    cfg = config.load_config()
+    raw_profile = payload.get("profile")
+    if isinstance(raw_profile, dict):
+        profile = config.clean_llm_profile(raw_profile)
+        if payload.get("api_key_unchanged") and not str(raw_profile.get("api_key") or "").strip():
+            old = next((item for item in (cfg.get("llm_profiles") or [])
+                        if item.get("id") == profile.get("id")), None)
+            if old:
+                profile["api_key"] = str(old.get("api_key") or "")
+    else:
+        profile_id = str(payload.get("profile_id") or "").strip() or None
+        known = {item["id"]: item for item in (cfg.get("llm_profiles") or [])}
+        if profile_id and profile_id not in known:
+            raise ApiError("找不到该模型服务", code="missing_field")
+        profile = known.get(profile_id) if profile_id else config.active_llm_profile(cfg)
+
+    started = time.time()
+    result: dict[str, Any] = {
+        "ok": False,
+        "connected": False,
+        "list_ok": False,
+        "chat_ok": False,
+        "latency_ms": 0,
+        "models": [],
+        "model_found": None,
+        "vision": str(profile.get("vision") or "auto"),
+        "profile_id": profile.get("id"),
+        "url": str(profile.get("base_url") or ""),
+        "error_code": None,
+        "error": None,
+        "hint": None,
+    }
+
+    try:
+        client = llm_client.client_from_profile(profile)
+        models = list(client.model_names())
+        result["list_ok"] = True
+        result["models"] = models
+    except Exception as exc:  # noqa: BLE001 - 测试接口要把原因带给前端
+        if getattr(exc, "code", None) == "not_found":
+            # 服务不支持 /models：不算故障，继续测对话
+            result["list_ok"] = True
+            models = []
+        else:
+            result.update(_llm_error_fields(exc, profile))
+            result["latency_ms"] = int((time.time() - started) * 1000)
+            return result
+
+    model = str(profile.get("model") or "").strip()
+    if not model and models:
+        model = models[0]
+    result["model_found"] = (model in models) if (model and models) else None
+    if not model:
+        result.update({
+            "error_code": "not_found",
+            "error": "没有可用的模型",
+            "hint": "先填写模型名，再点「测试连接」刷新模型列表",
+        })
+        result["latency_ms"] = int((time.time() - started) * 1000)
+        return result
+
+    try:
+        reply = client.chat(
+            model,
+            [{"role": "user", "content": "ping"}],
+            temperature=0.0,
+            num_predict=8,
+            think=False,
+        )
+        result["ok"] = True
+        result["connected"] = True
+        result["chat_ok"] = True
+        result["reply"] = str(reply or "")[:80]
+        pid = str(profile.get("id") or "")
+        if any(item.get("id") == pid for item in (cfg.get("llm_profiles") or [])):
+            _LLM_CACHE[pid] = {"at": time.time(), "data": {
+                "connected": True, "models": models, "error": None, "error_code": None,
+            }}
+            _LLM_BREAKER.pop(pid, None)
+    except Exception as exc:  # noqa: BLE001
+        if getattr(exc, "code", None) == "empty_content":
+            # 思考型模型会把最小对话的 token 全用在推理上，但通道本身是通的
+            result["ok"] = True
+            result["connected"] = True
+            result["chat_ok"] = True
+            result["hint"] = "模型只返回了推理内容（思考型模型），通道正常；正式润色会拿到正文"
+        else:
+            result.update(_llm_error_fields(exc, profile))
+    result["latency_ms"] = int((time.time() - started) * 1000)
+    return result
+
+
 @app.post("/api/ollama/test")
 def api_ollama_test(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """测试 Ollama 连通性并列出模型；不修改配置，供设置页「测试连接」使用。"""
+    """旧接口保留：只接受 ``{url}``，内部走与 ``/api/llm/test`` 相同的客户端。"""
     cfg = config.load_config()
-    url = str(payload.get("url") or cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL).strip()
+    url = str(payload.get("url") or cfg.get("ollama_url")
+              or ollama_client.DEFAULT_BASE_URL).strip()
     if not url.startswith(("http://", "https://")):
         raise ApiError("Ollama 地址必须以 http:// 或 https:// 开头", code="invalid_field")
-    started = time.time()
-    try:
-        client = ollama_client.OllamaClient(base_url=url, timeout=8.0)
-        models = client.model_names()
-        return {
-            "ok": True,
-            "connected": bool(models),
-            "models": models,
-            "url": url,
-            "latency_ms": int((time.time() - started) * 1000),
-        }
-    except Exception as exc:  # noqa: BLE001 - 连接失败要让设置页看到原因
-        return {
-            "ok": False,
-            "connected": False,
-            "models": [],
-            "url": url,
-            "error": str(exc),
-            "latency_ms": int((time.time() - started) * 1000),
-        }
+    return api_llm_test({
+        "profile": {
+            "id": "ollama-test",
+            "name": "Ollama",
+            "kind": "ollama",
+            "base_url": url,
+            "model": str(cfg.get("ollama_model") or ""),
+        },
+    })
 
 
 @app.post("/api/engine/warmup")

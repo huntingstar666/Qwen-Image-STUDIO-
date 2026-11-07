@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from typing import Any
 
@@ -101,9 +102,13 @@ DEFAULTS: dict[str, Any] = {
     # 服务
     "host": "127.0.0.1",
     "port": 8700,
-    # Ollama
+    # Ollama（旧键：保留给脚本与旧配置；保存 Ollama 档案时会自动回写）
     "ollama_url": "http://127.0.0.1:11434",
     "ollama_model": "",  # 空字符串 = 自动挑一个
+    # LLM 服务档案（提示词润色）：kind = ollama（本机）| openai（OpenAI 兼容云端）
+    # 空数组 = 首次启动时用上面的 ollama_url / ollama_model 迁移出一条本机档案
+    "llm_active": "local-ollama",
+    "llm_profiles": [],
     # 生成默认值
     "steps": 25,
     "cfg": 1.0,
@@ -328,6 +333,149 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- LLM 档案
+
+LLM_KINDS = ("ollama", "openai")
+LLM_MAX_PROFILES = 6
+DEFAULT_LLM_PROFILE_ID = "local-ollama"
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
+
+_VISION_MODES = ("auto", "on", "off")
+_OPENAI_OFFICIAL_HOSTS = ("https://api.openai.com", "http://api.openai.com")
+
+
+def slug_profile_id(value: Any, fallback: str = "profile") -> str:
+    """把任意文本收敛成 ``[a-z0-9-]`` 的服务 id（前端也会生成 UUID）。"""
+    slug = re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug[:40] or fallback
+
+
+def normalize_base_url(value: Any, kind: str) -> str:
+    """去掉尾部斜杠；OpenAI 官方域名漏写 ``/v1`` 时补上（不改网关路径）。"""
+    text = str(value or "").strip().rstrip("/")
+    if kind == "openai" and text in _OPENAI_OFFICIAL_HOSTS:
+        text = f"{text}/v1"
+    return text
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def clean_llm_profile(raw: Any) -> dict[str, Any]:
+    """把一条服务档案规整成落盘格式（缺失字段补默认值，越界值收敛到区间内）。"""
+    item = raw if isinstance(raw, dict) else {}
+    base_url = str(item.get("base_url") or "").strip()
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind not in LLM_KINDS:
+        kind = "ollama" if (not base_url or "11434" in base_url) else "openai"
+    if not base_url:
+        base_url = OLLAMA_DEFAULT_URL if kind == "ollama" else ""
+    base_url = normalize_base_url(base_url, kind)
+    name = str(item.get("name") or "").strip()[:40] or (
+        "本机 Ollama" if kind == "ollama" else "OpenAI 兼容服务")
+    vision = str(item.get("vision") or "auto").strip().lower()
+    if vision not in _VISION_MODES:
+        vision = "auto"
+    headers: dict[str, str] = {}
+    raw_headers = item.get("extra_headers")
+    if isinstance(raw_headers, dict):
+        for key, value in list(raw_headers.items())[:6]:
+            key_text = str(key).strip()
+            if key_text:
+                headers[key_text] = str(value).strip()
+    return {
+        "id": slug_profile_id(item.get("id") or name),
+        "name": name,
+        "kind": kind,
+        "base_url": base_url,
+        "api_key": str(item.get("api_key") or ""),
+        "api_key_env": str(item.get("api_key_env") or "").strip(),
+        "model": str(item.get("model") or "").strip(),
+        "timeout_s": _clamp_int(item.get("timeout_s"), 300, 5, 600),
+        "max_tokens": _clamp_int(item.get("max_tokens"), 2048, 64, 8192),
+        "json_mode": _as_bool(item.get("json_mode"), True),
+        "vision": vision,
+        # 云端默认不随请求发送参考图（避免额外 token 费用）
+        "send_reference_images": _as_bool(item.get("send_reference_images"), kind == "ollama"),
+        "extra_headers": headers,
+    }
+
+
+def normalize_llm_profiles(cfg: dict[str, Any]) -> dict[str, Any]:
+    """规范化 ``llm_profiles`` / ``llm_active``（原地修改并返回 cfg）。
+
+    * 没有档案时用旧 ``ollama_url`` / ``ollama_model`` 迁移出一条本机档案；
+    * id 去重、激活项失效时回退到第一条。
+    """
+    profiles: list[dict[str, Any]] = []
+    raw = cfg.get("llm_profiles")
+    if isinstance(raw, list):
+        for item in raw[:LLM_MAX_PROFILES]:
+            if isinstance(item, dict):
+                profiles.append(clean_llm_profile(item))
+    if not profiles:
+        profiles = [clean_llm_profile({
+            "id": DEFAULT_LLM_PROFILE_ID,
+            "name": "本机 Ollama",
+            "kind": "ollama",
+            "base_url": cfg.get("ollama_url") or OLLAMA_DEFAULT_URL,
+            "model": cfg.get("ollama_model") or "",
+        })]
+    seen: set[str] = set()
+    for profile in profiles:
+        base = profile["id"]
+        index = 2
+        while profile["id"] in seen:
+            profile["id"] = f"{base}-{index}"
+            index += 1
+        seen.add(profile["id"])
+    cfg["llm_profiles"] = profiles
+    active = str(cfg.get("llm_active") or "").strip()
+    if not any(item["id"] == active for item in profiles):
+        active = profiles[0]["id"]
+    cfg["llm_active"] = active
+    return cfg
+
+
+def active_llm_profile(cfg: dict[str, Any] | None = None,
+                       profile_id: str | None = None) -> dict[str, Any]:
+    """取激活（或指定 id）的服务档案；找不到时退回第一条。"""
+    cfg = cfg or load_config()
+    wanted = str(profile_id or cfg.get("llm_active") or "").strip()
+    profiles = cfg.get("llm_profiles") or []
+    for item in profiles:
+        if item.get("id") == wanted:
+            return item
+    return profiles[0] if profiles else clean_llm_profile({})
+
+
+def legacy_llm_patch(cfg: dict[str, Any]) -> dict[str, Any]:
+    """激活档案是本机 Ollama 时，把地址/模型回写到旧顶层键。
+
+    云端档案不回写，避免别的脚本把 ``ollama_url`` 误读成云端地址。
+    """
+    profile = active_llm_profile(cfg)
+    if profile.get("kind") != "ollama":
+        return {}
+    return {
+        "ollama_url": profile.get("base_url") or OLLAMA_DEFAULT_URL,
+        "ollama_model": profile.get("model") or "",
+    }
+
+
 _cache: dict[str, Any] | None = None
 
 
@@ -361,6 +509,8 @@ def load_config(path: str | None = None, *, refresh: bool = False) -> dict[str, 
         cfg["model_root"] = os.path.join(cfg["comfy_root"], "models")
     if not cfg.get("engine_dir"):
         cfg["engine_dir"] = os.path.join(ROOT, "engine")
+    # LLM 档案迁移 / 规范化（空档案用旧 ollama_url / ollama_model 合成）
+    normalize_llm_profiles(cfg)
     _cache = cfg
     return cfg
 

@@ -729,29 +729,221 @@ html[data-theme="dark"] .set-seg-item.active {
   word-break: break-all;
 }
 
-/* ------------------------------------------------------------- Ollama 测试 */
+/* ------------------------------------------------------------- AI 模型服务 */
 
-.llm-test-row {
+.llm-profile-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px 16px;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast, 0.15s) ease;
 }
 
-.llm-status {
+.llm-profile-row + .llm-profile-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.llm-profile-row:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.llm-profile-row.editing {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.llm-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dim) 16%, transparent);
+}
+
+.llm-status-dot.ok {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.llm-status-dot.bad {
+  background: var(--bad);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 16%, transparent);
+}
+
+.llm-profile-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.llm-profile-main strong {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-3);
   color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.45;
-  word-break: break-word;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
-.llm-status.ok {
+.llm-badge.active {
+  background: var(--accent-dim);
   color: var(--accent);
 }
 
-.llm-status.bad {
+.llm-profile-model {
+  flex: none;
+  max-width: 150px;
+}
+
+.llm-profile-state {
+  flex: none;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.llm-add {
+  display: block;
+  width: 100%;
+  padding: 11px 16px;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast, 0.15s) ease, color var(--dur-fast, 0.15s) ease;
+}
+
+.llm-add:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+}
+
+.llm-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.llm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.llm-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.llm-key-row .set-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.llm-env-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.llm-env-toggle input {
+  accent-color: var(--accent);
+}
+
+.llm-key-hint {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.llm-headers {
+  width: 100%;
+  min-height: 62px;
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.llm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.llm-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.llm-test-result.ok {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--text-2);
+}
+
+.llm-test-result.bad {
+  background: color-mix(in srgb, var(--bad) 7%, transparent);
+  color: var(--text-2);
+}
+
+.llm-test-result strong {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.llm-test-result.ok strong {
+  color: var(--accent);
+}
+
+.llm-test-result.bad strong {
   color: var(--bad);
+}
+
+.llm-test-hint {
+  color: var(--muted);
+}
+
+.llm-advanced .set-details-body {
+  padding: 0;
 }
 
 /* ------------------------------------------------------------- 底部 */

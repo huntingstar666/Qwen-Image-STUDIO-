@@ -73,5 +73,23 @@
   "png_compress_level": 1,
   "encode_cache_size": 8,
   "extra_model_paths_yaml": "",
-  "extra_model_roots": []
+  "extra_model_roots": [],
+  "llm_profiles": [
+    {
+      "id": "local-ollama",
+      "name": "本机 Ollama",
+      "kind": "ollama",
+      "base_url": "http://127.0.0.1:11434",
+      "api_key": "",
+      "api_key_env": "",
+      "model": "",
+      "timeout_s": 300,
+      "max_tokens": 2048,
+      "json_mode": true,
+      "vision": "auto",
+      "send_reference_images": true,
+      "extra_headers": {}
+    }
+  ],
+  "llm_active": "local-ollama"
 }

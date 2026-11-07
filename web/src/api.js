@@ -307,7 +307,13 @@ export const api = {
     return request('/api/models/scan', { method: 'POST', body: {}, timeout: 60000 });
   },
 
-  /** POST /api/ollama/test —— 测试 Ollama 连通性并列出模型 */
+  /** POST /api/llm/test —— 测试模型服务：列模型 + 一次最小对话 */
+  testLlm({ profile = null, profile_id = '', api_key_unchanged = false } = {}) {
+    const body = profile ? { profile, api_key_unchanged } : { profile_id };
+    return request('/api/llm/test', { method: 'POST', body, timeout: 60000 });
+  },
+
+  /** POST /api/ollama/test —— 旧接口：测试 Ollama 连通性并列出模型 */
   testOllama({ url = '' } = {}) {
     return request('/api/ollama/test', { method: 'POST', body: { url }, timeout: 20000 });
   },

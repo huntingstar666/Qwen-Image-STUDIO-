@@ -151,11 +151,11 @@ function renderTopbar() {
         </select>
         <button class="status-action" type="button" data-ref="freeVram" title="POST /api/engine/free（unload=true）：释放显存并卸载模型">${t('status.release')}</button>
       </div>
-      <div class="status" data-ref="ollama" title="Ollama 本地大模型（用于提示词润色）">
+      <div class="status" data-ref="llm" title="提示词润色使用的模型服务（本机 Ollama 或 OpenAI 兼容云端）">
         <span class="dot"></span>
-        <span class="status-label">${t('status.ollama')}</span>
+        <span class="status-label" data-role="name">${t('status.llm')}</span>
         <span class="status-detail" data-role="text">${t('status.connecting')}</span>
-        <select class="mini-select" data-ref="polishModel" aria-label="提示词润色模型" title="提示词润色使用的 Ollama 模型"></select>
+        <select class="mini-select" data-ref="polishModel" aria-label="提示词润色模型" title="提示词润色使用的模型"></select>
       </div>
       <div class="status" data-ref="queue" title="生成任务队列">
         <span class="dot"></span>
@@ -169,8 +169,10 @@ function renderTopbar() {
     </div>`;
   host.querySelector('[data-ref="openSettings"]').addEventListener('click', () => openSettings('appearance'));
   host.querySelector('[data-ref="polishModel"]').addEventListener('change', (event) => {
-    patchSettings({ polishModel: event.target.value });
-    toast(`润色模型已切换为 ${event.target.value}`, 'info', { timeout: 2200 });
+    const model = event.target.value;
+    patchSettings({ polishModel: model });
+    toast(`润色模型已切换为 ${model}`, 'info', { timeout: 2200 });
+    persistPolishModel(model);
   });
   host.querySelector('[data-ref="vramPolicy"]').addEventListener('change', async (event) => {
     const select = event.currentTarget;
@@ -340,17 +342,40 @@ function setStatus(name, { dot = null, text = null, title = null }) {
   if (title) el.title = title;
 }
 
-function fillModelOptions(models) {
+/** 顶栏切换润色模型：同时写回当前服务档案（失败只提示，不影响本页使用）。 */
+async function persistPolishModel(model) {
+  if (!model) return;
+  try {
+    const data = await api.getSettings();
+    const llm = data?.llm || {};
+    const profiles = (llm.profiles || []).map((profile) =>
+      profile.id === llm.active ? { ...profile, model } : profile);
+    await api.updateSettings({ llm_profiles: profiles, llm_active: llm.active });
+  } catch (err) {
+    toastWarn(`模型已在本页生效，但写回设置失败：${err?.message || err}`);
+  }
+}
+
+function fillModelOptions(llm) {
   const select = statusEl('polishModel');
   if (!select) return;
-  const current = store.state.polishModel || select.value || '';
-  const list = Array.isArray(models) ? models : [];
-  if (!list.length) {
-    select.innerHTML = '<option value="">—</option>';
+  const models = Array.isArray(llm?.models) ? llm.models : [];
+  const activeModel = String(llm?.model || '');
+  if (!models.length) {
+    select.innerHTML = `<option value="">${escapeHtml(activeModel || '—')}</option>`;
+    select.disabled = true;
     return;
   }
-  const preferred = list.includes(current) ? current : list.includes('qwen3.5:9b') ? 'qwen3.5:9b' : list[0];
-  select.innerHTML = list.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+  select.disabled = false;
+  const current = store.state.polishModel || select.value || '';
+  const preferred = models.includes(current)
+    ? current
+    : models.includes(activeModel)
+      ? activeModel
+      : models.includes('qwen3.5:9b')
+        ? 'qwen3.5:9b'
+        : models[0];
+  select.innerHTML = models.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   select.value = preferred;
   if (!store.state.polishModel) patchSettings({ polishModel: preferred });
 }
@@ -401,16 +426,19 @@ function renderHealth(health) {
       : '采样时文本编码器让位：约省 9GB，每单多约 1 秒重新上卡；切到「编码器常驻」更快';
   }
 
-  const ollama = health.ollama || {};
-  const models = Array.isArray(ollama.models) ? ollama.models : [];
-  setStatus('ollama', {
-    dot: ollama.connected ? 'ok' : 'bad',
-    text: ollama.connected
-      ? t('status.models', { n: models.length })
-      : t('status.offline'),
-    title: ollama.connected ? `Ollama 已连接：${models.join('、') || '无模型'}` : 'Ollama 未连接，提示词润色将不可用',
+  const llm = health.llm || health.ollama || {};
+  const models = Array.isArray(llm.models) ? llm.models : [];
+  const llmName = String(llm.name || '').trim() || t('status.llm');
+  const nameEl = statusEl('llm')?.querySelector('[data-role="name"]');
+  if (nameEl) nameEl.textContent = llmName;
+  setStatus('llm', {
+    dot: llm.connected ? 'ok' : 'bad',
+    text: llm.connected ? t('status.models', { n: models.length }) : t('status.offline'),
+    title: llm.connected
+      ? `${llmName}（${llm.kind === 'openai' ? 'OpenAI 兼容' : 'Ollama'}）已连接：${llm.model || '未选模型'}\n可用模型：${models.join('、') || '无'}`
+      : `${llmName} 未连接${llm.error ? `：${llm.error}` : ''}\n提示词润色将不可用，可在设置 → AI 模型中检查`,
   });
-  fillModelOptions(models);
+  fillModelOptions(llm);
 
   const queue = health.queue || {};
   const pending = Number(queue.pending) || 0;
@@ -445,7 +473,7 @@ function updateIdleHint(health) {
 function renderHealthError() {
   setStatus('engine', { dot: 'bad', text: t('status.serviceDown'), title: '无法连接 127.0.0.1:8700，请确认后端已启动' });
   setStatus('vram', { text: '—' });
-  setStatus('ollama', { dot: 'bad', text: t('status.unknown') });
+  setStatus('llm', { dot: 'bad', text: t('status.unknown') });
   setStatus('queue', { dot: 'bad', text: '—' });
   updateIdleHint(null);
 }

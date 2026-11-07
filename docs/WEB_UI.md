@@ -60,6 +60,7 @@ App Shell（所有页面共享）：
 - 大提示词 / 负向提示词、字数统计、清空；
 - **模型切换**：底部参数栏「模型」pill 在 Qwen-Image 2.1 / MOSS-Image (sft) 间切换；切换只改参数、生成时才换权重（单模型常驻，运行中禁切）；小圆点表示显存驻留状态（绿=已驻留，黄=驻留的是另一个模型）；卡片显示每模型默认步数 / CFG / 采样器与缺失权重；
 - 比例选择：`/api/options.ratios`，按钮显示实际 `w × h` 与「N 的倍数」提示（Qwen 32 对齐 / MOSS 16 对齐）；
+- **全景比例分组**：网格末尾单独一组「全景」——`2:1 / 3:1 / 4:1 / 8:1 / 21:9`；选中后尺寸弹层出现「自动追加全景提示词」复选框（默认勾选），提交时在提示词里补 `seamless ultra-wide panoramic photograph, consistent horizon, no duplicated subjects`（已有 `panoram` 关键词时不重复追加）。文生全景没有参考图，一致性弱于图像编辑页；
 - 自定义宽高（自动向上对齐到当前模型的倍数，实时提示对齐结果）；
 - 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；标签后的 `tag-hint` 标出模型默认值，改动后变为「已改 · 默认 X」；
 - 采样步数预设 chips（Qwen 取 `/api/options.steps_presets`；MOSS 为 50 步 / Turbo 8 步）；
@@ -77,6 +78,7 @@ App Shell（所有页面共享）：
 - 编辑指令 + 负向提示词 + 润色（`mode=edit`）；
 - 参考图上传：拖拽 / 点选 / 键盘 Enter，1~10 张；第 1 张标「编辑目标」，其余标「参考图 N」；支持拖动排序、单张删除、清空；第 1 张同时作为遮罩底图与输出尺寸基准；
 - 尺寸模式：`follow`（跟随原图，推荐零偏移）/ `custom`（自定义，32 对齐）/ `ratio`（官方比例 + 可选百万像素）/ `fixed_point`（BlueBox 32 不动点）；
+- **任务模式**：跟随预设 / 通用编辑 / 局部重绘 / 元素移除 / 扩图 / **全景**。选「全景」后展开 `studio/panoramaPanel.js`：比例 chips（`2:1 / 3:1 / 4:1 / 21:9`）、长边上限（`2048 / 3072 / 4096`）、「360° 环绕接缝（实验）」开关、目标画布实时预估与 6.0 MP 超限警告；参数写入 `edit.overrides.panorama.*`，提交时强制整画布采样（`scheme=a`、`fills=false`、`hint=gray_fill`），与扩图互斥；
 - `fit`：`pad` 补边 / `crop` 裁切；补边模式 `edge`；
 - 局部编辑：开关、方案 A 全画布 / 方案 B 裁切，羽化、外扩、颜色匹配开关、颜色强度、上下文倍数/像素、混合像素；
 - 一致性 LoRA：开关 + LoRA 选择 + 强度；
@@ -221,7 +223,8 @@ buildNodePrompt(rawPrompt, {
 - 文生图 / 编辑请求的 `prompt` 是「正文 + 预设 + 视角」合成后的最终文本；`meta.rawPrompt` 保留用户原文，`meta.creativePresets` / `meta.imageAngle` 保留快照，便于历史追溯；
 - `turbo` 只发 `{enabled, profile}`：加速 LoRA、sigma、底模由后端预设决定，前端不再允许手动改；
 - 编辑 `local.scheme` 为 `a` / `b`，`local.enabled=false` 时后端按 `scheme=none` 处理；
-- `size_mode=follow` 时 `width/height` 传 `null`；`ratio` 模式传 `ratio` 与可选 `megapixels`；`fixed_point` 只传 `megapixels`。
+- `size_mode=follow` 时 `width/height` 传 `null`；`ratio` 模式传 `ratio` 与可选 `megapixels`；`fixed_point` 只传 `megapixels`；
+- 全景任务（`task.mode="panorama"`）额外传 `panorama: {aspect, long_side, wrap, seam_blend}`；后端按目标比例算灰边画布、强制 `scheme=a`，输出保持全景画布，`quality.panorama` 回显画布/工作尺寸/四边补边/缩放与 `wrap_report`。详见 [PLAN_PANORAMA.md](PLAN_PANORAMA.md)。
 
 ## 5. 遮罩编辑器的输出约定
 

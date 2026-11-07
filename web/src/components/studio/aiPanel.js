@@ -72,18 +72,6 @@ export function mountAiPanel(host, ctx) {
   host.innerHTML = `
     <div class="ai-pane">
       <section class="ai-section">
-        <div class="ai-label">方案预设 <span class="ai-label-note" data-ref="presetNote"></span></div>
-        <div class="ai-presets" data-ref="presets"></div>
-        <div class="ai-hint" data-ref="presetHint"></div>
-      </section>
-
-      <section class="ai-section">
-        <div class="ai-label">本次保护</div>
-        <div data-ref="guards"></div>
-        <div class="ai-guard-note" data-ref="guardNote" hidden></div>
-      </section>
-
-      <section class="ai-section">
         <div class="ai-label">指令</div>
         <div class="ai-prompt-host" data-ref="promptHost"></div>
         <div class="ai-prompt-foot">
@@ -94,8 +82,6 @@ export function mountAiPanel(host, ctx) {
         </div>
         <div class="ai-mentions" data-ref="mentions" hidden></div>
         <div class="ai-polish" data-ref="polishBox" hidden></div>
-        <button class="btn primary ai-submit" type="button" data-ref="submit">修改</button>
-        <div class="ai-hint" data-ref="submitHint">Ctrl+Enter 提交 · 空白提交会被拦截</div>
       </section>
 
       <section class="ai-section">
@@ -118,69 +104,95 @@ export function mountAiPanel(host, ctx) {
         <div class="ai-layers" data-ref="layers"></div>
       </section>
 
-      <section class="ai-section">
-        <div class="ai-label">输出</div>
-        <label class="ai-field">
-          <span>分辨率</span>
-          <select class="select" data-ref="sizeMode">
-            <option value="follow">跟随主图（推荐）</option>
-            <option value="custom">指定尺寸</option>
-            <option value="ratio">按比例</option>
-          </select>
-        </label>
-        <div class="ai-row" data-ref="customSize" hidden>
-          <label class="ai-field">
-            <span>宽</span>
-            <input class="input mono" type="number" min="64" step="32" data-ref="width" />
-          </label>
-          <label class="ai-field">
-            <span>高</span>
-            <input class="input mono" type="number" min="64" step="32" data-ref="height" />
-          </label>
-        </div>
-        <label class="ai-field" data-ref="ratioRow" hidden>
-          <span>比例</span>
-          <select class="select" data-ref="ratio"></select>
-        </label>
-
-        <div class="ai-work mono" data-ref="workInfo"></div>
-        <div class="ai-warn" data-ref="workWarn" hidden></div>
-        <div class="ai-row">
-          <button class="btn ghost sm" type="button" data-ref="openOutpaint">扩图 / 外补画布 →</button>
-        </div>
+      <section class="ai-section ai-submit-section">
+        <button class="btn primary ai-submit" type="button" data-ref="submit">修改</button>
+        <div class="ai-hint" data-ref="submitHint">Ctrl+Enter 提交 · 空白提交会被拦截</div>
       </section>
 
-      <section class="ai-section">
-        <div class="ai-label">高级设置 <span class="ai-label-note" data-ref="advNote">数值 = 预设 + 你的覆盖</span></div>
-        <div data-ref="advanced"></div>
-      </section>
+      <section class="ai-section ai-more">
+        <button class="ai-more-head" type="button" data-ref="moreToggle" aria-expanded="false">
+          <span class="ai-more-arrow">▸</span>
+          <span class="ai-more-title">更多设置</span>
+          <span class="ai-more-summary" data-ref="moreSummary"></span>
+        </button>
+        <div class="ai-more-body" data-ref="moreBody" hidden>
+          <div class="ai-more-group">
+            <div class="ai-label">方案预设 <span class="ai-label-note" data-ref="presetNote"></span></div>
+            <div class="ai-presets" data-ref="presets"></div>
+            <div class="ai-hint" data-ref="presetHint"></div>
+          </div>
 
-      <section class="ai-section">
-        <div class="ai-label">采样与 LoRA</div>
-        <label class="ai-field">
-          <span>加速方案</span>
-          <select class="select" data-ref="turbo"></select>
-        </label>
-        <div class="ai-work mono" data-ref="samplingInfo"></div>
-        <label class="ai-field">
-          <span>任务</span>
-          <select class="select" data-ref="task">
-            ${Object.entries(TASK_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
-          </select>
-        </label>
-        <label class="ai-check"><input type="checkbox" data-ref="consistency" checked /><span>一致性 LoRA</span>
-          <span class="ai-tag" data-ref="consistencyName">—</span>
-        </label>
-        <label class="ai-slider">
-          <span class="ai-slider-head"><span>一致性强度</span><span class="mono" data-ref="strengthLabel">0.48</span></span>
-          <input type="range" min="0" max="200" step="1" value="48" data-ref="strength" />
-        </label>
-        <div class="ai-row">
-          <select class="select" data-ref="loraPick"><option value="">选择要叠加的 LoRA</option></select>
-          <button class="btn ghost sm" type="button" data-ref="loraAdd">添加</button>
+          <div class="ai-more-group">
+            <div class="ai-label">本次保护</div>
+            <div data-ref="guards"></div>
+            <div class="ai-guard-note" data-ref="guardNote" hidden></div>
+          </div>
+
+          <div class="ai-more-group">
+            <div class="ai-label">输出</div>
+            <label class="ai-field">
+              <span>分辨率</span>
+              <select class="select" data-ref="sizeMode">
+                <option value="follow">跟随主图（推荐）</option>
+                <option value="custom">指定尺寸</option>
+                <option value="ratio">按比例</option>
+              </select>
+            </label>
+            <div class="ai-row" data-ref="customSize" hidden>
+              <label class="ai-field">
+                <span>宽</span>
+                <input class="input mono" type="number" min="64" step="32" data-ref="width" />
+              </label>
+              <label class="ai-field">
+                <span>高</span>
+                <input class="input mono" type="number" min="64" step="32" data-ref="height" />
+              </label>
+            </div>
+            <label class="ai-field" data-ref="ratioRow" hidden>
+              <span>比例</span>
+              <select class="select" data-ref="ratio"></select>
+            </label>
+
+            <div class="ai-work mono" data-ref="workInfo"></div>
+            <div class="ai-warn" data-ref="workWarn" hidden></div>
+            <div class="ai-row">
+              <button class="btn ghost sm" type="button" data-ref="openOutpaint">扩图 / 外补画布 →</button>
+            </div>
+          </div>
+
+          <div class="ai-more-group">
+            <div class="ai-label">高级设置 <span class="ai-label-note" data-ref="advNote">数值 = 预设 + 你的覆盖</span></div>
+            <div data-ref="advanced"></div>
+          </div>
+
+          <div class="ai-more-group">
+            <div class="ai-label">采样与 LoRA</div>
+            <label class="ai-field">
+              <span>加速方案</span>
+              <select class="select" data-ref="turbo"></select>
+            </label>
+            <div class="ai-work mono" data-ref="samplingInfo"></div>
+            <label class="ai-field">
+              <span>任务</span>
+              <select class="select" data-ref="task">
+                ${Object.entries(TASK_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
+              </select>
+            </label>
+            <label class="ai-check"><input type="checkbox" data-ref="consistency" checked /><span>一致性 LoRA</span>
+              <span class="ai-tag" data-ref="consistencyName">—</span>
+            </label>
+            <label class="ai-slider">
+              <span class="ai-slider-head"><span>一致性强度</span><span class="mono" data-ref="strengthLabel">0.48</span></span>
+              <input type="range" min="0" max="200" step="1" value="48" data-ref="strength" />
+            </label>
+            <div class="ai-row">
+              <select class="select" data-ref="loraPick"><option value="">选择要叠加的 LoRA</option></select>
+              <button class="btn ghost sm" type="button" data-ref="loraAdd">添加</button>
+            </div>
+            <div class="ai-loras" data-ref="loraList"></div>
+            <div class="ai-warn" data-ref="loraWarn" hidden></div>
+          </div>
         </div>
-        <div class="ai-loras" data-ref="loraList"></div>
-        <div class="ai-warn" data-ref="loraWarn" hidden></div>
       </section>
 
       <section class="ai-section">
@@ -198,6 +210,9 @@ export function mountAiPanel(host, ctx) {
 
   const ref = (name) => host.querySelector(`[data-ref="${name}"]`);
   const refs = {
+    moreToggle: ref('moreToggle'),
+    moreBody: ref('moreBody'),
+    moreSummary: ref('moreSummary'),
     presets: ref('presets'),
     presetNote: ref('presetNote'),
     presetHint: ref('presetHint'),
@@ -333,6 +348,7 @@ export function mountAiPanel(host, ctx) {
       refs.presets.innerHTML = '<div class="ai-hint">未连接后端，暂不能选择预设</div>';
       refs.presetNote.textContent = '';
       refs.presetHint.textContent = '预设数值由后端下发，连接后自动出现。';
+      syncMoreSummary();
       return;
     }
     const dirty = modifiedKeys(currentPreset(), state.overrides).length > 0;
@@ -352,6 +368,7 @@ export function mountAiPanel(host, ctx) {
       .join('');
     refs.presetNote.textContent = `v${state.presetVersion}`;
     refs.presetHint.textContent = currentPreset()?.summary || '';
+    syncMoreSummary();
   }
 
   function selectPreset(id) {
@@ -492,6 +509,7 @@ export function mountAiPanel(host, ctx) {
     const parts = [`${plan.steps} 步`, `cfg ${plan.cfg}`, `${plan.sampler}/${plan.scheduler}`];
     if (plan.turbo.enabled) parts.push('Turbo 预设');
     refs.samplingInfo.textContent = parts.join(' · ');
+    syncMoreSummary();
   }
 
   async function loadOptions() {
@@ -550,6 +568,20 @@ export function mountAiPanel(host, ctx) {
     return source && source.width ? source : { width: 1024, height: 1024 };
   }
 
+  function outputSummary() {
+    const size = mainSize();
+    const mode = refs.sizeMode.value;
+    if (mode === 'custom') return `${refs.width.value || '—'} × ${refs.height.value || '—'}`;
+    if (mode === 'ratio') return refs.ratio.value || '1:1';
+    return `${size.width} × ${size.height}`;
+  }
+
+  function syncMoreSummary() {
+    const plan = sampling();
+    const turbo = plan.turbo.enabled ? `Turbo ${plan.steps} 步` : `标准 ${plan.steps} 步`;
+    refs.moreSummary.textContent = `${currentPreset()?.label || '自然'} · 输出 ${outputSummary()} · ${turbo}`;
+  }
+
   function renderMeta() {
     const size = mainSize();
     const mode = refs.sizeMode.value;
@@ -559,19 +591,14 @@ export function mountAiPanel(host, ctx) {
       preprocess: presetValue('preprocess.enabled', true) !== false,
       maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
     });
-    const output =
-      mode === 'custom'
-        ? `${refs.width.value || '—'} × ${refs.height.value || '—'}`
-        : mode === 'ratio'
-          ? `${refs.ratio.value || '1:1'}`
-          : `${size.width} × ${size.height}`;
-    refs.workInfo.textContent = `工作画布 ${work.width} × ${work.height} · 输出 ${output}`;
+    refs.workInfo.textContent = `工作画布 ${work.width} × ${work.height} · 输出 ${outputSummary()}`;
     const tokens = Math.round((work.width / 32) * (work.height / 32));
     const heavy = tokens > 4096;
     refs.workWarn.hidden = !heavy;
     refs.workWarn.textContent = heavy
       ? `采样 token 约 ${tokens}，显存占用偏高：建议开启预处理或圈小一点。`
       : '';
+    syncMoreSummary();
   }
 
   if (!refs.width.value) refs.width.value = '1024';
@@ -937,6 +964,15 @@ export function mountAiPanel(host, ctx) {
   promptEditor.el.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') refs.mentions.hidden = true;
   });
+
+  let moreOpen = false;
+  function setMoreOpen(open) {
+    moreOpen = open;
+    refs.moreBody.hidden = !open;
+    refs.moreToggle.setAttribute('aria-expanded', String(open));
+    refs.moreToggle.classList.toggle('is-open', open);
+  }
+  refs.moreToggle.addEventListener('click', () => setMoreOpen(!moreOpen));
 
   refs.mention.addEventListener('click', () => {
     if (refs.mentions.hidden) {

@@ -664,6 +664,8 @@ DOM 结构：
 
 - **D2.2 参考图拖拽与去重（已完成）** —— `.ai-refs` 参考图条与 `.ai-prompt` 指令框同时接入拖拽：本地文件走 `filesFromDataTransfer → addRefFiles`，图库缩略图 / 历史胶囊的 `application/x-wb-ref` 先 `urlToDataUrl` 再 `addRefItems`，两条路径共用同一套尺寸校验与 dataURL 去重；`dragover` 时高亮 `.is-dropping`（参考图条描边变实底、指令框边框变虚线），`dragleave` / `drop` 立即回落。拖入成功后沿用原有 `insertMention` 自动补 `@图N`；重复图不再入队并提示「参考图已存在，未重复添加」，满 3 张时提示改为「参考图最多 3 张，已忽略多余图片」。浏览器实测：文件拖入 2/4 且自动插入 `@图二`、同图再拖保持 3/4 并出现去重提示、`x-wb-ref` 拖进指令框到 4/4 且按钮禁用、第 4 张被拦截、拖拽高亮均能正确出现与清除，无 JS 异常。下一步 D3.1：富文本 @ 内核。
 
+- **D3.1 富文本编辑器内核（已完成）** —— 新增 `web/src/components/studio/promptEditor.js`：`createPromptEditor(host, opts)` 输出 `contenteditable` 编辑区与 `getText / setText / syncRefs / insertMention / setMentionMenu / focus / clear`。参考图以 `span.pe-mention[contenteditable=false][data-ref-id]` 原子节点存在，序列化按当前参考图顺序还原为 `@图二`，`<br>/<div>` 转 `\n` 并折叠连续空行，与既有 `mapMentions()` 契约一致；Backspace / Delete 命中相邻 chip 时整块删除，方向键按浏览器原生原子节点行为跨过；`@` 语境通过 `input` + 光标前文本识别并回调 `onMentionQuery(q|null)`，`insertMention` 会吞掉已输入的 `@` 片段；粘贴只取 `text/plain`，拖放交给调用方，IME 组合期间不触发变更与 @ 查询。浏览器实测（在页内动态 import 内核）：`setText` 还原 2 个 chip 且编号为 `r1:@图二 / main:@图一`、追加插入落在末尾、`syncRefs` 移除失效 chip 并回排编号同时回调 `onMissingRef(1)`、Backspace / Delete 各整块删除 1 个 chip、粘贴 HTML 不进入编辑区、IME 组合期间 0 次 `onChange` 且结束后补 1 次、`@` 唤起查询并选中菜单项后 chip 正确插入、Ctrl+Enter 回调 1 次、`clear` 后内容为空。下一步 D3.2：接入 AI 面板并做 @ 菜单与编号联动。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1122,7 +1124,7 @@ DOM 结构：
 | D1.3 | 空状态素材仓库入口 | 已完成 | 本次提交 | 方案 §12.6；两个按钮改为「从本地选择 / 从素材仓库」 |
 | D2.1 | 参考图三来源 | 已完成 | 本次提交 | 「+ 添加参考图 ▾」接入统一导入选择器，按剩余名额限制 |
 | D2.2 | 参考图拖拽与去重 | 已完成 | 本次提交 | 方案 §12.3；参考图条/指令框接收 `Files` 与 `x-wb-ref`，重复图忽略 |
-| D3.1 | 富文本编辑器内核 | 未开始 | — | — |
+| D3.1 | 富文本编辑器内核 | 已完成 | 本次提交 | 方案 §12.4；新增 `studio/promptEditor.js`，chip 原子节点与纯文本序列化 |
 | D3.2 | @ 菜单与编号联动 | 未开始 | — | — |
 | D4.1 | 右栏 3 段 + 扩图上下文 | 未开始 | — | — |
 | D4.2 | 蒙版工具浮条 | 未开始 | — | — |

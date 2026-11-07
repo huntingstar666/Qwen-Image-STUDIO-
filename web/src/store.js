@@ -28,9 +28,6 @@ const DEFAULT_T2I = {
   turboProfile: '',
   rgba: false,
   loras: {},
-  unet: '',
-  clip: '',
-  vae: '',
   negativePrompt: '',
   slg: { enabled: false, singleLayers: '', doubleLayers: '', startPercent: 0, endPercent: 0.5 },
   bbox: { enabled: false, characterBoxes: '1', items: [] },
@@ -76,9 +73,6 @@ const DEFAULT_EDIT = {
   turbo: false,
   turboProfile: '',
   loras: {},
-  unet: '',
-  clip: '',
-  vae: '',
   negativePrompt: '',
 };
 
@@ -99,6 +93,15 @@ const DEFAULT_SETTINGS = {
 const FONT_MODES = new Set(['system', 'sans', 'serif', 'mono']);
 const ACCENT_MODES = new Set(['teal', 'ochre', 'indigo', 'violet']);
 
+/** 旧版本把 unet/clip/vae 存在本地；现已统一跟随系统设置，读取时丢弃。 */
+function stripModelChoice(value) {
+  const next = { ...(value || {}) };
+  delete next.unet;
+  delete next.clip;
+  delete next.vae;
+  return next;
+}
+
 function loadSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -112,8 +115,8 @@ function loadSettings() {
       font: FONT_MODES.has(parsed?.font) ? parsed.font : 'system',
       accent: ACCENT_MODES.has(parsed?.accent) ? parsed.accent : 'teal',
       sidebarCollapsed: Boolean(parsed?.sidebarCollapsed),
-      t2i: { ...structuredClone(DEFAULT_T2I), ...(parsed?.t2i || {}) },
-      edit: { ...DEFAULT_EDIT, ...(parsed?.edit || {}) },
+      t2i: { ...structuredClone(DEFAULT_T2I), ...stripModelChoice(parsed?.t2i) },
+      edit: { ...DEFAULT_EDIT, ...stripModelChoice(parsed?.edit) },
       creativePresets: parsed?.creativePresets && typeof parsed.creativePresets === 'object' ? parsed.creativePresets : {},
       imageAngle: { ...DEFAULT_SETTINGS.imageAngle, ...(parsed?.imageAngle || {}) },
     };
@@ -365,12 +368,6 @@ export function applyOptionDefaults(options) {
   if (!t2i.slg || typeof t2i.slg !== 'object') t2i.slg = { ...DEFAULT_T2I.slg };
   if (!t2i.bbox || typeof t2i.bbox !== 'object') t2i.bbox = { ...DEFAULT_T2I.bbox };
   if (!Array.isArray(t2i.bbox.items)) t2i.bbox.items = [];
-  if (!t2i.unet && defaults.unet) t2i.unet = defaults.unet;
-  if (!t2i.clip && defaults.clip) t2i.clip = defaults.clip;
-  if (!t2i.vae && defaults.vae) t2i.vae = defaults.vae;
-  if (!edit.unet && defaults.unet) edit.unet = defaults.unet;
-  if (!edit.clip && defaults.clip) edit.clip = defaults.clip;
-  if (!edit.vae && defaults.vae) edit.vae = defaults.vae;
   if (!edit.consistencyLora && defaults.consistency_lora) edit.consistencyLora = defaults.consistency_lora;
 
   // 采样默认值只在用户从未保存过设置时套用

@@ -21,7 +21,7 @@ import { createRefLibrary, hasRefDrag, readRefDrag } from './refLibrary.js';
 import { PromptEditor } from './promptEditor.js';
 import { MaskEditor } from './maskEditor.js';
 import { createStylePicker } from './stylePicker.js';
-import { LoraPicker, ModelsField, TurboControl } from './controls.js';
+import { LoraPicker, ModelsSummary, TurboControl } from './controls.js';
 import { openModal } from './modal.js';
 import { openPoseStudio } from './poseStudio.js';
 import { openCompareDialog } from './compare.js';
@@ -65,8 +65,7 @@ export function createEditPage(host) {
   let turboControl = null;
   let loraPicker = null;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
-  let turboModelSnapshot = null; // 开 Turbo 前用户选的底模，切回普通模式时还原
-  let modelsField = null;
+
   let dragFrom = null;
   let lastSeed = null;
   let presetList = [];
@@ -1968,8 +1967,7 @@ export function createEditPage(host) {
     refs.steps.disabled = enabled;
     refs.cfg.disabled = enabled;
     refs.sampler.disabled = enabled;
-    // 「自动切换 Turbo 底模」预设：只改界面显示，关闭后恢复用户原来的选择
-    applyTurboModel(enabled, profile);
+    // Turbo 底模由后端按预设槽位（turbo_unet）自动切换，前端不再改模型下拉
     if (enabled && profile && overwriteValues) {
       if (profile.steps) {
         refs.steps.value = String(profile.steps);
@@ -2002,24 +2000,6 @@ export function createEditPage(host) {
     }
   }
 
-  function applyTurboModel(enabled, profile) {
-    if (!modelsField) return;
-    const ckpt = enabled && profile?.kind === 'ckpt' ? profile.unet?.name : '';
-    if (ckpt) {
-      if (turboModelSnapshot === null) {
-        turboModelSnapshot = modelsField.getValue().unet ?? '';
-      }
-      modelsField.setKey('unet', ckpt);
-      modelsField.setDisabled('unet', true);
-      return;
-    }
-    modelsField.setDisabled('unet', false);
-    if (turboModelSnapshot !== null) {
-      modelsField.setKey('unet', turboModelSnapshot);
-      turboModelSnapshot = null;
-    }
-  }
-
   function renderLoras() {
     const loras = store.state.options?.models?.lora || [];
     loraPicker = new LoraPicker(refs.loraHost, { loras, initial: edit.loras });
@@ -2032,19 +2012,8 @@ export function createEditPage(host) {
   }
 
   function renderModels() {
-    modelsField = new ModelsField(refs.modelsHost, {
-      models: store.state.options?.models || {},
-      initial: { unet: edit.unet, clip: edit.clip, vae: edit.vae },
-    });
-    refs.modelsHost.addEventListener('change', () => {
-      const value = modelsField.getValue();
-      edit.unet = value.unet || '';
-      edit.clip = value.clip || '';
-      edit.vae = value.vae || '';
-      patchSettings({ edit: { unet: edit.unet, clip: edit.clip, vae: edit.vae } });
-    });
-    // Turbo 的「自动切底模」预设需要模型下拉已就绪后才能套用
-    applyTurboToFields(false);
+    const defaults = store.state.options?.defaults || {};
+    new ModelsSummary(refs.modelsHost, { slots: defaults.slots || defaults });
   }
 
   function renderConsistency() {
@@ -2166,7 +2135,6 @@ export function createEditPage(host) {
         }
       : { dataURL: null, empty: true });
     const turboValue = turboControl.getValue();
-    const models = modelsField.getValue();
     const seedMode = edit.seedMode === 'fixed' ? 'fixed' : 'random';
     const seedText = refs.seed.value.trim();
     const seed = seedMode === 'random' ? null : Math.max(0, Math.floor(Number(seedText) || 0));
@@ -2221,7 +2189,6 @@ export function createEditPage(host) {
         enabled: turboValue.enabled,
         profile: turboValue.profile,
       },
-      models: { unet: models.unet || '', clip: models.clip || '', vae: models.vae || '' },
       loras: loraPicker.getValue(),
       consistency_lora: consistency,
       // 姿态图作为 image1：后端会把指令里的 <imageN> 顺延为 <image(N+1)>

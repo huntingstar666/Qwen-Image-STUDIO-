@@ -406,6 +406,20 @@ html[data-theme="dark"] .wb-adv {
   font-size: 11px;
 }
 
+/* 只读模型摘要：显示系统设置里生效的路径 */
+.wb-adv .model-selects > .field > .model-path {
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.wb-adv .model-summary-note {
+  padding: 0 14px 12px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
 .wb-adv .model-selects > .field > .select {
   width: 100%;
   height: 34px;

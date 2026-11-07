@@ -22,7 +22,7 @@ import { consumeT2IHandoff } from '../handoff.js';
 import { createStylePicker } from './stylePicker.js';
 import { openPoseStudio } from './poseStudio.js';
 import { openBboxStudio } from './bboxStudio.js';
-import { LoraPicker, ModelsField, TurboControl } from './controls.js';
+import { LoraPicker, ModelsSummary, TurboControl } from './controls.js';
 import { escapeHtml, fmtNum, snapUp } from '../utils.js';
 
 const FALLBACK_RATIOS = [
@@ -407,8 +407,6 @@ export function createT2IPage(host) {
   let turboControl = null;
   let loraPicker = null;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
-  let turboModelSnapshot = null; // 开 Turbo 前用户选的底模，切回普通模式时还原
-  let modelsField = null;
   let lastSeed = null;
   let sizeTier = 2048;
   let poseState = null;
@@ -1442,8 +1440,7 @@ export function createT2IPage(host) {
     refs.steps.disabled = enabled;
     refs.cfg.disabled = enabled;
     refs.sampler.disabled = enabled;
-    // 「自动切换 Turbo 底模」预设：只改界面显示，关闭后恢复用户原来的选择
-    applyTurboModel(enabled, profile);
+    // Turbo 底模由后端按预设槽位（turbo_unet）自动切换，前端不再改模型下拉
     if (enabled && profile && overwriteValues) {
       if (profile.steps) {
         refs.steps.value = String(profile.steps);
@@ -1461,24 +1458,6 @@ export function createT2IPage(host) {
     }
     syncTurboPill();
     updateSummary();
-  }
-
-  function applyTurboModel(enabled, profile) {
-    if (!modelsField) return;
-    const ckpt = enabled && profile?.kind === 'ckpt' ? profile.unet?.name : '';
-    if (ckpt) {
-      if (turboModelSnapshot === null) {
-        turboModelSnapshot = modelsField.getValue().unet ?? '';
-      }
-      modelsField.setKey('unet', ckpt);
-      modelsField.setDisabled('unet', true);
-      return;
-    }
-    modelsField.setDisabled('unet', false);
-    if (turboModelSnapshot !== null) {
-      modelsField.setKey('unet', turboModelSnapshot);
-      turboModelSnapshot = null;
-    }
   }
 
   function renderLoras() {
@@ -1506,27 +1485,9 @@ export function createT2IPage(host) {
     refs.modelFiles.textContent = readOnly
       ? `当前模型权重（只读）：${files.length ? files.join(' · ') : '未配置'}`
       : '';
-    if (readOnly) {
-      modelsField = null;
-      return;
-    }
-    modelsField = new ModelsField(refs.modelsHost, {
-      models: store.state.options?.models || {},
-      initial: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae },
-    });
-    if (!refs.modelsHost.dataset.bound) {
-      refs.modelsHost.dataset.bound = '1';
-      refs.modelsHost.addEventListener('change', () => {
-        if (!modelsField) return;
-        const value = modelsField.getValue();
-        t2i.unet = value.unet || '';
-        t2i.clip = value.clip || '';
-        t2i.vae = value.vae || '';
-        patchSettings({ t2i: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae } });
-      });
-    }
-    // Turbo 的「自动切底模」预设需要模型下拉已就绪后才能套用
-    applyTurboToFields(false);
+    if (readOnly) return;
+    const defaults = store.state.options?.defaults || {};
+    new ModelsSummary(refs.modelsHost, { slots: defaults.slots || defaults });
   }
 
   /* ---------------- 参数摘要 ---------------- */
@@ -1701,7 +1662,6 @@ export function createT2IPage(host) {
     // 随机模式交给后端每次抽新种子；固定模式按输入框，空则用 0
     const seed = seedMode === 'random' ? null : Math.max(0, Math.floor(Number(seedText) || 0));
     const loras = loraPicker.getValue();
-    const models = modelsField?.getValue?.() || { unet: '', clip: '', vae: '' };
     const pickerMeta = stylePicker.getMeta();
     // 负向提示词留空时：有模型默认值就传 null 让后端补默认，否则传空串
     const negative = refs.negative.value.trim();
@@ -1727,11 +1687,6 @@ export function createT2IPage(host) {
         profile: turboValue.profile,
       },
       rgba: Boolean(caps.rgba && refs.rgba.checked),
-      models: {
-        unet: models.unet || '',
-        clip: models.clip || '',
-        vae: models.vae || '',
-      },
       loras,
       slg: caps.slg
         ? {

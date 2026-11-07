@@ -150,7 +150,6 @@ export function nestOverrides(overrides) {
  *   settings: object,
  *   loras: {task:string, consistency:boolean, consistencyName:string, strength:number, custom:Array<{name:string,strength:number}>},
  *   sampling: {steps:number, cfg:number, sampler:string, scheduler:string, turbo:{enabled:boolean, profile:string}},
- *   models?: {unet?:string,clip?:string,vae?:string},
  *   task?: string,
  * }} input
  */
@@ -163,7 +162,6 @@ export function buildEditPayload({
   settings = {},
   loras = {},
   sampling = {},
-  models = {},
   task = 'edit',
 }) {
   const imageCount = 1 + refs.length;
@@ -211,7 +209,6 @@ export function buildEditPayload({
     turbo: sampling.turbo?.enabled
       ? { enabled: true, profile: sampling.turbo.profile || '' }
       : { enabled: false, profile: null },
-    models: { unet: models.unet || '', clip: models.clip || '', vae: models.vae || '' },
     loras: loraList,
     consistency_lora:
       loras.consistency && loras.consistencyName

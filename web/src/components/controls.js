@@ -2,7 +2,7 @@
  * 可复用表单控件：
  * - TurboControl：Turbo 开关 + 加速预设（调度 / 加速 LoRA / 底模全部由预设决定）；
  * - LoraPicker：LoRA 多选 + 强度；
- * - ModelsField：unet / clip / vae 三个模型下拉。
+ * - ModelsSummary：unet / clip / vae 的只读摘要（跟随系统设置里的默认模型）。
  * 文生图页与图像编辑页共用，避免参数逻辑两处各写一份。
  */
 
@@ -349,91 +349,45 @@ function loraFolder(value) {
 }
 
 /* ============================================================
- * 模型选择
+ * 模型摘要（只读：跟随系统设置里的默认模型）
  * ============================================================ */
-export class ModelsField {
+
+const MODEL_ROWS = [
+  ['unet', '扩散模型 UNET'],
+  ['clip', '文本编码器 CLIP'],
+  ['vae', 'VAE'],
+];
+
+export class ModelsSummary {
   /**
    * @param {HTMLElement} host
-   * @param {{models?: object, initial?: {unet?:string, clip?:string, vae?:string}}} options
+   * @param {{slots?: object}} options
    */
-  constructor(host, { models = {}, initial = {} } = {}) {
+  constructor(host, { slots = {} } = {}) {
     this.host = host;
-    this.models = models || {};
-    this.initial = { ...(initial || {}) };
+    this.slots = slots || {};
     this.render();
   }
 
   render() {
-    const groups = [
-      ['unet', '扩散模型 UNET'],
-      ['clip', '文本编码器 CLIP'],
-      ['vae', 'VAE'],
-    ];
-    this.host.innerHTML = `<div class="model-selects">${groups
-      .map(([key, label]) => {
-        const list = normalizeModelList(this.models[key]);
-        const current = this.initial[key] || '';
-        const values = list.map((item) => item.value ?? item.name ?? String(item));
-        const options = list
-          .map((item) => {
-            const value = item.value ?? item.name ?? String(item);
-            const text = item.label || value;
-            const size = item.size_gb ? ` · ${item.size_gb}GB` : '';
-            return `<option value="${escapeHtml(value)}" ${value === current ? 'selected' : ''}>${escapeHtml(text + size)}</option>`;
-          })
-          .join('');
-        // 当前值不在扫描列表里（例如默认路径已失效）时，也保留成一个选中项，避免静默切到列表第一项
-        const fallbackOption =
-          current && !values.includes(current)
-            ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}（当前值）</option>`
-            : current
-              ? ''
-              : '<option value="">（后端默认）</option>';
-        return `
-          <label class="field">
-            <span class="field-label">${label}</span>
-            <select class="select mono" data-role="${key}">
-              ${fallbackOption}
-              ${options || '<option value="">（未返回模型列表）</option>'}
-            </select>
-          </label>`;
-      })
-      .join('')}</div>`;
-    this.host.querySelectorAll('select[data-role]').forEach((select) => {
-      if (!select.value && this.initial[select.dataset.role]) select.value = this.initial[select.dataset.role];
-    });
+    const rows = MODEL_ROWS.map(([key, label]) => {
+      const value = this.slots[key] || '';
+      const text = value || '未找到默认模型，请在系统设置中选择';
+      return `
+        <div class="field">
+          <span class="field-label">${label}</span>
+          <div class="model-path mono" title="${escapeHtml(value)}">${escapeHtml(text)}</div>
+        </div>`;
+    }).join('');
+    this.host.innerHTML = `
+      <div class="model-selects">
+        ${rows}
+        <div class="model-summary-note">跟随系统默认 · 在「设置 → 默认模型」中修改</div>
+      </div>`;
   }
 
-  getValue() {
-    const value = {};
-    this.host.querySelectorAll('select[data-role]').forEach((select) => {
-      value[select.dataset.role] = select.value;
-    });
-    return value;
-  }
-
-  /** 只改某个下拉的选中值（不重建 DOM，避免丢失事件监听）。 */
-  setKey(key, value) {
-    if (value == null) return;
-    const select = this.host.querySelector(`select[data-role="${key}"]`);
-    if (!select) return;
-    if ([...select.options].some((option) => option.value === String(value))) {
-      select.value = String(value);
-    }
-  }
-
-  setDisabled(key, disabled) {
-    const select = this.host.querySelector(`select[data-role="${key}"]`);
-    if (select) select.disabled = Boolean(disabled);
-  }
-
-  setValue(initial = {}) {
-    this.initial = { ...(initial || {}) };
+  setValue(slots = {}) {
+    this.slots = slots || {};
     this.render();
   }
-}
-
-function normalizeModelList(list) {
-  if (!Array.isArray(list)) return [];
-  return list.map((item) => (typeof item === 'string' ? { value: item, label: item } : item));
 }

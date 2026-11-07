@@ -147,6 +147,10 @@ export function createStudioPage(host) {
   let raf = 0;
   let tint = null;
   let tintDirty = true;
+  /* D18.2：涂抹时只重绘 tint 的脏矩形，避免每帧重算整张 4K 蒙版。 */
+  let tintRect = null;
+  /* D18.2：调色滑杆拖动期间用低分辨率代理预览，change 后再全分辨率合成。 */
+  let adjustPreview = false;
   let selectedLayerId = null;
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
@@ -468,6 +472,7 @@ export function createStudioPage(host) {
     },
     getMainThumb() {
       if (!doc) return '';
+      flushAdjustPreview();
       try {
         const base = doc.renderBase();
         if (thumbCache.doc === doc && thumbCache.base === base && thumbCache.url) return thumbCache.url;
@@ -488,6 +493,7 @@ export function createStudioPage(host) {
       if (!doc) return null;
       const size = doc.size;
       const stats = doc.maskStats();
+      flushAdjustPreview();
       return {
         main: { data: doc.bake('image/png'), name: doc.name, width: size.width, height: size.height },
         mask: stats.has ? doc.maskPng() : null,
@@ -499,6 +505,7 @@ export function createStudioPage(host) {
     /** 当前主图（含调色/变换/叠加层，不含 AI 结果预览），用于图片对比。 */
     getMainImage() {
       if (!doc) return null;
+      flushAdjustPreview();
       const size = doc.size;
       return { url: doc.bake('image/png'), label: '当前主图', width: size.width, height: size.height };
     },
@@ -781,6 +788,14 @@ export function createStudioPage(host) {
     });
   }
 
+  /** 调色代理预览结束：丢缓存并安排一次全分辨率合成（D18.2）。 */
+  function flushAdjustPreview() {
+    if (!adjustPreview || !doc) return;
+    adjustPreview = false;
+    doc.invalidateBase();
+    scheduleDraw();
+  }
+
   /**
    * 裁剪框改为 DOM 覆盖层（D5.3）：拖动选框只写 left/top/width/height，
    * 画布不再重绘，4K 图下也不会出现整图重绘卡顿。
@@ -818,13 +833,28 @@ export function createStudioPage(host) {
       perf.end(t0);
       return;
     }
-    const image = doc.renderBase();
-    const w = image.width * view.scale;
-    const h = image.height * view.scale;
+    // 叠加层拖动（D18.2）：底层合成复用缓存，叠加层按视口实时重画，避免每帧重建 4K base。
+    const liveLayers = !adjustPreview && drag?.mode === 'moveLayer' && doc.layers.length > 0;
+    const image = adjustPreview
+      ? doc.renderPreviewBase()
+      : liveLayers
+        ? doc.renderUnderlay()
+        : doc.renderBase();
+    const size = doc.size;
+    const w = size.width * view.scale;
+    const h = size.height * view.scale;
 
     // 底图阴影交给 CSS drop-shadow（见 .studio-canvas-wrap canvas），
     // 避免每帧对整图做 shadowBlur 模糊。
     ctx.drawImage(image, view.x, view.y, w, h);
+    if (liveLayers) {
+      const crop = doc.transform.crop;
+      ctx.save();
+      ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+      ctx.scale(view.scale, view.scale);
+      for (const layer of doc.layers) layer.draw(ctx);
+      ctx.restore();
+    }
 
     // AI 结果预览（覆盖底图；按住 \ 可临时看回底图）
     if (preview.image && !preview.flash) {
@@ -844,6 +874,10 @@ export function createStudioPage(host) {
       if (tintDirty || !tint) {
         tint = doc.renderMaskTint();
         tintDirty = false;
+        tintRect = null;
+      } else if (tintRect) {
+        tint = doc.renderMaskTint(tintRect);
+        tintRect = null;
       }
       ctx.save();
       ctx.globalAlpha = 0.42;
@@ -1007,7 +1041,18 @@ export function createStudioPage(host) {
     mctx.fill();
     mctx.restore();
     doc.markMaskChanged(tool !== 'eraser');
-    tintDirty = true;
+    // 只记录画笔包围盒，让 tint 增量重绘（D18.2）；若已有整图失效，保持整图重绘。
+    if (!tintDirty) {
+      const dirty = { x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2 };
+      tintRect = tintRect
+        ? {
+            x: Math.min(tintRect.x, dirty.x),
+            y: Math.min(tintRect.y, dirty.y),
+            width: Math.max(tintRect.x + tintRect.width, dirty.x + dirty.width) - Math.min(tintRect.x, dirty.x),
+            height: Math.max(tintRect.y + tintRect.height, dirty.y + dirty.height) - Math.min(tintRect.y, dirty.y),
+          }
+        : dirty;
+    }
   }
 
   function strokeTo(point) {
@@ -1814,6 +1859,8 @@ export function createStudioPage(host) {
     cropRect = null;
     tint = null;
     tintDirty = true;
+    tintRect = null;
+    adjustPreview = false;
     refs.cropbar.hidden = true;
     refs.empty.hidden = true;
     refs.dot.classList.add('is-live');
@@ -1869,6 +1916,7 @@ export function createStudioPage(host) {
 
   function syncAdjustInputs() {
     if (!doc) return;
+    adjustPreview = false;
     for (const input of host.querySelectorAll('[data-adjust]')) {
       const value = doc.adjust[input.dataset.adjust] ?? 0;
       input.value = String(value);
@@ -1932,6 +1980,7 @@ export function createStudioPage(host) {
   async function copyToClipboard() {
     if (!doc) return;
     if (previewBlocked('复制')) return;
+    flushAdjustPreview();
     try {
       const blob = await doc.bakeBlob('image/png');
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
@@ -1947,6 +1996,7 @@ export function createStudioPage(host) {
   async function collect() {
     if (!doc) return;
     if (previewBlocked('收藏')) return;
+    flushAdjustPreview();
     refs.exportBtn.disabled = true;
     try {
       const blob = await doc.bakeBlob('image/png');
@@ -1969,6 +2019,7 @@ export function createStudioPage(host) {
   async function sendToEdit() {
     if (!doc) return;
     if (previewBlocked('送入图像编辑')) return;
+    flushAdjustPreview();
     try {
       const [blob, maskBlob] = await Promise.all([doc.bakeBlob('image/png'), doc.maskBlob()]);
       const [dataUrl, mask] = await Promise.all([
@@ -1991,6 +2042,7 @@ export function createStudioPage(host) {
   async function exportImage(type, name) {
     if (!doc) return;
     if (previewBlocked('导出')) return;
+    flushAdjustPreview();
     refs.exportBtn.disabled = true;
     try {
       const blob = await doc.bakeBlob(type, 0.92);
@@ -2208,15 +2260,21 @@ export function createStudioPage(host) {
       if (!doc) return;
       const key = input.dataset.adjust;
       doc.adjust[key] = Number(input.value);
-      doc.invalidateBase();
+      // 拖动期间只出低分辨率代理，避免每帧过滤 4K（D18.2）。
+      adjustPreview = true;
       const label = host.querySelector(`[data-value="${key}"]`);
       if (label) label.textContent = input.value;
       scheduleDraw();
     });
     input.addEventListener('change', () => {
       if (!doc) return;
+      if (adjustPreview) {
+        adjustPreview = false;
+        doc.invalidateBase();
+      }
       doc.snapshot();
       updateHistoryUi();
+      scheduleDraw();
       scheduleSave();
     });
   }

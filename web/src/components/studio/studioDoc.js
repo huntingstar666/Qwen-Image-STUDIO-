@@ -132,6 +132,8 @@ export class StudioDoc {
     this.mask = cloneCanvas(state.mask);
     this.layers = (state.layers || []).map((layer) => layer.clone());
     this._base = null;
+    this._underlay = null;
+    this._tint = null;
     this._maskHas = null;
   }
 
@@ -368,7 +370,7 @@ export class StudioDoc {
    * 松手后调用 commitLayers() 落一次快照。
    */
   touchLayers() {
-    this.invalidateBase();
+    this._base = null;
   }
 
   commitLayers() {
@@ -379,7 +381,7 @@ export class StudioDoc {
     const layer = this.findLayer(id);
     if (!layer) return false;
     layer.opacity = Math.max(0, Math.min(1, Number(opacity) || 0));
-    this.invalidateBase();
+    this._base = null;
     return true;
   }
 
@@ -387,7 +389,7 @@ export class StudioDoc {
     const layer = this.findLayer(id);
     if (!layer) return false;
     layer.scale = Math.max(0.02, Math.min(8, layer.scale * factor));
-    this.invalidateBase();
+    this._base = null;
     return true;
   }
 
@@ -396,14 +398,15 @@ export class StudioDoc {
   /** 调色等状态被外部修改后调用，丢弃合成缓存。 */
   invalidateBase() {
     this._base = null;
+    this._underlay = null;
   }
 
   /**
-   * 输出「原图 + 变换 + 调色」的合成画布（不含蒙版，不含裁剪以外的遮罩）。
-   * 结果缓存，供画布展示与导出复用。
+   * 「原图 + 变换 + 调色 + 裁剪」的合成画布（不含叠加层），单独缓存。
+   * 叠加层拖动时只需重画 `_base`，底层 4K 合成可以复用（D18.2）。
    */
-  renderBase() {
-    if (this._base) return this._base;
+  renderUnderlay() {
+    if (this._underlay) return this._underlay;
     const oriented = this.oriented;
     const crop = this.transform.crop;
     const baseWidth = crop ? crop.width : oriented.width;
@@ -452,37 +455,145 @@ export class StudioDoc {
       }
     }
 
-    // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移
-    if (this.layers.length) {
-      const ctx2 = canvas.getContext('2d');
-      ctx2.save();
-      if (crop) ctx2.translate(-crop.x, -crop.y);
-      for (const layer of this.layers) layer.draw(ctx2);
-      ctx2.restore();
-    }
+    this._underlay = canvas;
+    return canvas;
+  }
 
+  /**
+   * 输出「原图 + 变换 + 调色 + 叠加层」的合成画布（不含蒙版，不含裁剪以外的遮罩）。
+   * 结果缓存，供画布展示与导出复用。
+   */
+  renderBase() {
+    if (this._base) return this._base;
+    const underlay = this.renderUnderlay();
+    if (!this.layers.length) {
+      this._base = underlay;
+      return underlay;
+    }
+    const canvas = makeCanvas(underlay.width, underlay.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(underlay, 0, 0);
+    // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移
+    const crop = this.transform.crop;
+    ctx.save();
+    if (crop) ctx.translate(-crop.x, -crop.y);
+    for (const layer of this.layers) layer.draw(ctx);
+    ctx.restore();
     this._base = canvas;
     return canvas;
   }
 
-  /** 蒙版着色图（红色 35%），用于画布叠加显示。复用画布，尺寸变化时才重新分配。 */
-  renderMaskTint() {
+  /**
+   * 低分辨率合成（D18.2 调色滑杆预览）：从原图按缩小比例重新合成，避免每帧过滤 4K。
+   * 不写入任何缓存，`change` 后仍需 `invalidateBase()` + `renderBase()` 出正式结果。
+   */
+  renderPreviewBase(maxSide = 1024) {
+    const oriented = this.oriented;
+    const crop = this.transform.crop;
+    const fullWidth = crop ? crop.width : oriented.width;
+    const fullHeight = crop ? crop.height : oriented.height;
+    const ratio = Math.min(1, maxSide / Math.max(1, fullWidth, fullHeight));
+    if (ratio >= 1) return this.renderBase();
+    const width = Math.max(1, Math.round(fullWidth * ratio));
+    const height = Math.max(1, Math.round(fullHeight * ratio));
+    if (!this._preview || this._preview.width !== width || this._preview.height !== height) {
+      this._preview = makeCanvas(width, height);
+    }
+    const canvas = this._preview;
+    const ctx = canvas.getContext('2d');
+    const img = this.image;
+    const { rotate, flipH, flipV } = this.transform;
+    const adjust = this.adjust;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.scale(ratio, ratio);
+    ctx.translate(
+      oriented.width / 2 - (crop ? crop.x : 0),
+      oriented.height / 2 - (crop ? crop.y : 0),
+    );
+    ctx.rotate((rotate * Math.PI) / 180);
+    ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+    if (supportsCanvasFilter) {
+      const brightness = Math.pow(2, adjust.exposure / 100) * (1 + adjust.brightness / 100);
+      const contrast = 1 + adjust.contrast / 100;
+      const saturation = 1 + adjust.saturation / 100;
+      ctx.filter = `brightness(${Math.max(0, brightness)}) contrast(${Math.max(0, contrast)}) saturate(${Math.max(0, saturation)})`;
+    }
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2, img.naturalWidth, img.naturalHeight);
+    ctx.restore();
+    if (supportsCanvasFilter) ctx.filter = 'none';
+    if (adjust.temperature) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.globalAlpha = Math.min(0.5, Math.abs(adjust.temperature) / 100 * 0.5);
+      ctx.fillStyle = adjust.temperature > 0 ? '#ff9a4d' : '#4d9aff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+    if (adjust.tint) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.globalAlpha = Math.min(0.45, Math.abs(adjust.tint) / 100 * 0.45);
+      ctx.fillStyle = adjust.tint > 0 ? '#ff4dd2' : '#4dff9a';
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+    if (this.layers.length) {
+      ctx.save();
+      ctx.scale(ratio, ratio);
+      if (crop) ctx.translate(-crop.x, -crop.y);
+      for (const layer of this.layers) layer.draw(ctx);
+      ctx.restore();
+    }
+    return canvas;
+  }
+
+  /** 蒙版着色图（红色 35%），用于画布叠加显示。复用画布，尺寸变化时才重新分配。
+   *  传入 `rect`（蒙版坐标）时只重绘该矩形，涂抹时避免每帧整张 4K 重算（D18.2）。
+   */
+  renderMaskTint(rect = null) {
     const oriented = this.oriented;
     const crop = this.transform.crop;
     const width = crop ? crop.width : oriented.width;
     const height = crop ? crop.height : oriented.height;
+    const offX = crop ? crop.x : 0;
+    const offY = crop ? crop.y : 0;
     if (!this._tint || this._tint.width !== width || this._tint.height !== height) {
       this._tint = makeCanvas(width, height);
+      rect = null;
     }
     const tint = this._tint;
     const ctx = tint.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
-    ctx.clearRect(0, 0, width, height);
-    ctx.drawImage(this.mask, crop ? -crop.x : 0, crop ? -crop.y : 0);
+    if (!rect) {
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(this.mask, -offX, -offY);
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.fillStyle = '#ff3b30';
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
+      return tint;
+    }
+    const dx = Math.max(0, Math.floor(rect.x - offX));
+    const dy = Math.max(0, Math.floor(rect.y - offY));
+    const ex = Math.min(width, Math.ceil(rect.x + rect.width - offX));
+    const ey = Math.min(height, Math.ceil(rect.y + rect.height - offY));
+    const dw = ex - dx;
+    const dh = ey - dy;
+    if (dw <= 0 || dh <= 0) return tint;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(dx, dy, dw, dh);
+    ctx.clip();
+    ctx.clearRect(dx, dy, dw, dh);
+    ctx.drawImage(this.mask, dx + offX, dy + offY, dw, dh, dx, dy, dw, dh);
     ctx.globalCompositeOperation = 'source-in';
     ctx.fillStyle = '#ff3b30';
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(dx, dy, dw, dh);
+    ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
     return tint;
   }

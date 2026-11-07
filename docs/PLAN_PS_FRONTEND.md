@@ -688,6 +688,12 @@ DOM 结构：
 
 - **D18.1 性能探针与基线（已完成）** —— 新增 `web/src/components/studio/perf.js`：`createPerfProbe(label,{window=60})` 返回 `start/end/hit/reset/snapshot`，`end()` 记录一帧耗时并每 60 帧 `console.info` 一次（含 `performance.memory` 堆提示）；`perfSnapshot()/perfReset()` 汇总全部探针并挂到 `window.__wbPerf`，方便分场景 `reset → 操作 → snapshot`。开关仍是 `localStorage['wb.studio.perf']='1'`，关闭时所有方法零成本。`studio.js` 删除原内联 `perfOn / perfFrames / t0 / 60 帧日志`（约 10 行），改为顶部 `import { createPerfProbe }` + `const perf = createPerfProbe('studio.draw')`，`draw()` 用 `perf.start()/perf.end(t0)`，空文档提前 return 分支也会记一帧。`imageTools.js` / `maskEditor.js` 属同事 WIP（高清放大接入），本轮**未接入探针**，图像工具基线改用页面级「rAF 帧间隔 + 同步 dispatch 耗时」测量，避免改冲突文件。4K（4096×4096）实测：平移 draw 0.20ms 均 / 0.40ms 峰（41 帧）、缩放 0.13ms 均 / 0.30ms 峰（20 帧）—— 平移缩放只做缓存底图 blit，已远低于 16ms；蒙版涂抹 45.15ms 均 / 144.2ms 峰、叠加层拖动 102.06ms 均 / 127.5ms 峰、调色滑杆 123.62ms 均 / 162.8ms 峰 —— 三者每帧都在重建 4K 合成（`renderMaskTint` 全图重绘 / `invalidateBase` 全量重绘），是 D18.2 的主要目标；图像工具裁剪拖动帧间隔 30.43ms 均 / 51.2ms 峰（40 帧中 39 帧超标，同步 dispatch 仅 0.09ms/move，说明耗时在每次 move 的异步 `render()` 全量重建工作画布），留给 D18.3。历史内存：4K 蒙版单步快照 67MB，`HISTORY_BUDGET = 256MB` 生效 —— 连续 20 次快照后实测只剩 3 步可撤销（≈201MB，符合预算），JS 堆 20 步增量 <10MB（headless 下 `performance.memory` 被量化，仅作趋势参考）。测试数据（`p-mw6i8p9i-5oh3qe` 工程及其 `layers/refs` 记录）已清理，工作区不改他人文件。已知限制：headless 无 GPU 合成差异未覆盖，待 D18.4 在真实浏览器与 DPR 2 下复测。数据同步写入 §17.6 基线表。
 
+- **D18.2 工作室交互优化（已完成）** —— 三处根因分别处理：
+  1. **蒙版涂抹 45.15ms → 3.48ms**：`studioDoc.renderMaskTint(rect)` 支持脏矩形增量重绘（clip + 子区域 `drawImage` + `source-in` 填充），`stampMask()` 累积画笔包围盒 `tintRect`，只有裁剪/旋转/清空等 `tintDirty=true` 才整图重算；tint 画布尺寸变化时自动退回全量，避免假脏。
+  2. **叠加层拖动 102.06ms → 2.39ms**：`studioDoc` 把「原图+变换+调色+裁剪」拆成 `renderUnderlay()` 独立缓存，`renderBase()` 只在有叠加层时复制一层并画图层；`invalidateBase()` 同时清 `_base/_underlay`，`touchLayers()/setOverlayOpacity()/scaleOverlay()` 只清 `_base`。拖动中的叠加层走 `drag.mode==='moveLayer'` 分支：底图用缓存的 underlay，图层按视口变换实时画在 `ctx` 上，不再每帧重建 4K。
+  3. **调色滑杆 123.62ms → 7.96ms**：拖动（`input`）期间 `adjustPreview=true`，`draw()` 改用 `doc.renderPreviewBase(1024)`（从原图按 1/4 边长重建，滤镜与柔光同源实现，不写缓存）；`change` 时 `flushAdjustPreview()` 丢掉 `_base/_underlay` 并全分辨率重合成一次（实测 126.7ms，一次性成本），同时 `syncAdjustInputs()/setDoc()/导出/复制/收藏/送编辑/对比/缩略图` 都先 flush，保证「所见即所得」。
+  4. 平移/缩放维持缓存 blit（3.20ms / 2.15ms，含 1 个叠加层与蒙版）；历史预算与 `bakeBlob()→toBlob` 异步导出保持现状。顺带修复 `restore()` 未清 `_underlay/_tint` 导致的撤销后残留旧底图问题。4K 实测前后对比已写入 §17.6；截图 `.screenshots/d18-optimized-studio-*.png`。测试工程与 `layers/refs` 记录已清理；`imageTools.js` 未改动，仍留给 D18.3。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1158,7 +1164,7 @@ DOM 结构：
 | D16.1 | AI 编辑历史卡片 | 已完成 | b0aaba5 | 方案 §15.2；`sessionHistory.js` + `studio/aiHistory.js`，刷新可恢复、载入还原指令/参考图 |
 | D16.2 | 图片对比 | 已完成 | 本次提交 | 方案 §15.3；`compareLauncher.js`，顶栏/结果卡片/历史卡片/Shift+C 四入口 |
 | D18.1 | 性能探针与基线 | 已完成 | 本次提交 | 方案 §17.4~§17.6；`studio/perf.js` + `studio.js` 接入，4K 基线已填表（§17.6） |
-| D18.2 | 工作室交互优化 | 未开始 | — | 排查见 §17 |
+| D18.2 | 工作室交互优化 | 已完成 | 本次提交 | 脏矩形 tint、叠加底层缓存、调色低分代理；4K 实测见 §17.6 |
 | D18.3 | 图像工具与蒙版优化 | 未开始 | — | 需与 `imageTools.js` 当前 WIP 协调 |
 | D18.4 | 性能回归基准 | 未开始 | — | — |
 | D19.1 | 数据与输出一致性 | 已完成 | 本次提交 | §18 S-01~S-04 |
@@ -1633,19 +1639,19 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 
 ### 17.6 性能基线（D18.1 填写）
 
-| 场景 | 分辨率 | 当前 | 目标 |
-| --- | --- | --- | --- |
-| 裁剪拖动（工作室） | 4096² | 0.012ms/move、0 次重绘（D5.3 实测） | <16ms/帧 |
-| 平移 / 缩放 | 4096² | 平移 draw 0.20ms 均 / 0.40ms 峰（41 帧）；缩放 0.13ms 均 / 0.30ms 峰（20 帧） | <16ms/帧 |
-| 蒙版涂抹 | 4096² | draw 45.15ms 均 / 144.2ms 峰（41 帧） | <16ms/帧 |
-| 叠加层拖动 | 4096² | draw 102.06ms 均 / 127.5ms 峰（31 帧） | <16ms/帧 |
-| 调色滑杆 | 4096² | draw 123.62ms 均 / 162.8ms 峰（40 帧） | 预览 <16ms/帧 |
-| 图像工具裁剪拖动 | 4096² | 帧间隔 30.43ms 均 / 51.2ms 峰（40 帧中 39 帧 >16.7ms；同步 0.09ms/move） | <16ms/帧 |
-| 历史 20 步内存 | 4096² | 蒙版单步 67MB；256MB 预算触发淘汰，实测仅保留 3 步可撤销（≈201MB）；JS 堆增量 <10MB | <256MB |
+| 场景 | 分辨率 | D18.1 基线 | D18.2 优化后 | 目标 |
+| --- | --- | --- | --- | --- |
+| 裁剪拖动（工作室） | 4096² | 0.012ms/move、0 次重绘（D5.3） | 未改动 | <16ms/帧 |
+| 平移 / 缩放 | 4096² | draw 0.20ms 均 / 0.40ms 峰（41 帧）；缩放 0.13 / 0.30（20 帧） | 3.20ms 均 / 6.70ms 峰；缩放 2.15 / 3.60（含 1 个叠加层与蒙版） | <16ms/帧 |
+| 蒙版涂抹 | 4096² | draw 45.15ms 均 / 144.2ms 峰（41 帧） | 3.48ms 均 / 22.6ms 峰（31 帧） | <16ms/帧 |
+| 叠加层拖动 | 4096² | draw 102.06ms 均 / 127.5ms 峰（31 帧） | 2.39ms 均 / 4.70ms 峰（31 帧） | <16ms/帧 |
+| 调色滑杆 | 4096² | draw 123.62ms 均 / 162.8ms 峰（40 帧） | 拖动 7.96ms 均 / 9.10ms 峰（40 帧）；松手一次全量 126.7ms | 预览 <16ms/帧 |
+| 图像工具裁剪拖动 | 4096² | 帧间隔 30.43ms 均 / 51.2ms 峰（40 帧中 39 帧 >16.7ms） | 未改动（留给 D18.3） | <16ms/帧 |
+| 历史 20 步内存 | 4096² | 每步 67MB，预算 256MB → 仅保留 3 步（≈201MB） | 未改动（已满足） | <256MB |
 
-> 测量环境：Chromium headless、视口 1440×900、DPR 1、后端未启动（纯前端链路），4K 测试图为 4096×4096 渐变 + 色块；`__wbPerf` 探针统计 `draw()` 耗时（不含浏览器合成），蒙版/叠加层/调色均在同一次页面会话内连续采样。
-> 已知限制：headless 下 `performance.memory.usedJSHeapSize` 被量化到 10MB 粒度，只能作趋势参考；画布后备存储不计入 JS 堆，历史内存按 `HISTORY_BUDGET` 字节预算与实测可撤销步数折算。
-> 结论：平移 / 缩放 / 工作室裁剪已达标；蒙版涂抹、叠加层拖动、调色滑杆、图像工具裁剪拖动均远超 16ms，分别交给 D18.2（前三个）与 D18.3（图像工具）处理。
+> 测量环境：Chromium headless、视口 1440×900、DPR 1、4K 测试图为 4096×4096 渐变 + 色块；`__wbPerf` 探针统计 `draw()` 耗时（不含浏览器合成），各场景在同一页面会话内 `reset → 操作 → snapshot` 连续采样。D18.2 数据在画布实际可见（756×551、缩放 12%）下取得，并带 1 个 800² 叠加层与已涂蒙版。
+> 已知限制：headless 下 `performance.memory.usedJSHeapSize` 被量化到 10MB 粒度，只能作趋势参考；画布后备存储不计入 JS 堆，历史内存按 `HISTORY_BUDGET` 字节预算与实测可撤销步数折算；无 GPU 合成差异未覆盖，待 D18.4 在真实浏览器与 DPR 2 下复测。
+> 结论：工作室平移 / 缩放 / 蒙版涂抹 / 叠加层拖动 / 调色拖拽均已进入 16ms 预算（调色松手后一次性全分辨率合成为 127ms，属预期的一次性成本）；图像工具裁剪拖动仍为 30ms/帧，交给 D18.3。
 
 ### 17.7 验收标准
 

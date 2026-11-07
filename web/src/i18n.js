@@ -325,6 +325,14 @@ const DICTS = {
     'about.modelRoot': '模型根目录',
     'about.storageValue': '已用 {used} · 可用 {free}',
     'about.outputsValue': '{n} 张图片',
+    'about.studioData': '本机精修工程',
+    'about.studioLoading': '统计中…',
+    'about.studioUsage': '{n} 个工程 · 占用 {used} / {quota}',
+    'about.studioUnknown': '占用未知',
+    'about.studioCleanup': '清理',
+    'about.studioCleanupConfirm': '将删除本机保存的全部精修工程与草稿，且不可恢复。确定继续？',
+    'about.studioCleaned': '已清理 {n} 个本机工程',
+    'about.studioCleanupFail': '清理本机工程失败',
   },
   en: {
     'nav.group.create': 'Create',
@@ -647,6 +655,15 @@ const DICTS = {
     'about.modelRoot': 'Model root',
     'about.storageValue': '{used} used · {free} free',
     'about.outputsValue': '{n} images',
+    'about.studioData': 'Local studio projects',
+    'about.studioLoading': 'Measuring…',
+    'about.studioUsage': '{n} projects · {used} / {quota}',
+    'about.studioUnknown': 'Usage unknown',
+    'about.studioCleanup': 'Clear',
+    'about.studioCleanupConfirm':
+      'This removes every studio project and draft saved in this browser. This cannot be undone. Continue?',
+    'about.studioCleaned': 'Cleared {n} local projects',
+    'about.studioCleanupFail': 'Failed to clear local projects',
   },
 };
 

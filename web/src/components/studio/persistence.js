@@ -9,6 +9,7 @@
  * - session：指令、裁剪、变换、调色、AI 参数等轻量现场
  * - aiHistory / aiResults / drafts：预留给 D16 / D17.2 / D17.3
  *
+ * 另含 D17.3 的配额估算、旧工程清理与多标签编辑租约。
  * 所有数据只落在本机浏览器，不上传服务端。
  */
 
@@ -374,4 +375,234 @@ export async function clearProject(projectId) {
   for (const key of [...layerSignatures.keys()]) {
     if (key.startsWith(`${projectId}:`)) layerSignatures.delete(key);
   }
+}
+
+/* ============================================================
+ * 配额、清理与多标签（D17.3）
+ * ============================================================ */
+
+const LEASE_TTL = 12_000;
+const LEASE_HEARTBEAT = 4_000;
+const LEASE_CHANNEL = 'wb-studio-lease';
+
+function leaseKey(projectId) {
+  return `wb.studio.lease.${projectId}`;
+}
+
+/** 读取工程当前租约；超过 TTL 未心跳视为已释放。 */
+function readLease(projectId) {
+  try {
+    const raw = localStorage.getItem(leaseKey(projectId));
+    if (!raw) return null;
+    const record = JSON.parse(raw);
+    if (!record?.tabId) return null;
+    if (Date.now() - Number(record.at || 0) > LEASE_TTL) return null;
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+function writeLease(projectId, tabId) {
+  try {
+    localStorage.setItem(leaseKey(projectId), JSON.stringify({ tabId, at: Date.now() }));
+  } catch {
+    // 隐私模式写不进 localStorage 时退化为单标签，不做互斥
+  }
+}
+
+export function leaseHeldByOther(projectId, tabId) {
+  const current = readLease(projectId);
+  return Boolean(current && current.tabId !== tabId);
+}
+
+/**
+ * 多标签编辑租约：同一工程同一时刻只允许一个标签自动保存。
+ * 后开标签 claim 失败即转只读；点「接管」调用 take()，
+ * 原标签通过 BroadcastChannel（或 storage 事件）立即转只读。
+ */
+export function createProjectLease(projectId, tabId, { onLost } = {}) {
+  let timer = 0;
+  let channel = null;
+  let owned = false;
+
+  const post = (type) => {
+    try {
+      channel?.postMessage({ type, projectId, tabId });
+    } catch {
+      // 通道关闭后忽略
+    }
+  };
+
+  const stopTimer = () => {
+    clearInterval(timer);
+    timer = 0;
+  };
+
+  const lose = () => {
+    if (!owned) return;
+    owned = false;
+    stopTimer();
+    onLost?.();
+  };
+
+  const beat = () => {
+    if (!owned) return;
+    const current = readLease(projectId);
+    if (current && current.tabId !== tabId) {
+      lose();
+      return;
+    }
+    writeLease(projectId, tabId);
+  };
+
+  const start = () => {
+    owned = true;
+    writeLease(projectId, tabId);
+    if (!timer) timer = setInterval(beat, LEASE_HEARTBEAT);
+  };
+
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel(LEASE_CHANNEL);
+      channel.onmessage = (event) => {
+        const message = event.data || {};
+        if (message.projectId !== projectId || message.tabId === tabId) return;
+        if (message.type === 'take' || message.type === 'claim') lose();
+      };
+    }
+  } catch {
+    channel = null;
+  }
+
+  // BroadcastChannel 不可用时，用 storage 事件兜底。
+  const onStorage = (event) => {
+    if (event.key !== leaseKey(projectId) || !event.newValue) return;
+    try {
+      const record = JSON.parse(event.newValue);
+      if (record?.tabId && record.tabId !== tabId) lose();
+    } catch {
+      // 解析失败不处理
+    }
+  };
+  window.addEventListener('storage', onStorage);
+
+  return {
+    claim() {
+      if (leaseHeldByOther(projectId, tabId)) {
+        owned = false;
+        return false;
+      }
+      start();
+      post('claim');
+      return true;
+    },
+    take() {
+      start();
+      post('take');
+    },
+    get owned() {
+      return owned;
+    },
+    release() {
+      owned = false;
+      stopTimer();
+      if (readLease(projectId)?.tabId === tabId) {
+        try {
+          localStorage.removeItem(leaseKey(projectId));
+        } catch {
+          // 忽略
+        }
+        post('release');
+      }
+      try {
+        channel?.close();
+      } catch {
+        // 忽略
+      }
+      channel = null;
+      window.removeEventListener('storage', onStorage);
+    },
+  };
+}
+
+/** 浏览器源站存储估算；不支持时返回 null。 */
+export async function estimateStorage() {
+  try {
+    if (!navigator.storage?.estimate) return null;
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    if (!quota || !Number.isFinite(quota)) return null;
+    return { usage, quota, ratio: Math.min(1, usage / quota) };
+  } catch {
+    return null;
+  }
+}
+
+/** 申请持久化存储，降低被浏览器自动清理的概率。 */
+export async function requestPersistentStorage() {
+  try {
+    if (!navigator.storage?.persist) return false;
+    if (await navigator.storage.persisted?.()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+/** 按最近更新时间倒序列出全部工程。 */
+export async function listProjects() {
+  const db = await openDb();
+  const tx = db.transaction(['projects'], 'readonly');
+  const done = transactionDone(tx);
+  const items = await readRequest(tx.objectStore('projects').getAll());
+  await done;
+  return (items || []).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
+ * 清理旧工程：最多保留最近 `keep` 个，且超过 `maxAgeDays` 天的自动删除。
+ * 正在被其他标签编辑（租约未过期）的工程会跳过。
+ * @returns {Promise<number>} 删除数量
+ */
+export async function cleanupProjects({ keep = 10, maxAgeDays = 7, keepId = '', tabId = '' } = {}) {
+  const projects = await listProjects();
+  const cutoff = maxAgeDays > 0 ? Date.now() - maxAgeDays * 86_400_000 : 0;
+  let removed = 0;
+  for (let index = 0; index < projects.length; index += 1) {
+    const item = projects[index];
+    if (!item?.id || item.id === keepId) continue;
+    const stale = index >= keep || (cutoff > 0 && (item.updatedAt || 0) < cutoff);
+    if (!stale) continue;
+    if (tabId && leaseHeldByOther(item.id, tabId)) continue;
+    try {
+      await clearProject(item.id);
+      removed += 1;
+    } catch {
+      // 单个工程删除失败不影响其余
+    }
+  }
+  return removed;
+}
+
+/** 清空全部本机工程数据（设置页「关于」入口，需二次确认）。 */
+export async function clearAllProjects() {
+  const projects = await listProjects();
+  for (const item of projects) {
+    if (!item?.id) continue;
+    try {
+      await clearProject(item.id);
+    } catch {
+      // 继续清理其他工程
+    }
+  }
+  try {
+    const db = await openDb();
+    const tx = db.transaction(['meta'], 'readwrite');
+    const done = transactionDone(tx);
+    tx.objectStore('meta').delete('lastProjectId');
+    await done;
+  } catch {
+    // 忽略：工程本身已删
+  }
+  return projects.length;
 }

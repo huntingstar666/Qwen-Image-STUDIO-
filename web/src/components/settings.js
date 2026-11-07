@@ -7,8 +7,9 @@
 import { api } from '../api.js';
 import { setAccent, setFont, setLanguage, setTheme, store } from '../store.js';
 import { t } from '../i18n.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, fmtBytes } from '../utils.js';
 import { toastError, toastSuccess, toastWarn } from './toast.js';
+import { clearAllProjects, estimateStorage, listProjects } from './studio/persistence.js';
 
 const SECTIONS = [
   { id: 'appearance', icon: 'palette', label: () => t('settings.nav.appearance') },
@@ -1307,10 +1308,46 @@ function renderAbout() {
     [t('about.engine'), `<span class="set-value mono">${escapeHtml(app.engine_dir || '—')}</span>`],
     [t('about.outputs'), `<span class="set-value">${t('about.outputsValue', { n: app.outputs ?? 0 })}</span>`],
     [t('about.storage'), `<span class="set-value">${t('about.storageValue', { used, free })}</span>`],
+    [
+      t('about.studioData'),
+      `<span class="set-value mono" data-ref="studioStorage">${t('about.studioLoading')}</span>
+       <button class="btn ghost sm" type="button" data-action="studio-cleanup">${t('about.studioCleanup')}</button>`,
+    ],
   ]
     .map(([label, control]) => row(label, '', control))
     .join('');
   return group(t('about.title'), rows);
+}
+
+/** 统计本机精修工程数量与源站存储占用（异步补到「关于」里）。 */
+async function loadStudioStorage() {
+  const target = refs?.content?.querySelector('[data-ref="studioStorage"]');
+  if (!target) return;
+  try {
+    const [projects, estimate] = await Promise.all([listProjects(), estimateStorage()]);
+    if (!refs?.content?.contains(target)) return;
+    target.textContent = estimate
+      ? t('about.studioUsage', {
+          n: projects.length,
+          used: fmtBytes(estimate.usage),
+          quota: fmtBytes(estimate.quota),
+        })
+      : `${t('about.studioUnknown')} · ${projects.length}`;
+  } catch {
+    if (target) target.textContent = t('about.studioUnknown');
+  }
+}
+
+/** 清空本机精修工程（二次确认）。 */
+async function clearStudioStorage() {
+  if (!window.confirm(t('about.studioCleanupConfirm'))) return;
+  try {
+    const count = await clearAllProjects();
+    toastSuccess(t('about.studioCleaned', { n: count }));
+    render();
+  } catch (err) {
+    toastError(err, t('about.studioCleanupFail'));
+  }
 }
 
 const RENDERERS = {
@@ -1347,6 +1384,7 @@ function render() {
   refs.sub.textContent = t('settings.subtitle');
   refs.close.setAttribute('aria-label', t('settings.close'));
   refs.content.innerHTML = RENDERERS[section.id]();
+  if (section.id === 'about') void loadStudioStorage();
   renderFooter();
 }
 
@@ -1595,6 +1633,9 @@ function handleAction(action, element = null) {
       break;
     case 'reset-defaults':
       resetDefaults();
+      break;
+    case 'studio-cleanup':
+      void clearStudioStorage();
       break;
     case 'recheck-defaults':
       recheckDefaults();

@@ -20,7 +20,16 @@ import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
-import { loadLastProject, newProjectId, saveStudioProject, storageAvailable } from './studio/persistence.js';
+import {
+  cleanupProjects,
+  createProjectLease,
+  estimateStorage,
+  loadLastProject,
+  newProjectId,
+  requestPersistentStorage,
+  saveStudioProject,
+  storageAvailable,
+} from './studio/persistence.js';
 import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
@@ -152,6 +161,11 @@ export function createStudioPage(host) {
   let restoreChecked = false;
   let restoring = false;
   let pendingRestore = null;
+  /* D17.3：多标签租约、配额告警与持久化申请。 */
+  let lease = null;
+  let leaseLocked = false;
+  let quotaWarned = false;
+  let persistRequested = false;
 
   host.innerHTML = `
     <div class="page page-studio">
@@ -179,6 +193,13 @@ export function createStudioPage(host) {
           <span class="spacer"></span>
           <button class="btn ghost sm" type="button" data-ref="restoreIgnore">忽略</button>
           <button class="btn primary sm" type="button" data-ref="restoreApply">恢复</button>
+        </div>
+
+        <div class="studio-restore studio-lock" data-ref="lockBar" hidden>
+          <span class="studio-restore-dot"></span>
+          <span class="studio-restore-text" data-ref="lockText">该工程已在其他标签编辑 · 本标签暂不保存</span>
+          <span class="spacer"></span>
+          <button class="btn primary sm" type="button" data-ref="lockTake">接管编辑</button>
         </div>
 
         <div class="studio-body">
@@ -377,6 +398,9 @@ export function createStudioPage(host) {
     restoreText: ref('restoreText'),
     restoreApply: ref('restoreApply'),
     restoreIgnore: ref('restoreIgnore'),
+    lockBar: ref('lockBar'),
+    lockText: ref('lockText'),
+    lockTake: ref('lockTake'),
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
@@ -1130,6 +1154,7 @@ export function createStudioPage(host) {
     saved: '已保存',
     error: '保存失败，重试中',
     off: '当前浏览器不支持本机保存',
+    locked: '其他标签编辑中',
   };
   let tabToken = '';
 
@@ -1147,8 +1172,71 @@ export function createStudioPage(host) {
     return tabToken;
   }
 
+  /* ---------------------------------------------------------- 多标签租约（D17.3） */
+
+  function setSaveState(next) {
+    if (!refs.saveState) return;
+    refs.saveState.dataset.state = next;
+    refs.saveState.textContent = SAVE_LABELS[next] || SAVE_LABELS.idle;
+    clearTimeout(saveStateTimer);
+    if (next === 'saved') {
+      saveStateTimer = setTimeout(() => {
+        if (refs.saveState?.dataset.state === 'saved') setSaveState('idle');
+      }, 2500);
+    }
+  }
+
+  /** 只读态：画布与右栏不可交互，自动保存停摆，避免覆盖另一个标签的编辑。 */
+  function setLeaseLocked(locked) {
+    if (leaseLocked === locked) return;
+    leaseLocked = locked;
+    const root = host.querySelector('.studio');
+    if (root) root.dataset.locked = locked ? 'true' : 'false';
+    refs.lockBar.hidden = !locked;
+    if (locked) {
+      clearTimeout(saveTimer);
+      saveTimer = 0;
+      clearTimeout(idleTimer);
+      idleTimer = 0;
+      setSaveState('locked');
+    } else if (!persistDisabled) {
+      setSaveState('idle');
+    }
+  }
+
+  function stopLease() {
+    lease?.release?.();
+    lease = null;
+    setLeaseLocked(false);
+  }
+
+  /** 进入工程时抢占租约：失败则锁定，等用户点「接管编辑」。 */
+  function startLease(id) {
+    stopLease();
+    if (!id) return;
+    lease = createProjectLease(id, tabId(), {
+      onLost: () => {
+        setLeaseLocked(true);
+        toastWarn('该工程已在其他标签接管编辑，本标签已暂停保存');
+      },
+    });
+    if (!lease.claim()) {
+      setLeaseLocked(true);
+      refs.lockText.textContent = '该工程已在其他标签编辑 · 本标签为只读';
+    }
+  }
+
+  refs.lockTake.addEventListener('click', () => {
+    if (!lease) return;
+    lease.take();
+    setLeaseLocked(false);
+    scheduleSave(300);
+    toastSuccess('已接管编辑');
+  });
+
   /** 打开新主图 = 开启新工程；旧工程留在本机，供后续「最近工程」入口使用。 */
   function beginProject() {
+    stopLease();
     projectId = newProjectId();
     projectCreatedAt = Date.now();
     sourceBlob = null;
@@ -1195,18 +1283,6 @@ export function createStudioPage(host) {
       return canvas.toDataURL('image/jpeg', 0.72);
     } catch {
       return '';
-    }
-  }
-
-  function setSaveState(next) {
-    if (!refs.saveState) return;
-    refs.saveState.dataset.state = next;
-    refs.saveState.textContent = SAVE_LABELS[next] || SAVE_LABELS.idle;
-    clearTimeout(saveStateTimer);
-    if (next === 'saved') {
-      saveStateTimer = setTimeout(() => {
-        if (refs.saveState?.dataset.state === 'saved') setSaveState('idle');
-      }, 2500);
     }
   }
 
@@ -1305,7 +1381,7 @@ export function createStudioPage(host) {
   }
 
   function scheduleSave(delay = 800) {
-    if (!doc || persistDisabled) return;
+    if (!doc || persistDisabled || leaseLocked) return;
     saveDirty = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -1321,7 +1397,7 @@ export function createStudioPage(host) {
   }
 
   async function runSave() {
-    if (!doc || persistDisabled) return;
+    if (!doc || persistDisabled || leaseLocked) return;
     if (saving) {
       savePending = true;
       return;
@@ -1332,18 +1408,35 @@ export function createStudioPage(host) {
     saveDirty = false;
     setSaveState('saving');
     try {
+      const estimate = await estimateStorage();
+      if (estimate && estimate.ratio >= 0.8 && !quotaWarned) {
+        quotaWarned = true;
+        toastWarn(
+          `浏览器本机存储已用 ${Math.round(estimate.ratio * 100)}%，自动保存可能失败；` +
+            '可在「设置 · 关于」清理旧工程',
+        );
+      }
       const payload = await collectProject();
       if (!payload) return;
       await saveStudioProject(payload);
       saveRetryDelay = 0;
       saveWarned = false;
       setSaveState('saved');
-    } catch {
+      if (!persistRequested) {
+        persistRequested = true;
+        void requestPersistentStorage();
+      }
+    } catch (err) {
       saveDirty = true;
       setSaveState('error');
       if (!saveWarned) {
         saveWarned = true;
-        toastWarn('本地自动保存失败，编辑内容仍在内存中，可继续导出');
+        const quotaExceeded = err?.name === 'QuotaExceededError';
+        toastWarn(
+          quotaExceeded
+            ? '浏览器本机存储空间不足，自动保存暂停；请先导出，再在「设置 · 关于」清理旧工程'
+            : '本地自动保存失败，编辑内容仍在内存中，可继续导出',
+        );
       }
       saveRetryDelay = Math.min(30000, saveRetryDelay ? saveRetryDelay * 2 : 2000);
       saveRetryTimer = setTimeout(() => {
@@ -1360,7 +1453,7 @@ export function createStudioPage(host) {
   }
 
   function flushSave() {
-    if (!doc || persistDisabled) return;
+    if (!doc || persistDisabled || leaseLocked) return;
     clearTimeout(saveTimer);
     saveTimer = 0;
     clearTimeout(idleTimer);
@@ -1463,6 +1556,7 @@ export function createStudioPage(host) {
       projectCreatedAt = saved.project.createdAt || Date.now();
       sourceBlob = base.bitmapBlob;
       cropRect = session.cropRect ? { ...session.cropRect } : null;
+      startLease(projectId);
 
       setDoc(next, { restore: true, fit: false, tool: session.activeTool });
       if (cropRect) {
@@ -1607,6 +1701,7 @@ export function createStudioPage(host) {
       if (imageTooLarge(image)) return;
       flushSave();
       beginProject();
+      startLease(projectId);
       sourceBlob = file;
       setDoc(new StudioDoc(image, file.name || 'untitled.png'));
     } catch (err) {
@@ -1628,6 +1723,7 @@ export function createStudioPage(host) {
       if (token !== openSeq) return false;
       flushSave();
       beginProject();
+      startLease(projectId);
       // 外链/历史图取不到原文件时，用空白文档先编码一份原图，避免把叠加层烘进底图。
       sourceBlob = fetched || (await next.bakeBlob('image/png').catch(() => null));
       setDoc(next);
@@ -2132,6 +2228,8 @@ export function createStudioPage(host) {
   function onKeyDown(event) {
     if (!isActive()) return;
     if (isEditableTarget(event.target)) return;
+    // 其他标签正在编辑本工程时，键盘编辑快捷键一并禁用。
+    if (leaseLocked) return;
     // 按住 \ 临时闪回底图，替代原来被劫持的 Tab（保留键盘导航）。
     if (event.key === '\\' && preview.image) {
       event.preventDefault();
@@ -2254,11 +2352,17 @@ export function createStudioPage(host) {
         return;
       }
       // 有素材仓库交接时优先打开交接图，否则尝试恢复上次未完成的工程。
-      if (!applyStudioHandoff()) void maybeRestore();
+      if (!applyStudioHandoff()) {
+        void maybeRestore().then(() => {
+          // 顺带清理超过 7 天或排名 10 名之外的旧工程，正在被其他标签编辑的跳过。
+          void cleanupProjects({ keep: 10, maxAgeDays: 7, keepId: projectId, tabId: tabId() });
+        });
+      }
     },
     /** 页面被移除时统一解绑，避免全局监听器与观察器在旧实例上累积。 */
     destroy() {
       flushSave();
+      stopLease();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('paste', onPaste);

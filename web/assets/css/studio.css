@@ -114,6 +114,22 @@
   color: var(--dim);
 }
 
+/* 其他标签正在编辑：横幅转警示色，主体区域转只读。 */
+
+.studio-lock {
+  background: color-mix(in srgb, #d97757 9%, transparent);
+}
+
+.studio-lock .studio-restore-dot {
+  background: #d97757;
+}
+
+.studio[data-locked='true'] .studio-body {
+  opacity: 0.62;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ------------------------------------------------------------- 三栏主体 */
 
 .studio-body {

@@ -376,6 +376,11 @@
   2. 后端 `pipeline` 在 `task.mode=remove` 且提示词含"水印"时，若未提及"徽章/编号/logo"，自动追加上述限定语，并在 `quality.warnings` 里提示已补全。
   3. 保留"仅去文字"的高级开关，避免误删画面内真实文字（招牌/书名）。
 - 验收：11d 提示词模板化后，用 11a/11b/11c 同款泛化输入，3 轮视觉检查徽章与编号均消失；`outside_max_abs=0`。
+- **已落地（2026-11-07）**：
+  - 后端 `pipeline.augment_watermark_prompt()`：提示词含"水印/watermark" + 移除意图（移除/去除/remove…）且未点名徽章/编号/logo 时，自动追加"文字 + 徽章 + 编号"限定语；`quality.watermark_prompt=true`，`quality.warnings` 给出补全提示。
+  - "仅去文字"开关：请求 `task.watermark_scope=text`（或顶层 `watermark_scope`）时不补全，保留画面内真实文字的能力。
+  - 编辑页提示词工具栏新增「去水印模板」按钮，一键写入点名版模板，避免用户手写漏项。
+  - 单元测试 `tests/test_watermark_prompt.py`：6 项（补全 / 已点名 / 仅文字 / 非移除意图 / 无关提示 / 英文）全部通过。
 
 ### 6.2 O2 连续编辑防漂移（优先级 P0，流程层）
 
@@ -387,6 +392,7 @@
   4. UI 展示累计漂移提示：当 `delta_e_vs_original > 10` 或背景块 mean > 8 时提示"建议回锚"。
   5. 连续编辑默认 `turbo=true`、`seed` 固定为会话 seed，减少随机抖动。
 - 验收：同一 20 轮脚本改为"每轮带遮罩"后，背景块 mean 增长 ≤ 5，ΔE(原图) ≤ 8；GIF 肉眼无明显色温跳变。
+- **已核对（2026-11-07）**：`edit.js` 的 `beginChainIfNeeded / renderChainBar / anchorChainBack` 已实现上一轮遮罩保留、累计漂移 ΔE 显示、≥10 提示"建议回锚"、一键回锚（遮罩还原）；`presets.py` 的 `chain_mask`（遮罩外 byte-exact）/ `chain_native`（整图校色 + 漂移提示）与 `PRESET_VERSION=2` 生效。20 轮脚本属于 API 直连用例，不经过该前端会话逻辑，故 P1-4 保留为流程层已缓解、模型层仍会漂移的结论。
 
 ### 6.3 O3 跨性别/大幅换人（优先级 P1，提示词 + 流程）
 
@@ -402,12 +408,14 @@
 - 现状：Turbo 覆盖显式 steps/cfg 只在质量报告里可见（P0-3）。
 - 方案：编辑面板在 Turbo 开启时把 steps/cfg/sampler 置灰并显示"Turbo 固定 9 步 / cfg 1.0"；切换"自定义"才可编辑。参数冲突（如 remove 预设 + edit 任务）即时提示实际生效值。
 - 验收：面板回显与 `job.params` 一致；`/api/meta` 无需新增字段。
+- **已核对（2026-11-07）**：`edit.js` 的 `applyTurboToFields()` 在 Turbo 开启时置灰 `steps/cfg/sampler` 并显示 `turboLock` 文案"Turbo 固定 9 步 / cfg 1.0"；关闭 Turbo 时恢复可编辑并把遗留的 8 步纠正为 25。
 
 ### 6.5 O5 质量报告与测试口径（优先级 P2）
 
 - `quality` 增补：`preprocess.applied/scale/work`、`pose_lora`、`params.loras`（P0-1 已完成落库）、`outpaint.left/top`（已有）。
 - 测试脚本统一以 `quality.outside_max_abs` 为几何验收，手工统计只输出参考值并标注接缝带。
 - 验收：任意用例可从单条 `results.json` 复现全部结论。
+- **已落地（2026-11-07）**：`quality` 新增 `loras`（实际挂载的文件名 + 权重）、`pose_lora`、`turbo_lora`、`turbo_unet`、`prompt_augmented`、`watermark_prompt`；`preprocess` 与 `outpaint` 原有字段保留。
 
 ### 6.6 O6 大图与性能监控（优先级 P3）
 

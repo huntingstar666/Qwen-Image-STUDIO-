@@ -77,6 +77,40 @@ _TASK_ALIASES = {
 _OUTPAINT_INSTRUCTION = "移除图像中的灰色区域，无缝自然延展为完整图像。"
 _REMOVE_INSTRUCTION = "移除图像中的绿色区域。"
 
+#: 去水印补全：模型默认只把“水印”理解成文字，徽章 / 编号需要点名（见测试 11a~11d）。
+_WATERMARK_INSTRUCTION = (
+    "同时移除画面中所有叠加的水印元素，包括斜向平铺文字、角标徽章/logo、编号/日期，"
+    "保持底层画面与主体不变。"
+)
+_WATERMARK_REMOVE_WORDS = ("移除", "去除", "去掉", "消除", "抹掉", "清理", "remove", "erase", "delete", "clean")
+_WATERMARK_SCOPE_WORDS = ("徽章", "角标", "编号", "badge", "叠加元素", "斜向平铺文字")
+
+
+def augment_watermark_prompt(prompt: str, params: dict[str, Any] | None = None) -> str | None:
+    """提示词提到“水印”且是移除意图时，补全徽章 / 编号等叠加元素。
+
+    返回补全后的提示词；无需补全时返回 ``None``。
+    ``task.watermark_scope = "text"``（或顶层 ``watermark_scope``）表示“仅去文字”，
+    此时保持原提示词，交给模型只处理文字水印。
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return None
+    low = text.lower()
+    if "水印" not in low and "watermark" not in low:
+        return None
+    if not any(word in low for word in _WATERMARK_REMOVE_WORDS):
+        return None
+    params = params or {}
+    task = params.get("task") if isinstance(params.get("task"), dict) else {}
+    scope = str(task.get("watermark_scope") or params.get("watermark_scope") or "").strip().lower()
+    if scope in ("text", "text_only", "text-only", "文字"):
+        return None
+    if any(word in low for word in _WATERMARK_SCOPE_WORDS):
+        return None
+    return f"{text}；{_WATERMARK_INSTRUCTION}"
+
+
 #: 提示图别名：前端历史上传 ``green``，旧数据可能传 ``overlay``。
 _HINT_ALIASES = {
     "green": "green_overlay",
@@ -1052,6 +1086,14 @@ class Pipeline:
                 key in prompt_text.lower() for key in ("绿色", "绿区", "green")):
             prompt_text = _REMOVE_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "remove"
+        # 去水印：模型默认只理解“文字水印”，徽章 / 编号需要点名补全。
+        watermark_prompt = augment_watermark_prompt(prompt_text, params)
+        if watermark_prompt:
+            prompt_text = watermark_prompt
+            job.meta["watermark_prompt"] = True
+            warnings.append(
+                "提示词提到水印但未点名徽章 / 编号，已自动补全为“文字 + 徽章 + 编号”全量移除；"
+                "如需只去文字，请设置 task.watermark_scope=text")
         # 姿态参考：插到最前面成为 image1，编辑目标顺延为 image2；
         # 提示词里的 <imageN> 同步顺延，避免 @ 引用指错图。
         pose = _pose_payload(params) if profile["id"] == "qwen" else None
@@ -1260,6 +1302,12 @@ class Pipeline:
             "leak_ratio": diff_stats.get("leak_ratio"),
             "diff_threshold": diff_stats.get("threshold"),
             "lora_warning": job.meta.get("lora_warning"),
+            "loras": job.params.get("loras") or [],
+            "pose_lora": job.meta.get("pose_lora"),
+            "turbo_lora": job.meta.get("turbo_lora"),
+            "turbo_unet": job.meta.get("turbo_unet"),
+            "prompt_augmented": job.meta.get("prompt_augmented"),
+            "watermark_prompt": bool(job.meta.get("watermark_prompt")),
             "model": profile["id"],
             "elapsed_encode_s": round(time.time() - t_start, 1),
         }

@@ -47,6 +47,9 @@ import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 
 const MAX_IMAGES = 10;
 
+//: 去水印模板：点名文字 + 徽章 + 编号，避免模型只清掉文字水印（测试 11a~11d）。
+const WATERMARK_TEMPLATE = '移除画面中的水印，包括斜向平铺文字、角标徽章/logo、编号/日期等所有叠加元素，保持底层画面与主体不变。';
+
 const FALLBACK_RATIOS = [
   { id: '1:1', label: '1:1 方形', w: 2048, h: 2048 },
   { id: '4:3', label: '4:3 横幅', w: 2048, h: 1536 },
@@ -330,6 +333,7 @@ export function createEditPage(host) {
                 <span class="wb-char" data-ref="promptCount">0 字</span>
                 <input class="wb-negative" data-ref="negative" placeholder="负向提示词（可选）：文字、水印、变形、重复人物" />
                 <button class="wb-link" type="button" data-ref="atRef" title="引用小图库里的参考图">＠ 参考图</button>
+                <button class="wb-link" type="button" data-ref="watermarkPrompt" title="一键写入去水印模板（文字 + 徽章 + 编号）">去水印模板</button>
                 <button class="wb-link" type="button" data-ref="clearPrompt">清空</button>
                 <button class="wb-link accent" type="button" data-ref="polish">✦ 润色指令</button>
               </div>
@@ -398,6 +402,7 @@ export function createEditPage(host) {
     promptCount: ref('promptCount'),
     negative: ref('negative'),
     atRef: ref('atRef'),
+    watermarkPrompt: ref('watermarkPrompt'),
     clearPrompt: ref('clearPrompt'),
     libHost: ref('libHost'),
     refBox: ref('refBox'),
@@ -666,6 +671,15 @@ export function createEditPage(host) {
     promptEditor.setText('');
     edit.prompt = '';
     patchSettings({ edit: { prompt: '' } });
+    updatePromptCount();
+    promptEditor.focus();
+  });
+  refs.watermarkPrompt.addEventListener('click', () => {
+    const current = promptEditor.getSemantic().trim();
+    const next = current.includes('水印') ? current : (current ? `${current}；${WATERMARK_TEMPLATE}` : WATERMARK_TEMPLATE);
+    promptEditor.setText(next);
+    edit.prompt = next;
+    patchSettings({ edit: { prompt: next } });
     updatePromptCount();
     promptEditor.focus();
   });

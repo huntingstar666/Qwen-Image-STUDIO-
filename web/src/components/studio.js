@@ -437,6 +437,12 @@ export function createStudioPage(host) {
       doc.setOverlayOpacity(id, value);
       scheduleDraw();
     },
+    /** 滑杆松手后落一次快照，让不透明度调整可以撤销。 */
+    commitLayers() {
+      if (!doc) return;
+      doc.commitLayers();
+      updateHistoryUi();
+    },
     scaleLayer(id, factor) {
       if (!doc) return;
       doc.scaleOverlay(id, factor);
@@ -1143,8 +1149,20 @@ export function createStudioPage(host) {
     }
   }
 
-  function commitTransform(action) {
+  async function commitTransform(label, action) {
     if (!doc) return;
+    const lost = [];
+    if (doc.layers.length) lost.push(`${doc.layers.length} 个叠加层`);
+    if (doc.transform.crop) lost.push('裁剪区域');
+    if (lost.length) {
+      const ok = await confirmDialog({
+        title: label,
+        message: `${label}会清空${lost.join('、')}（可用 Ctrl+Z 撤销），确定继续？`,
+        confirmText: '继续',
+        danger: true,
+      });
+      if (!ok || !doc) return;
+    }
     action();
     updateSizeInfo();
     updateHistoryUi();
@@ -1163,8 +1181,16 @@ export function createStudioPage(host) {
     downloadUrl(dataUrl, filename);
   }
 
+  /** AI 预览只画在画布上，导出/复制/收藏/送编辑都读底图，先拦住避免「所见非所得」。 */
+  function previewBlocked(action) {
+    if (!preview.image) return false;
+    toastWarn(`当前显示的是 AI 预览，导出的是载入前的底图。请先点「载入为新底图」或关闭预览再${action}`);
+    return true;
+  }
+
   async function copyToClipboard() {
     if (!doc) return;
+    if (previewBlocked('复制')) return;
     try {
       const blob = await (await fetch(doc.bake('image/png'))).blob();
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
@@ -1179,6 +1205,7 @@ export function createStudioPage(host) {
 
   async function collect() {
     if (!doc) return;
+    if (previewBlocked('收藏')) return;
     refs.favoriteBtn.disabled = true;
     const original = refs.favoriteBtn.textContent;
     refs.favoriteBtn.textContent = '收藏中…';
@@ -1197,6 +1224,7 @@ export function createStudioPage(host) {
 
   function sendToEdit() {
     if (!doc) return;
+    if (previewBlocked('送入图像编辑')) return;
     try {
       const dataUrl = doc.bake('image/png');
       const mask = doc.maskPng();
@@ -1258,10 +1286,12 @@ export function createStudioPage(host) {
   refs.copyBtn.addEventListener('click', copyToClipboard);
   refs.jpgBtn.addEventListener('click', () => {
     if (!doc) return;
+    if (previewBlocked('导出')) return;
     downloadDataUrl(doc.bake('image/jpeg', 0.92), `${baseName(doc.name)}-edited.jpg`);
   });
   refs.pngBtn.addEventListener('click', () => {
     if (!doc) return;
+    if (previewBlocked('导出')) return;
     downloadDataUrl(doc.bake('image/png'), `${baseName(doc.name)}-edited.png`);
   });
   refs.sendBtn.addEventListener('click', sendToEdit);
@@ -1362,10 +1392,10 @@ export function createStudioPage(host) {
     downloadDataUrl(dataUrl, `${baseName(doc.name)}-mask.png`);
   });
 
-  refs.rotateLeft.addEventListener('click', () => commitTransform(() => doc?.rotateLeft()));
-  refs.rotateRight.addEventListener('click', () => commitTransform(() => doc?.rotateRight()));
-  refs.flipH.addEventListener('click', () => commitTransform(() => doc?.flip('h')));
-  refs.flipV.addEventListener('click', () => commitTransform(() => doc?.flip('v')));
+  refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));
+  refs.rotateRight.addEventListener('click', () => commitTransform('向右旋转', () => doc?.rotateRight()));
+  refs.flipH.addEventListener('click', () => commitTransform('水平翻转', () => doc?.flip('h')));
+  refs.flipV.addEventListener('click', () => commitTransform('垂直翻转', () => doc?.flip('v')));
 
   refs.cropStart.addEventListener('click', () => setTool('crop'));
 
@@ -1406,9 +1436,10 @@ export function createStudioPage(host) {
 
   refs.resetAll.addEventListener('click', async () => {
     if (!doc) return;
+    const layerNote = doc.layers.length ? `、${doc.layers.length} 个叠加层` : '';
     const ok = await confirmDialog({
       title: '恢复原始图片',
-      message: '会清空所有调色、裁剪与蒙版操作（原图不会被删除），确定继续？',
+      message: `会清空所有调色、裁剪、蒙版${layerNote}（原图不会被删除），确定继续？`,
       confirmText: '恢复',
       danger: true,
     });

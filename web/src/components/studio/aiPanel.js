@@ -910,6 +910,10 @@ export function mountAiPanel(host, ctx) {
     if (!input) return;
     ctx.setLayerOpacity?.(input.dataset.layerAlpha, Number(input.value) / 100);
   });
+  refs.layers.addEventListener('change', (event) => {
+    if (!event.target.closest('[data-layer-alpha]')) return;
+    ctx.commitLayers?.();
+  });
 
   refs.sizeMode.addEventListener('change', renderMeta);
   refs.width.addEventListener('input', renderMeta);

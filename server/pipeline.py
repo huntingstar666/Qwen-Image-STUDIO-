@@ -918,6 +918,12 @@ class Pipeline:
                 params["loras"] = [{"preset": "consistency"}]
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         _apply_pose_lora(cfg, profile, params, loras, job)
+        # 真正挂载的 LoRA 写回 job.params：预设/任务自动挂载的那部分原本只在局部变量里，
+        # 历史回放与质量报告看不到（测试用例 0a 复现）。
+        job.params["loras"] = [
+            {"name": os.path.basename(item["name"]), "strength": item["strength"]}
+            for item in loras
+        ]
         if sampling.get("turbo_lora_note"):
             job.meta["turbo_lora"] = sampling["turbo_lora_note"]
         if sampling.get("lora_warning") and not job.meta.get("lora_warning"):

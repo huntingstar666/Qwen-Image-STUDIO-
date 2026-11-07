@@ -259,6 +259,20 @@ def merge(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None
     req_task = merged.get("task")
     if not isinstance(req_task, dict):
         req_task = {}
+    # 显式任务与预设任务不一致时（例如 preset=remove 却显式 task.mode=edit），
+    # 任务专属的 local 开关必须让位给新任务，否则会把「移除」的绿区提示 / 洞填充
+    # 带进普通编辑，模型输入被污染（测试用例 0e 复现）。
+    explicit_mode = normalize_id(((params.get("task") or {})
+                                  if isinstance(params.get("task"), dict) else {}).get("mode"))
+    preset_mode = normalize_id((preset.get("task") or {}).get("mode"))
+    if explicit_mode and preset_mode and explicit_mode != preset_mode:
+        req_local = params.get("local") if isinstance(params.get("local"), dict) else {}
+        local = merged.get("local")
+        if isinstance(local, dict):
+            if "hint" not in req_local:
+                local["hint"] = "none"
+            if "fills" not in req_local:
+                local["fills"] = explicit_mode == "remove"
     if not normalize_id(req_task.get("mode")):
         req_task = {**req_task, **copy.deepcopy(preset.get("task") or {})}
     merged["task"] = req_task

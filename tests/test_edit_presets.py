@@ -42,6 +42,25 @@ def test_explicit_fields_beat_preset_and_preset_fills_the_rest():
     assert merged["turbo"]["profile"] == "turbo9_ckpt"
 
 
+def test_explicit_task_mode_drops_preset_task_only_keys():
+    """显式换了任务，预设里"任务专属"的 hint / fills 必须让位（测试用例 0e）。
+
+    否则 preset=remove + task.mode=edit 会把移除任务的绿区提示画进普通编辑的参考图。
+    """
+    merged, _ = presets.merge({"preset": "remove", "task": {"mode": "edit"}})
+    assert merged["task"]["mode"] == "edit"
+    assert merged["local"]["hint"] == "none"
+    assert merged["local"]["fills"] is False
+    # 用户显式给 hint 时仍然用户说了算
+    merged2, _ = presets.merge({"preset": "remove", "task": {"mode": "edit"},
+                                "local": {"hint": "green_overlay"}})
+    assert merged2["local"]["hint"] == "green_overlay"
+    # 任务一致时预设值原样保留
+    merged3, _ = presets.merge({"preset": "remove"})
+    assert merged3["local"]["hint"] == "green_overlay"
+    assert merged3["local"]["fills"] is True
+
+
 def test_no_preset_is_identity():
     params = {"local": {"scheme": "a"}, "task": {"mode": "edit"}}
     merged, info = presets.merge(params)

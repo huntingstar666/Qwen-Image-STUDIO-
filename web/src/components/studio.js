@@ -17,7 +17,7 @@ import { downloadUrl, fmtNum, readFileAsDataURL } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
-import { StudioDoc, ADJUST_DEFAULTS } from './studio/studioDoc.js';
+import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openCompareDialog } from './compare.js';
@@ -248,6 +248,7 @@ export function createStudioPage(host) {
               </div>
               <button class="btn ghost sm studio-block" type="button" data-ref="resetAdjust">复位调色</button>
               <div class="studio-note">调色为非破坏式，随时可以撤销；导出时才真正写入像素。</div>
+              <div class="studio-note" data-ref="filterNote" hidden></div>
             </div>
 
             <div class="studio-pane" data-pane="mask" hidden>
@@ -328,6 +329,7 @@ export function createStudioPage(host) {
     statusTool: ref('statusTool'),
     statusMask: ref('statusMask'),
     resetAdjust: ref('resetAdjust'),
+    filterNote: ref('filterNote'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
     rotateLeft: ref('rotateLeft'),
@@ -1192,6 +1194,18 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 不支持 Canvas filter 时禁用相关滑杆并说明，避免「滑杆有反应但画面没变」。 */
+  function applyCanvasFilterCapability() {
+    if (supportsCanvasFilter) return;
+    for (const key of ['exposure', 'brightness', 'contrast', 'saturation']) {
+      const input = host.querySelector(`[data-adjust="${key}"]`);
+      if (input) input.disabled = true;
+    }
+    refs.filterNote.hidden = false;
+    refs.filterNote.textContent =
+      '当前浏览器不支持画布滤镜：曝光 / 亮度 / 对比度 / 饱和度已禁用，色温与色调仍可用。';
+  }
+
   async function commitTransform(label, action) {
     if (!doc) return;
     const lost = [];
@@ -1702,6 +1716,7 @@ export function createStudioPage(host) {
     updateHistoryUi();
     setTool(tool);
     syncTabs();
+    applyCanvasFilterCapability();
     if (!doc) refs.statusTool.textContent = '未打开图片 · 支持拖拽 / 粘贴';
   });
 

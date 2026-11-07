@@ -43,6 +43,21 @@ export function canvasToBlob(canvas, type = 'image/png', quality) {
   });
 }
 
+/**
+ * 旧版 Safari 不支持 Canvas filter，赋值后读回仍是 'none'。
+ * 模块加载时探测一次，渲染与 UI 共用同一结论，避免「滑杆有反应但画面没变」。
+ */
+export const supportsCanvasFilter = (() => {
+  try {
+    const probe = document.createElement('canvas').getContext('2d');
+    if (!probe) return false;
+    probe.filter = 'brightness(0.5)';
+    return probe.filter === 'brightness(0.5)';
+  } catch {
+    return false;
+  }
+})();
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -407,7 +422,7 @@ export class StudioDoc {
     );
     ctx.rotate((rotate * Math.PI) / 180);
     ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-    if (ctx.filter !== undefined) {
+    if (supportsCanvasFilter) {
       const brightness = Math.pow(2, adjust.exposure / 100) * (1 + adjust.brightness / 100);
       const contrast = 1 + adjust.contrast / 100;
       const saturation = 1 + adjust.saturation / 100;
@@ -415,7 +430,7 @@ export class StudioDoc {
     }
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2, img.naturalWidth, img.naturalHeight);
     ctx.restore();
-    if (ctx.filter !== undefined) ctx.filter = 'none';
+    if (supportsCanvasFilter) ctx.filter = 'none';
 
     // 色温 / 色调：Canvas filter 不支持，用 soft-light 叠加近似
     if (adjust.temperature || adjust.tint) {

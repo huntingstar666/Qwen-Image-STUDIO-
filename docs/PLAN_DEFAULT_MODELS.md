@@ -185,6 +185,9 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 
 ## 12. 本方案不做
 
+- 不限制任务级 LoRA 叠加：页面的 `LoraPicker` 保持原样，仍可从全部已扫描 LoRA 里多选并调强度，请求 `loras` 参数不变；
+  设置里的 4 个 LoRA 槽位（turbo / consistency / remove / outpaint）只决定「默认用哪个」，候选永远来自扫描结果，
+  新放进 `loras` 目录的文件点一次「重新扫描」即可出现。
 - 不做多套命名方案（标准/高清/省显存）——结构已预留，后续再加。
 - 不改 Turbo 档位内部固定的 LoRA/底模策略（槽位只做兜底与 `turbo_unet` 覆盖）。
 - 不改 `model_root` 扫描算法与 `extra_model_paths.yaml` 解析。

@@ -482,6 +482,66 @@
   border-radius: 999px;
 }
 
+/* 蒙版工具浮条（选中画笔类工具时出现） */
+.studio-maskbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--glass-strong);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.studio-maskbar[hidden] {
+  display: none;
+}
+
+.studio-maskbar-tool {
+  width: 86px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+.studio-maskbar-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.studio-maskbar-field input[type="range"] {
+  width: 80px;
+  accent-color: var(--accent);
+}
+
+.studio-maskbar-field .mono {
+  min-width: 44px;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.studio-maskbar .btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  border-radius: 999px;
+}
+
 /* 状态栏 */
 .studio-status {
   display: flex;

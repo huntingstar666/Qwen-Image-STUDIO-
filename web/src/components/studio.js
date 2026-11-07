@@ -231,6 +231,33 @@ export function createStudioPage(host) {
 
             <div class="studio-canvas-wrap" data-ref="stage">
               <canvas data-ref="canvas"></canvas>
+              <div class="studio-maskbar" data-ref="maskbar" hidden>
+                <select class="select studio-maskbar-tool" data-ref="maskTool" aria-label="蒙版工具">
+                  <option value="brush">画笔</option>
+                  <option value="eraser">橡皮</option>
+                  <option value="rect">矩形</option>
+                  <option value="ellipse">椭圆</option>
+                  <option value="lasso">套索</option>
+                </select>
+                <label class="studio-maskbar-field">
+                  <span>大小</span>
+                  <input type="range" min="4" max="400" step="2" value="64" data-brush="size" />
+                  <span class="mono" data-value="size">64 px</span>
+                </label>
+                <label class="studio-maskbar-field">
+                  <span>硬度</span>
+                  <input type="range" min="0" max="100" step="1" value="70" data-brush="hardness" />
+                  <span class="mono" data-value="hardness">70%</span>
+                </label>
+                <label class="studio-maskbar-field">
+                  <span>不透明度</span>
+                  <input type="range" min="5" max="100" step="1" value="100" data-brush="opacity" />
+                  <span class="mono" data-value="opacity">100%</span>
+                </label>
+                <span class="spacer"></span>
+                <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
+                <button class="btn ghost sm" type="button" data-ref="maskClear">清除蒙版</button>
+              </div>
               <div class="studio-outpaint" data-ref="outpaintLayer" hidden>
                 <div class="so-shade" data-shade="top"></div>
                 <div class="so-shade" data-shade="bottom"></div>
@@ -307,27 +334,6 @@ export function createStudioPage(host) {
               <div class="studio-note" data-ref="filterNote" hidden></div>
             </div>
 
-            <div class="studio-pane" data-pane="mask" hidden>
-              <div class="studio-pane-title">画笔</div>
-              <label class="studio-slider">
-                <span class="studio-slider-head"><span>大小</span><span class="mono" data-value="size">64 px</span></span>
-                <input type="range" min="4" max="400" step="2" value="64" data-brush="size" />
-              </label>
-              <label class="studio-slider">
-                <span class="studio-slider-head"><span>硬度</span><span class="mono" data-value="hardness">70%</span></span>
-                <input type="range" min="0" max="100" step="1" value="70" data-brush="hardness" />
-              </label>
-              <label class="studio-slider">
-                <span class="studio-slider-head"><span>不透明度</span><span class="mono" data-value="opacity">100%</span></span>
-                <input type="range" min="5" max="100" step="1" value="100" data-brush="opacity" />
-              </label>
-              <div class="studio-row">
-                <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
-                <button class="btn ghost sm" type="button" data-ref="maskClear">清除蒙版</button>
-              </div>
-              <div class="studio-note">蒙版标红的区域会被送去图生图做精准重绘；送入后可在图像编辑页继续调整。</div>
-            </div>
-
             <div class="studio-pane" data-pane="transform" hidden>
               <div class="studio-pane-title">方向</div>
               <div class="studio-row">
@@ -389,6 +395,8 @@ export function createStudioPage(host) {
     statusMask: ref('statusMask'),
     resetAdjust: ref('resetAdjust'),
     filterNote: ref('filterNote'),
+    maskbar: ref('maskbar'),
+    maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
     rotateLeft: ref('rotateLeft'),
@@ -612,7 +620,8 @@ export function createStudioPage(host) {
       outpaint?.deactivate?.();
       if (activeTab === 'outpaint') activeTab = 'ai';
     }
-    if (!MASK_TOOLS.has(next) && activeTab === 'mask') activeTab = 'ai';
+    refs.maskbar.hidden = !MASK_TOOLS.has(next);
+    if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
     if (!MASK_TOOLS.has(next)) {
       cropRect = null;
@@ -623,9 +632,6 @@ export function createStudioPage(host) {
       syncTabs();
     } else if (next === 'move') {
       activeTab = 'ai';
-      syncTabs();
-    } else if (MASK_TOOLS.has(next)) {
-      activeTab = 'mask';
       syncTabs();
     } else if (next === 'outpaint') {
       activeTab = 'outpaint';
@@ -644,10 +650,9 @@ export function createStudioPage(host) {
 
   const TAB_IDS = new Set(['ai', 'adjust', 'transform']);
 
-  /** 恢复会话时把历史的 5 tab 归一化：蒙版 / 扩图只在对应工具下保留。 */
+  /** 恢复会话时把历史的 5 tab 归一化：扩图只在对应工具下保留。 */
   function normalizeTab(tab) {
     if (TAB_IDS.has(tab)) return tab;
-    if (tab === 'mask' && MASK_TOOLS.has(tool)) return 'mask';
     if (tab === 'outpaint' && tool === 'outpaint') return 'outpaint';
     return 'ai';
   }
@@ -2123,11 +2128,16 @@ export function createStudioPage(host) {
       if (key === 'size') brush.size = value;
       if (key === 'hardness') brush.hardness = value / 100;
       if (key === 'opacity') brush.opacity = value / 100;
-      const label = host.querySelector(`[data-value="${key}"]`);
+      const label = host.querySelector(`.studio-maskbar [data-value="${key}"]`);
       if (label) label.textContent = key === 'size' ? `${value} px` : `${value}%`;
       scheduleDraw();
     });
   }
+
+  /* 蒙版工具浮条：下拉切换画笔类工具，参数与快捷键共用同一份 brush 状态。 */
+  refs.maskTool.addEventListener('change', () => {
+    if (MASK_TOOLS.has(refs.maskTool.value)) setTool(refs.maskTool.value);
+  });
 
   refs.maskClear.addEventListener('click', async () => {
     if (!doc || !doc.hasMask()) return;

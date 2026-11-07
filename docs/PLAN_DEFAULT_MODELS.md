@@ -163,6 +163,8 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 | S6 | 首次使用三步向导 + i18n | 清空 model_root 后启动 → 向导 → 自动匹配 → 确认 |
 | S7 | 文档回写（本文 + `PLAN_PS_EDIT_GH.md` 交叉引用）与回归 | 全部测试通过，提交 |
 
+> 进度：S1 已完成 —— `server/model_slots.py`（8 槽位注册表、`resolve_plan` 四层合并、`match_slots` 精确/后缀/同名匹配、`audit`）与 `tests/test_model_slots.py`（8 项全绿）。
+
 ## 10. 测试计划
 
 - 单元：槽位合并优先级、预设覆盖、旧键迁移、相对/绝对路径规整、多候选不自动选。

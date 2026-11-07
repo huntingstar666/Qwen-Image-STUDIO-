@@ -42,6 +42,8 @@ const DEFAULT_EDIT = {
   preset: 'mask_edit',
   overrides: {},
   protection: { color: true, zeroShift: true },
+  // 旧字段（羽化/外扩/校色…）已迁移到 overrides 的一次性标记
+  presetMigrated: false,
   consistency: true,
   consistencyStrength: 0.48,
   sizeMode: 'follow',

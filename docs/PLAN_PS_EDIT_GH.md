@@ -2271,6 +2271,7 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 
 - **P15-1 ✅** 公共模块已抽出并接入图片精修：`studio/presets.js`（`/api/meta` 拉取 + 预设/覆盖项合并 + 无蒙版降级）、`studio/guards.js`（色彩校准 / 零像素偏移两开关，值写 `settings.edit.protection` 并跨页共享）、`studio/advanced.js`（8 组高级设置 + 三级恢复）。`store.DEFAULT_EDIT` 新增 `preset/overrides/protection`。图生图页在 P15-2/P15-3 直接 import 同一份。
 - **P15-2 ✅** 图生图 payload 升级为「预设模式」：`collectPayload` 先按 `edit.preset` + 有无遮罩解析预设（有遮罩 `mask_edit`、无遮罩降级 `canvas`），命中预设时只发 `preset + overrides`（`nestOverrides` 复用图片精修同一份），未改高级项时请求里除 `preset` 外不多任何字段；`local.*` 完整字段只在无预设（meta 拉取失败）时保留，老配置仍按原样提交。`task.mode` 两页都显式传（取预设 `task_mode`）；`remove` 强制 `fills=true + green_overlay`、`outpaint` 强制 `fills=false + gray_fill`。同时修 G1：一致性关掉改发 `consistency_lora:false` 且预设模式补 `local.consistency=false`。旧设置按 §15.6 迁移：`scheme/feather/colorMatch/colorStrength/maskExpand/context*/blendPixels` 仅在与预设值不同时落覆盖项。提交前 `await ensurePresets()`，失败自动退回旧参数集。全量 **391 passed**。
+- **P15-3 ✅** 图生图侧栏上线「方案预设 / 本次保护 / 高级参数」三块，全部复用图片精修同一套组件与数据：预设横条直接渲染 `/api/meta.edit_presets`（5 卡 + 版本号 + 摘要 + `已修改` 标记），点卡片写 `edit.preset`；`mountGuards` 两开关写 `edit.protection`；`mountAdvanced` 7 组折叠直接读写 `edit.overrides`，快捷滑杆也改为写覆盖项（`withOverride`），与高级面板双向回显。无蒙版时 `mask_edit/remove` 按 `canvas` 执行并在开关下方提示「将按整画布执行」。保护关闭时 payload 显式落 `local.color_match=false + local.color_restore=false`、`zero_shift.enabled=false`。旧字段一次性迁移到覆盖项（`edit.presetMigrated`），迁移后快捷项回显预设生效值。验证：浏览器实测 5 张卡片 / 2 个开关 / 7 组高级、切换卡片与滑杆 `56→64` 后高级面板同步为 64 且 `overrides` 落盘；全量 **391 passed**。
 
 ### 15.8 决策（钉死）
 

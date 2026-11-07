@@ -30,12 +30,18 @@ import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '..
 import { escapeHtml, fmtNum, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
 import {
   defaultPresetId,
+  effectiveValue,
   findPreset,
   loadPresets,
+  modifiedKeys,
+  normalizeProtection,
   presetTaskMode,
   resolvePresetForMask,
+  withOverride,
 } from './studio/presets.js';
 import { nestOverrides } from './studio/payload.js';
+import { mountGuards } from './studio/guards.js';
+import { mountAdvanced } from './studio/advanced.js';
 
 const MAX_IMAGES = 10;
 
@@ -60,6 +66,7 @@ export function createEditPage(host) {
   let dragFrom = null;
   let lastSeed = null;
   let presetList = [];
+  let presetVersion = 1;
 
   host.innerHTML = `
     <div class="page wb-page page-edit-v2">
@@ -70,6 +77,18 @@ export function createEditPage(host) {
             <button class="wb-adv-close" type="button" data-ref="advClose" title="收起侧边栏">×</button>
           </div>
           <div class="wb-adv-body">
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">方案预设 <span class="panel-sub" data-ref="presetNote"></span></div>
+          </div>
+          <div class="panel-body">
+            <div class="ai-presets edit-presets" data-ref="presetCards"></div>
+            <div class="ai-hint" data-ref="presetHint"></div>
+            <div data-ref="guardsHost"></div>
+            <div class="ai-guard-note" data-ref="guardNote" hidden></div>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">尺寸与画布 <span class="panel-sub">零偏移对齐</span></div>
@@ -157,6 +176,13 @@ export function createEditPage(host) {
               <div class="notice info">羽化与外扩会实时叠加到遮罩编辑器的红色预览；提交的遮罩尺寸 = 第 1 张图尺寸。</div>
             </div>
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">高级参数 <span class="panel-sub">孤海几何 / 接缝 / 预处理</span></div>
+          </div>
+          <div class="panel-body" data-ref="advancedHost"></div>
         </section>
 
         <section class="panel">
@@ -383,6 +409,12 @@ export function createEditPage(host) {
     localEnabled: ref('localEnabled'),
     localOptions: ref('localOptions'),
     localDisabledNote: ref('localDisabledNote'),
+    presetCards: ref('presetCards'),
+    presetNote: ref('presetNote'),
+    presetHint: ref('presetHint'),
+    guardsHost: ref('guardsHost'),
+    guardNote: ref('guardNote'),
+    advancedHost: ref('advancedHost'),
     schemeA: ref('schemeA'),
     schemeB: ref('schemeB'),
     feather: ref('feather'),
@@ -1480,48 +1512,232 @@ export function createEditPage(host) {
     edit.scheme = scheme;
     refs.schemeA.checked = scheme === 'a';
     refs.schemeB.checked = scheme === 'b';
+    paintSchemePills();
+    patchSettings({ edit: { scheme } });
+    setLocalOverride('local.scheme', scheme);
+  }
+
+  function paintSchemePills() {
     for (const pill of refs.localOptions.querySelectorAll('.radio-pill')) {
       const input = pill.querySelector('input');
       pill.classList.toggle('active', input.checked);
     }
-    patchSettings({ edit: { scheme } });
   }
+
   refs.schemeA.addEventListener('change', () => setScheme('a'));
   refs.schemeB.addEventListener('change', () => setScheme('b'));
 
-  function bindRange(input, key, labelEl, format, after) {
-    input.value = String(edit[key]);
-    if (labelEl) labelEl.textContent = format(edit[key]);
+  /** 局部编辑的快捷项直接写覆盖项，生效值 = 预设 + 覆盖（与图片精修同一套规则）。 */
+  function bindPresetRange(input, key, stateKey, labelEl, format) {
     input.addEventListener('input', () => {
       const value = Number(input.value);
-      edit[key] = value;
       if (labelEl) labelEl.textContent = format(value);
-      patchSettings({ edit: { [key]: value } });
-      after?.(value);
+      if (stateKey) edit[stateKey] = value;
+      setLocalOverride(key, value);
     });
   }
 
-  bindRange(refs.feather, 'feather', refs.featherVal, (v) => `${Math.round(v)} px`);
+  bindPresetRange(refs.feather, 'local.feather', 'feather', refs.featherVal, (v) => `${Math.round(v)} px`);
   // 注意：store 里的字段叫 maskExpand（不是 expand），绑错会让滑杆值变成 undefined → 显示 NaN px
-  bindRange(refs.expand, 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`);
-  bindRange(refs.colorStrength, 'colorStrength', refs.colorStrengthVal, (v) => Number(v).toFixed(2));
-  bindRange(refs.contextFactor, 'contextFactor', refs.contextFactorVal, (v) => `${Number(v).toFixed(1)}×`);
+  bindPresetRange(refs.expand, 'local.mask_expand', 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`);
+  bindPresetRange(refs.colorStrength, 'local.color_strength', 'colorStrength', refs.colorStrengthVal, (v) => Number(v).toFixed(2));
+  bindPresetRange(refs.contextFactor, 'local.context_factor', 'contextFactor', refs.contextFactorVal, (v) => `${Number(v).toFixed(1)}×`);
 
-  refs.colorMatch.checked = Boolean(edit.colorMatch);
   refs.colorMatch.addEventListener('change', () => {
     edit.colorMatch = refs.colorMatch.checked;
     patchSettings({ edit: { colorMatch: edit.colorMatch } });
+    setLocalOverride('local.color_match', edit.colorMatch);
   });
-  refs.contextPixels.value = String(edit.contextPixels);
   refs.contextPixels.addEventListener('change', () => {
     edit.contextPixels = Math.max(0, Math.round(Number(refs.contextPixels.value) || 0));
     patchSettings({ edit: { contextPixels: edit.contextPixels } });
+    setLocalOverride('local.context_pixels', edit.contextPixels);
   });
-  refs.blendPixels.value = String(edit.blendPixels);
   refs.blendPixels.addEventListener('change', () => {
     edit.blendPixels = Math.max(0, Math.round(Number(refs.blendPixels.value) || 0));
     patchSettings({ edit: { blendPixels: edit.blendPixels } });
+    setLocalOverride('local.blend_pixels', edit.blendPixels);
   });
+
+  /* ============================================================
+   * 方案预设 / 本次保护 / 高级参数（与图片精修共用同一套数据源）
+   * ============================================================ */
+  function localHasMask() {
+    const target = images[0];
+    return Boolean(refs.localEnabled.checked && target?.mask?.dataUrl);
+  }
+
+  function currentPresetId() {
+    const wanted = String(edit.preset || defaultPresetId(presetList) || 'mask_edit');
+    return resolvePresetForMask(wanted, localHasMask());
+  }
+
+  function currentPreset() {
+    return findPreset(presetList, currentPresetId().id);
+  }
+
+  function presetValue(key, fallback) {
+    return effectiveValue(currentPreset(), edit.overrides || {}, key, fallback);
+  }
+
+  function setLocalOverride(key, value) {
+    const preset = currentPreset();
+    if (!preset) return;
+    edit.overrides = withOverride(preset, edit.overrides || {}, key, value);
+    patchSettings({ edit: { overrides: edit.overrides } });
+    renderPresets();
+    // 快捷项变化时高级折叠里的同一字段也要跟着回显
+    advanced.refresh();
+  }
+
+  mountGuards(refs.guardsHost, {
+    value: edit.protection,
+    onChange(next) {
+      edit.protection = next;
+      patchSettings({ edit: { protection: next } });
+      syncGuardNote();
+    },
+  });
+
+  const advanced = mountAdvanced(refs.advancedHost, {
+    getPreset: currentPreset,
+    getOverrides: () => edit.overrides || {},
+    apply(next) {
+      edit.overrides = next;
+      patchSettings({ edit: { overrides: next } });
+      syncLocalControls();
+      renderPresets();
+    },
+    onChange() {
+      renderPresets();
+    },
+  });
+
+  function renderPresets() {
+    if (!presetList.length) {
+      refs.presetCards.innerHTML = '<div class="ai-hint">未连接后端，暂不能选择预设（提交时回退旧参数集）</div>';
+      refs.presetNote.textContent = '';
+      refs.presetHint.textContent = '';
+      refs.guardNote.hidden = true;
+      return;
+    }
+    const preset = currentPreset();
+    const dirty = preset ? modifiedKeys(preset, edit.overrides || {}).length > 0 : false;
+    refs.presetCards.innerHTML = presetList
+      .map((item) => {
+        const active = preset ? item.id === preset.id : false;
+        return `<button type="button" class="ai-preset${active ? ' active' : ''}" data-preset="${escapeHtml(item.id)}"
+          title="${escapeHtml(item.summary || '')}">
+          <span class="ai-preset-head">
+            <span class="ai-preset-name">${escapeHtml(item.label || item.id)}</span>
+            ${item.default ? '<span class="ai-preset-badge">推荐</span>' : ''}
+            ${active && dirty ? '<span class="ai-preset-chip">已修改</span>' : ''}
+          </span>
+          <span class="ai-preset-sum">${escapeHtml(item.summary || '')}</span>
+        </button>`;
+      })
+      .join('');
+    refs.presetNote.textContent = `v${presetVersion}`;
+    refs.presetHint.textContent = preset?.summary || '';
+    syncGuardNote();
+  }
+
+  function syncGuardNote() {
+    const protection = normalizeProtection(edit.protection);
+    const notes = [];
+    const resolved = currentPresetId();
+    if (resolved.degraded) notes.push('当前没有蒙版：局部编辑预设会按整画布执行');
+    if (!protection.color) notes.push('色彩校准已关闭：输出可能与原图有色差');
+    if (!protection.zeroShift) notes.push('零像素偏移已关闭：可能出现 1~31px 位移或亚像素模糊');
+    refs.guardNote.hidden = !notes.length;
+    refs.guardNote.textContent = notes.join('；');
+  }
+
+  refs.presetCards.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-preset]');
+    if (!button) return;
+    const preset = findPreset(presetList, button.dataset.preset);
+    if (!preset) return;
+    edit.preset = preset.id;
+    patchSettings({ edit: { preset: preset.id } });
+    syncLocalControls();
+    renderPresets();
+    advanced.refresh();
+  });
+
+  /** 旧字段一次性迁移到覆盖项，避免历史自定义值被预设默认值覆盖。 */
+  function migrateLegacyOverrides() {
+    if (edit.presetMigrated) return;
+    const preset = currentPreset();
+    if (!preset) return;
+    let next = { ...(edit.overrides || {}) };
+    const seed = (key, value, fallback) => {
+      const number = Number(value);
+      if (!Number.isFinite(number) || Math.abs(number - Number(fallback)) < 1e-6) return;
+      if (!Object.prototype.hasOwnProperty.call(next, key)) next = withOverride(preset, next, key, number);
+    };
+    seed('local.feather', edit.feather, 32);
+    seed('local.mask_expand', edit.maskExpand, 0);
+    seed('local.color_strength', edit.colorStrength, 0.6);
+    seed('local.context_factor', edit.contextFactor, 1.5);
+    seed('local.context_pixels', edit.contextPixels, 96);
+    seed('local.blend_pixels', edit.blendPixels, 24);
+    if (edit.colorMatch === false) next = withOverride(preset, next, 'local.color_match', false);
+    if (edit.scheme === 'b') next = withOverride(preset, next, 'local.scheme', 'b');
+    edit.overrides = next;
+    edit.presetMigrated = true;
+    patchSettings({ edit: { overrides: next, presetMigrated: true } });
+  }
+
+  /** 快捷项回显预设生效值（不写覆盖项）。 */
+  function syncLocalControls() {
+    const preset = currentPreset();
+    if (!preset) return;
+    const scheme = String(presetValue('local.scheme', preset.params?.local?.scheme || 'a'));
+    if (scheme === 'a' || scheme === 'b') {
+      edit.scheme = scheme;
+      refs.schemeA.checked = scheme === 'a';
+      refs.schemeB.checked = scheme === 'b';
+      paintSchemePills();
+    }
+    const feather = Math.round(Number(presetValue('local.feather', 32)));
+    edit.feather = feather;
+    refs.feather.value = String(feather);
+    refs.featherVal.textContent = `${feather} px`;
+    const expand = Math.round(Number(presetValue('local.mask_expand', 0)));
+    edit.maskExpand = expand;
+    refs.expand.value = String(expand);
+    refs.expandVal.textContent = `${expand} px`;
+    const strength = Number(presetValue('local.color_strength', 0.6));
+    edit.colorStrength = strength;
+    refs.colorStrength.value = String(strength);
+    refs.colorStrengthVal.textContent = strength.toFixed(2);
+    const factor = Number(presetValue('local.context_factor', 1.5));
+    edit.contextFactor = factor;
+    refs.contextFactor.value = String(factor);
+    refs.contextFactorVal.textContent = `${factor.toFixed(1)}×`;
+    const ctxPixels = Math.round(Number(presetValue('local.context_pixels', 96)));
+    edit.contextPixels = ctxPixels;
+    refs.contextPixels.value = String(ctxPixels);
+    const blend = Math.round(Number(presetValue('local.blend_pixels', 24)));
+    edit.blendPixels = blend;
+    refs.blendPixels.value = String(blend);
+    const match = Boolean(presetValue('local.color_match', true));
+    edit.colorMatch = match;
+    refs.colorMatch.checked = match;
+    patchSettings({
+      edit: {
+        scheme: edit.scheme,
+        feather,
+        maskExpand: expand,
+        colorStrength: strength,
+        contextFactor: factor,
+        contextPixels: ctxPixels,
+        blendPixels: blend,
+        colorMatch: match,
+      },
+    });
+  }
 
   function updateMaskStatus() {
     const target = images[0];
@@ -1534,6 +1750,8 @@ export function createEditPage(host) {
     } else {
       refs.actionHint.textContent = `局部编辑已开启：遮罩覆盖 ${percent}%，遮罩外逐像素保留`;
     }
+    // 遮罩有无会影响「需蒙版预设」是否降级，及时刷新预设条与保护提示
+    if (presetList.length) renderPresets();
   }
 
   /* ============================================================
@@ -1838,7 +2056,9 @@ export function createEditPage(host) {
     refs.readyHint.style.color = ready ? 'var(--ok)' : 'var(--warn)';
   }
 
-  setScheme(edit.scheme === 'b' ? 'b' : 'a');
+  refs.schemeA.checked = edit.scheme !== 'b';
+  refs.schemeB.checked = edit.scheme === 'b';
+  paintSchemePills();
   refs.localEnabled.checked = Boolean(edit.localEnabled);
   syncLocalUi();
   renderSelects();
@@ -1851,6 +2071,13 @@ export function createEditPage(host) {
   renderHealthHint();
   store.subscribe(() => renderHealthHint());
   on('options:loaded', () => refreshAll());
+  // 预设摘要异步加载：先迁移旧字段，再回显预设生效值
+  ensurePresets().then(() => {
+    migrateLegacyOverrides();
+    syncLocalControls();
+    renderPresets();
+    advanced.refresh();
+  });
 
   /* ============================================================
    * 提交
@@ -1861,41 +2088,11 @@ export function createEditPage(host) {
     try {
       const data = await loadPresets();
       presetList = data.list || [];
+      presetVersion = data.version || 1;
     } catch {
       presetList = [];
     }
     return presetList;
-  }
-
-  /**
-   * 旧设置项 → 覆盖项（§15.6）：只在与预设值不同时落字段，
-   * 保证「没改高级项时提交里只有 preset」。
-   */
-  function legacyEditOverrides(presetMeta) {
-    const local = presetMeta?.params?.local || {};
-    const out = {};
-    const differs = (a, b) =>
-      typeof a === 'number' || typeof b === 'number'
-        ? Math.abs(Number(a) - Number(b)) > 1e-6
-        : a !== b;
-    const presetScheme = String(local.scheme || '');
-    if (presetScheme && presetScheme !== 'native') {
-      const uiScheme = refs.schemeB.checked ? 'b' : 'a';
-      if (uiScheme !== presetScheme) out['local.scheme'] = uiScheme;
-    }
-    const pairs = [
-      ['local.feather', Math.round(Number(edit.feather) || 0), Number(local.feather ?? 32)],
-      ['local.color_match', refs.colorMatch.checked, local.color_match !== false],
-      ['local.color_strength', Number(edit.colorStrength), Number(local.color_strength ?? 0.6)],
-      ['local.mask_expand', Math.round(Number(edit.maskExpand) || 0), Number(local.mask_expand ?? 0)],
-      ['local.context_factor', Number(edit.contextFactor), 1.5],
-      ['local.context_pixels', Math.round(Number(edit.contextPixels) || 0), 96],
-      ['local.blend_pixels', Math.round(Number(edit.blendPixels) || 0), Number(local.blend_pixels ?? 24)],
-    ];
-    for (const [key, value, presetValue] of pairs) {
-      if (differs(value, presetValue)) out[key] = value;
-    }
-    return out;
   }
 
   function collectPayload(precomputedMask = null) {
@@ -1999,8 +2196,17 @@ export function createEditPage(host) {
     if (presetId) {
       // 预设模式：只发 preset + 覆盖项（§14.4）；其余参数由后端预设补全
       payload.preset = presetId;
-      const extra = nestOverrides({ ...legacyEditOverrides(presetMeta), ...(edit.overrides || {}) });
+      const extra = nestOverrides(edit.overrides || {});
       const localExtra = { ...(extra.local || {}) };
+      const protection = normalizeProtection(edit.protection);
+      // 保护开关关闭时显式落字段（B2/B3）
+      if (!protection.color) {
+        localExtra.color_match = false;
+        localExtra.color_restore = false;
+      }
+      if (!protection.zeroShift) {
+        extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };
+      }
       // 任务训练约定优先于预设文案
       if (taskMode === 'remove') {
         localExtra.fills = true;

@@ -67,7 +67,7 @@ class UpscalerManager:
 
     def get(self, name: str | None = None, cfg: dict[str, Any] | None = None):
         cfg = cfg or app_config.load_config()
-        name = str(name or registry.section(cfg).get("default_engine") or "seedvr2")
+        name = str(name or registry.section(cfg).get("default_engine") or "vosr2")
         with self._lock:
             for other, engine in list(self._engines.items()):
                 if other != name and engine.loaded:

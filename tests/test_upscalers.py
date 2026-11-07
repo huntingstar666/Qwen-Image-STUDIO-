@@ -111,5 +111,5 @@ def test_manager_status_is_empty_before_use():
 
 def test_defaults_section_exists():
     up = config.DEFAULTS.get("upscale") or {}
-    assert up.get("default_engine") == "seedvr2"
+    assert up.get("default_engine") == "vosr2"
     assert up.get("defaults", {}).get("scale") == 2

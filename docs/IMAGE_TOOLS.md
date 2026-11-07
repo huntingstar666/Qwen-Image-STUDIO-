@@ -186,10 +186,10 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
     "vosr2": {"dir": "...", "ready": true, "model_bundle": "VOSR2", "bundles": ["VOSR2"],
               "missing": []}
   },
-  "default_engine": "seedvr2",
+  "default_engine": "vosr2",
   "defaults": {"scale": 2, "seed": 42},
   "ready": true,
-  "status": {"loaded": {"seedvr2": true}}
+  "status": {"loaded": {"vosr2": true}}
 }
 ```
 

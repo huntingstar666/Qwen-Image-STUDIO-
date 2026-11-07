@@ -88,6 +88,14 @@ class VOSR2Engine:
                 progress(1.0, "加载 VOSR2 权重")
             dtype = "default" if self.precision in ("auto", "", None) else self.precision
             try:
+                import torch
+
+                if not torch.cuda.is_available():
+                    # CPU 上 bf16/fp16 推理会明显变慢甚至报错，统一退回默认精度
+                    dtype = "default"
+            except Exception:  # noqa: BLE001 - 无 torch 时交给 loader 报错
+                pass
+            try:
                 from .vendor.vosr2.loader import VOSR2LoadError, load_vosr2
 
                 self._model = load_vosr2(self.model_dir, self.bundle, dtype=dtype)

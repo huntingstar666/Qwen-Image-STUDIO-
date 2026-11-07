@@ -98,7 +98,7 @@ function emptyForm() {
         vae_tile_size: 512,
         vae_tile_overlap: 64,
       },
-      default_engine: 'seedvr2',
+      default_engine: 'vosr2',
       idle_unload_minutes: 10,
       defaults: { scale: 2 },
     },
@@ -168,7 +168,7 @@ function upscaleFormFromData(up = {}) {
       vae_tile_size: Number(vosr2.vae_tile_size) || 512,
       vae_tile_overlap: Number(vosr2.vae_tile_overlap) || 64,
     },
-    default_engine: up.default_engine || 'seedvr2',
+    default_engine: up.default_engine || 'vosr2',
     idle_unload_minutes: Number(up.idle_unload_minutes ?? 10),
     defaults: { scale: Number(up.defaults?.scale) || 2 },
   };

@@ -1191,7 +1191,7 @@ def api_image_upscale(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             params[key] = payload.get(key)
 
     scan = upscale_registry.scan_all(cfg)
-    engine = str(payload.get("engine") or scan.get("default_engine") or "seedvr2")
+    engine = str(payload.get("engine") or scan.get("default_engine") or "vosr2")
     if engine not in scan["engines"]:
         raise ApiError(f"未知的放大引擎：{engine}", code="invalid_field")
     if not scan["engines"][engine].get("ready"):

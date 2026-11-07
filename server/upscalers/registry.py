@@ -174,7 +174,7 @@ def scan_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "flashvsr": scan_flashvsr(dirs["flashvsr"], cfg),
         "vosr2": scan_vosr2(dirs["vosr2"], cfg),
     }
-    default = str(up.get("default_engine") or "seedvr2")
+    default = str(up.get("default_engine") or "vosr2")
     if not engines.get(default, {}).get("ready"):
         ready = [k for k, v in engines.items() if v.get("ready")]
         default = ready[0] if ready else default

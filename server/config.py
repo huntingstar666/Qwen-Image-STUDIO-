@@ -148,7 +148,7 @@ DEFAULTS: dict[str, Any] = {
     # 约定目录自动推断；模型文件从设置页扫描结果里选。
     "upscale": {
         "dirs": {"seedvr2": "", "flashvsr": "", "vosr2": ""},
-        "default_engine": "seedvr2",
+        "default_engine": "vosr2",
         "seedvr2": {
             "dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
             "vae": "ema_vae_fp16.safetensors",

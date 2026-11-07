@@ -40,6 +40,7 @@ import {
   withOverride,
 } from './studio/presets.js';
 import { nestOverrides } from './studio/payload.js';
+import { chainConfigOf, imageUrlToDataUrl, meanDeltaE } from './studio/chain.js';
 import { mountGuards } from './studio/guards.js';
 import { mountAdvanced } from './studio/advanced.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
@@ -59,6 +60,8 @@ const FALLBACK_SCHEDULERS = ['simple', 'normal', 'beta', 'karras', 'exponential'
 export function createEditPage(host) {
   const edit = store.state.edit;
   let images = [];
+  // 连续编辑会话：起点原图 / 已接力轮次 / 累计漂移（chain 预设专用）
+  let chainSession = { config: null, round: 0, drift: 0, original: null, lastDataUrl: '' };
   let turboControl = null;
   let loraPicker = null;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
@@ -319,6 +322,7 @@ export function createEditPage(host) {
               <span class="spacer"></span>
               <div class="wb-status-job" data-ref="statusStrip"></div>
             </div>
+            <div class="notice info" data-ref="chainBar" hidden></div>
             <div class="wb-prompt-wrap">
               <div data-ref="stylePicker"></div>
               <div class="wb-prompt" data-ref="prompt" spellcheck="false"
@@ -399,6 +403,7 @@ export function createEditPage(host) {
     libHost: ref('libHost'),
     refBox: ref('refBox'),
     composer: ref('composer'),
+    chainBar: ref('chainBar'),
     uploadCount: ref('uploadCount'),
     dropzone: ref('dropzone'),
     fileInput: ref('fileInput'),
@@ -2335,6 +2340,163 @@ export function createEditPage(host) {
     refs.actionHint.textContent = parts.join(' · ') || DEFAULT_ACTION_HINT;
   }
 
+  /* ============================================================
+   * 连续编辑（接力）：结果自动接为下一轮输入、保留遮罩、回锚提示
+   * chain 契约由预设下发（server/presets.py 的 chain_mask / chain_native）
+   * ============================================================ */
+  function activeChainConfig() {
+    if (!images.length) return null;
+    const hasMask = Boolean(refs.localEnabled.checked && images[0]?.mask?.dataUrl);
+    const wanted = String(edit.preset || defaultPresetId(presetList) || 'mask_edit');
+    const resolved = resolvePresetForMask(wanted, hasMask);
+    const cfg = chainConfigOf(findPreset(presetList, resolved.id));
+    if (!cfg) return null;
+    if (cfg.mode === 'mask' && !hasMask) return null;
+    return cfg;
+  }
+
+  function beginChainIfNeeded(cfg) {
+    const first = images[0];
+    if (!first) return;
+    const sameSession = chainSession.original
+      && chainSession.config?.mode === cfg.mode
+      && chainSession.lastDataUrl === first.dataUrl;
+    if (sameSession) {
+      chainSession.config = cfg;
+      return;
+    }
+    chainSession = {
+      config: cfg,
+      round: 0,
+      drift: 0,
+      lastDataUrl: first.dataUrl,
+      original: {
+        dataUrl: first.dataUrl,
+        width: first.width,
+        height: first.height,
+        mask: first.mask ? { ...first.mask } : null,
+      },
+    };
+    renderChainBar();
+  }
+
+  function chainName(name, round) {
+    const base = String(name || 'image').replace(/\.[^.]+$/, '');
+    return `${base}-chain${round}.png`;
+  }
+
+  function renderChainBar() {
+    const bar = refs.chainBar;
+    if (!bar) return;
+    const { round, drift, config, original } = chainSession;
+    if (!original || !round) {
+      bar.hidden = true;
+      bar.innerHTML = '';
+      return;
+    }
+    const warn = drift >= (config?.driftWarn || 10);
+    bar.hidden = false;
+    bar.className = `notice ${warn ? 'warn' : 'info'}`;
+    bar.innerHTML = `
+      <span>连续编辑第 <b>${round}</b> 轮 · 结果已自动接为下一轮输入${config?.carryMask ? ' · 遮罩已保留' : ''} · 累计漂移 ΔE <b>${drift.toFixed(1)}</b>${warn ? '（建议回锚）' : ''}</span>
+      <span class="spacer"></span>
+      <button class="btn ghost sm" type="button" data-chain="anchor">回锚到原图</button>
+      <button class="btn ghost sm" type="button" data-chain="hide">收起</button>`;
+  }
+
+  function anchorChainBack(silent = false) {
+    const original = chainSession.original;
+    if (!original || !images.length) return;
+    const prev = images[0];
+    images[0] = {
+      ...prev,
+      id: `img-${Date.now().toString(36)}`,
+      name: chainName(prev.name, 'anchor'),
+      dataUrl: original.dataUrl,
+      width: original.width,
+      height: original.height,
+      mask: original.mask ? { ...original.mask } : null,
+    };
+    chainSession.round = 0;
+    chainSession.drift = 0;
+    chainSession.lastDataUrl = original.dataUrl;
+    renderUploadList();
+    renderModeRows();
+    updateSizeInfo();
+    updateMaskStatus();
+    renderChainBar();
+    if (!silent) toastSuccess('已回锚到本次接力的起点原图，遮罩已还原');
+  }
+
+  function promptChainAnchor() {
+    const { round, drift, original } = chainSession;
+    if (!original) return;
+    openModal({
+      title: `已连续编辑 ${round} 轮`,
+      subtitle: '整图反复重绘会累积漂移；建议回锚到原图后再继续',
+      content: `<div class="notice ${drift >= 10 ? 'warn' : 'info'}">相对起点原图累计漂移 ΔE ${drift.toFixed(1)}。回锚会丢弃这一段的画面变化（遮罩保留）。</div>`,
+      actions: [
+        { label: '继续接力', kind: 'ghost', close: true },
+        { label: '回锚到原图', kind: 'primary', close: true, onClick: () => anchorChainBack() },
+      ],
+    });
+  }
+
+  async function advanceChain(job, cfg) {
+    if (job?.status && job.status !== 'done') return;
+    const image = (job?.images || [])[0];
+    if (!image?.url) return;
+    try {
+      const url = String(image.url).startsWith('http') ? image.url : api.fileUrl(image.url);
+      const dataUrl = await imageUrlToDataUrl(url);
+      const { width, height } = await probeImageSize(dataUrl);
+      const prev = images[0];
+      if (!prev) return;
+      let mask = null;
+      if (cfg.carryMask && prev.mask?.dataUrl) {
+        const same = Number(prev.mask.width) === Number(width)
+          && Number(prev.mask.height) === Number(height);
+        mask = same ? { ...prev.mask } : null;
+        if (!same) toastWarn('输出尺寸与遮罩不一致，遮罩已清除，请重新涂抹');
+      }
+      images[0] = {
+        ...prev,
+        id: `img-${Date.now().toString(36)}`,
+        name: chainName(prev.name, chainSession.round + 1),
+        dataUrl,
+        width,
+        height,
+        mask,
+      };
+      chainSession.round += 1;
+      chainSession.lastDataUrl = dataUrl;
+      chainSession.config = cfg;
+      chainSession.drift = chainSession.original
+        ? await meanDeltaE(chainSession.original.dataUrl, dataUrl)
+        : 0;
+      renderUploadList();
+      renderModeRows();
+      updateSizeInfo();
+      updateMaskStatus();
+      renderChainBar();
+      if (chainSession.round % cfg.anchorEvery === 0) promptChainAnchor();
+      else if (chainSession.drift >= cfg.driftWarn) {
+        toastWarn(`连续编辑累计漂移 ΔE ${chainSession.drift.toFixed(1)}，建议回锚`);
+      }
+    } catch (err) {
+      console.warn('[edit] 连续编辑自动接力失败', err);
+      toastWarn('结果已生成，但自动接力失败：可把结果图重新拖入参考区继续');
+    }
+  }
+
+  if (refs.chainBar) {
+    refs.chainBar.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-chain]')?.dataset.chain;
+      if (action === 'anchor') anchorChainBack();
+      if (action === 'hide') refs.chainBar.hidden = true;
+    });
+  }
+
   async function handleSubmit() {
     syncActionProgress(null);
     if (refs.submit.disabled) return;
@@ -2376,6 +2538,9 @@ export function createEditPage(host) {
         toastWarn('元素移除需要先开启局部编辑并涂抹蒙版');
         return;
       }
+      // 连续编辑：记录本次接力的起点原图，成功后自动把结果接为下一轮输入
+      const chainCfg = activeChainConfig();
+      if (chainCfg) beginChainIfNeeded(chainCfg);
       const payload = collectPayload(maskResult);
       const maskOverlay = payload.__maskOverlay;
       delete payload.__maskOverlay;
@@ -2409,6 +2574,7 @@ export function createEditPage(host) {
             if (edit.seedMode !== 'fixed') setSeedValue(String(seed));
             syncSeedUi();
           }
+          if (chainCfg) void advanceChain(job, chainCfg);
           refreshHealthSoon();
         },
       });

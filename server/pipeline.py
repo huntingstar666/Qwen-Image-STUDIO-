@@ -725,6 +725,10 @@ class Pipeline:
         if preset_info is not None:
             job.params["preset"] = preset_info["id"]
             job.params["preset_version"] = preset_info["version"]
+            # 连续编辑约定：随 job.params 原样记录，前端 / 历史回放据此恢复接力策略。
+            chain = params.get("chain")
+            if isinstance(chain, dict):
+                job.params["chain"] = dict(chain)
             job.meta["preset"] = preset_info
         profile = self._profile(cfg, params)
         if not profile["capabilities"].get("edit"):

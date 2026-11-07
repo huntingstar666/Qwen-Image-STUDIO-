@@ -266,6 +266,23 @@
 - C 证明：只要走遮罩合成（遮罩外 byte-exact），背景块每轮都是 0/0，ΔE 稳定在 1.63~1.68，**20 轮也不会漂**。
 - 结论：BlueBox 色温校正是「单次编辑的事后校色」，不是「跨轮记忆」；连续编辑必须靠遮罩/回锚，而不是加大校色强度。
 
+#### 4.9.2 接力流程落地与验证
+
+- 预设契约：`chain_mask` / `chain_native` 下发 `chain{mode, carry_mask, anchor_every, drift_warn_delta_e}`。
+- 后端回写：`server/pipeline.py` 合并预设后把 `chain` 原样写进 `job.params`，历史回放据此恢复接力策略。
+- 前端接力：`web/src/components/studio/chain.js`（取回结果图转 dataURL、缩略后逐像素求平均 ΔE76）配合 `web/src/components/edit.js`——结果自动接为下一轮输入、`carry_mask` 时保留遮罩、每 `anchor_every` 轮弹「回锚」、累计 ΔE 超阈值提示、可一键回到起点原图。
+
+验证（临时实例 8733，`chain_mask` + 768×768 遮罩，一次真实任务）：
+
+| 项 | 结果 |
+| --- | --- |
+| 任务状态 / 耗时 | done / 36.7s |
+| `job.params.preset` / `preset_version` | `chain_mask` / `2` |
+| `job.params.chain` | `{mode: mask, carry_mask: true, anchor_every: 5, drift_warn_delta_e: 10}` |
+| `quality.outside_max_abs` | `0`（方案 b 合成，遮罩外逐字节不变） |
+
+> 生产实例 8722 以非 reload 方式启动，需重启才会加载新预设与接力流程。
+
 ### 4.10 PS 画笔圈选（用例 9）
 
 | 轮次 | 耗时(s) | outside | ΔE | 结论 |

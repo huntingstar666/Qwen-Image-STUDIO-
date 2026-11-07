@@ -43,6 +43,7 @@ import base64
 import io
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageCms, ImageOps
@@ -70,6 +71,11 @@ __all__ = [
     "restore_preprocess",
     "outpaint_canvas",
     "outpaint_mask",
+    "PANORAMA_ASPECTS",
+    "PanoramaPlan",
+    "panorama_plan",
+    "panorama_canvas",
+    "wrap_seam_blend",
     "compose_canvas",
     "map_mask_to_canvas",
     "map_mask_from_canvas",
@@ -1082,6 +1088,203 @@ def outpaint_mask(info: OutpaintInfo, *, feather: int = 0) -> np.ndarray:
     if feather > 0:
         mask = align.feather_mask(mask, int(feather))
     return mask
+
+
+# ---------------------------------------------------------------------------
+# 全景：按目标比例规划宽幅画布 → 复用灰边外补语义
+# ---------------------------------------------------------------------------
+
+#: 全景比例（宽:高）。官方开源权重只保证到 16:9，2:1 以上属于参考图编辑的延展用法。
+PANORAMA_ASPECTS: dict[str, tuple[int, int]] = {
+    "2:1": (2, 1),
+    "3:1": (3, 1),
+    "4:1": (4, 1),
+    "21:9": (21, 9),
+}
+
+#: 单张全景的总像素上限：覆盖 3072×1536（4.7MP），但拦住 4096×2048（8.4MP）。
+PANORAMA_MAX_PIXELS = 6_000_000
+
+
+@dataclass
+class PanoramaPlan:
+    """全景画布几何：源图按比例缩到 ``work_*`` 后贴在画布中央。"""
+
+    src_w: int
+    src_h: int
+    work_w: int
+    work_h: int
+    left: int
+    right: int
+    top: int
+    bottom: int
+    canvas_w: int
+    canvas_h: int
+    aspect: str
+    wrap: bool
+    scale: float
+    fill: tuple[int, int, int]
+
+    def to_outpaint_info(self) -> OutpaintInfo:
+        """复用 ``outpaint_mask`` 的遮罩几何。"""
+        return OutpaintInfo(
+            src_w=self.work_w, src_h=self.work_h,
+            left=self.left, right=self.right,
+            top=self.top, bottom=self.bottom,
+            canvas_w=self.canvas_w, canvas_h=self.canvas_h,
+            fill=self.fill,
+        )
+
+
+def panorama_plan(
+    src_w: int,
+    src_h: int,
+    *,
+    aspect: str = "2:1",
+    long_side: int = 3072,
+    multiple: int = 32,
+    max_side: int = 4096,
+    max_pixels: int = PANORAMA_MAX_PIXELS,
+    fill: tuple[int, int, int] = _OUTPAINT_FILL,
+) -> PanoramaPlan:
+    """按目标比例计算全景画布；只缩不放，超出预算时抛 ``ValueError``。
+
+    扩展方向由原图比例自动决定，按“最小外扩”补齐：
+    - 源图比目标窄 → 左右补灰；
+    - 源图比目标宽 → 上下补灰（否则只能裁掉内容）。
+
+    ``long_side`` 是输出长边上限，``max_pixels`` 是总像素上限；两者都只触发
+    等比缩小（源图同步缩），不会放大源图。
+    """
+    sw, sh = int(src_w), int(src_h)
+    if sw <= 0 or sh <= 0:
+        raise ValueError("全景原图尺寸无效")
+    aspect = str(aspect or "2:1").strip()
+    if aspect not in PANORAMA_ASPECTS:
+        raise ValueError(
+            f"全景比例只支持 {'/'.join(PANORAMA_ASPECTS)}，收到 {aspect!r}")
+    multiple = max(1, int(multiple))
+    long_side = int(long_side or 0)
+    if long_side <= 0:
+        raise ValueError("全景长边必须是正整数")
+    if max_side and long_side > int(max_side):
+        raise ValueError(f"全景长边 {long_side} 超过上限 {int(max_side)}")
+
+    aw, ah = PANORAMA_ASPECTS[aspect]
+    ratio = aw / ah
+
+    # 1) 最小外扩：只补需要的方向
+    current = sw / sh
+    if current < ratio:
+        natural_w = max(sw, int(math.ceil(sh * ratio)))
+        natural_h = sh
+    elif current > ratio:
+        natural_w = sw
+        natural_h = max(sh, int(math.ceil(sw / ratio)))
+    else:
+        natural_w, natural_h = sw, sh
+
+    canvas_w = _snap_up(natural_w, multiple)
+    canvas_h = _snap_up(natural_h, multiple)
+
+    # 2) 长边 / 总像素上限：只缩不放
+    scale = 1.0
+    long = max(canvas_w, canvas_h)
+    if long > long_side:
+        scale = long_side / long
+    if max_pixels and canvas_w * canvas_h * scale * scale > max_pixels:
+        scale = min(scale, math.sqrt(max_pixels / (canvas_w * canvas_h)))
+    if scale < 1.0:
+        # 向下取整到 32 的倍数，确保缩小后不越过长边/像素上限。
+        canvas_w = max(multiple, int(round(canvas_w * scale)) // multiple * multiple)
+        canvas_h = max(multiple, int(round(canvas_h * scale)) // multiple * multiple)
+
+    if max_side and max(canvas_w, canvas_h) > int(max_side):
+        raise ValueError(
+            f"全景画布 {canvas_w}×{canvas_h} 超过单边上限 {int(max_side)}；请降低长边")
+    if max_pixels and canvas_w * canvas_h > max_pixels:
+        raise ValueError(
+            f"全景画布 {canvas_w}×{canvas_h} 超过总像素上限 {int(max_pixels)}；"
+            f"请降低长边到 {max(multiple, int(math.sqrt(max_pixels / ratio)) // multiple * multiple)} 以内")
+
+    # 3) 源图等比缩到画布内（不放大），居中贴放
+    actual = min(1.0, canvas_w / natural_w, canvas_h / natural_h)
+    work_w = max(1, min(canvas_w, int(round(sw * actual))))
+    work_h = max(1, min(canvas_h, int(round(sh * actual))))
+    left = (canvas_w - work_w) // 2
+    top = (canvas_h - work_h) // 2
+    return PanoramaPlan(
+        src_w=sw, src_h=sh, work_w=work_w, work_h=work_h,
+        left=left, right=canvas_w - work_w - left,
+        top=top, bottom=canvas_h - work_h - top,
+        canvas_w=canvas_w, canvas_h=canvas_h,
+        aspect=aspect, wrap=False,
+        scale=round(actual, 6), fill=tuple(int(v) for v in fill),
+    )
+
+
+def panorama_canvas(im: Image.Image, plan: PanoramaPlan) -> Image.Image:
+    """把源图按 plan 缩到工作尺寸并贴在灰底画布中央。"""
+    src = im.convert("RGBA")
+    if (plan.work_w, plan.work_h) != src.size:
+        src = src.resize((plan.work_w, plan.work_h), _resample("bicubic"))
+    canvas = Image.new("RGBA", (plan.canvas_w, plan.canvas_h),
+                       (*plan.fill, 255))
+    canvas.paste(src, (plan.left, plan.top))
+    return canvas
+
+
+def wrap_seam_blend(
+    image: Image.Image | np.ndarray,
+    *,
+    blend_px: int = 24,
+    strength: float = 1.0,
+) -> tuple[Image.Image | np.ndarray, dict[str, Any]]:
+    """360° 环绕接缝的近似处理：边缘色差校正 + 窄带羽化。
+
+    只做“让左右边缘尽量对齐”的低频修补，不承诺等距柱状投影的结构正确性。
+    返回 ``(image, report)``，``report`` 里带处理前后的边缘差。
+    """
+    is_pil = isinstance(image, Image.Image)
+    raw = np.asarray(image)
+    if raw.ndim != 3 or raw.shape[1] < 4:
+        return image, {"skipped": True, "reason": "shape"}
+    width = int(raw.shape[1])
+    band = max(1, min(int(blend_px), width // 2))
+    scale_div = 255.0 if raw.dtype == np.uint8 else 1.0
+    rgb = raw[..., :3].astype(np.float32) / scale_div
+
+    before = float(np.abs(rgb[:, 0] - rgb[:, -1]).max() * 255.0)
+    left_mean = rgb[:, :band].mean(axis=(0, 1))
+    right_mean = rgb[:, -band:].mean(axis=(0, 1))
+    delta = (right_mean - left_mean) * float(max(0.0, min(1.0, strength)))
+
+    # 全宽线性校正：左边缘 -delta/2，右边缘 +delta/2，中间平滑过渡。
+    ramp = np.linspace(-0.5, 0.5, width, dtype=np.float32)[None, :, None]
+    rgb = np.clip(rgb + delta[None, None, :] * ramp, 0.0, 1.0)
+
+    # 窄带羽化：把首尾两列先取平均，再按距离衰减写回两侧。
+    edge = (rgb[:, 0:1, :] + rgb[:, -1:, :]) * 0.5
+    for index in range(band):
+        alpha = 1.0 - index / band
+        rgb[:, index:index + 1] = rgb[:, index:index + 1] * (1 - alpha) + edge * alpha
+        rgb[:, width - 1 - index:width - index] = (
+            rgb[:, width - 1 - index:width - index] * (1 - alpha) + edge * alpha)
+
+    after = float(np.abs(rgb[:, 0] - rgb[:, -1]).max() * 255.0)
+    out = np.array(raw, copy=True)
+    out[..., :3] = (
+        np.rint(rgb * 255.0).astype(np.uint8) if raw.dtype == np.uint8 else rgb)
+    report = {
+        "mode": "edge_affine",
+        "blend_px": band,
+        "before_max_abs": round(before, 2),
+        "after_max_abs": round(after, 2),
+        "shift": [round(float(v) * 255.0, 2) for v in delta],
+    }
+    if is_pil:
+        return Image.fromarray(out, mode=image.mode), report
+    return out, report
 
 
 # ---------------------------------------------------------------------------

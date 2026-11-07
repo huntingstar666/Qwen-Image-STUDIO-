@@ -17,6 +17,7 @@ import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { openModal } from './modal.js';
 import { setHandoff, goToEditPage, setT2IHandoff, goToT2IPage } from '../handoff.js';
+import { openCompareDialog } from './compare.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
 import {
   copyText,
@@ -653,6 +654,7 @@ export function createImageToolsPage(host) {
                   <div class="row">
                     <button class="btn primary sm" type="button" data-ref="upscaleGo" disabled>开始放大</button>
                     <button class="btn ghost sm hidden" type="button" data-ref="upscaleCancel">取消</button>
+                    <button class="btn ghost sm" type="button" data-ref="upscaleCompare" disabled>图像对比</button>
                   </div>
                   <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快，VOSR2 单步细节恢复。</div>
                 </div>
@@ -1015,6 +1017,7 @@ export function createImageToolsPage(host) {
     upscaleGo: ref('upscaleGo'),
     upscaleCancel: ref('upscaleCancel'),
     upscaleHint: ref('upscaleHint'),
+    upscaleCompare: ref('upscaleCompare'),
     taggerModel: ref('taggerModel'),
     taggerThreshold: ref('taggerThreshold'),
     taggerThresholdVal: ref('taggerThresholdVal'),
@@ -1201,6 +1204,7 @@ export function createImageToolsPage(host) {
     updateOutpaintSummary();
     syncUpscaleButton();
     syncTaggerButton();
+    syncCompareButton();
   }
 
   async function loadSourceImage() {
@@ -2338,6 +2342,33 @@ export function createImageToolsPage(host) {
     syncScaleChips();
   });
 
+  refs.upscaleCompare.addEventListener('click', () => {
+    if (!state.source) {
+      toastWarn('请先上传图片');
+      return;
+    }
+    const outputs = state.results
+      .filter((item) => item.kind === 'upscale')
+      .map((item) => ({
+        url: item.url,
+        label: `${item.filename || '放大结果'}（${fmtNum(item.width)}×${fmtNum(item.height)}）`,
+      }));
+    if (!outputs.length) {
+      toastWarn('还没有放大结果，先运行一次放大');
+      return;
+    }
+    openCompareDialog({
+      references: [
+        {
+          url: state.source.dataUrl,
+          label: `原图（${fmtNum(state.source.width)}×${fmtNum(state.source.height)}）`,
+        },
+      ],
+      results: outputs,
+      initialResult: 0,
+    });
+  });
+
   refs.upscaleGo.addEventListener('click', async () => {
     if (!state.source) {
       toastWarn('请先上传图片');
@@ -3064,7 +3095,13 @@ export function createImageToolsPage(host) {
     syncFilmSelectionUi();
   }
 
+  function syncCompareButton() {
+    const hasUpscale = state.results.some((item) => item.kind === 'upscale');
+    refs.upscaleCompare.disabled = !state.source || !hasUpscale;
+  }
+
   function renderResults() {
+    syncCompareButton();
     for (const id of [...selectedResultIds]) {
       if (!state.results.some((item) => item.id === id)) selectedResultIds.delete(id);
     }

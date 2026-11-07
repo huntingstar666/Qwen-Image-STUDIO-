@@ -241,7 +241,17 @@ VOSR2 的模型包 / 精度 / 颜色对齐 / 分块尺寸 / 分块重叠 / VAE �
 VOSR2 额外显示选中的模型包与已扫描到的包），首次打开设置时随 `GET /api/settings`
 自动扫描，`POST /api/models/scan` 会一并刷新。
 
-### 7.5 测试
+### 7.5 图像对比
+
+放大分区新增「图像对比」按钮，直接复用图像编辑页的
+[compare.js](file:///<PROJECT_ROOT>/web/src/components/compare.js) 弹窗（`openCompareDialog`）：
+
+- 参考图固定为当前源图，结果图取历史结果中 `kind = 'upscale'` 的项（最新的在前）；
+- 有多张放大结果时先弹选择器，单张时直接进入对比；
+- 支持拖动中缝、← → 逐像素移动、差异热图、容差/采样步长与色彩校正统计；
+- 未上传源图或还没有放大结果时按钮禁用。
+
+### 7.6 测试
 
 ```powershell
 & "<python>" -m pytest tests/test_upscalers.py tests/test_vosr2.py -q   # 10 项，纯 CPU，0.2s

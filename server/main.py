@@ -1097,6 +1097,18 @@ MAX_VIDEO_BYTES = 512 * 1024 * 1024
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 
 
+def _prepare_watermark_image(raw: Any, ops: Any) -> bytes:
+    """水印输入的预处理：先跑 imageops 的 ops，再交给水印渲染。"""
+    data = _decode_image_payload(raw)
+    if not ops:
+        return data
+    try:
+        images, _applied = imageops.apply_ops(data, ops)
+    except imageops.ImageOpsError as exc:
+        raise ApiError(str(exc), code=getattr(exc, "code", "invalid_ops")) from exc
+    return imaging.encode_png(images[0])
+
+
 def _watermark_mark_data(payload: dict[str, Any]) -> bytes | None:
     raw = payload.get("image_mark")
     if isinstance(raw, dict):
@@ -1118,7 +1130,7 @@ def api_watermark_preview(payload: dict[str, Any] = Body(...)) -> dict[str, Any]
     if not raw:
         raise ApiError("缺少 image（data URL 或 /files/ 路径）", code="missing_field")
     try:
-        data = _decode_image_payload(raw)
+        data = _prepare_watermark_image(raw, payload.get("ops"))
         png, width, height = mediaops.preview(
             data, payload, mark_data=_watermark_mark_data(payload))
     except mediaops.MediaOpsError as exc:
@@ -1141,13 +1153,14 @@ def api_watermark(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         raise ApiError(f"一次最多处理 {mediaops.MAX_WATERMARK_BATCH} 张", code="too_many_images")
 
     mark_data = _watermark_mark_data(payload)
+    ops = payload.get("ops")
     fmt = str(payload.get("format") or "png").lower()
     prefix = str(payload.get("prefix") or "watermark")
     results = []
     for index, raw in enumerate(raw_images):
         try:
             watermarked = mediaops.apply_watermark(
-                _decode_image_payload(raw), payload, mark_data=mark_data)
+                _prepare_watermark_image(raw, ops), payload, mark_data=mark_data)
             encoded, ext = imageops.encode_export(
                 watermarked, fmt,
                 quality=int(payload.get("quality") or 92),
@@ -1251,6 +1264,7 @@ def api_media_gif(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     if source == "video":
         path = _video_path(payload.get("path") or payload.get("video"))
+        frames_data: list[bytes] = []
         total_frames = 0
     else:
         raw_images = payload.get("images")
@@ -1258,8 +1272,12 @@ def api_media_gif(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             raise ApiError("缺少 images（帧数组）", code="missing_field")
         if len(raw_images) > mediaops.MAX_GIF_FRAMES:
             raise ApiError(f"帧数过多（最多 {mediaops.MAX_GIF_FRAMES}）", code="too_many_frames")
+        try:
+            frames_data = [_decode_image_payload(raw) for raw in raw_images]
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(f"帧图片解码失败：{exc}", code="invalid_image") from exc
         path = ""
-        total_frames = len(raw_images)
+        total_frames = len(frames_data)
 
     def _run(job: jobs.Job) -> None:
         job.meta.update({"source": source, "mode": mode, "frames": total_frames})
@@ -1271,7 +1289,7 @@ def api_media_gif(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             )
         else:
             result = mediaops.gif_from_images(
-                raw_images, duration=duration, durations=durations, width=width, mode=mode,
+                frames_data, duration=duration, durations=durations, width=width, mode=mode,
                 loop=loop,
                 progress=lambda value, label: job.set_progress(value, 100, label),
                 cancel=lambda: job.cancel_requested,

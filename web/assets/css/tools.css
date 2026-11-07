@@ -469,3 +469,106 @@
 .upscale-progress .field-hint {
   margin: 0;
 }
+
+/* ------------------------------------------------------------- 工具轨（水印/动图/尺寸/导出分组） */
+
+.tool-rail {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  gap: 5px;
+  padding: 2px 0 8px;
+  margin-bottom: 4px;
+  background: var(--bg-1, var(--bg-2));
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tool-rail .chip {
+  padding: 4px 9px;
+  font-size: 11.5px;
+}
+
+.tool-rail .chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* ------------------------------------------------------------- 水印预览 */
+
+.wm-preview {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+
+.wm-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* ------------------------------------------------------------- GIF 帧条 */
+
+.gif-frames {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(54px, 1fr));
+  gap: 8px;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.gif-frames .field-hint {
+  grid-column: 1 / -1;
+}
+
+.gif-frame {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+}
+
+.gif-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.gif-frame-index {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gif-frame-remove {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gif-frame-remove:hover {
+  background: var(--danger, #d64545);
+}

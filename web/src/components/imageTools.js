@@ -30,6 +30,15 @@ const NEUTRAL_ADJUST = Object.freeze({
 
 const FORMAT_LABEL = { png: 'PNG（无损，可透明）', jpeg: 'JPEG（体积小，无透明）' };
 
+const RESULT_KIND_LABEL = {
+  process: '处理',
+  grid: '宫格',
+  upscale: '放大',
+  watermark: '水印',
+  gif: '动图',
+  'gif-frame': '拆帧',
+};
+
 /* ============================================================
  * vendor kit 动态加载（模块级缓存）
  * ============================================================ */
@@ -129,9 +138,47 @@ function flipCanvas(src, horizontal, vertical) {
   return canvas;
 }
 
+/** 与服务端 `op_resize` 对齐的目标尺寸计算（用于前端预览）。 */
+function resizeTargetSize(src, op) {
+  const mode = op.mode || 'exact';
+  if (mode === 'percent') {
+    const percent = Number(op.percent) || 100;
+    return [src.width * percent / 100, src.height * percent / 100];
+  }
+  if (mode === 'long_edge') {
+    const edge = Number(op.long_edge) || Math.max(src.width, src.height);
+    const scale = edge / Math.max(src.width, src.height);
+    return [src.width * scale, src.height * scale];
+  }
+  if (mode === 'short_edge') {
+    const edge = Number(op.short_edge) || Math.min(src.width, src.height);
+    const scale = edge / Math.min(src.width, src.height);
+    return [src.width * scale, src.height * scale];
+  }
+  if (mode === 'megapixels') {
+    const megapixels = Number(op.megapixels) || (src.width * src.height) / 1e6;
+    const scale = Math.sqrt((megapixels * 1e6) / (src.width * src.height));
+    return [src.width * scale, src.height * scale];
+  }
+  const width = Number(op.width) || src.width;
+  const height = Number(op.height) || src.height;
+  if (op.keep_aspect === false) return [width, height];
+  const scale = Math.min(width / src.width, height / src.height);
+  return [src.width * scale, src.height * scale];
+}
+
 function resizeCanvasFit(src, op) {
-  const width = Math.max(1, Math.round(op.width || src.width));
-  const height = Math.max(1, Math.round(op.height || src.height));
+  const isExact = !op.mode || op.mode === 'exact';
+  let [rawWidth, rawHeight] = isExact
+    ? [Number(op.width) || src.width, Number(op.height) || src.height]
+    : resizeTargetSize(src, op);
+  const snap = Number(op.snap) || 0;
+  if (snap > 1) {
+    rawWidth = Math.max(snap, Math.round(rawWidth / snap) * snap);
+    rawHeight = Math.max(snap, Math.round(rawHeight / snap) * snap);
+  }
+  const width = Math.max(1, Math.round(rawWidth || src.width));
+  const height = Math.max(1, Math.round(rawHeight || src.height));
   const fit = op.fit || 'contain';
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -226,6 +273,15 @@ function adjustFilterString(adjustOps, live) {
   return parts.join(' ');
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function urlToDataUrl(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`下载结果失败：HTTP ${response.status}`);
@@ -262,6 +318,46 @@ export function createImageToolsPage(host) {
     outpaint: { direction: 'right', amount: 0.5, panoramaAspect: '', active: false, result: null, busy: false },
     upscale: { models: null, engine: '', scale: 2, jobId: '', polling: false, touchedScale: false },
     results: [],
+    tool: 'adjust',
+    watermark: {
+      kind: 'text',
+      text: '© 2026 Studio',
+      font: '',
+      color: '#ffffff',
+      opacity: 55,
+      scale: 6,
+      rotation: 0,
+      position: 'bottom-right',
+      margin: 3,
+      tile: false,
+      gapX: 20,
+      gapY: 12,
+      tileAngle: -24,
+      strokeWidth: 0,
+      strokeColor: '#000000',
+      shadow: true,
+      markData: '',
+      markName: '',
+      fonts: [],
+      busy: false,
+    },
+    gif: {
+      source: 'images',
+      frames: [],
+      video: null,
+      duration: 120,
+      fps: 12,
+      width: 720,
+      mode: 'forward',
+      loop: 0,
+      start: 0,
+      end: 0,
+      busy: false,
+      jobId: '',
+      uploading: false,
+      status: '',
+      percent: 0,
+    },
   };
 
   host.innerHTML = `
@@ -291,7 +387,16 @@ export function createImageToolsPage(host) {
           <section class="panel">
             <div class="panel-head"><div class="panel-title">工具 <span class="panel-sub">即时预览 · 可撤销</span></div></div>
             <div class="panel-body tool-stack">
-              <details class="fold tool-fold" open>
+              <div class="chips tool-rail" data-ref="toolRail">
+                <button class="chip active" type="button" data-tool-group="adjust">调整</button>
+                <button class="chip" type="button" data-tool-group="size">尺寸</button>
+                <button class="chip" type="button" data-tool-group="watermark">水印</button>
+                <button class="chip" type="button" data-tool-group="gif">动图</button>
+                <button class="chip" type="button" data-tool-group="upscale">放大</button>
+                <button class="chip" type="button" data-tool-group="export">导出</button>
+                <button class="chip" type="button" data-tool-group="outpaint">扩图</button>
+              </div>
+              <details class="fold tool-fold" data-group="adjust" open>
                 <summary>裁剪 / 宫格</summary>
                 <div class="fold-body">
                   <div class="field">
@@ -318,7 +423,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="adjust">
                 <summary>旋转 / 翻转</summary>
                 <div class="fold-body">
                   <div class="chips">
@@ -335,7 +440,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="size">
                 <summary>缩放 / 对齐 32</summary>
                 <div class="fold-body">
                   <div class="grid-2">
@@ -355,6 +460,42 @@ export function createImageToolsPage(host) {
                       <option value="stretch">stretch 拉伸铺满</option>
                     </select>
                   </label>
+                  <label class="field">
+                    <span class="field-label">缩放模式</span>
+                    <select class="select" data-ref="resizeMode">
+                      <option value="exact">精确宽高（用上面的宽高 + fit）</option>
+                      <option value="percent">按百分比</option>
+                      <option value="long_edge">按长边</option>
+                      <option value="short_edge">按短边</option>
+                      <option value="megapixels">按百万像素</option>
+                    </select>
+                  </label>
+                  <div class="grid-2 hidden" data-ref="resizeModeRow">
+                    <label class="field">
+                      <span class="field-label" data-ref="resizeModeLabel">百分比</span>
+                      <input class="input mono" type="number" min="1" step="1" value="100" data-ref="resizeModeValue" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">滤镜</span>
+                      <select class="select" data-ref="resizeFilter">
+                        <option value="lanczos">lanczos（默认，最清晰）</option>
+                        <option value="bicubic">bicubic</option>
+                        <option value="bilinear">bilinear</option>
+                        <option value="nearest">nearest（像素风）</option>
+                        <option value="box">box</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="grid-2">
+                    <label class="field">
+                      <span class="field-label">对齐倍数</span>
+                      <input class="input mono" type="number" min="0" max="256" step="1" value="0" data-ref="resizeSnap" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">缩放后锐化 <span class="tag-hint" data-ref="resizeSharpenVal">0</span></span>
+                      <input class="range" type="range" min="0" max="200" step="5" value="0" data-ref="resizeSharpen" />
+                    </label>
+                  </div>
                   <div class="row">
                     <button class="btn primary sm" type="button" data-ref="resizeApply">应用缩放</button>
                     <button class="btn ghost sm" type="button" data-ref="pad32Apply">对齐 32</button>
@@ -363,7 +504,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="adjust">
                 <summary>调色</summary>
                 <div class="fold-body">
                   <div class="adjust-list" data-ref="adjustList"></div>
@@ -375,7 +516,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="export">
                 <summary>格式导出</summary>
                 <div class="fold-body">
                   <label class="field">
@@ -383,18 +524,32 @@ export function createImageToolsPage(host) {
                     <select class="select" data-ref="format">
                       <option value="png">PNG（无损，可透明）</option>
                       <option value="jpeg">JPEG（体积小，无透明）</option>
+                      <option value="webp">WebP（小体积，可透明）</option>
                     </select>
                   </label>
                   <label class="field" data-ref="qualityField">
-                    <span class="field-label">JPEG 质量 <span class="tag-hint" data-ref="qualityVal">92</span></span>
+                    <span class="field-label">质量 <span class="tag-hint" data-ref="qualityVal">92</span></span>
                     <input class="range" type="range" min="30" max="100" step="1" value="92" data-ref="quality" />
+                  </label>
+                  <label class="switch hidden" data-ref="losslessField">
+                    <input type="checkbox" data-ref="lossless" />
+                    <span class="switch-track"></span>
+                    <span class="switch-label">WebP 无损<small>体积更大，画质完全保留</small></span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">目标体积 KB <span class="tag-hint">可选，留空按质量</span></span>
+                    <input class="input mono" type="number" min="32" max="51200" step="32" data-ref="targetKb" placeholder="例如 800" />
+                  </label>
+                  <label class="field hidden" data-ref="bgField">
+                    <span class="field-label">JPEG 透明区铺底</span>
+                    <input class="input" type="color" value="#ffffff" data-ref="exportBg" />
                   </label>
                   <div class="size-summary"><span>预计体积</span><span class="mono" data-ref="estimate">—</span></div>
                   <button class="btn primary block" type="button" data-ref="processApply">处理并保存</button>
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="outpaint">
                 <summary>扩图（outpaint）</summary>
                 <div class="fold-body">
                   <div class="field">
@@ -428,7 +583,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold">
+              <details class="fold tool-fold" data-group="upscale">
                 <summary>高清放大 <span class="tag-hint">SeedVR2 / FlashVSR</span></summary>
                 <div class="fold-body">
                   <div class="field">
@@ -453,6 +608,117 @@ export function createImageToolsPage(host) {
                     <button class="btn ghost sm hidden" type="button" data-ref="upscaleCancel">取消</button>
                   </div>
                   <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快。</div>
+                </div>
+              </details>
+
+              <details class="fold tool-fold" data-group="watermark">
+                <summary>水印 <span class="tag-hint">文字 / 图片</span></summary>
+                <div class="fold-body">
+                  <div class="chips" data-ref="wmKinds">
+                    <button class="chip active" type="button" data-wm-kind="text">文字水印</button>
+                    <button class="chip" type="button" data-wm-kind="image">图片水印</button>
+                  </div>
+                  <div data-ref="wmTextFields">
+                    <label class="field"><span class="field-label">内容</span><input class="input" type="text" value="© 2026 Studio" data-ref="wmText" /></label>
+                    <label class="field"><span class="field-label">字体</span><select class="select" data-ref="wmFont"></select></label>
+                  </div>
+                  <div class="hidden" data-ref="wmImageFields">
+                    <input type="file" accept="image/*" hidden data-ref="wmMarkInput" />
+                    <button class="btn ghost sm block" type="button" data-ref="wmMarkPick">选择 PNG logo（推荐透明背景）</button>
+                    <div class="field-hint" data-ref="wmMarkName">未选择图片</div>
+                  </div>
+                  <div class="grid-2">
+                    <label class="field"><span class="field-label">颜色</span><input class="input" type="color" value="#ffffff" data-ref="wmColor" /></label>
+                    <label class="field"><span class="field-label">位置</span><select class="select" data-ref="wmPosition">
+                      <option value="top-left">左上</option>
+                      <option value="top">上中</option>
+                      <option value="top-right">右上</option>
+                      <option value="left">左中</option>
+                      <option value="center">居中</option>
+                      <option value="right">右中</option>
+                      <option value="bottom-left">左下</option>
+                      <option value="bottom">下中</option>
+                      <option value="bottom-right" selected>右下</option>
+                    </select></label>
+                  </div>
+                  <label class="field"><span class="field-label">不透明度 <span class="tag-hint" data-ref="wmOpacityVal">55%</span></span><input class="range" type="range" min="5" max="100" value="55" data-ref="wmOpacity" /></label>
+                  <div class="grid-2">
+                    <label class="field"><span class="field-label">大小 <span class="tag-hint" data-ref="wmScaleVal">6%</span></span><input class="range" type="range" min="1" max="20" value="6" data-ref="wmScale" /></label>
+                    <label class="field"><span class="field-label">旋转°</span><input class="input mono" type="number" min="-180" max="180" step="1" value="0" data-ref="wmRotation" /></label>
+                    <label class="field"><span class="field-label">边距 <span class="tag-hint" data-ref="wmMarginVal">3%</span></span><input class="range" type="range" min="0" max="20" value="3" data-ref="wmMargin" /></label>
+                    <label class="field"><span class="field-label">描边 <span class="tag-hint" data-ref="wmStrokeVal">0</span></span><input class="range" type="range" min="0" max="5" step="1" value="0" data-ref="wmStroke" /></label>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked data-ref="wmShadow" />
+                    <span class="switch-track"></span>
+                    <span class="switch-label">柔和阴影<small>深底上更清晰</small></span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" data-ref="wmTile" />
+                    <span class="switch-track"></span>
+                    <span class="switch-label">平铺防盗<small>覆盖全图</small></span>
+                  </label>
+                  <div class="grid-2 hidden" data-ref="wmTileFields">
+                    <label class="field"><span class="field-label">横向间距 <span class="tag-hint" data-ref="wmGapXVal">20%</span></span><input class="range" type="range" min="5" max="60" value="20" data-ref="wmGapX" /></label>
+                    <label class="field"><span class="field-label">纵向间距 <span class="tag-hint" data-ref="wmGapYVal">12%</span></span><input class="range" type="range" min="5" max="60" value="12" data-ref="wmGapY" /></label>
+                    <label class="field"><span class="field-label">平铺角度</span><input class="input mono" type="number" min="-90" max="90" step="1" value="-24" data-ref="wmTileAngle" /></label>
+                  </div>
+                  <div class="row">
+                    <button class="btn ghost sm" type="button" data-ref="wmPreview">服务端预览</button>
+                    <button class="btn primary sm" type="button" data-ref="wmApply">应用水印</button>
+                  </div>
+                  <div class="wm-preview hidden" data-ref="wmPreviewBox">
+                    <img alt="水印预览" data-ref="wmPreviewImg" />
+                  </div>
+                  <div class="field-hint" data-ref="wmHint">「服务端预览」与最终落盘一致；应用后结果进入右侧「结果」。</div>
+                </div>
+              </details>
+
+              <details class="fold tool-fold" data-group="gif">
+                <summary>动图 GIF <span class="tag-hint">图片序列 / 视频</span></summary>
+                <div class="fold-body">
+                  <div class="chips" data-ref="gifSources">
+                    <button class="chip active" type="button" data-gif-source="images">图片序列</button>
+                    <button class="chip" type="button" data-gif-source="video">视频截取</button>
+                  </div>
+                  <div data-ref="gifImageFields">
+                    <input type="file" accept="image/*" multiple hidden data-ref="gifFrameInput" />
+                    <div class="row">
+                      <button class="btn ghost sm" type="button" data-ref="gifAddFrames">添加帧</button>
+                      <button class="btn ghost sm" type="button" data-ref="gifAddSource">当前源图入帧</button>
+                    </div>
+                    <div class="chips gif-frames" data-ref="gifFrames"></div>
+                    <div class="grid-2">
+                      <label class="field"><span class="field-label">每帧毫秒</span><input class="input mono" type="number" min="20" max="2000" step="10" value="120" data-ref="gifDuration" /></label>
+                      <label class="field"><span class="field-label">宽度 px</span><input class="input mono" type="number" min="64" max="1600" step="8" value="720" data-ref="gifWidth" /></label>
+                    </div>
+                  </div>
+                  <div class="hidden" data-ref="gifVideoFields">
+                    <input type="file" accept="video/*" hidden data-ref="gifVideoInput" />
+                    <button class="btn ghost sm block" type="button" data-ref="gifVideoPick">选择视频（≤512MB）</button>
+                    <div class="field-hint" data-ref="gifVideoInfo">支持 mp4 / mov / webm / mkv / avi</div>
+                    <div class="grid-2">
+                      <label class="field"><span class="field-label">起点秒</span><input class="input mono" type="number" min="0" step="0.1" value="0" data-ref="gifStart" /></label>
+                      <label class="field"><span class="field-label">终点秒</span><input class="input mono" type="number" min="0" step="0.1" value="0" data-ref="gifEnd" /></label>
+                      <label class="field"><span class="field-label">帧率 fps</span><input class="input mono" type="number" min="5" max="30" step="1" value="12" data-ref="gifFps" /></label>
+                      <label class="field"><span class="field-label">宽度 px</span><input class="input mono" type="number" min="64" max="1600" step="8" value="720" data-ref="gifVideoWidth" /></label>
+                    </div>
+                  </div>
+                  <label class="field"><span class="field-label">播放方式</span><select class="select" data-ref="gifMode">
+                    <option value="forward">正向</option>
+                    <option value="reverse">倒放</option>
+                    <option value="boomerang">往返</option>
+                  </select></label>
+                  <div class="upscale-progress hidden" data-ref="gifProgress">
+                    <div class="upscale-bar"><span data-ref="gifBar"></span></div>
+                    <div class="field-hint mono" data-ref="gifStatus">排队中…</div>
+                  </div>
+                  <div class="row">
+                    <button class="btn primary sm" type="button" data-ref="gifGo">生成 GIF</button>
+                    <button class="btn ghost sm hidden" type="button" data-ref="gifCancel">取消</button>
+                  </div>
+                  <button class="btn ghost sm block" type="button" data-ref="gifSplit">把当前 GIF 拆帧</button>
+                  <div class="field-hint" data-ref="gifHint">图片序列走全局调色板；视频走 ffmpeg 两遍调色板。结果进入右侧「结果」。</div>
                 </div>
               </details>
 
@@ -544,6 +810,76 @@ export function createImageToolsPage(host) {
     resizeApply: ref('resizeApply'),
     pad32Apply: ref('pad32Apply'),
     resizeHint: ref('resizeHint'),
+    toolRail: ref('toolRail'),
+    resizeMode: ref('resizeMode'),
+    resizeModeRow: ref('resizeModeRow'),
+    resizeModeLabel: ref('resizeModeLabel'),
+    resizeModeValue: ref('resizeModeValue'),
+    resizeFilter: ref('resizeFilter'),
+    resizeSnap: ref('resizeSnap'),
+    resizeSharpen: ref('resizeSharpen'),
+    resizeSharpenVal: ref('resizeSharpenVal'),
+    losslessField: ref('losslessField'),
+    lossless: ref('lossless'),
+    targetKb: ref('targetKb'),
+    bgField: ref('bgField'),
+    exportBg: ref('exportBg'),
+    wmKinds: ref('wmKinds'),
+    wmTextFields: ref('wmTextFields'),
+    wmImageFields: ref('wmImageFields'),
+    wmText: ref('wmText'),
+    wmFont: ref('wmFont'),
+    wmMarkInput: ref('wmMarkInput'),
+    wmMarkPick: ref('wmMarkPick'),
+    wmMarkName: ref('wmMarkName'),
+    wmColor: ref('wmColor'),
+    wmPosition: ref('wmPosition'),
+    wmOpacity: ref('wmOpacity'),
+    wmOpacityVal: ref('wmOpacityVal'),
+    wmScale: ref('wmScale'),
+    wmScaleVal: ref('wmScaleVal'),
+    wmRotation: ref('wmRotation'),
+    wmMargin: ref('wmMargin'),
+    wmMarginVal: ref('wmMarginVal'),
+    wmStroke: ref('wmStroke'),
+    wmStrokeVal: ref('wmStrokeVal'),
+    wmShadow: ref('wmShadow'),
+    wmTile: ref('wmTile'),
+    wmTileFields: ref('wmTileFields'),
+    wmGapX: ref('wmGapX'),
+    wmGapXVal: ref('wmGapXVal'),
+    wmGapY: ref('wmGapY'),
+    wmGapYVal: ref('wmGapYVal'),
+    wmTileAngle: ref('wmTileAngle'),
+    wmPreview: ref('wmPreview'),
+    wmApply: ref('wmApply'),
+    wmPreviewBox: ref('wmPreviewBox'),
+    wmPreviewImg: ref('wmPreviewImg'),
+    wmHint: ref('wmHint'),
+    gifSources: ref('gifSources'),
+    gifImageFields: ref('gifImageFields'),
+    gifVideoFields: ref('gifVideoFields'),
+    gifFrameInput: ref('gifFrameInput'),
+    gifAddFrames: ref('gifAddFrames'),
+    gifAddSource: ref('gifAddSource'),
+    gifFrames: ref('gifFrames'),
+    gifDuration: ref('gifDuration'),
+    gifWidth: ref('gifWidth'),
+    gifVideoInput: ref('gifVideoInput'),
+    gifVideoPick: ref('gifVideoPick'),
+    gifVideoInfo: ref('gifVideoInfo'),
+    gifStart: ref('gifStart'),
+    gifEnd: ref('gifEnd'),
+    gifFps: ref('gifFps'),
+    gifVideoWidth: ref('gifVideoWidth'),
+    gifMode: ref('gifMode'),
+    gifProgress: ref('gifProgress'),
+    gifBar: ref('gifBar'),
+    gifStatus: ref('gifStatus'),
+    gifGo: ref('gifGo'),
+    gifCancel: ref('gifCancel'),
+    gifSplit: ref('gifSplit'),
+    gifHint: ref('gifHint'),
     adjustList: ref('adjustList'),
     adjustApply: ref('adjustApply'),
     adjustReset: ref('adjustReset'),
@@ -644,6 +980,60 @@ export function createImageToolsPage(host) {
     });
   }
   renderAdjustFields();
+
+  /* ============================================================
+   * 工具轨 / 尺寸模式 / 导出选项
+   * ============================================================ */
+  function syncToolGroups() {
+    for (const chip of refs.toolRail.querySelectorAll('[data-tool-group]')) {
+      chip.classList.toggle('active', chip.dataset.toolGroup === state.tool);
+    }
+    for (const fold of host.querySelectorAll('.tool-fold[data-group]')) {
+      fold.hidden = fold.dataset.group !== state.tool;
+    }
+  }
+  refs.toolRail.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-tool-group]');
+    if (!chip) return;
+    state.tool = chip.dataset.toolGroup;
+    syncToolGroups();
+  });
+  syncToolGroups();
+
+  const RESIZE_MODES = {
+    percent: { label: '百分比 %', min: 1, max: 400, step: 1, value: 100 },
+    long_edge: { label: '长边 px', min: 1, max: 8192, step: 1, value: 2048 },
+    short_edge: { label: '短边 px', min: 1, max: 8192, step: 1, value: 1080 },
+    megapixels: { label: '百万像素 MP', min: 0.1, max: 80, step: 0.1, value: 4 },
+  };
+  function applyResizeModeMeta(meta) {
+    if (!meta) {
+      refs.resizeModeRow.classList.add('hidden');
+      return;
+    }
+    refs.resizeModeRow.classList.remove('hidden');
+    refs.resizeModeLabel.textContent = meta.label;
+    refs.resizeModeValue.min = String(meta.min);
+    refs.resizeModeValue.max = String(meta.max);
+    refs.resizeModeValue.step = String(meta.step);
+  }
+  refs.resizeMode.addEventListener('change', () => {
+    const meta = RESIZE_MODES[refs.resizeMode.value];
+    applyResizeModeMeta(meta);
+    if (meta) refs.resizeModeValue.value = String(meta.value);
+  });
+  applyResizeModeMeta(null);
+  refs.resizeSharpen.addEventListener('input', () => {
+    refs.resizeSharpenVal.textContent = refs.resizeSharpen.value;
+  });
+
+  const syncExportUi = () => {
+    const fmt = refs.format.value;
+    refs.losslessField.classList.toggle('hidden', fmt !== 'webp');
+    refs.bgField.classList.toggle('hidden', fmt !== 'jpeg');
+    refs.qualityField.classList.toggle('hidden', fmt === 'png' || (fmt === 'webp' && refs.lossless.checked));
+  };
+  syncExportUi();
 
   /* ============================================================
    * 源图 / 上传
@@ -1270,18 +1660,38 @@ export function createImageToolsPage(host) {
       toastWarn('请先上传图片');
       return;
     }
-    const width = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeWidth.value) || 0)));
-    const height = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeHeight.value) || 0)));
-    if (!width || !height) {
-      toastWarn('请输入有效的宽高');
+    const mode = refs.resizeMode.value || 'exact';
+    const common = {
+      snap: Math.max(0, Math.round(Number(refs.resizeSnap.value) || 0)),
+      filter: refs.resizeFilter.value || 'lanczos',
+      sharpen_after: Math.max(0, Math.round(Number(refs.resizeSharpen.value) || 0)),
+    };
+    if (mode === 'exact') {
+      const width = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeWidth.value) || 0)));
+      const height = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeHeight.value) || 0)));
+      if (!width || !height) {
+        toastWarn('请输入有效的宽高');
+        return;
+      }
+      pushOp(
+        { op: 'resize', width, height, fit: refs.resizeFit.value, ...common },
+        `缩放到 ${fmtNum(width)}×${fmtNum(height)}（${refs.resizeFit.value}）`,
+      );
+      state.resize.width = width;
+      state.resize.height = height;
+      toastSuccess('已应用缩放');
       return;
     }
+    const value = Number(refs.resizeModeValue.value) || 0;
+    if (!(value > 0)) {
+      toastWarn('请输入有效的目标值');
+      return;
+    }
+    const meta = RESIZE_MODES[mode];
     pushOp(
-      { op: 'resize', width, height, fit: refs.resizeFit.value },
-      `缩放到 ${fmtNum(width)}×${fmtNum(height)}（${refs.resizeFit.value}）`,
+      { op: 'resize', mode, [mode]: value, ...common },
+      `缩放（${meta ? meta.label : mode} ${value}）`,
     );
-    state.resize.width = width;
-    state.resize.height = height;
     toastSuccess('已应用缩放');
   }
   refs.resizeApply.addEventListener('click', applyResize);
@@ -1533,10 +1943,379 @@ export function createImageToolsPage(host) {
   }
 
   /* ============================================================
+   * 水印 / 动图
+   * ============================================================ */
+  function currentOpsForServer() {
+    const ops = [...state.stagedOps];
+    const pending = pendingCropPixelRect();
+    if (pending) ops.push(pending);
+    return ops;
+  }
+
+  function addResultItems(items, kind) {
+    for (const image of items) {
+      state.results.unshift({
+        id: `res-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        url: image.url,
+        thumbUrl: image.thumb_url || image.url,
+        width: image.width,
+        height: image.height,
+        filename: image.filename,
+        kind,
+        at: Date.now(),
+      });
+    }
+    renderResults();
+  }
+
+  function syncWatermarkKind() {
+    const isText = state.watermark.kind === 'text';
+    refs.wmTextFields.classList.toggle('hidden', !isText);
+    refs.wmImageFields.classList.toggle('hidden', isText);
+    for (const chip of refs.wmKinds.querySelectorAll('[data-wm-kind]')) {
+      chip.classList.toggle('active', chip.dataset.wmKind === state.watermark.kind);
+    }
+  }
+  refs.wmKinds.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-wm-kind]');
+    if (!chip) return;
+    state.watermark.kind = chip.dataset.wmKind;
+    syncWatermarkKind();
+  });
+  syncWatermarkKind();
+
+  const wmRangeLabels = [
+    [refs.wmOpacity, refs.wmOpacityVal, '%'],
+    [refs.wmScale, refs.wmScaleVal, '%'],
+    [refs.wmMargin, refs.wmMarginVal, '%'],
+    [refs.wmStroke, refs.wmStrokeVal, ''],
+    [refs.wmGapX, refs.wmGapXVal, '%'],
+    [refs.wmGapY, refs.wmGapYVal, '%'],
+  ];
+  for (const [input, label, suffix] of wmRangeLabels) {
+    const sync = () => { label.textContent = `${input.value}${suffix}`; };
+    input.addEventListener('input', sync);
+    sync();
+  }
+  refs.wmTile.addEventListener('change', () => {
+    refs.wmTileFields.classList.toggle('hidden', !refs.wmTile.checked);
+  });
+  refs.wmMarkPick.addEventListener('click', () => refs.wmMarkInput.click());
+  refs.wmMarkInput.addEventListener('change', async () => {
+    const file = refs.wmMarkInput.files?.[0];
+    if (!file) return;
+    state.watermark.markData = await fileToDataUrl(file);
+    state.watermark.markName = file.name;
+    refs.wmMarkName.textContent = file.name;
+  });
+
+  api.watermarkFonts()
+    .then((result) => {
+      const fonts = result?.fonts || [];
+      state.watermark.fonts = fonts;
+      refs.wmFont.innerHTML = fonts.length
+        ? fonts.map((font, index) => `<option value="${escapeHtml(font.id)}"${index === 0 ? ' selected' : ''}>${escapeHtml(font.label)}</option>`).join('')
+        : '<option value="">默认字体</option>';
+      if (fonts.length) state.watermark.font = fonts[0].id;
+    })
+    .catch(() => {
+      refs.wmFont.innerHTML = '<option value="">默认字体</option>';
+    });
+
+  function watermarkSpec() {
+    const spec = {
+      opacity: Number(refs.wmOpacity.value) / 100,
+      scale: Number(refs.wmScale.value) / 100,
+      rotation: Number(refs.wmRotation.value) || 0,
+      position: refs.wmPosition.value,
+      margin: Number(refs.wmMargin.value) / 100,
+      tile: {
+        enabled: refs.wmTile.checked,
+        gap_x: Number(refs.wmGapX.value) / 100,
+        gap_y: Number(refs.wmGapY.value) / 100,
+        angle: Number(refs.wmTileAngle.value) || 0,
+      },
+      shadow: refs.wmShadow.checked
+        ? { blur: 0.008, dx: 0.004, dy: 0.004, color: '#00000099' }
+        : null,
+      stroke: { width: Number(refs.wmStroke.value) / 1000, color: '#000000' },
+      ops: currentOpsForServer(),
+      format: 'png',
+    };
+    if (state.watermark.kind === 'text') {
+      spec.text = refs.wmText.value.trim();
+      spec.font = refs.wmFont.value || state.watermark.font;
+      spec.color = refs.wmColor.value;
+    } else if (state.watermark.markData) {
+      spec.image_mark = {
+        url: state.watermark.markData,
+        scale: Number(refs.wmScale.value) / 100,
+        opacity: 1,
+      };
+    }
+    return spec;
+  }
+
+  refs.wmPreview.addEventListener('click', async () => {
+    if (!state.source) { toastWarn('请先上传图片'); return; }
+    const spec = watermarkSpec();
+    if (!spec.text && !spec.image_mark) { toastWarn('请输入水印内容或选择 logo'); return; }
+    refs.wmPreview.disabled = true;
+    refs.wmHint.textContent = '正在生成服务端预览…';
+    try {
+      const result = await api.watermarkPreview({ image: state.source.dataUrl, ...spec });
+      refs.wmPreviewImg.src = result.data_url;
+      refs.wmPreviewBox.classList.remove('hidden');
+      refs.wmHint.textContent = `预览 ${result.width}×${result.height}，与最终落盘一致。`;
+    } catch (err) {
+      toastError(err, '水印预览失败');
+      refs.wmHint.textContent = '预览失败，检查字体/参数后重试。';
+    } finally {
+      refs.wmPreview.disabled = false;
+    }
+  });
+
+  refs.wmApply.addEventListener('click', async () => {
+    if (!state.source) { toastWarn('请先上传图片'); return; }
+    const spec = watermarkSpec();
+    if (!spec.text && !spec.image_mark) { toastWarn('请输入水印内容或选择 logo'); return; }
+    const original = refs.wmApply.textContent;
+    refs.wmApply.disabled = true;
+    refs.wmApply.innerHTML = '<span class="spin"></span>处理中…';
+    try {
+      const result = await api.watermark({ images: [state.source.dataUrl], ...spec });
+      addResultItems(result.images || [], 'watermark');
+      toastSuccess(`水印完成：${(result.images || []).length} 张已加入结果`);
+    } catch (err) {
+      toastError(err, '加水印失败');
+    } finally {
+      refs.wmApply.disabled = false;
+      refs.wmApply.textContent = original;
+    }
+  });
+
+  function renderGifFrames() {
+    const frames = state.gif.frames;
+    if (!frames.length) {
+      refs.gifFrames.innerHTML = '<span class="field-hint">还没有帧：添加本地图片，或把当前源图/结果加入。</span>';
+      return;
+    }
+    refs.gifFrames.innerHTML = frames
+      .map((frame, index) => `
+        <span class="gif-frame" title="${escapeHtml(frame.name)}">
+          <img src="${escapeHtml(frame.dataUrl)}" alt="" />
+          <span class="gif-frame-index">${index + 1}</span>
+          <button type="button" class="gif-frame-remove" data-gif-remove="${index}" aria-label="移除">×</button>
+        </span>`)
+      .join('');
+  }
+  function addGifFrame(dataUrl, name) {
+    if (state.gif.frames.length >= 300) { toastWarn('最多 300 帧'); return; }
+    state.gif.frames.push({ dataUrl, name });
+    renderGifFrames();
+  }
+  renderGifFrames();
+  refs.gifFrames.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-gif-remove]');
+    if (!button) return;
+    state.gif.frames.splice(Number(button.dataset.gifRemove), 1);
+    renderGifFrames();
+  });
+  refs.gifAddFrames.addEventListener('click', () => refs.gifFrameInput.click());
+  refs.gifFrameInput.addEventListener('change', async () => {
+    const files = [...(refs.gifFrameInput.files || [])];
+    for (const file of files) {
+      try {
+        addGifFrame(await fileToDataUrl(file), file.name);
+      } catch (err) {
+        toastError(err, '读取图片失败');
+      }
+    }
+    refs.gifFrameInput.value = '';
+  });
+  refs.gifAddSource.addEventListener('click', () => {
+    if (!state.source) { toastWarn('请先上传图片'); return; }
+    addGifFrame(state.source.dataUrl, state.source.name);
+  });
+
+  function syncGifSource() {
+    const isImages = state.gif.source === 'images';
+    refs.gifImageFields.classList.toggle('hidden', !isImages);
+    refs.gifVideoFields.classList.toggle('hidden', isImages);
+    for (const chip of refs.gifSources.querySelectorAll('[data-gif-source]')) {
+      chip.classList.toggle('active', chip.dataset.gifSource === state.gif.source);
+    }
+  }
+  refs.gifSources.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-gif-source]');
+    if (!chip) return;
+    state.gif.source = chip.dataset.gifSource;
+    syncGifSource();
+  });
+  syncGifSource();
+
+  refs.gifVideoPick.addEventListener('click', () => refs.gifVideoInput.click());
+  refs.gifVideoInput.addEventListener('change', async () => {
+    const file = refs.gifVideoInput.files?.[0];
+    if (!file) return;
+    refs.gifVideoInfo.textContent = `上传中… ${file.name}`;
+    state.gif.uploading = true;
+    try {
+      const result = await api.uploadVideo(file);
+      state.gif.video = {
+        relpath: result.relpath,
+        url: result.url,
+        name: file.name,
+        info: result.info || {},
+      };
+      const duration = Number(result.info?.duration) || 0;
+      if (duration) {
+        refs.gifStart.value = '0';
+        refs.gifEnd.value = String(Math.min(duration, 6).toFixed(1));
+      }
+      refs.gifVideoInfo.textContent = `${file.name} · ${duration.toFixed(1)}s · ${result.info?.width || '?'}×${result.info?.height || '?'} · ${result.info?.fps || '?'}fps`;
+    } catch (err) {
+      state.gif.video = null;
+      refs.gifVideoInfo.textContent = '上传失败，重新选择视频。';
+      toastError(err, '视频上传失败');
+    } finally {
+      state.gif.uploading = false;
+      refs.gifVideoInput.value = '';
+    }
+  });
+
+  function setGifProgress(percent, text, visible = true) {
+    refs.gifProgress.classList.toggle('hidden', !visible);
+    refs.gifBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (text) refs.gifStatus.textContent = text;
+  }
+  function finishGif() {
+    state.gif.busy = false;
+    state.gif.jobId = '';
+    refs.gifGo.disabled = false;
+    refs.gifCancel.classList.add('hidden');
+  }
+
+  refs.gifGo.addEventListener('click', async () => {
+    if (state.gif.busy) return;
+    const mode = refs.gifMode.value;
+    let payload;
+    if (state.gif.source === 'images') {
+      if (!state.gif.frames.length) { toastWarn('请先添加至少 1 帧'); return; }
+      payload = {
+        source: 'images',
+        images: state.gif.frames.map((frame) => frame.dataUrl),
+        duration: Math.max(20, Number(refs.gifDuration.value) || 120),
+        width: Number(refs.gifWidth.value) || 720,
+        mode,
+        loop: 0,
+      };
+    } else {
+      if (!state.gif.video) { toastWarn('请先选择视频'); return; }
+      const start = Number(refs.gifStart.value) || 0;
+      const end = Number(refs.gifEnd.value) || 0;
+      if (end <= start) { toastWarn('终点必须大于起点'); return; }
+      payload = {
+        source: 'video',
+        path: state.gif.video.relpath,
+        start,
+        end,
+        fps: Number(refs.gifFps.value) || 12,
+        width: Number(refs.gifVideoWidth.value) || 720,
+        mode,
+      };
+    }
+    state.gif.busy = true;
+    refs.gifGo.disabled = true;
+    refs.gifCancel.classList.remove('hidden');
+    setGifProgress(2, '提交任务…');
+    try {
+      const resp = await api.gif(payload);
+      state.gif.jobId = resp.job_id;
+      state.gif.status = resp.status || 'queued';
+      await pollGifJob(resp.job_id);
+    } catch (err) {
+      toastError(err, 'GIF 任务提交失败');
+      finishGif();
+    }
+  });
+
+  refs.gifCancel.addEventListener('click', async () => {
+    if (!state.gif.jobId) return;
+    try {
+      await api.cancelJob(state.gif.jobId);
+      refs.gifStatus.textContent = '正在取消…';
+    } catch (err) {
+      toastError(err, '取消失败');
+    }
+  });
+
+  async function pollGifJob(jobId) {
+    while (!disposed && state.gif.jobId === jobId) {
+      let job;
+      try {
+        job = await api.job(jobId);
+      } catch {
+        await sleep(1500);
+        continue;
+      }
+      const progress = job.progress || {};
+      const percent = progress.max ? (Number(progress.value) / Number(progress.max)) * 100 : 0;
+      const stage = progress.label || (job.status === 'queued' ? '排队中' : '生成中');
+      setGifProgress(percent, stage);
+      if (job.status === 'done') {
+        addResultItems(job.images || [], 'gif');
+        toastSuccess(`GIF 完成：${(job.images || []).length} 个已加入结果`);
+        setGifProgress(100, '完成');
+        finishGif();
+        return;
+      }
+      if (job.status === 'error') {
+        toastError(new Error(job.error?.message || job.error || 'GIF 生成失败'), 'GIF 失败');
+        finishGif();
+        return;
+      }
+      if (job.status === 'canceled') {
+        toastWarn('已取消 GIF');
+        finishGif();
+        return;
+      }
+      await sleep(1000);
+    }
+  }
+
+  refs.gifSplit.addEventListener('click', async () => {
+    if (!state.source) { toastWarn('请先上传 GIF'); return; }
+    const isGif = /^data:image\/gif/i.test(state.source.dataUrl) || /\.gif$/i.test(state.source.name || '');
+    if (!isGif) { toastWarn('当前源图不是 GIF'); return; }
+    const original = refs.gifSplit.textContent;
+    refs.gifSplit.disabled = true;
+    refs.gifSplit.innerHTML = '<span class="spin"></span>拆帧中…';
+    try {
+      const result = await api.splitGif({ image: state.source.dataUrl, max_frames: 60 });
+      addResultItems((result.images || []).map((item, index) => ({
+        ...item,
+        filename: item.filename || `gifframe-${index + 1}.png`,
+      })), 'gif-frame');
+      toastSuccess(`拆帧完成：${(result.images || []).length} 帧已加入结果`);
+    } catch (err) {
+      toastError(err, 'GIF 拆帧失败');
+    } finally {
+      refs.gifSplit.disabled = false;
+      refs.gifSplit.textContent = original;
+    }
+  });
+
+  /* ============================================================
    * 导出 / 结果
    * ============================================================ */
   refs.format.addEventListener('change', () => {
     state.format = refs.format.value;
+    syncExportUi();
+    updateEstimate();
+  });
+  refs.lossless.addEventListener('change', () => {
+    syncExportUi();
     updateEstimate();
   });
   refs.quality.addEventListener('input', () => {
@@ -1568,6 +2347,9 @@ export function createImageToolsPage(host) {
         ops,
         format: state.format,
         quality: state.quality,
+        lossless: refs.lossless.checked,
+        target_kb: Number(refs.targetKb.value) || undefined,
+        background: refs.exportBg.value || '#ffffff',
         prefix: kind === 'grid' ? 'grid' : 'processed',
       });
       if (!result?.images?.length) throw new Error('后端没有返回图片');
@@ -1604,7 +2386,7 @@ export function createImageToolsPage(host) {
           <div class="tool-result-thumb"><img src="${escapeHtml(item.thumbUrl)}" alt="" loading="lazy" /></div>
           <div class="tool-result-meta">
             <span class="mono">${fmtNum(item.width)}×${fmtNum(item.height)}</span>
-            <span class="kind">${item.kind === 'grid' ? '宫格' : item.kind === 'upscale' ? '放大' : '处理'}</span>
+            <span class="kind">${RESULT_KIND_LABEL[item.kind] || '处理'}</span>
           </div>
         </div>`,
       )
@@ -1634,7 +2416,7 @@ export function createImageToolsPage(host) {
       </div>`;
     openModal({
       title: '处理结果',
-      subtitle: item.kind === 'grid' ? '宫格切分输出' : '图像处理输出',
+      subtitle: `${RESULT_KIND_LABEL[item.kind] || '图像处理'}输出`,
       size: 'lg',
       content,
       actions: [
@@ -1645,8 +2427,31 @@ export function createImageToolsPage(host) {
           onClick: () => downloadUrl(item.url, item.filename || 'processed.png'),
         },
         {
+          label: '收藏素材',
+          kind: 'ghost',
+          close: false,
+          onClick: async () => {
+            try {
+              await api.createMaterial({
+                image: { url: item.url, filename: item.filename },
+                title: item.filename || '',
+                kind: 'upload',
+              });
+              toastSuccess('已收藏到素材仓库');
+            } catch (err) {
+              toastError(err, '收藏失败');
+            }
+          },
+        },
+        {
+          label: '加入 GIF',
+          kind: 'ghost',
+          close: true,
+          onClick: () => { addResultToGif(item); },
+        },
+        {
           label: '继续编辑',
-          kind: 'primary',
+          kind: 'ghost',
           onClick: async () => {
             try {
               const dataUrl = await urlToDataUrl(item.url);
@@ -1658,8 +2463,38 @@ export function createImageToolsPage(host) {
             }
           },
         },
+        {
+          label: '送入图像编辑',
+          kind: 'primary',
+          onClick: async () => {
+            try {
+              const dataUrl = await urlToDataUrl(item.url);
+              setHandoff({
+                images: [{ dataUrl, name: item.filename || 'result.png' }],
+                prompt: '',
+                source: 'image-tools',
+              });
+              goToEditPage();
+            } catch (err) {
+              toastError(err, '送入编辑失败');
+              return false;
+            }
+          },
+        },
       ],
     });
+  }
+
+  async function addResultToGif(item) {
+    try {
+      const dataUrl = item.url.startsWith('data:') ? item.url : await urlToDataUrl(item.url);
+      addGifFrame(dataUrl, item.filename || 'result.png');
+      state.tool = 'gif';
+      syncToolGroups();
+      toastSuccess('已加入 GIF 帧');
+    } catch (err) {
+      toastError(err, '加入 GIF 失败');
+    }
   }
 
   refs.clearResults.addEventListener('click', () => {

@@ -1,6 +1,6 @@
 # 全景图生成：能力查证、落位与实施计划
 
-> 状态：**S1~S6 已落地并提交**（几何层 / 契约层 / 管线 / 编辑页 / 文生图 / 图像处理辅助）；**P0 真机基线已执行**（2026-11-07，RTX 5090 32GB，2:1 / 3:1 / 4:1 × 3 seed，结果见第 13 节）。  
+> 状态：**S1~S6 已落地并提交**（几何层 / 契约层 / 管线 / 编辑页 / 文生图 / 图像处理辅助）；**P0 真机基线已执行**（2026-11-07，RTX 5090 32GB，2:1 / 3:1 / 4:1 × 3 seed，见第 13 节）；**S8 已修复源图边界亮带**（13.5）。  
 > 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)、[WEB_UI.md](WEB_UI.md)、[ALIGN_COLOR.md](ALIGN_COLOR.md)、[IMAGE_TOOLS.md](IMAGE_TOOLS.md)。  
 > 约束：仓库有并行开发（`animation_kit/`、作品画廊、`web/assets/css/app.css`），本次实现未触碰这些文件，全部按文件名精确暂存。
 
@@ -14,7 +14,7 @@
    - 次入口：纯文生全景只需“尺寸 + 提示词模板”，不需要新管线。
    - **不新增顶级页面**，不重写扩图，不动 `outpaint` 现有语义。
 5. **“360° 全景（等距柱状 / VR）”只能作为实验能力**，官方没有承诺；先做 **2:1 / 3:1 / 4:1 宽幅全景**，360 环绕接缝作为 P5 可选项。
-6. **真机基线结论（2026-11-07）**：2:1 默认、3:1 推荐（注意 24.6GB 峰值显存）、4:1 保持实验。三种比例都能连续延展、无重复主体、地平线平直；当前最需要修的是**源图与扩展区交界的竖向亮带**（第 13.4 节）。
+6. **真机基线结论（2026-11-07）**：2:1 默认、3:1 推荐（注意 24.6GB 峰值显存）、4:1 保持实验。三种比例都能连续延展、无重复主体、地平线平直；基线暴露的**源图与扩展区交界亮带**已在 S8 修复（交界阶跃 24~31 → <0.1，光晕 22 → 5），复测见 13.5。
 
 ## 1. 官方查证
 
@@ -172,6 +172,7 @@ def panorama_plan(src_w, src_h, *, aspect="2:1", long_side=3072,
 4. 硬保护：`max(W,H) > max_side` 或 `W*H > max_pixels` 抛 `ValueError`，错误信息带建议长边。
 5. `PanoramaPlan.to_outpaint_info()` 复用 `OutpaintInfo`，遮罩直接走 `outpaint_mask()`。
 6. `panorama_canvas(im, plan)` 负责缩图与贴画布；`wrap_seam_blend(image, blend_px=24, strength=1.0)` 做全宽线性色差校正 + 首尾窄带羽化，返回 `(image, report)`。
+7. `seam_level(image, pads, band=48, flatten=96, flatten_clip=32)` 修源图与扩展区的交界：先按逐行/逐列色差做 48px 阶跃对齐，再把源图边缘低频走向镜像进扩展区压掉 20~40px 的光晕，返回 `(image, seam_report)`。只写扩展区，源图像素不动。
 
 ### 4.3 管线改造：`pipeline.generate_edit()`
 
@@ -211,6 +212,13 @@ elif task_mode == "panorama":
     "work":   { "w": 1408, "h": 704 },
     "pads":   { "left": 0, "right": 0, "top": 0, "bottom": 0 },
     "scale": 1.0,
+    "seam_report": {      // 源图边界渐变修正，见 13.4
+      "mode": "edge_offset_ramp", "band": 48, "flatten": 96,
+      "sides": {
+        "left":  {"pad": 256, "band": 48, "before_mean_abs": 59.7, "before_max_abs": 109.0, "after_mean_abs": 4.0, "flatten_mean_abs": 7.9},
+        "right": {"pad": 256, "band": 48, "before_mean_abs": 55.2, "before_max_abs": 95.0,  "after_mean_abs": 3.4, "flatten_mean_abs": 6.5}
+      }
+    },
     "wrap_report": null   // 开 wrap 时为 {mode, blend_px, before_max_abs, after_max_abs, shift}
   }
 }
@@ -321,7 +329,7 @@ elif task_mode == "panorama":
 | 360° 并非官方能力 | 等距柱状投影需要 180° 垂直视场，模型未训练 | 只做“环绕接缝闭合”的近似，UI 标“实验”，不承诺 VR 可用 |
 | 显存 | 8.4MP 画布超出常规编辑预算 | 总像素上限 6.0MP，超限自动等比缩小并报警告 |
 | 接缝 | 宽幅画布容易出现左右重复纹理 | 灰边遮罩 + 已有过渡带 + 颜色一致；360 再用边缘色差校正 + 窄带羽化 |
-| **源图边界亮带** | 真机复现：扩展区与源图交界有 1~2px 亮度阶跃（左边界 24~31/255，右边界 5~10/255），三种比例、三个 seed 全部出现 | 已知缺陷，见 13.4；建议合成阶段加边界亮度渐变，不在比例层面回避 |
+| **源图边界亮带** | ~~真机复现：扩展区与源图交界有 1~2px 亮度阶跃（左边界 24~31/255，右边界 5~10/255）~~ | **已修复**（S8）：`imaging.seam_level()` 先对齐交界阶跃，再把源图边缘低频走向镜像进扩展区压掉光晕；真机复测见 13.5 |
 | **24GB 显存卡** | 3:1 峰值 24.6GB，4090/3090 级别的 24GB 卡接近上限 | 默认 2:1；24GB 卡限制源图高度，或在文案提示降低比例 |
 | 并行开发冲突 | `app.css`、`animation_kit/`、画廊由他人维护 | 新样式只加在 `composer.css` 的独立类名下；不改 `app.css` |
 
@@ -343,6 +351,9 @@ elif task_mode == "panorama":
 | `web/src/components/imageTools.js` | 扩图规划全景比例 + 交接编辑页 | 已提交 `91ffb0e` |
 | `web/src/handoff.js` | 交接增加 `taskMode` / `panorama` 字段 | 已提交 `91ffb0e` |
 | `web/src/components/edit.js` | `applyHandoff` 应用任务模式与全景覆盖项 | 已提交 `91ffb0e` |
+| `server/imaging.py` | S8：`seam_level()` + `_smooth_1d()` / `_smooth_axis1()`，交界阶跃与低频光晕修正 | 本次提交 |
+| `server/pipeline.py` | S8：全景合成后调用 `seam_level`、`quality.panorama.seam_report`、`feather=0` 修复 | 本次提交 |
+| `tests/test_panorama.py` | S8：`seam_level` 单测（阶跃、光晕、跳过、PIL） | 本次提交 |
 | `docs/WEB_UI.md` | 补「全景」入口说明 | 本次文档维护 |
 
 ## 10. 已确认事项
@@ -473,7 +484,7 @@ python -m pytest tests/test_zero_shift_ps.py -v
 python -m pytest tests -q
 ```
 
-本次全量结果：**442 passed in 48.06s**。
+本次全量结果：**446 passed in 46.53s**（含 S8 新增的 4 个 `seam_level` 单测）。
 
 真机回归（2026-11-07 已执行）：
 
@@ -502,7 +513,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 - ✅ S1~S6 已完成并提交；文档已回写。
 - ✅ **P0 真机基线**：2:1 / 3:1 / 4:1 各 3 组已跑完（第 13 节），结论是 2:1 默认、3:1 推荐但注意显存、4:1 保持实验。
 - ✅ **360° 环绕接缝实测**：2:1 下 `before_max_abs 238 → after_max_abs 0`，功能可用，UI 继续保留“实验”标签（不承诺等距柱状投影）。
-- ⬜ **源图边界亮带**：13.4 的已知缺陷，建议下一轮在合成阶段修掉，并补一条真机回归。
+- ✅ **源图边界亮带**：S8 用 `imaging.seam_level()` 修复（阶跃对齐 + 低频光晕压制），真机复测见 13.5；`feather=0` 也被正确识别。
 - ⬜ **21:9 / 8:1**：未跑真机，当前按 4:1 同量级对待；若要作为正式档位需补测。
 
 ## 13. P0 真机基线（2026-11-07）
@@ -520,6 +531,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 | 产物 | `%TEMP%\qwen-pano-baseline\`（源图、9 张结果、`baseline.json`），未提交进仓库 |
 
 ### 13.2 结果
+
+> 本节是 **S8 修复前**的基线数字（用于留档与横向对比）；修复后的同条件复测见 13.5。
 
 | 比例 | 画布（补边 左/右） | 源区占比 | seed | 耗时 | 峰值显存 | 左边界亮度阶跃 | 右边界亮度阶跃 |
 |---|---|---|---|---|---|---|---|
@@ -547,7 +560,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 - **一致性 LoRA 生效**：9 次均自动挂载 `Qwen2.1 一致性无偏移_GH_V1.0`（0.48），主体未漂移。
 - **长边 3072 在 1024×768 源图上用不满**：`long_side` 只是上限且不放大，实际输出 2:1 仅 1536×768（1.18MP）、3:1 为 2304×768、4:1 才 3072×768。
 
-### 13.4 已知缺陷：源图与扩展区交界的竖向亮带
+### 13.4 缺陷定位：源图与扩展区交界的竖向亮带（已修复）
 
 源图左右边界存在 1~2px 的亮度阶跃：左边界 23.7~30.5（约 9%~12% 灰阶），右边界 5.3~9.9。视觉上是紧贴源图边缘的一条竖向亮带，2:1 / 3:1 / 4:1 与三个 seed 全部复现。
 
@@ -560,9 +573,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 | `local.hint=none` | 29.6 | 全景分支强制 `gray_fill`，hint 无法关闭 |
 | `local.feather=0` | 29.6 | `pipeline.py` 是 `int(local.get("feather") or 32)`，**0 被吃成 32**，无法关羽化做对照 |
 
-结论：亮带来自「模型补全结果与源图之间的亮度差」在合成边界上的直接暴露，不是色彩校正造成的，羽化也没有把它抹平。建议下一轮在合成阶段对 pad 边界做 4~8px 亮度渐变（或对扩展区低频亮度对齐到源图边缘），同时把 `feather` 改成显式 `None` 判断，让 0 真正生效。
+结论：亮带来自「模型补全结果与源图之间的亮度差」在合成边界上的直接暴露，不是色彩校正造成的，羽化也没有把它抹平。
 
-### 13.5 结论与建议
+### 13.5 修复与真机复测（S8）
+
+修复落在 `imaging.seam_level()`（[imaging.py](../../server/imaging.py)），只改扩展区、不动源图：
+
+1. **交界阶跃对齐**：取交界两侧的逐行（左右）/逐列（上下）色差，向扩展区内做 48px 线性衰减偏移，交界处与源图对齐。
+2. **低频光晕压制**：模型常在交界内侧 20~40px 画一条竖亮带。把源图边缘的低频灰度走向镜像到扩展区，按 96px 衰减修正，限幅 32 级——只抹低频偏差，保留纹理。
+3. 结果写入 `quality.panorama.seam_report`（每边 `before_mean_abs / after_mean_abs / flatten_mean_abs`）。
+4. 顺带修掉 `pipeline.py` 的 `int(local.get("feather") or 32)`：现在显式传 `feather=0` 不再被吃成 32。
+
+真机复测（同源图、同 seed 1207、turbo9）：
+
+| 比例 | 交界列亮度阶跃（左 / 右） | 逐行色差均值（左） | 天空区光晕凸起（左 / 右） | `outside_max_abs` |
+|---|---|---|---|---|
+| 2:1 | 29.6 → **0.07 / 0.07** | 59.7 → **4.0** | 22 → **4.8 / 5.8** | 0 |
+| 3:1 | 28.0 → **0.09 / 0.04** | 59.0 → **3.7** | 22 → **4.9 / 5.8** | 0 |
+| 4:1 | 23.7 → **0.05 / 0.04** | 60.3 → **3.3** | 22 → **4.9 / 6.2** | 0 |
+
+视觉上竖向亮带已基本消失，只在天空里残留极淡的过渡；源图区域像素仍逐字节保留，耗时与显存无明显变化（2:1 首跑 39.8s 含预热，3:1 10.2s，4:1 16.2s）。
+
+### 13.6 结论与建议
 
 | 问题 | 建议 |
 |---|---|
@@ -572,7 +604,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 | 21:9 / 8:1 | 本轮未跑真机，按 4:1 同量级对待；作为正式档位前需补测 |
 | 长边 3072 | 保持默认，但 UI 文案应明确它是**上限而非输出尺寸**：源图高度决定画布高度，`long_side` 只在超出时缩小 |
 | 显存 | 全景比同源图文生图（20.9GB）多 2~3.7GB；24GB 卡建议限制源图短边或优先用 2:1 |
-| 修复优先级 | 源图边界亮带 > 大图分块 > 地平线指标；亮带修完后补一轮真机回归 |
+| 修复优先级 | ~~源图边界亮带~~（S8 已修）> 大图分块 > 地平线指标；后续补测 21:9 / 8:1 与 24GB 卡 |
 
 ## 14. 官方来源
 

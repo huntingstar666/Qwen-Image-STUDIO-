@@ -1,7 +1,9 @@
 # 图像处理模块 2.0：原理、架构与实施计划
 
-> 状态：**P0 + P4（高清放大）已落地**（SeedVR2 / FlashVSR 后端、设置分区、图像处理页「高清放大」）；
-> 水印 / GIF / 工作台三栏重构 / 前端联动仍待实施
+> 状态：**P0 / P1 后端 / P2 后端 / P3 后端 / P4（高清放大）已落地**：
+> 尺寸多模式 + WebP/目标体积/EXIF、水印（`server/mediaops.py` + `/api/image/watermark*`）、
+> GIF（图片序列 + 视频两遍调色板 + 拆帧）、SeedVR2 / FlashVSR 与设置分区。
+> **图像处理页三栏工作台重构与导入/结果联动（P1 前端、P5）仍待实施。**
 > 日期：2026-11-07
 > 范围：`web/src/components/imageTools.js`、`web/assets/css/tools.css`、`server/imageops.py`、新增 `server/mediaops.py`、新增 `server/upscalers/`、`server/config.py`、`server/main.py`、`server/jobs.py`、设置页
 > 目标：把「图像处理」从单页工具堆叠，升级为可商用的本地图像工作台：基础处理 + 水印 + GIF + 两套高清放大，并与素材仓库、图像编辑、结果历史打通。全部能力在本仓库内实现，不请求 ComfyUI 或任何其他项目的后端服务。

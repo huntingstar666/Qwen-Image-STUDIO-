@@ -11,19 +11,40 @@
 """
 from __future__ import annotations
 
+import io
 import math
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
 
 from . import align, imaging, storage
 
 MAX_SIDE = 8192
 
+#: 导出体积目标范围（KB）：太小的目标在高质量图上无解，太大则失去意义。
+MIN_TARGET_KB = 32
+MAX_TARGET_KB = 50 * 1024
+
+#: resize 支持的重采样滤镜（默认 lanczos）。
+_RESAMPLE = {
+    "lanczos": Image.Resampling.LANCZOS,
+    "bicubic": Image.Resampling.BICUBIC,
+    "bilinear": Image.Resampling.BILINEAR,
+    "nearest": Image.Resampling.NEAREST,
+    "box": Image.Resampling.BOX,
+}
+
 
 class ImageOpsError(ValueError):
-    """参数非法（会作为 400 返回给前端）。"""
+    """参数非法（会作为 400 返回给前端）。
+
+    ``code`` 用于前端把错误映射到具体动作（如 ``image_too_large`` 提示先缩小）。
+    """
+
+    def __init__(self, message: str, *, code: str = "invalid_ops") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # --------------------------------------------------------------------------- 单项操作
@@ -102,12 +123,109 @@ def op_flip(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
     return out if (horizontal or vertical) else image
 
 
+def _resample(name: Any) -> Image.Resampling:
+    key = str(name or "lanczos").lower()
+    if key not in _RESAMPLE:
+        raise ImageOpsError(f"未知的重采样滤镜：{name}（支持 {sorted(_RESAMPLE)}）")
+    return _RESAMPLE[key]
+
+
+def _target_size(image: Image.Image, spec: dict[str, Any]) -> tuple[int, int]:
+    """按 mode 计算目标尺寸（不做事，只算数）。
+
+    mode 缺省为 ``exact``，兼容旧的 ``width/height`` 请求。
+    ``keep_aspect`` 默认 True：给定长宽时按「放进框内」等比缩小（contain），
+    不会因为锁定比例反而超出用户输入的目标框。
+    """
+    mode = str(spec.get("mode") or "exact").lower()
+    width, height = image.size
+
+    if mode == "exact":
+        raw_w = spec.get("width")
+        raw_h = spec.get("height")
+        has_w = raw_w not in (None, "", 0)
+        has_h = raw_h not in (None, "", 0)
+        if not has_w and not has_h:
+            raise ImageOpsError("exact 模式需要 width 或 height")
+        if not has_w:
+            target_h = _as_int(raw_h, "height", minimum=1)
+            return max(1, round(width * target_h / height)), target_h
+        if not has_h:
+            target_w = _as_int(raw_w, "width", minimum=1)
+            return target_w, max(1, round(height * target_w / width))
+        target_w = _as_int(raw_w, "width", minimum=1)
+        target_h = _as_int(raw_h, "height", minimum=1)
+        if target_w > MAX_SIDE or target_h > MAX_SIDE:
+            # 用户请求值先校验：锁定比例时会被缩到框内，不能让它悄悄通过
+            raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）", code="image_too_large")
+        if bool(spec.get("keep_aspect", True)):
+            scale = min(target_w / width, target_h / height)
+            return max(1, round(width * scale)), max(1, round(height * scale))
+        return target_w, target_h
+
+    if mode == "percent":
+        percent = float(spec.get("percent", 100))
+        if percent <= 0:
+            raise ImageOpsError("percent 必须大于 0")
+        return max(1, round(width * percent / 100)), max(1, round(height * percent / 100))
+
+    if mode == "long_edge":
+        edge = _as_int(spec.get("long_edge"), "long_edge", minimum=1)
+        scale = edge / max(width, height)
+        return max(1, round(width * scale)), max(1, round(height * scale))
+
+    if mode == "short_edge":
+        edge = _as_int(spec.get("short_edge"), "short_edge", minimum=1)
+        scale = edge / min(width, height)
+        return max(1, round(width * scale)), max(1, round(height * scale))
+
+    if mode == "megapixels":
+        megapixels = float(spec.get("megapixels", 0))
+        if megapixels <= 0:
+            raise ImageOpsError("megapixels 必须大于 0")
+        scale = math.sqrt(megapixels * 1_000_000 / (width * height))
+        return max(1, round(width * scale)), max(1, round(height * scale))
+
+    raise ImageOpsError(f"未知的 resize 模式：{mode}（支持 exact/percent/long_edge/short_edge/megapixels）")
+
+
 def op_resize(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
-    """fit: contain(补边) / cover(裁切) / stretch(拉伸)。"""
+    """两种用法：
+
+    * 旧接口：``width/height + fit``（contain 补边 / cover 裁切 / stretch 拉伸）；
+    * 新接口：``mode + 目标参数``（exact / percent / long_edge / short_edge / megapixels），
+      可带 ``snap``（对齐到倍数）、``filter``（重采样滤镜）、``sharpen_after``（锐化强度）。
+    """
+    if spec.get("fit") is not None:
+        return _resize_fit(image, spec)
+
+    width, height = _target_size(image, spec)
+    snap = _as_int(spec.get("snap", 0), "snap")
+    if snap > 1:
+        width = max(snap, int(round(width / snap)) * snap)
+        height = max(snap, int(round(height / snap)) * snap)
+    if width > MAX_SIDE or height > MAX_SIDE:
+        raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）", code="image_too_large")
+
+    method = _resample(spec.get("filter"))
+    if width < image.width or height < image.height:
+        out = image.resize((width, height), resample=method, reducing_gap=3)
+    else:
+        out = image.resize((width, height), resample=method)
+
+    sharpen = float(spec.get("sharpen_after") or 0)
+    if sharpen > 0:
+        out = out.filter(ImageFilter.UnsharpMask(
+            radius=1.0, percent=int(_clamp(sharpen, 1, 200)), threshold=2))
+    return out
+
+
+def _resize_fit(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
+    """旧接口：fit = contain(补边) / cover(裁切) / stretch(拉伸)。"""
     width = _as_int(spec.get("width"), "width", minimum=1)
     height = _as_int(spec.get("height"), "height", minimum=1)
     if width > MAX_SIDE or height > MAX_SIDE:
-        raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）")
+        raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）", code="image_too_large")
     fit = str(spec.get("fit") or "contain")
     if fit == "stretch":
         return image.resize((width, height), Image.LANCZOS)
@@ -227,34 +345,136 @@ def apply_ops(data: bytes, ops: list[dict[str, Any]] | None) -> tuple[list[Image
     return images, applied
 
 
+def _parse_color(value: Any, default: tuple[int, int, int] = (255, 255, 255)) -> tuple[int, int, int]:
+    """解析 ``#rgb`` / ``#rrggbb`` 颜色；非法时退回默认值。"""
+    text = str(value or "").strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(ch * 2 for ch in text)
+    if len(text) != 6:
+        return default
+    try:
+        return tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return default
+
+
+def _flatten_rgb(image: Image.Image, background: tuple[int, int, int]) -> Image.Image:
+    """把带 alpha 的图合成到纯色底（JPEG 这类无透明通道的格式用）。"""
+    rgba = image.convert("RGBA")
+    canvas = Image.new("RGBA", rgba.size, (*background, 255))
+    canvas.alpha_composite(rgba)
+    return canvas.convert("RGB")
+
+
+def _encode(image: Image.Image, fmt: str, *, quality: int, lossless: bool,
+            background: tuple[int, int, int]) -> bytes:
+    if fmt == "png":
+        return imaging.encode_png(image)
+    if fmt == "webp":
+        buf = io.BytesIO()
+        if lossless:
+            image.save(buf, format="WEBP", lossless=True, quality=100, method=4)
+        else:
+            image.save(buf, format="WEBP", quality=int(quality), method=4)
+        return buf.getvalue()
+    return imaging.encode_jpeg(_flatten_rgb(image, background), quality=quality)
+
+
+def encode_export(image: Image.Image, fmt: str = "png", *, quality: int = 92,
+                  lossless: bool = False, background: Any = "#ffffff") -> tuple[bytes, str]:
+    """按导出格式编码单张图，返回 ``(字节, 扩展名)``（水印等其它模块复用）。"""
+    fmt = "jpeg" if fmt == "jpg" else fmt
+    if fmt not in ("png", "jpeg", "webp"):
+        raise ImageOpsError("format 只能是 png / jpeg / webp")
+    payload = _encode(image, fmt, quality=int(_clamp(quality, 1, 100)), lossless=lossless,
+                      background=_parse_color(background, (255, 255, 255)))
+    return payload, {"png": "png", "jpeg": "jpg", "webp": "webp"}[fmt]
+
+
+def _encode_with_target(image: Image.Image, fmt: str, *, quality: int, lossless: bool,
+                        background: tuple[int, int, int], target_kb: int | None
+                        ) -> tuple[bytes, int, bool | None]:
+    """编码；给了 ``target_kb`` 时对 JPEG/WebP 二分搜索质量（最多 7 次）。
+
+    返回 ``(字节, 实际质量, 是否达标)``。PNG 不可控体积，达标信息按实际大小如实返回。
+    """
+    if not target_kb:
+        return _encode(image, fmt, quality=quality, lossless=lossless,
+                       background=background), quality, None
+
+    target = target_kb * 1024
+    if fmt == "png":
+        payload = _encode(image, fmt, quality=quality, lossless=lossless, background=background)
+        return payload, quality, len(payload) <= target
+
+    low, high = 30, max(quality, 60)
+    best: tuple[bytes, int] | None = None
+    smallest: tuple[bytes, int] | None = None
+    for _ in range(7):
+        if low > high:
+            break
+        mid = (low + high) // 2
+        payload = _encode(image, fmt, quality=mid, lossless=lossless, background=background)
+        if smallest is None or len(payload) < len(smallest[0]):
+            smallest = (payload, mid)
+        if len(payload) <= target:
+            best = (payload, mid)
+            low = mid + 1
+        else:
+            high = mid - 1
+    if best is not None:
+        return best[0], best[1], True
+    # 最低质量仍超标：给出最小质量结果并告知未达标
+    payload = _encode(image, fmt, quality=30, lossless=lossless, background=background)
+    return payload, 30, False
+
+
 def process(data: bytes, body: dict[str, Any]) -> dict[str, Any]:
-    """HTTP 层入口：执行操作并落盘，返回可直接展示的结果。"""
+    """HTTP 层入口：执行操作并落盘，返回可直接展示的结果。
+
+    导出增强：``webp`` + ``lossless``、``target_kb``（JPEG/WebP 二分质量）、
+    ``background``（JPEG 透明区铺底颜色）。
+    """
     fmt = str(body.get("format") or "png").lower()
-    if fmt not in ("png", "jpeg", "jpg"):
-        raise ImageOpsError("format 只能是 png 或 jpeg")
+    if fmt == "jpg":
+        fmt = "jpeg"
+    if fmt not in ("png", "jpeg", "webp"):
+        raise ImageOpsError("format 只能是 png / jpeg / webp")
     quality = _as_int(body.get("quality", 92), "quality", minimum=1)
     quality = min(quality, 100)
+    lossless = bool(body.get("lossless"))
+    background = _parse_color(body.get("background"), (255, 255, 255))
+    target_kb: int | None = None
+    if body.get("target_kb") not in (None, "", 0):
+        target_kb = _as_int(body.get("target_kb"), "target_kb", minimum=MIN_TARGET_KB)
+        if target_kb > MAX_TARGET_KB:
+            raise ImageOpsError(f"target_kb 过大（上限 {MAX_TARGET_KB}KB）")
     prefix = str(body.get("prefix") or "processed")
+    ext = {"png": "png", "jpeg": "jpg", "webp": "webp"}[fmt]
 
     images, applied = apply_ops(data, body.get("ops"))
     results = []
     for index, image in enumerate(images):
-        if fmt == "png":
-            payload = imaging.encode_png(image)
-            ext = "png"
-        else:
-            payload = imaging.encode_jpeg(image.convert("RGB"), quality=quality)
-            ext = "jpg"
-        meta = storage.save_output(payload, prefix=f"{prefix}-{index + 1}", ext=f".{ext}")
+        payload, used_quality, target_met = _encode_with_target(
+            image, fmt, quality=quality, lossless=lossless,
+            background=background, target_kb=target_kb,
+        )
+        meta = storage.save_output(payload, prefix=f"{prefix}-{index + 1}", ext=f".{ext}",
+                                   image=image)
         meta["index"] = index
+        meta["quality"] = used_quality
+        if target_kb is not None:
+            meta["target_kb"] = target_kb
+            meta["target_met"] = target_met
         results.append(meta)
 
     return {
         "ok": True,
         "applied": applied,
         "count": len(results),
-        "images": results,
         "format": fmt,
+        "lossless": lossless,
+        "images": results,
     }
 
 

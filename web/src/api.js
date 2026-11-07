@@ -218,6 +218,56 @@ export const api = {
     return request('/api/image/upscale', { method: 'POST', body: payload, timeout: 30000 });
   },
 
+  /** GET /api/image/watermark/fonts —— 水印可用字体 */
+  watermarkFonts() {
+    return request('/api/image/watermark/fonts', { timeout: 15000 });
+  },
+
+  /** POST /api/image/watermark/preview —— 服务端精确预览（返回 data_url） */
+  watermarkPreview(payload) {
+    return request('/api/image/watermark/preview', { method: 'POST', body: payload, timeout: 60000 });
+  },
+
+  /** POST /api/image/watermark —— 批量加水印（最多 20 张） */
+  watermark(payload) {
+    return request('/api/image/watermark', { method: 'POST', body: payload, timeout: 180000 });
+  },
+
+  /** POST /api/media/upload —— 上传视频（GIF 源，multipart） */
+  async uploadVideo(file) {
+    const form = new FormData();
+    form.append('file', file, file.name || 'video.mp4');
+    const response = await fetch('/api/media/upload', { method: 'POST', body: form });
+    if (!response.ok) {
+      let message = `视频上传失败：HTTP ${response.status}`;
+      let code = null;
+      try {
+        const data = await response.json();
+        if (data?.error?.message) message = data.error.message;
+        code = data?.error?.code ?? null;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(message, { status: response.status, code, path: '/api/media/upload' });
+    }
+    return response.json();
+  },
+
+  /** POST /api/media/video/probe —— 视频时长/分辨率/fps */
+  videoProbe(payload) {
+    return request('/api/media/video/probe', { method: 'POST', body: payload, timeout: 30000 });
+  },
+
+  /** POST /api/media/gif —— 提交 GIF 任务（图片序列或视频，返回 job_id） */
+  gif(payload) {
+    return request('/api/media/gif', { method: 'POST', body: payload, timeout: 120000 });
+  },
+
+  /** POST /api/media/gif/split —— GIF 拆帧为 PNG 结果 */
+  splitGif(payload) {
+    return request('/api/media/gif/split', { method: 'POST', body: payload, timeout: 180000 });
+  },
+
   /** GET /api/jobs/{id} —— 任务状态 */
   job(jobId) {
     return request(`/api/jobs/${encodeURIComponent(jobId)}`, { timeout: 20000 });

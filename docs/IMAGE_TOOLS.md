@@ -39,13 +39,19 @@ vendor 位置：`web/vendor/image-tools-kit/`（原样复制，不改）。
     {"op": "rotate", "angle": 90},
     {"op": "flip", "horizontal": true, "vertical": false},
     {"op": "resize", "width": 1024, "height": 768, "fit": "contain|cover|stretch"},
+    // 或按模式：exact | percent | long_edge | short_edge | megapixels
+    {"op": "resize", "mode": "long_edge", "long_edge": 2048, "snap": 32,
+     "filter": "lanczos", "sharpen_after": 60},
     {"op": "adjust", "brightness": 1.05, "contrast": 1.1, "saturation": 1.05,
                      "sharpness": 1.2, "temperature": 0.1},
     {"op": "pad32"},
     {"op": "trim_alpha", "padding": 8}
   ],
-  "format": "png|jpeg",
-  "quality": 92,
+  "format": "png|jpeg|webp",
+  "quality": 92,          // JPEG/WebP 质量
+  "lossless": false,      // WebP 无损
+  "target_kb": 800,       // 可选：目标体积（JPEG/WebP 二分质量；PNG 只提示）
+  "background": "#ffffff",// JPEG 透明区铺底颜色
   "prefix": "processed"
 }
 ```
@@ -68,7 +74,14 @@ vendor 位置：`web/vendor/image-tools-kit/`（原样复制，不改）。
 - **顺序执行**，`grid` 会对当前第一张做切分（先裁再切是常见用法）；
 - 所有坐标是**像素**，越界自动收敛（但宽高 < 1 会报 400）；
 - `pad32` = 向上对齐到 32 的倍数（补边），这是送进编辑管线前的必备步骤；
-- `format=jpeg` 会转 RGB（丢 alpha），`quality` 1~100；
+- `format=jpeg` 会转 RGB（丢 alpha，透明区按 `background` 铺底）；`quality` 1~100；
+- 导出支持 `webp`（`lossless=true` 走无损）；`target_kb` 对 JPEG/WebP 二分搜索质量（最多 7 次），
+  返回项里的 `quality` / `target_met` 告诉前端实际用了多少质量、是否达标；
+- `resize` 两种写法：旧接口 `width/height + fit`；新接口 `mode + 目标参数`，
+  可选 `snap`（对齐倍数）、`filter`（lanczos/bicubic/bilinear/nearest/box）、
+  `sharpen_after`（0~200，UnsharpMask）。`keep_aspect` 默认 true，长宽都给时按“放进框内”等比缩小；
+- 目标尺寸超过 8192 返回错误码 `image_too_large`；
+- 解码时统一 `ImageOps.exif_transpose`，手机竖拍照片不会横着落盘；
 - 输出落 `storage/outputs`，可直接用 URL 作为 `image_1` 再送 `/api/edit`。
 
 ### `POST /api/image/outpaint-plan`
@@ -118,12 +131,22 @@ vendor 位置：`web/vendor/image-tools-kit/`（原样复制，不改）。
 ## 6. 测试
 
 ```powershell
-& "<python>" -m pytest tests/test_imageops.py -q     # 17 项，纯 CPU，0.5s
+& "<python>" -m pytest tests/test_imageops.py tests/test_imageops_resize.py tests/test_imageops_export.py -q
 ```
 
 覆盖：裁剪尺寸/越界收敛/非法参数、宫格数量与格子尺寸（含间隔）、旋转翻转、三种 fit、
 调色改变像素且保持尺寸、色温方向（暖色抬红压蓝）、`pad32` 对齐、alpha 去边、未知操作报错、
-落盘与 JPEG 质量、扩图规划（单方向/全方向/amount 收敛）。
+落盘与 JPEG 质量、扩图规划（单方向/全方向/amount 收敛）；resize 五种模式/锁比例/snap/
+滤镜/锐化/EXIF 方向；WebP、目标体积二分、alpha 铺底、超大尺寸错误码。
+
+水印与 GIF：
+
+```powershell
+& "<python>" -m pytest tests/test_mediaops_watermark.py tests/test_gif_images.py tests/test_gif_video.py -q
+```
+
+覆盖：九宫格/自定义位置、透明度 0、平铺覆盖、图片水印、空内容报错；GIF 帧数/时长/循环/
+倒放/往返/逐帧时长/拆帧/帧数上限；视频探测与真实 1 秒样例转 GIF（无 ffmpeg 自动跳过）。
 
 ## 7. 高清放大（SeedVR2 / FlashVSR）
 
@@ -208,3 +231,90 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
 
 覆盖：目录推断与显式覆盖、SeedVR2 就绪/缺失判定、FlashVSR 五个权重齐全判定、
 默认引擎回退到可用引擎、管理器空状态与默认配置。
+
+## 8. 水印（`server/mediaops.py`）
+
+### 8.1 接口
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/image/watermark/fonts` | 本机可用字体白名单 `{id,label,family,path}` |
+| `POST /api/image/watermark/preview` | 服务端精确预览，返回 `{data_url,width,height}`（最长边 960） |
+| `POST /api/image/watermark` | 批量加水印（最多 20 张），结果落 `storage/outputs` |
+
+请求体（归一化坐标，避免分辨率耦合）：
+
+```jsonc
+{
+  "image": "data:image/png;base64,...",   // 或 "images": [...] 批量
+  "text": "© 2026 Studio",
+  "font": "msyh",
+  "color": "#ffffff",
+  "opacity": 0.55,                        // 0~1
+  "scale": 0.06,                          // 字号相对短边 1%~20%
+  "rotation": -12,
+  "position": "bottom-right",             // 九宫格或 custom
+  "x": 0.5, "y": 0.5,                     // position=custom 时的归一化中心
+  "margin": 0.03,                         // 相对短边 0~20%
+  "stroke": {"width": 0.004, "color": "#000000"},
+  "shadow": {"blur": 0.008, "dx": 0.004, "dy": 0.004, "color": "#00000088"},
+  "tile": {"enabled": false, "gap_x": 0.20, "gap_y": 0.12, "angle": -24},
+  "image_mark": {"url": "/files/materials/xxx.png", "scale": 0.18, "opacity": 0.8},
+  "format": "png|jpeg|webp", "quality": 92
+}
+```
+
+要点：
+
+- 文字与图片二选一：有 `text` 就画文字，否则用 `image_mark`；都没有返回 400；
+- 九宫格位置按边距贴边；`position=custom` 用 `x/y` 归一化中心定位；
+- `tile.enabled` 时忽略单点位置，按 `gap_x/gap_y`（相对短边）平铺，`angle` 为平铺角度；
+- 字体优先用白名单 id（`msyh/simhei/arial/...`），也可直接传字体文件绝对路径；
+- 批量结果结构与其他结果一致（`url/thumb_url/width/height/bytes`），可直接进胶片条。
+
+## 9. 动图（GIF）
+
+### 9.1 接口
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/media/upload` | multipart 上传视频（mp4/mov/webm/mkv/avi，≤512MB），返回 `relpath/url/info` |
+| `POST /api/media/video/probe` | `{path}` → 时长/分辨率/fps/码率（ffprobe，缺失时回退 OpenCV） |
+| `POST /api/media/gif` | 提交 GIF 任务，返回 `job_id`（进度/取消走 `/api/jobs/{id}`） |
+| `POST /api/media/gif/split` | GIF 拆帧为 PNG 结果（最多 60 帧），每帧带 `duration` |
+
+图片序列：
+
+```jsonc
+{
+  "source": "images",
+  "images": ["data:image/png;base64,...", "/files/outputs/xxx.png"],
+  "duration": 100,                 // 每帧毫秒，默认 100（最小 20）
+  "durations": [80, 120, 160],     // 可选：逐帧覆盖
+  "width": 720,                    // 0 = 用首帧宽度；最长边会被压到 1600 以内
+  "mode": "forward|reverse|boomerang",
+  "loop": 0
+}
+```
+
+视频：
+
+```jsonc
+{
+  "source": "video",
+  "path": "uploads/vid-xxx.mp4",
+  "start": 1.2, "end": 6.4,        // 片段最长 60s；倒放/往返限 15s
+  "fps": 12, "width": 720,
+  "mode": "forward"
+}
+```
+
+实现要点：
+
+- 图片序列用 Pillow：所有帧缩略拼成接触表 → `quantize(MEDIANCUT)` 得**全局调色板** →
+  逐帧 `quantize(palette=..., dither=FLOYDSTEINBERG)`，避免逐帧跳色；
+- 视频用 ffmpeg **两遍调色板**（`palettegen=stats_mode=diff` + `paletteuse`），
+  `-progress pipe:1` 的 `out_time_ms` 映射到 5%~95%；取消时终止进程并删除临时目录；
+- 没有 ffmpeg 时自动回退 OpenCV 抽帧 + Pillow 序列编码（质量降级但不报错）；
+- 结果 `.gif` 走 `storage.save_output`，缩略图取首帧；`meta.frames` 记录帧数；
+- 输出超过 50MB 返回 `gif_too_large`，建议降宽度/帧率或减少帧数。

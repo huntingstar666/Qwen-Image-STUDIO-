@@ -186,7 +186,7 @@ export function createEditPage(host) {
           <div class="fold-body">
             <div data-ref="modelsHost"></div>
             <div class="field">
-              <span class="field-label">LoRA <span class="tag-hint">勾选启用 · 可调强度</span></span>
+              <span class="field-label">LoRA <span class="tag-hint">按需添加 · 可调强度</span></span>
               <div data-ref="loraHost"></div>
             </div>
             <label class="switch">

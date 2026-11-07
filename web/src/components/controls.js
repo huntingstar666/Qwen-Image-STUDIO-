@@ -7,6 +7,7 @@
  */
 
 import { escapeHtml } from '../utils.js';
+import { openModal } from './modal.js';
 
 /* ============================================================
  * Turbo 加速预设
@@ -174,7 +175,7 @@ export class TurboControl {
 }
 
 /* ============================================================
- * LoRA 多选
+ * LoRA 选择：按需添加，只显示已添加的条目
  * ============================================================ */
 export class LoraPicker {
   /**
@@ -184,51 +185,143 @@ export class LoraPicker {
   constructor(host, { loras = [], initial = {} } = {}) {
     this.host = host;
     this.loras = (loras || []).map((item) => {
-      if (typeof item === 'string') return { name: item, label: item, sizeGb: null };
+      if (typeof item === 'string') {
+        return { name: item, label: item, short: loraShortName(item), folder: loraFolder(item), sizeGb: null };
+      }
       const name = item.value ?? item.name ?? String(item);
-      return { name, label: item.label || name, sizeGb: item.size_gb ?? item.sizeGb ?? null };
+      return {
+        name,
+        label: item.label || name,
+        short: loraShortName(item.label || name),
+        folder: loraFolder(name),
+        sizeGb: item.size_gb ?? item.sizeGb ?? null,
+      };
     });
     this.selected = { ...(initial || {}) };
     this.render();
   }
 
+  metaOf(name) {
+    return (
+      this.loras.find((item) => item.name === name) || {
+        name,
+        label: name,
+        short: loraShortName(name),
+        folder: loraFolder(name),
+        sizeGb: null,
+      }
+    );
+  }
+
   render() {
-    if (!this.loras.length) {
-      this.host.innerHTML = '<div class="empty" style="padding:14px 8px"><div>后端未返回 LoRA 列表，可在 /api/options 里检查 models.lora</div></div>';
-      this.refs = { rows: [] };
-      return;
-    }
-    this.host.innerHTML = `<div class="lora-list">${this.loras
-      .map((lora, index) => {
-        const active = Object.prototype.hasOwnProperty.call(this.selected, lora.name);
-        const strength = active ? Number(this.selected[lora.name]) : 1;
+    const entries = Object.entries(this.selected);
+    const rows = entries
+      .map(([name, raw]) => {
+        const meta = this.metaOf(name);
+        const strength = Number(raw);
+        const title = meta.folder ? `${meta.folder} / ${meta.label}` : meta.label;
         return `
-          <div class="lora-row ${active ? '' : 'off'}" data-index="${index}">
-            <input type="checkbox" data-role="check" ${active ? 'checked' : ''} aria-label="启用 ${escapeHtml(lora.label)}" />
-            <span class="lora-name" title="${escapeHtml(`${lora.label}${lora.sizeGb ? ` · ${lora.sizeGb} GB` : ''}`)}">${escapeHtml(lora.label)}</span>
-            <input class="range lora-strength" type="range" min="0" max="2" step="0.05" value="${strength}" ${active ? '' : 'disabled'} aria-label="强度" />
+          <div class="lora-row" data-name="${escapeHtml(name)}">
+            <span class="lora-name" title="${escapeHtml(title)}">${escapeHtml(meta.short)}</span>
+            <input class="range lora-strength" type="range" min="0" max="2" step="0.05" value="${strength}"
+              aria-label="${escapeHtml(meta.short)} 强度" />
             <span class="lora-value mono">${strength.toFixed(2)}</span>
+            <button class="lora-remove" type="button" title="移除" aria-label="移除 ${escapeHtml(meta.short)}">×</button>
           </div>`;
       })
-      .join('')}</div>`;
+      .join('');
 
-    this.refs = { rows: [...this.host.querySelectorAll('.lora-row')] };
-    this.refs.rows.forEach((row, index) => {
-      const lora = this.loras[index];
-      const check = row.querySelector('[data-role="check"]');
+    this.host.innerHTML = `
+      <div class="lora-picker">
+        ${
+          entries.length
+            ? `<div class="lora-list">${rows}</div>`
+            : '<div class="lora-empty">还没有添加 LoRA，点击下方按钮从目录中挑选</div>'
+        }
+        <button class="lora-add" type="button" ${this.loras.length ? '' : 'disabled'}>＋ 新增 LoRA</button>
+        ${this.loras.length ? '' : '<div class="field-hint">后端未返回 LoRA 列表，请检查模型目录配置</div>'}
+      </div>`;
+
+    this.host.querySelector('.lora-add')?.addEventListener('click', () => this.openPicker());
+
+    this.host.querySelectorAll('.lora-row').forEach((row) => {
+      const name = row.dataset.name;
       const range = row.querySelector('.lora-strength');
       const valueEl = row.querySelector('.lora-value');
-      check.addEventListener('change', () => {
-        row.classList.toggle('off', !check.checked);
-        range.disabled = !check.checked;
-        if (check.checked) this.selected[lora.name] = Number(range.value);
-        else delete this.selected[lora.name];
-      });
       range.addEventListener('input', () => {
         valueEl.textContent = Number(range.value).toFixed(2);
-        if (check.checked) this.selected[lora.name] = Number(range.value);
+        this.selected[name] = Number(range.value);
+      });
+      row.querySelector('.lora-remove').addEventListener('click', () => {
+        delete this.selected[name];
+        this.render();
+        this.emit();
       });
     });
+  }
+
+  /** 从 LoRA 目录里挑一个加入列表 */
+  openPicker() {
+    const available = this.loras.filter((item) => !(item.name in this.selected));
+    const content = document.createElement('div');
+    content.className = 'lora-picker-body';
+    content.innerHTML = `
+      <input class="input lora-search" type="search" placeholder="搜索 LoRA 名称或目录…" />
+      <div class="lora-catalog"></div>`;
+    const list = content.querySelector('.lora-catalog');
+    const search = content.querySelector('.lora-search');
+
+    const paint = (keyword = '') => {
+      const kw = keyword.trim().toLowerCase();
+      const items = available.filter(
+        (item) =>
+          !kw ||
+          item.label.toLowerCase().includes(kw) ||
+          item.short.toLowerCase().includes(kw) ||
+          item.folder.toLowerCase().includes(kw)
+      );
+      if (!items.length) {
+        list.innerHTML = '<div class="lora-empty">没有可添加的 LoRA</div>';
+        return;
+      }
+      list.innerHTML = items
+        .map(
+          (item) => `
+          <button class="lora-catalog-row" type="button" data-name="${escapeHtml(item.name)}">
+            <span class="lora-catalog-main">
+              <span class="lora-catalog-name">${escapeHtml(item.short)}</span>
+              ${item.folder ? `<span class="lora-catalog-sub">${escapeHtml(item.folder)}</span>` : ''}
+            </span>
+            ${item.sizeGb ? `<span class="lora-catalog-size mono">${item.sizeGb} GB</span>` : ''}
+          </button>`
+        )
+        .join('');
+    };
+    paint();
+    search.addEventListener('input', () => paint(search.value));
+
+    const modal = openModal({
+      title: '选择 LoRA',
+      subtitle: '从 LoRA 目录中挑一个加入本次生成',
+      content,
+      dialogClass: 'lora-picker-modal',
+      hideFooter: true,
+    });
+
+    list.addEventListener('click', (event) => {
+      const btn = event.target.closest('.lora-catalog-row');
+      if (!btn) return;
+      const name = btn.dataset.name;
+      if (!(name in this.selected)) this.selected[name] = 1;
+      modal.close();
+      this.render();
+      this.emit();
+    });
+  }
+
+  /** 让外层的 change 监听拿到最新值 */
+  emit() {
+    this.host.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   /** @returns {Array<{name:string, strength:number}>} */
@@ -240,6 +333,19 @@ export class LoraPicker {
     this.selected = { ...(value || {}) };
     this.render();
   }
+}
+
+/** 只保留文件名，去掉扩展名 */
+function loraShortName(value) {
+  const base = String(value || '').split(/[\\/]/).pop() || '';
+  return base.replace(/\.(safetensors|ckpt|pt|pth|bin)$/i, '');
+}
+
+/** 文件名所在的目录 */
+function loraFolder(value) {
+  const parts = String(value || '').split(/[\\/]/);
+  parts.pop();
+  return parts.join('/');
 }
 
 /* ============================================================

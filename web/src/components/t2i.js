@@ -21,6 +21,7 @@ import { createHistoryRail } from './historyRail.js';
 import { consumeT2IHandoff } from '../handoff.js';
 import { createStylePicker } from './stylePicker.js';
 import { openPoseStudio } from './poseStudio.js';
+import { openBboxStudio } from './bboxStudio.js';
 import { LoraPicker, ModelsField, TurboControl } from './controls.js';
 import { escapeHtml, fmtNum, snapUp } from '../utils.js';
 
@@ -71,26 +72,27 @@ export function createT2IPage(host) {
             <button class="wb-adv-close" type="button" data-ref="advClose" title="收起侧边栏">×</button>
           </div>
           <div class="wb-adv-body">
+            <div class="wb-model-bar" data-ref="modelBar"></div>
             <section class="panel">
               <div class="panel-head">
-                <div class="panel-title">画面尺寸 <span class="panel-sub">长边档位 · 32 倍数</span></div>
+                <div class="panel-title">画面尺寸 <span class="panel-sub" data-ref="sizeSub">长边档位 · 32 倍数</span></div>
               </div>
               <div class="panel-body">
                 <div class="ratio-grid" data-ref="ratios"></div>
                 <div class="grid-2">
                   <label class="field">
-                    <span class="field-label">宽度 <span class="tag-hint">32 倍数</span></span>
+                    <span class="field-label">宽度 <span class="tag-hint" data-ref="sizeHintW">32 倍数</span></span>
                     <input class="input mono" type="number" min="256" max="4096" step="32" data-ref="width" />
                   </label>
                   <label class="field">
-                    <span class="field-label">高度 <span class="tag-hint">32 倍数</span></span>
+                    <span class="field-label">高度 <span class="tag-hint" data-ref="sizeHintH">32 倍数</span></span>
                     <input class="input mono" type="number" min="256" max="4096" step="32" data-ref="height" />
                   </label>
                 </div>
                 <div class="size-summary">
                   <span>输出</span><span class="mono" data-ref="sizeSummary">—</span>
                   <span class="spacer"></span>
-                  <span class="field-hint">自动向上对齐到 32 的倍数</span>
+                  <span class="field-hint" data-ref="sizeSnapHint">自动向上对齐到 32 的倍数</span>
                 </div>
               </div>
             </section>
@@ -104,34 +106,95 @@ export function createT2IPage(host) {
                 </div>
                 <div class="grid-2">
                   <label class="field">
-                    <span class="field-label">步数 <span class="locked-note hidden" data-ref="turboLock">Turbo 锁定</span></span>
+                    <span class="field-label">步数 <span class="tag-hint" data-ref="stepsHint"></span> <span class="locked-note hidden" data-ref="turboLock">Turbo 锁定</span></span>
                     <input class="input mono" type="number" min="1" max="200" step="1" data-ref="steps" />
                   </label>
                   <label class="field">
-                    <span class="field-label">CFG</span>
+                    <span class="field-label">CFG <span class="tag-hint" data-ref="cfgHint"></span></span>
                     <input class="input mono" type="number" min="0" max="20" step="0.1" data-ref="cfg" />
                   </label>
                 </div>
                 <div class="grid-2">
                   <label class="field">
-                    <span class="field-label">采样器</span>
+                    <span class="field-label">采样器 <span class="tag-hint" data-ref="samplerHint"></span></span>
                     <select class="select" data-ref="sampler"></select>
                   </label>
                   <label class="field">
-                    <span class="field-label">调度器</span>
+                    <span class="field-label">调度器 <span class="tag-hint" data-ref="schedulerHint"></span></span>
                     <select class="select" data-ref="scheduler"></select>
                   </label>
                 </div>
                 <div data-ref="turboHost"></div>
+                <details class="fold slg-fold" data-ref="slgFold" hidden>
+                  <summary>SLG 跳过层引导（实验）</summary>
+                  <div class="fold-body">
+                    <label class="switch">
+                      <input type="checkbox" data-ref="slgEnabled" />
+                      <span class="switch-track"></span>
+                      <span class="switch-label">启用 SLG<small>50 步下约 +10~15s；8 步加速下不建议开启</small></span>
+                    </label>
+                    <div class="grid-2">
+                      <label class="field">
+                        <span class="field-label">单层 <span class="tag-hint" data-ref="slgSingleHint">默认 22</span></span>
+                        <input class="input mono" data-ref="slgSingle" placeholder="22" />
+                      </label>
+                      <label class="field">
+                        <span class="field-label">双层 <span class="tag-hint">留空不启用</span></span>
+                        <input class="input mono" data-ref="slgDouble" placeholder="留空" />
+                      </label>
+                    </div>
+                    <div class="grid-2">
+                      <label class="field">
+                        <span class="field-label">起始比例</span>
+                        <input class="input mono" type="number" min="0" max="1" step="0.05" data-ref="slgStart" placeholder="0" />
+                      </label>
+                      <label class="field">
+                        <span class="field-label">结束比例</span>
+                        <input class="input mono" type="number" min="0" max="1" step="0.05" data-ref="slgEnd" placeholder="0.5" />
+                      </label>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </section>
+
+            <section class="panel" data-ref="bboxPanel" hidden>
+              <div class="panel-head"><div class="panel-title">边界框布局</div></div>
+              <div class="panel-body">
+                <label class="switch">
+                  <input type="checkbox" data-ref="bboxEnabled" />
+                  <span class="switch-track"></span>
+                  <span class="switch-label">启用布局<small>框内文字 / 物体位置由边界框指定</small></span>
+                </label>
+                <div class="grid-2">
+                  <label class="field">
+                    <span class="field-label">角色数量</span>
+                    <select class="select" data-ref="bboxCharacters">
+                      <option value="1">1 个角色</option>
+                      <option value="-1">多角色</option>
+                      <option value="">不限制</option>
+                    </select>
+                  </label>
+                  <div class="field">
+                    <span class="field-label">画布</span>
+                    <span class="field-hint mono" data-ref="bboxCanvas">—</span>
+                  </div>
+                </div>
+                <div class="bbox-actions">
+                  <button class="btn ghost sm" type="button" data-ref="bboxOpen">打开设计器</button>
+                  <button class="btn ghost sm" type="button" data-ref="bboxClear">清空</button>
+                </div>
+                <div class="field-hint" data-ref="bboxSummary">未设置</div>
               </div>
             </section>
 
             <details class="fold">
               <summary>高级：模型与 LoRA</summary>
               <div class="fold-body">
+                <div class="field-hint" data-ref="modelFiles" hidden></div>
                 <div data-ref="modelsHost"></div>
                 <div class="field">
-                  <span class="field-label">LoRA <span class="tag-hint">勾选启用 · 可调强度</span></span>
+                  <span class="field-label">LoRA <span class="tag-hint">按需添加 · 可调强度</span></span>
                   <div data-ref="loraHost"></div>
                 </div>
               </div>
@@ -193,6 +256,15 @@ export function createT2IPage(host) {
               </div>
             </div>
             <div class="wb-pillbar">
+              <div class="wb-model-anchor" data-ref="modelAnchor">
+                <button class="wb-pill wb-model-pill" type="button" data-ref="modelPill" aria-expanded="false" title="图像模型">
+                  <span class="wb-pill-key">模型</span>
+                  <span class="wb-model-dot" data-ref="modelDot"></span>
+                  <span data-ref="modelLabel">Qwen-Image 2.1</span>
+                  <span class="wb-caret">▼</span>
+                </button>
+                <div class="model-pop" data-ref="modelPop" hidden></div>
+              </div>
               <div class="wb-size-anchor" data-ref="sizeAnchor">
                 <button class="wb-pill wb-size-pill" type="button" data-ref="sizePill" aria-expanded="false" title="画面尺寸">
                   <span class="wb-pill-key">尺寸</span>
@@ -241,6 +313,9 @@ export function createT2IPage(host) {
                 <img class="wb-pose-thumb" data-ref="poseThumb" alt="" hidden />
                 <span data-ref="poseLabel">未设置</span>
               </button>
+              <button class="wb-pill wb-bbox-pill" type="button" data-ref="bboxPill" title="边界框布局（仅 MOSS）" hidden>
+                <span class="wb-pill-key">布局</span><span data-ref="bboxLabel">未设置</span>
+              </button>
               <button class="wb-pill wb-pill-btn" type="button" data-ref="turboPill" title="Turbo 加速">
                 <span class="wb-pill-key">Turbo</span><span data-role="label">加速</span>
               </button>
@@ -280,6 +355,16 @@ export function createT2IPage(host) {
     sizeAnchor: ref('sizeAnchor'),
     sizePill: ref('sizePill'),
     sizePillValue: ref('sizePillValue'),
+    sizeSub: ref('sizeSub'),
+    sizeHintW: ref('sizeHintW'),
+    sizeHintH: ref('sizeHintH'),
+    sizeSnapHint: ref('sizeSnapHint'),
+    modelAnchor: ref('modelAnchor'),
+    modelPill: ref('modelPill'),
+    modelPop: ref('modelPop'),
+    modelDot: ref('modelDot'),
+    modelLabel: ref('modelLabel'),
+    modelBar: ref('modelBar'),
     sizePop: ref('sizePop'),
     sizePopDims: ref('sizePopDims'),
     sizeTiers: ref('sizeTiers'),
@@ -289,6 +374,27 @@ export function createT2IPage(host) {
     sizeApply: ref('sizeApply'),
     sampler: ref('sampler'),
     scheduler: ref('scheduler'),
+    stepsHint: ref('stepsHint'),
+    cfgHint: ref('cfgHint'),
+    samplerHint: ref('samplerHint'),
+    schedulerHint: ref('schedulerHint'),
+    slgFold: ref('slgFold'),
+    slgEnabled: ref('slgEnabled'),
+    slgSingle: ref('slgSingle'),
+    slgDouble: ref('slgDouble'),
+    slgStart: ref('slgStart'),
+    slgEnd: ref('slgEnd'),
+    slgSingleHint: ref('slgSingleHint'),
+    bboxPanel: ref('bboxPanel'),
+    bboxEnabled: ref('bboxEnabled'),
+    bboxCharacters: ref('bboxCharacters'),
+    bboxCanvas: ref('bboxCanvas'),
+    bboxOpen: ref('bboxOpen'),
+    bboxClear: ref('bboxClear'),
+    bboxSummary: ref('bboxSummary'),
+    bboxPill: ref('bboxPill'),
+    bboxLabel: ref('bboxLabel'),
+    modelFiles: ref('modelFiles'),
     turboHost: ref('turboHost'),
     turboLock: ref('turboLock'),
     rgba: ref('rgba'),
@@ -337,6 +443,499 @@ export function createT2IPage(host) {
   let lastSeed = null;
   let sizeTier = 2048;
   let poseState = null;
+  let jobActive = false;
+
+  /* ---------------- 模型档案 / 按模型快照 ---------------- */
+  const SNAPSHOT_KEYS = [
+    'steps', 'cfg', 'sampler', 'scheduler', 'width', 'height', 'ratioId', 'custom',
+    'negativePrompt', 'turbo', 'turboProfile', 'rgba', 'slg', 'bbox',
+  ];
+
+  function ensureModelState() {
+    if (!t2i.byModel || typeof t2i.byModel !== 'object') t2i.byModel = {};
+    if (!t2i.slg || typeof t2i.slg !== 'object') {
+      t2i.slg = { enabled: false, singleLayers: '', doubleLayers: '', startPercent: 0, endPercent: 0.5 };
+    }
+    if (!t2i.bbox || typeof t2i.bbox !== 'object') {
+      t2i.bbox = { enabled: false, characterBoxes: '1', items: [] };
+    }
+    if (!Array.isArray(t2i.bbox.items)) t2i.bbox.items = [];
+  }
+
+  function modelProfiles() {
+    const profiles = store.state.options?.model_profiles;
+    return Array.isArray(profiles) ? profiles : [];
+  }
+
+  function profileById(id) {
+    return modelProfiles().find((profile) => profile.id === id) || null;
+  }
+
+  function fallbackProfile() {
+    return {
+      id: t2i.model === 'moss' ? 'moss' : 'qwen',
+      label: t2i.model === 'moss' ? 'MOSS-Image (sft)' : 'Qwen-Image 2.1',
+      defaults: {
+        steps: t2i.steps, cfg: t2i.cfg, sampler: t2i.sampler, scheduler: t2i.scheduler,
+        width: t2i.width, height: t2i.height, negative_prompt: '', megapixels: 1,
+      },
+      snap: t2i.model === 'moss' ? 16 : 32,
+      capabilities: t2i.model === 'moss'
+        ? { t2i: true, edit: false, bbox: true, slg: true, rgba: false }
+        : { t2i: true, edit: true, bbox: false, slg: false, rgba: true },
+      turbo: [],
+      samplers: [t2i.sampler, 'euler', 'er_sde'].filter(Boolean),
+      slg: null,
+      files: {},
+      missing: [],
+      ready: true,
+    };
+  }
+
+  function currentProfile() {
+    ensureModelState();
+    const fallbackId = store.state.options?.default_model || 'qwen';
+    return profileById(t2i.model) || profileById(fallbackId) || fallbackProfile();
+  }
+
+  function currentModelId() {
+    return currentProfile().id;
+  }
+
+  function modelSnap() {
+    return Number(currentProfile()?.snap) || 32;
+  }
+
+  function modelCapabilities() {
+    return currentProfile()?.capabilities || {};
+  }
+
+  function modelDefaults() {
+    return currentProfile()?.defaults || {};
+  }
+
+  function snapSize(value) {
+    return snapUp(value, modelSnap());
+  }
+
+  function clone(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  function snapshotCurrentModel() {
+    const snapshot = {};
+    for (const key of SNAPSHOT_KEYS) snapshot[key] = clone(t2i[key]);
+    t2i.byModel = { ...(t2i.byModel || {}), [currentModelId()]: snapshot };
+  }
+
+  function restoreSnapshot(snapshot) {
+    for (const key of SNAPSHOT_KEYS) {
+      if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, key)) t2i[key] = clone(snapshot[key]);
+    }
+  }
+
+  function applyProfileDefaults(profile) {
+    const d = profile.defaults || {};
+    t2i.steps = Number(d.steps) || 25;
+    t2i.cfg = Number(d.cfg) || 4;
+    t2i.sampler = d.sampler || 'euler';
+    t2i.scheduler = d.scheduler || 'simple';
+    t2i.width = clampSide(Number(d.width) || 1024);
+    t2i.height = clampSide(Number(d.height) || 1024);
+    t2i.ratioId = '';
+    t2i.custom = true;
+    t2i.negativePrompt = '';
+    t2i.turbo = false;
+    t2i.turboProfile = profile.turbo?.[0]?.id || '';
+    t2i.rgba = false;
+    const slg = profile.slg || {};
+    t2i.slg = {
+      enabled: false,
+      singleLayers: String(slg.single_layers ?? ''),
+      doubleLayers: String(slg.double_layers ?? ''),
+      startPercent: Number(slg.start_percent ?? 0),
+      endPercent: Number(slg.end_percent ?? 0.5),
+    };
+    t2i.bbox = { enabled: false, characterBoxes: '1', items: [] };
+  }
+
+  function patchModelState(extra = {}) {
+    const patch = { model: t2i.model, byModel: t2i.byModel, ...extra };
+    for (const key of SNAPSHOT_KEYS) {
+      if (!(key in patch)) patch[key] = t2i[key];
+    }
+    patchSettings({ t2i: patch });
+  }
+
+  function profileSubtitle(profile) {
+    const d = profile.defaults || {};
+    const caps = profile.capabilities || {};
+    const tags = [];
+    if (caps.edit) tags.push('参考图编辑');
+    if (caps.rgba) tags.push('透明背景');
+    if (caps.bbox) tags.push('布局框');
+    return `${d.steps} 步 · CFG ${d.cfg} · ${d.sampler}${tags.length ? ` · ${tags.join(' / ')}` : ''}`;
+  }
+
+  function syncModelPill() {
+    const profile = currentProfile();
+    const resident = store.state.health?.engine?.model || null;
+    refs.modelLabel.textContent = profile.label || profile.id;
+    refs.modelDot.className = 'wb-model-dot';
+    if (resident === profile.id) refs.modelDot.classList.add('is-resident');
+    else if (resident) refs.modelDot.classList.add('is-other');
+    refs.modelPill.classList.toggle('is-busy', jobActive);
+    refs.modelPill.disabled = jobActive;
+    refs.modelPill.title = resident
+      ? `图像模型：当前显存驻留 ${profileById(resident)?.label || resident}`
+      : '图像模型（切换只改参数，生成时才换权重）';
+  }
+
+  function renderModelPop() {
+    const resident = store.state.health?.engine?.model || null;
+    refs.modelPop.innerHTML = modelProfiles()
+      .map((profile) => {
+        const active = profile.id === currentModelId();
+        const status = !profile.ready
+          ? `<span class="model-status is-bad">缺失 ${escapeHtml((profile.missing || []).join(', '))}</span>`
+          : resident === profile.id
+            ? '<span class="model-status is-resident">已驻留</span>'
+            : '<span class="model-status">未加载</span>';
+        return `
+          <button class="model-card ${active ? 'active' : ''}" type="button"
+            data-model="${escapeHtml(profile.id)}" ${profile.ready ? '' : 'disabled'}>
+            <span class="model-card-title">${escapeHtml(profile.label)}${active ? ' ✓' : ''}</span>
+            <span class="model-card-sub">${escapeHtml(profileSubtitle(profile))}</span>
+            ${status}
+          </button>`;
+      })
+      .join('') || '<div class="field-hint">模型信息尚未加载</div>';
+    refs.modelPop.querySelectorAll('[data-model]').forEach((button) => {
+      button.addEventListener('click', () => switchModel(button.dataset.model));
+    });
+  }
+
+  function setModelPop(open) {
+    refs.modelPop.hidden = !open;
+    refs.modelAnchor.classList.toggle('open', open);
+    refs.modelPill.setAttribute('aria-expanded', String(open));
+    if (open) {
+      renderModelPop();
+      syncModelPill();
+    }
+  }
+
+  function switchModel(nextId) {
+    if (!nextId || nextId === currentModelId()) {
+      setModelPop(false);
+      return;
+    }
+    if (jobActive) {
+      toastWarn('任务进行中，完成后再切换模型');
+      return;
+    }
+    const profile = profileById(nextId);
+    if (!profile) return;
+    if (!profile.ready) {
+      toastWarn(`${profile.label} 权重缺失：${(profile.missing || []).join(', ')}`);
+      return;
+    }
+    const prevResident = store.state.health?.engine?.model || null;
+    snapshotCurrentModel();
+    t2i.model = nextId;
+    const snapshot = t2i.byModel?.[nextId];
+    if (snapshot) restoreSnapshot(snapshot);
+    else applyProfileDefaults(profile);
+    if (!profile.capabilities?.rgba) t2i.rgba = false;
+    if (profile.id !== 'qwen') {
+      poseState = null;
+      syncPoseUi();
+    }
+    if (!profile.capabilities?.bbox) t2i.bbox = { ...(t2i.bbox || {}), enabled: false };
+    patchModelState();
+    sizeTier = inferTier(Number(t2i.width) || 1024, Number(t2i.height) || 1024);
+    refreshModelDependentUi();
+    setModelPop(false);
+    if (snapshot) toastSuccess(`已切换 ${profile.label}（沿用上次参数）`);
+    else toastSuccess(`已切换 ${profile.label}，已套用默认 ${t2i.steps} 步 / CFG ${t2i.cfg}`);
+    if (prevResident && prevResident !== nextId) {
+      toastWarn(`生成前会先卸载 ${profileById(prevResident)?.label || prevResident} 再加载新模型（约 30~60s）`);
+    } else if (nextId === 'moss') {
+      toastWarn('MOSS 首次加载约 30~60s，显存约 20GB');
+    }
+  }
+
+  function syncModelBar() {
+    const profile = currentProfile();
+    const d = profile.defaults || {};
+    const files = Object.values(profile.files || {}).filter(Boolean);
+    refs.modelBar.innerHTML = `
+      <div class="wb-model-bar-main">
+        <span class="badge info">${escapeHtml(profile.label)}</span>
+        <span class="field-hint">${d.steps} 步 · CFG ${d.cfg} · ${escapeHtml(String(d.sampler || ''))}</span>
+      </div>
+      <button class="btn ghost sm" type="button" data-role="modelReset">恢复默认</button>
+      ${files.length ? `<div class="field-hint wb-model-bar-files">${files.map((name) => `<span class="mono">${escapeHtml(name)}</span>`).join(' · ')}</div>` : ''}`;
+    refs.modelBar.querySelector('[data-role="modelReset"]')?.addEventListener('click', () => {
+      if (jobActive) {
+        toastWarn('任务进行中，完成后再恢复默认');
+        return;
+      }
+      applyProfileDefaults(profile);
+      patchModelState();
+      sizeTier = inferTier(t2i.width, t2i.height);
+      refreshModelDependentUi();
+      toastSuccess(`已恢复 ${profile.label} 的默认参数`);
+    });
+  }
+
+  function syncSizeSnapUi() {
+    const snap = modelSnap();
+    refs.sizeSub.textContent = `长边档位 · ${snap} 倍数`;
+    refs.sizeHintW.textContent = `${snap} 倍数`;
+    refs.sizeHintH.textContent = `${snap} 倍数`;
+    refs.sizeSnapHint.textContent = `自动向上对齐到 ${snap} 的倍数`;
+    for (const input of [refs.width, refs.height, refs.popWidth, refs.popHeight]) {
+      input.step = String(snap);
+    }
+  }
+
+  function applyModelCapabilities() {
+    const profile = currentProfile();
+    const caps = profile.capabilities || {};
+    refs.rgbaPill.hidden = !caps.rgba;
+    refs.posePill.hidden = profile.id !== 'qwen';
+    refs.bboxPill.hidden = !caps.bbox;
+    refs.bboxPanel.hidden = !caps.bbox;
+    refs.slgFold.hidden = !caps.slg;
+    if (!caps.rgba && refs.rgba.checked) {
+      refs.rgba.checked = false;
+      t2i.rgba = false;
+      patchSettings({ t2i: { rgba: false } });
+      syncRgbaPill();
+    }
+  }
+
+  function refreshModelDependentUi() {
+    syncSamplingFields();
+    renderStepsPresets();
+    renderSelects();
+    renderTurbo();
+    renderModels();
+    renderLoras();
+    applyModelCapabilities();
+    syncSlgUi();
+    syncBboxUi();
+    syncSizeSnapUi();
+    syncDefaultHints();
+    syncModelBar();
+    syncModelPill();
+    syncSizeFields();
+    syncSizeCard();
+    updateSummary();
+  }
+
+  /* ---------------- SLG（MOSS） ---------------- */
+  function slgState() {
+    ensureModelState();
+    return t2i.slg;
+  }
+
+  function syncSlgUi() {
+    const slg = slgState();
+    const defaults = currentProfile().slg || {};
+    const single = defaults.single_layers ?? '22';
+    const double = defaults.double_layers ?? '';
+    refs.slgEnabled.checked = Boolean(slg.enabled);
+    refs.slgSingle.value = slg.singleLayers ?? '';
+    refs.slgDouble.value = slg.doubleLayers ?? '';
+    refs.slgStart.value = slg.startPercent ?? '';
+    refs.slgEnd.value = slg.endPercent ?? '';
+    refs.slgSingle.placeholder = String(single);
+    refs.slgDouble.placeholder = String(double || '留空');
+    refs.slgStart.placeholder = String(defaults.start_percent ?? 0);
+    refs.slgEnd.placeholder = String(defaults.end_percent ?? 0.5);
+    refs.slgSingleHint.textContent = `默认 ${single}`;
+    const enabled = Boolean(slg.enabled);
+    for (const input of [refs.slgSingle, refs.slgDouble, refs.slgStart, refs.slgEnd]) {
+      input.disabled = !enabled;
+    }
+  }
+
+  function commitSlg(patch) {
+    t2i.slg = { ...slgState(), ...patch };
+    patchSettings({ t2i: { slg: t2i.slg } });
+    syncSlgUi();
+    updateSummary();
+  }
+
+  refs.slgEnabled.addEventListener('change', () => commitSlg({ enabled: refs.slgEnabled.checked }));
+  refs.slgSingle.addEventListener('change', () => commitSlg({ singleLayers: refs.slgSingle.value.trim() }));
+  refs.slgDouble.addEventListener('change', () => commitSlg({ doubleLayers: refs.slgDouble.value.trim() }));
+  refs.slgStart.addEventListener('change', () => commitSlg({ startPercent: Number(refs.slgStart.value) || 0 }));
+  refs.slgEnd.addEventListener('change', () => commitSlg({ endPercent: Number(refs.slgEnd.value) || 0 }));
+
+  /* ---------------- 边界框布局 ---------------- */
+  function bboxState() {
+    ensureModelState();
+    return t2i.bbox;
+  }
+
+  function currentCanvasSize() {
+    return [
+      snapSize(refs.width.value || t2i.width),
+      snapSize(refs.height.value || t2i.height),
+    ];
+  }
+
+  function bboxCountText() {
+    const items = bboxState().items || [];
+    if (!items.length) return '未设置';
+    const textCount = items.filter((item) => item.type === 'text').length;
+    return `${items.length} 个框${textCount ? ` · ${textCount} 文字` : ''}`;
+  }
+
+  function bboxEnabledNow() {
+    const bbox = bboxState();
+    return Boolean(bbox.enabled && bbox.items.length);
+  }
+
+  function syncBboxUi() {
+    const bbox = bboxState();
+    const caps = modelCapabilities();
+    const active = bboxEnabledNow() && Boolean(caps.bbox);
+    refs.bboxEnabled.checked = Boolean(bbox.enabled);
+    refs.bboxCharacters.value = bbox.characterBoxes ?? '1';
+    refs.bboxPill.classList.toggle('active', active);
+    refs.bboxLabel.textContent = bboxCountText();
+    const [width, height] = currentCanvasSize();
+    refs.bboxCanvas.textContent = `${fmtNum(width)} × ${fmtNum(height)}`;
+    refs.bboxSummary.textContent = bbox.items.length
+      ? `${bbox.items.length} 个框 · ${bbox.enabled ? '已启用' : '未启用'}`
+      : '未设置：打开设计器后在画布上拖拽创建';
+    // 布局模式一次只能生成 1 张
+    refs.batch.disabled = active;
+    refs.batch.title = active ? '布局模式一次生成 1 张' : '一次生成几张';
+    if (active && Number(refs.batch.value) !== 1) {
+      refs.batch.value = '1';
+      t2i.batch = 1;
+      patchSettings({ t2i: { batch: 1 } });
+    }
+  }
+
+  /** 提交前校验布局框：越界 / 零面积 / 文字框为空都直接拦截。 */
+  function validateBboxPayload(payload) {
+    if (!payload?.bbox?.enabled) return '';
+    for (const item of payload.bbox.items) {
+      if (![item.x, item.y, item.w, item.h].every(Number.isFinite)) return '布局框坐标无效';
+      if (item.w < 16 || item.h < 16) return '布局框最小尺寸为 16×16';
+      if (item.type === 'text' && !String(item.text || '').trim()) return '文字框必须填写文字';
+      if (item.x < 0 || item.y < 0
+          || item.x + item.w > payload.width || item.y + item.h > payload.height) {
+        return '存在超出画布的布局框，请重新调整';
+      }
+    }
+    return '';
+  }
+
+  function openBboxDialog() {
+    const [width, height] = currentCanvasSize();
+    openBboxStudio({
+      width,
+      height,
+      initial: clone(bboxState()),
+      onApply: ({ enabled, characterBoxes, items }) => {
+        t2i.bbox = {
+          enabled: Boolean(enabled),
+          characterBoxes: characterBoxes ?? '1',
+          items: Array.isArray(items) ? items : [],
+        };
+        patchSettings({ t2i: { bbox: t2i.bbox } });
+        syncBboxUi();
+        updateSummary();
+        toastSuccess(`布局已应用：${t2i.bbox.items.length} 个框`);
+      },
+      onClear: () => {
+        t2i.bbox = { enabled: false, characterBoxes: bboxState().characterBoxes || '1', items: [] };
+        patchSettings({ t2i: { bbox: t2i.bbox } });
+        syncBboxUi();
+        updateSummary();
+        toastSuccess('已清空布局');
+      },
+    });
+  }
+
+  refs.bboxEnabled.addEventListener('change', () => {
+    const bbox = bboxState();
+    if (refs.bboxEnabled.checked && !bbox.items.length) {
+      refs.bboxEnabled.checked = false;
+      openBboxDialog();
+      return;
+    }
+    t2i.bbox = { ...bbox, enabled: refs.bboxEnabled.checked };
+    patchSettings({ t2i: { bbox: t2i.bbox } });
+    syncBboxUi();
+    updateSummary();
+  });
+  refs.bboxCharacters.addEventListener('change', () => {
+    t2i.bbox = { ...bboxState(), characterBoxes: refs.bboxCharacters.value };
+    patchSettings({ t2i: { bbox: t2i.bbox } });
+    syncBboxUi();
+  });
+  refs.bboxOpen.addEventListener('click', openBboxDialog);
+  refs.bboxPill.addEventListener('click', openBboxDialog);
+  refs.bboxClear.addEventListener('click', () => {
+    t2i.bbox = { enabled: false, characterBoxes: bboxState().characterBoxes || '1', items: [] };
+    patchSettings({ t2i: { bbox: t2i.bbox } });
+    syncBboxUi();
+    updateSummary();
+    toastSuccess('已清空布局');
+  });
+
+  refs.modelPill.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (jobActive) {
+      toastWarn('任务进行中，完成后再切换模型');
+      return;
+    }
+    setModelPop(refs.modelPop.hidden);
+  });
+  refs.modelPop.addEventListener('click', (event) => event.stopPropagation());
+  document.addEventListener('click', () => setModelPop(false));
+
+  /** 采样参数输入框与模型相关提示（负向默认值 / placeholder）。 */
+  function syncSamplingFields() {
+    refs.steps.value = String(t2i.steps);
+    refs.cfg.value = String(t2i.cfg);
+    refs.batch.value = String(t2i.batch);
+    refs.negative.value = t2i.negativePrompt || '';
+    const negativeDefault = modelDefaults().negative_prompt || '';
+    refs.negative.placeholder = negativeDefault
+      ? `负向提示词（留空 = 默认：${negativeDefault}）`
+      : '负向提示词（可选）：文字、水印、模糊、畸变';
+    refs.negative.title = negativeDefault ? `留空时使用模型默认：${negativeDefault}` : '';
+  }
+
+  /** 默认值提示：未改动显示「默认 X」，改动后显示「已改 · 默认 X」。 */
+  function setDefaultHint(node, value, fallback) {
+    if (!node) return;
+    if (fallback == null || fallback === '') {
+      node.textContent = '';
+      node.classList.remove('is-changed');
+      return;
+    }
+    const same = String(value) === String(fallback);
+    node.textContent = same ? `默认 ${fallback}` : `已改 · 默认 ${fallback}`;
+    node.classList.toggle('is-changed', !same);
+  }
+
+  function syncDefaultHints() {
+    const d = modelDefaults();
+    setDefaultHint(refs.stepsHint, Number(refs.steps.value) || d.steps, d.steps);
+    setDefaultHint(refs.cfgHint, Number(refs.cfg.value), d.cfg);
+    setDefaultHint(refs.samplerHint, refs.sampler.value, d.sampler);
+    setDefaultHint(refs.schedulerHint, refs.scheduler.value, d.scheduler);
+  }
 
   /* ---------------- 姿态参考 ---------------- */
   function syncPoseUi() {
@@ -425,6 +1024,7 @@ export function createT2IPage(host) {
 
   /** 按「长边 = 档位」算尺寸；官方预设仅在长边等于档位时直接采用。 */
   function sizeForRatio(id, tier = sizeTier) {
+    const multiple = modelSnap();
     const official = ratioList().find((ratio) => ratio.id === id);
     if (official && Math.max(official.w, official.h) === tier) {
       return { w: official.w, h: official.h };
@@ -432,9 +1032,9 @@ export function createT2IPage(host) {
     const { rw, rh } = ratioPair(id);
     const long = clampSide(tier);
     if (rw >= rh) {
-      return { w: long, h: clampSide(Math.round((long * rh) / rw / 32) * 32) };
+      return { w: long, h: clampSide(Math.round((long * rh) / rw / multiple) * multiple) };
     }
-    return { w: clampSide(Math.round((long * rw) / rh / 32) * 32), h: long };
+    return { w: clampSide(Math.round((long * rw) / rh / multiple) * multiple), h: long };
   }
 
   /** 根据长边推断档位（官方预设尺寸就近归档）。 */
@@ -459,6 +1059,34 @@ export function createT2IPage(host) {
   }
 
   function applySize(width, height, ratioId = '') {
+    const oldWidth = Number(t2i.width) || 0;
+    const oldHeight = Number(t2i.height) || 0;
+    const bbox = t2i.bbox;
+    if (oldWidth && oldHeight && (oldWidth !== width || oldHeight !== height)
+        && bbox?.enabled && bbox.items?.length) {
+      const keep = window.confirm(
+        `画布尺寸将从 ${oldWidth}×${oldHeight} 变为 ${width}×${height}。\n\n`
+        + '确定：按比例缩放所有布局框；取消：清空布局。',
+      );
+      if (keep) {
+        const fx = width / oldWidth;
+        const fy = height / oldHeight;
+        t2i.bbox = {
+          ...bbox,
+          items: bbox.items.map((item) => ({
+            ...item,
+            x: Math.round(item.x * fx),
+            y: Math.round(item.y * fy),
+            w: Math.max(16, Math.round(item.w * fx)),
+            h: Math.max(16, Math.round(item.h * fy)),
+          })),
+        };
+      } else {
+        t2i.bbox = { ...bbox, enabled: false, items: [] };
+      }
+      patchSettings({ t2i: { bbox: t2i.bbox } });
+      syncBboxUi();
+    }
     t2i.width = clampSide(width);
     t2i.height = clampSide(height);
     t2i.ratioId = ratioId;
@@ -556,8 +1184,8 @@ export function createT2IPage(host) {
   }
 
   function commitCustomSize() {
-    const width = snapUp(refs.popWidth.value || t2i.width);
-    const height = snapUp(refs.popHeight.value || t2i.height);
+    const width = snapSize(refs.popWidth.value || t2i.width);
+    const height = snapSize(refs.popHeight.value || t2i.height);
     sizeTier = inferTier(width, height);
     applySize(width, height, '');
   }
@@ -583,9 +1211,11 @@ export function createT2IPage(host) {
     refs.height.value = String(t2i.height);
     const width = Number(refs.width.value) || 0;
     const height = Number(refs.height.value) || 0;
-    const snappedW = snapUp(width);
-    const snappedH = snapUp(height);
-    const snapNote = snappedW !== width || snappedH !== height ? `（将自动对齐为 ${snappedW} × ${snappedH}）` : ' · 32 的倍数 ✓';
+    const snappedW = snapSize(width);
+    const snappedH = snapSize(height);
+    const snapNote = snappedW !== width || snappedH !== height
+      ? `（将自动对齐为 ${snappedW} × ${snappedH}）`
+      : ` · ${modelSnap()} 的倍数 ✓`;
     refs.sizeSummary.textContent = `${fmtNum(snappedW)} × ${fmtNum(snappedH)}${snapNote}`;
     for (const button of refs.ratios.querySelectorAll('[data-ratio]')) {
       const active = Number(button.dataset.w) === width && Number(button.dataset.h) === height;
@@ -596,8 +1226,8 @@ export function createT2IPage(host) {
   }
 
   function commitSizeInputs() {
-    const width = snapUp(refs.width.value);
-    const height = snapUp(refs.height.value);
+    const width = snapSize(refs.width.value);
+    const height = snapSize(refs.height.value);
     sizeTier = inferTier(width, height);
     applySize(width, height, '');
   }
@@ -605,10 +1235,21 @@ export function createT2IPage(host) {
   refs.width.addEventListener('change', commitSizeInputs);
   refs.height.addEventListener('change', commitSizeInputs);
 
+  function stepsPresetsForModel() {
+    const profile = currentProfile();
+    const d = profile.defaults || {};
+    if (profile.id !== 'qwen') {
+      return [
+        { id: 'standard', label: `标准 · ${d.steps || 50} 步`, steps: d.steps || 50, cfg: d.cfg ?? 3.5, note: `${profile.label} 默认` },
+        { id: 'turbo8', label: 'Turbo · 8 步', steps: 8, cfg: 1.0, note: '需开启 Turbo' },
+      ];
+    }
+    const presets = store.state.options?.steps_presets;
+    return Array.isArray(presets) && presets.length ? presets : FALLBACK_STEPS_PRESETS;
+  }
+
   function renderStepsPresets() {
-    const presets = Array.isArray(store.state.options?.steps_presets) && store.state.options.steps_presets.length
-      ? store.state.options.steps_presets
-      : FALLBACK_STEPS_PRESETS;
+    const presets = stepsPresetsForModel();
     refs.stepsPresets.innerHTML = presets
       .map(
         (preset) => `
@@ -625,6 +1266,7 @@ export function createT2IPage(host) {
         t2i.steps = Number(button.dataset.steps);
         t2i.cfg = Number(button.dataset.cfg);
         patchSettings({ t2i: { steps: t2i.steps, cfg: t2i.cfg } });
+        syncDefaultHints();
         updateSummary();
       });
     });
@@ -632,16 +1274,33 @@ export function createT2IPage(host) {
 
   /* ---------------- 采样器 ---------------- */
   function renderSelects() {
-    const samplers = Array.isArray(store.state.options?.samplers) && store.state.options.samplers.length
-      ? store.state.options.samplers
-      : FALLBACK_SAMPLERS;
+    const profile = currentProfile();
+    const d = profile.defaults || {};
+    const optionSamplers = store.state.options?.samplers;
+    const samplers = Array.isArray(profile.samplers) && profile.samplers.length
+      ? profile.samplers
+      : (Array.isArray(optionSamplers) && optionSamplers.length ? optionSamplers : FALLBACK_SAMPLERS);
     const schedulers = Array.isArray(store.state.options?.schedulers) && store.state.options.schedulers.length
       ? store.state.options.schedulers
       : FALLBACK_SCHEDULERS;
-    refs.sampler.innerHTML = samplers.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-    refs.scheduler.innerHTML = schedulers.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-    if (samplers.includes(t2i.sampler)) refs.sampler.value = t2i.sampler;
-    if (schedulers.includes(t2i.scheduler)) refs.scheduler.value = t2i.scheduler;
+    const samplerOptions = !t2i.sampler || samplers.includes(t2i.sampler)
+      ? samplers
+      : [...samplers, t2i.sampler];
+    const schedulerOptions = !t2i.scheduler || schedulers.includes(t2i.scheduler)
+      ? schedulers
+      : [...schedulers, t2i.scheduler];
+    refs.sampler.innerHTML = samplerOptions.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    refs.scheduler.innerHTML = schedulerOptions.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if (!t2i.sampler) {
+      t2i.sampler = samplers.includes(d.sampler) ? d.sampler : samplers[0];
+      patchSettings({ t2i: { sampler: t2i.sampler } });
+    }
+    if (!t2i.scheduler) {
+      t2i.scheduler = schedulers.includes(d.scheduler) ? d.scheduler : schedulers[0];
+      patchSettings({ t2i: { scheduler: t2i.scheduler } });
+    }
+    refs.sampler.value = t2i.sampler;
+    refs.scheduler.value = t2i.scheduler;
   }
 
   /* ---------------- 采样字段 ---------------- */
@@ -657,12 +1316,14 @@ export function createT2IPage(host) {
     t2i.steps = Math.max(1, Math.round(Number(refs.steps.value) || 25));
     refs.steps.value = String(t2i.steps);
     patchSettings({ t2i: { steps: t2i.steps } });
+    syncDefaultHints();
     updateSummary();
   });
   refs.cfg.addEventListener('change', () => {
     t2i.cfg = Math.max(0, Number(refs.cfg.value) || 1);
     refs.cfg.value = String(t2i.cfg);
     patchSettings({ t2i: { cfg: t2i.cfg } });
+    syncDefaultHints();
     updateSummary();
   });
   refs.batch.addEventListener('change', () => {
@@ -721,11 +1382,13 @@ export function createT2IPage(host) {
   refs.sampler.addEventListener('change', () => {
     t2i.sampler = refs.sampler.value;
     patchSettings({ t2i: { sampler: t2i.sampler } });
+    syncDefaultHints();
     updateSummary();
   });
   refs.scheduler.addEventListener('change', () => {
     t2i.scheduler = refs.scheduler.value;
     patchSettings({ t2i: { scheduler: t2i.scheduler } });
+    syncDefaultHints();
     updateSummary();
   });
   refs.rgba.addEventListener('change', () => {
@@ -787,27 +1450,38 @@ export function createT2IPage(host) {
 
   syncRgbaPill();
 
+  function turboProfilesForModel() {
+    const profile = currentProfile();
+    if (Array.isArray(profile.turbo) && profile.turbo.length) return profile.turbo;
+    return store.state.options?.turbo_profiles || [];
+  }
+
   function renderTurbo() {
-    const profiles = store.state.options?.turbo_profiles || [];
+    const profiles = turboProfilesForModel();
     turboControl = new TurboControl(refs.turboHost, {
       profiles,
-      defaultProfile: store.state.options?.defaults?.turbo_profile || '',
+      defaultProfile: profiles[0]?.id || '',
       initial: {
         enabled: Boolean(t2i.turbo),
         profile: t2i.turboProfile || '',
       },
       onChange: (value) => {
-        // 开 Turbo 时记住原采样参数，关掉时还原（否则会一直停在 8 步 / cfg 1）
+        const d = modelDefaults();
+        // 开 Turbo 时记住原采样参数，关掉时还原（否则会一直停在加速档）
         if (value.enabled && !turboSnapshot) {
           turboSnapshot = {
-            steps: Number(refs.steps.value) || 25,
-            cfg: Number(refs.cfg.value) || 1,
-            sampler: refs.sampler.value || 'euler',
+            steps: Number(refs.steps.value) || Number(d.steps) || 25,
+            cfg: Number(refs.cfg.value) || Number(d.cfg) || 1,
+            sampler: refs.sampler.value || d.sampler || 'euler',
           };
         }
         let restored = null;
         if (!value.enabled) {
-          restored = turboSnapshot || { steps: 25, cfg: 1, sampler: 'euler' };
+          restored = turboSnapshot || {
+            steps: Number(d.steps) || 25,
+            cfg: Number(d.cfg) || 4,
+            sampler: d.sampler || 'euler',
+          };
           turboSnapshot = null;
         }
         t2i.turbo = value.enabled;
@@ -832,15 +1506,17 @@ export function createT2IPage(host) {
           patchSettings({ t2i: { turbo: value.enabled, turboProfile: value.profile } });
         }
         applyTurboToFields();
+        syncDefaultHints();
         updateSummary();
       },
     });
     applyTurboToFields(false);
-    // 历史遗留：之前 Turbo 关掉后步数停在 8，这里纠正一次（8 步只在 Turbo 下有意义）
-    if (!t2i.turbo && Number(refs.steps.value) < 12) {
-      refs.steps.value = '25';
-      t2i.steps = 25;
-      patchSettings({ t2i: { steps: 25 } });
+    // 历史遗留：普通模式下步数不应停在个位数（8 步只在 Turbo 下有意义）
+    const defaultSteps = Number(modelDefaults().steps) || 25;
+    if (!t2i.turbo && Number(refs.steps.value) < 12 && defaultSteps >= 12) {
+      refs.steps.value = String(defaultSteps);
+      t2i.steps = defaultSteps;
+      patchSettings({ t2i: { steps: defaultSteps } });
     }
   }
 
@@ -894,38 +1570,72 @@ export function createT2IPage(host) {
   function renderLoras() {
     const loras = store.state.options?.models?.lora || [];
     loraPicker = new LoraPicker(refs.loraHost, { loras, initial: t2i.loras });
-    loraPicker.host.addEventListener('change', () => {
+    if (refs.loraHost.dataset.bound) return;
+    refs.loraHost.dataset.bound = '1';
+    refs.loraHost.addEventListener('change', () => {
       t2i.loras = Object.fromEntries(loraPicker.getValue().map((item) => [item.name, item.strength]));
       patchSettings({ t2i: { loras: t2i.loras } });
       updateSummary();
     });
-    loraPicker.host.addEventListener('input', () => {
+    refs.loraHost.addEventListener('input', () => {
       t2i.loras = Object.fromEntries(loraPicker.getValue().map((item) => [item.name, item.strength]));
       patchSettings({ t2i: { loras: t2i.loras } });
     });
   }
 
   function renderModels() {
+    const profile = currentProfile();
+    const readOnly = profile.id !== 'qwen';
+    refs.modelsHost.hidden = readOnly;
+    const files = Object.values(profile.files || {}).filter(Boolean);
+    refs.modelFiles.hidden = !readOnly;
+    refs.modelFiles.textContent = readOnly
+      ? `当前模型权重（只读）：${files.length ? files.join(' · ') : '未配置'}`
+      : '';
+    if (readOnly) {
+      modelsField = null;
+      return;
+    }
     modelsField = new ModelsField(refs.modelsHost, {
       models: store.state.options?.models || {},
       initial: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae },
     });
-    refs.modelsHost.addEventListener('change', () => {
-      const value = modelsField.getValue();
-      t2i.unet = value.unet || '';
-      t2i.clip = value.clip || '';
-      t2i.vae = value.vae || '';
-      patchSettings({ t2i: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae } });
-    });
+    if (!refs.modelsHost.dataset.bound) {
+      refs.modelsHost.dataset.bound = '1';
+      refs.modelsHost.addEventListener('change', () => {
+        if (!modelsField) return;
+        const value = modelsField.getValue();
+        t2i.unet = value.unet || '';
+        t2i.clip = value.clip || '';
+        t2i.vae = value.vae || '';
+        patchSettings({ t2i: { unet: t2i.unet, clip: t2i.clip, vae: t2i.vae } });
+      });
+    }
     // Turbo 的「自动切底模」预设需要模型下拉已就绪后才能套用
     applyTurboToFields(false);
   }
 
   /* ---------------- 参数摘要 ---------------- */
+  function defaultActionHint() {
+    const profile = currentProfile();
+    const resident = store.state.health?.engine?.model || null;
+    if (resident && resident !== profile.id) {
+      const residentLabel = profileById(resident)?.label || resident;
+      return `生成前将卸载 ${residentLabel} 并加载 ${profile.label}（约 30~60s）`;
+    }
+    if (profile.id === 'moss' && resident !== 'moss') {
+      return 'MOSS 首次加载约 30~60s，显存约 20GB';
+    }
+    return '首次生成需要加载模型，可能要等待一段时间';
+  }
+
   function updateSummary() {
     if (!refs.summary) return;
-    const width = snapUp(refs.width.value || t2i.width);
-    const height = snapUp(refs.height.value || t2i.height);
+    const profile = currentProfile();
+    const d = profile.defaults || {};
+    const caps = profile.capabilities || {};
+    const width = snapSize(refs.width.value || t2i.width);
+    const height = snapSize(refs.height.value || t2i.height);
     const turboValue = turboControl?.getValue();
     const turboOn = Boolean(turboValue?.enabled);
     const preset = turboControl?.selectedProfile();
@@ -936,16 +1646,26 @@ export function createT2IPage(host) {
       loraCount ? `${loraCount} 个手动` : '',
       turboLoraFile ? `加速 ${turboLoraFile}` : (turboOn ? '不挂加速' : ''),
     ].filter(Boolean).join(' + ') || '无';
+    const stepsValue = Number(refs.steps.value) || 0;
+    const cfgValue = Number(refs.cfg.value) || 0;
+    const stepsMark = String(stepsValue) === String(d.steps) ? '（默认）' : '（自定义）';
+    const cfgMark = String(cfgValue) === String(d.cfg) ? '（默认）' : '（自定义）';
     const rows = [
+      ['模型', `${profile.label} · ${stepsValue} 步${stepsMark} · CFG ${cfgValue}${cfgMark} · ${refs.sampler.value}`],
       ['尺寸', `${fmtNum(width)} × ${fmtNum(height)}`],
-      ['步数 / CFG', `${refs.steps.value} / ${refs.cfg.value}`],
       ['采样', `${refs.sampler.value} · ${refs.scheduler.value}`],
       ['Turbo', turboOn ? (preset?.label || '开启') : '关闭'],
       ['批量', refs.batch.value],
       ['种子', t2i.seedMode === 'fixed' ? (refs.seed.value.trim() || '0') : '随机'],
       ['LoRA', loraText],
-      ['透明背景', refs.rgba.checked ? '是' : '否'],
     ];
+    if (caps.bbox) {
+      const bbox = bboxState();
+      rows.push(['布局', bbox.items.length
+        ? `${bboxCountText()}${bbox.enabled ? ' · 已启用' : ' · 未启用'}`
+        : '未设置']);
+    }
+    if (caps.rgba) rows.push(['透明背景', refs.rgba.checked ? '是' : '否']);
     refs.summary.innerHTML = rows
       .map(
         ([label, value]) =>
@@ -959,21 +1679,30 @@ export function createT2IPage(host) {
           ? `Turbo 模式 · 加速 LoRA：${turboLoraFile}`
           : 'Turbo 模式：不挂加速 LoRA';
     } else {
-      refs.actionHint.textContent = '首次生成需要加载模型，可能要等待一段时间';
+      refs.actionHint.textContent = defaultActionHint();
     }
   }
 
   /* ---------------- 启动 / 刷新 ---------------- */
   function refreshAll() {
+    ensureModelState();
     sizeTier = inferTier(Number(t2i.width) || 2048, Number(t2i.height) || 2048);
     renderRatios();
     renderSizeCard();
-    syncSizeFields();
     renderStepsPresets();
     renderSelects();
     renderTurbo();
     renderLoras();
     renderModels();
+    applyModelCapabilities();
+    syncSamplingFields();
+    syncSlgUi();
+    syncSizeSnapUi();
+    syncDefaultHints();
+    syncBboxUi();
+    syncModelBar();
+    syncModelPill();
+    syncSizeFields();
     updateSummary();
     renderHealthHint();
   }
@@ -991,19 +1720,13 @@ export function createT2IPage(host) {
   }
 
   sizeTier = inferTier(Number(t2i.width) || 2048, Number(t2i.height) || 2048);
-  renderRatios();
-  renderSizeCard();
-  syncSizeFields();
-  renderStepsPresets();
-  renderSelects();
-  renderTurbo();
-  renderLoras();
-  renderModels();
-  updateSummary();
-  renderHealthHint();
+  refreshAll();
   on('options:loaded', () => refreshAll());
-  // health 变化通过 store 订阅刷新「引擎就绪」提示
-  store.subscribe(() => renderHealthHint());
+  // health 变化通过 store 订阅刷新「引擎就绪」提示与模型驻留状态
+  store.subscribe(() => {
+    renderHealthHint();
+    syncModelPill();
+  });
 
   /* ---------------- 润色 ---------------- */
   function applyRatioByText(text) {
@@ -1019,15 +1742,21 @@ export function createT2IPage(host) {
   }
 
   async function handlePolish() {
+    const profile = currentProfile();
+    const bbox = bboxState();
     await polishWithDialog({
       prompt: refs.prompt.value,
       mode: 't2i',
       model: store.state.polishModel || null,
+      imageModel: profile.id,
+      layoutHint: profile.capabilities?.bbox && bbox.enabled && bbox.items.length
+        ? '这是边界框布局任务：框内文字与物体位置已在布局中单独指定，主提示词只描述整体画面，不要把框内文字写进主提示词。'
+        : '',
       button: refs.polish,
       ratios: ratioList(),
       targetSize: {
-        width: snapUp(refs.width.value || t2i.width),
-        height: snapUp(refs.height.value || t2i.height),
+        width: snapSize(refs.width.value || t2i.width),
+        height: snapSize(refs.height.value || t2i.height),
       },
       pose: poseState
         ? { image: poseState.dataUrl, summary: poseState.summary, label: poseState.label }
@@ -1045,8 +1774,10 @@ export function createT2IPage(host) {
 
   /* ---------------- 生成 ---------------- */
   function collectPayload() {
-    const width = snapUp(refs.width.value || t2i.width);
-    const height = snapUp(refs.height.value || t2i.height);
+    const profile = currentProfile();
+    const caps = profile.capabilities || {};
+    const width = snapSize(refs.width.value || t2i.width);
+    const height = snapSize(refs.height.value || t2i.height);
     refs.width.value = String(width);
     refs.height.value = String(height);
     t2i.width = width;
@@ -1058,33 +1789,66 @@ export function createT2IPage(host) {
     // 随机模式交给后端每次抽新种子；固定模式按输入框，空则用 0
     const seed = seedMode === 'random' ? null : Math.max(0, Math.floor(Number(seedText) || 0));
     const loras = loraPicker.getValue();
-    const models = modelsField.getValue();
+    const models = modelsField?.getValue?.() || { unet: '', clip: '', vae: '' };
     const pickerMeta = stylePicker.getMeta();
+    // 负向提示词留空时：有模型默认值就传 null 让后端补默认，否则传空串
+    const negative = refs.negative.value.trim();
+    const bbox = bboxState();
+    const bboxEnabled = Boolean(caps.bbox && bbox.enabled && bbox.items.length);
+    const slgStateValue = slgState();
 
     return {
       // 正文保持原文，预设/视角在这里合成为最终提示词
       prompt: stylePicker.composePrompt(refs.prompt.value.trim()),
-      negative_prompt: refs.negative.value.trim(),
+      model: profile.id,
+      negative_prompt: negative || (caps.rgba && !modelDefaults().negative_prompt ? '' : null),
       width,
       height,
-      steps: Number(refs.steps.value) || 25,
-      cfg: Number(refs.cfg.value) || 4.0,
+      steps: Number(refs.steps.value) || Number(modelDefaults().steps) || 25,
+      cfg: Number(refs.cfg.value) || Number(modelDefaults().cfg) || 4.0,
       seed,
       batch: Number(refs.batch.value) || 1,
-      sampler: refs.sampler.value || 'euler',
-      scheduler: refs.scheduler.value || 'simple',
+      sampler: refs.sampler.value || modelDefaults().sampler || 'euler',
+      scheduler: refs.scheduler.value || modelDefaults().scheduler || 'simple',
       turbo: {
         enabled: turboValue.enabled,
         profile: turboValue.profile,
       },
-      rgba: refs.rgba.checked,
+      rgba: Boolean(caps.rgba && refs.rgba.checked),
       models: {
         unet: models.unet || '',
         clip: models.clip || '',
         vae: models.vae || '',
       },
       loras,
-      pose: poseState
+      slg: caps.slg
+        ? {
+            enabled: Boolean(slgStateValue.enabled),
+            single_layers: slgStateValue.singleLayers ?? '',
+            double_layers: slgStateValue.doubleLayers ?? '',
+            start_percent: Number(slgStateValue.startPercent ?? 0),
+            end_percent: Number(slgStateValue.endPercent ?? 0.5),
+          }
+        : undefined,
+      bbox: bboxEnabled
+        ? {
+            enabled: true,
+            canvas: [width, height],
+            character_boxes: bbox.characterBoxes ?? '1',
+            items: bbox.items.map((item) => ({
+              x: Math.round(item.x),
+              y: Math.round(item.y),
+              width: Math.round(item.w),
+              height: Math.round(item.h),
+              w: Math.round(item.w),
+              h: Math.round(item.h),
+              type: item.type || 'object',
+              text: item.text || '',
+              desc: item.desc || '',
+            })),
+          }
+        : undefined,
+      pose: profile.id === 'qwen' && poseState
         ? {
             image: poseState.dataUrl,
             width: poseState.width,
@@ -1099,6 +1863,7 @@ export function createT2IPage(host) {
         : null,
       meta: {
         source: 'web/t2i',
+        model: profile.id,
         ratio: t2i.ratioId || null,
         rawPrompt: refs.prompt.value.trim(),
         creativePresets: pickerMeta.creativePresets,
@@ -1109,15 +1874,13 @@ export function createT2IPage(host) {
     };
   }
 
-  const DEFAULT_ACTION_HINT = '首次生成需要加载模型，可能要等待一段时间';
-
   /** 把任务进度同步到底部操作条：条永远可见，用户不用滚到结果面板看进度。 */
   function syncActionProgress(job) {
     if (!refs.actionBar) return;
     if (!job) {
       refs.actionBar.classList.remove('is-running', 'is-done', 'is-error');
       if (refs.actionStrip) refs.actionStrip.style.width = '0%';
-      refs.actionHint.textContent = DEFAULT_ACTION_HINT;
+      refs.actionHint.textContent = defaultActionHint();
       return;
     }
     const p = job.progress || {};
@@ -1136,7 +1899,7 @@ export function createT2IPage(host) {
     else if (job.status === 'canceled') parts.push('已取消');
     if (p.label) parts.push(p.label);
     if (job.elapsed_ms) parts.push(`${(job.elapsed_ms / 1000).toFixed(1)}s`);
-    refs.actionHint.textContent = parts.join(' · ') || DEFAULT_ACTION_HINT;
+    refs.actionHint.textContent = parts.join(' · ') || defaultActionHint();
   }
 
   async function handleGenerate() {
@@ -1150,6 +1913,8 @@ export function createT2IPage(host) {
     }
     refs.generate.disabled = true;
     refs.generate.innerHTML = '<span class="spin"></span>生成中…';
+    jobActive = true;
+    syncModelPill();
     try {
       // 等 vendor 模块就绪，确保预设能合成进提示词
       await stylePicker.ensureVendor();
@@ -1157,6 +1922,11 @@ export function createT2IPage(host) {
         toastWarn('风格模块未就绪：本次将只使用原始提示词（可稍后重试）');
       }
       const payload = collectPayload();
+      const bboxError = validateBboxPayload(payload);
+      if (bboxError) {
+        toastWarn(bboxError);
+        return;
+      }
       if (payload.turbo.enabled && !payload.turbo.profile) {
         toastWarn('Turbo 已开启但没有可用的加速预设，请等模型信息加载完成后再试');
         return;
@@ -1193,6 +1963,8 @@ export function createT2IPage(host) {
         },
       });
     } finally {
+      jobActive = false;
+      syncModelPill();
       refs.generate.disabled = false;
       refs.generate.textContent = '生成';
     }
@@ -1208,9 +1980,19 @@ export function createT2IPage(host) {
   });
 
   refs.reset.addEventListener('click', () => {
+    const profile = currentProfile();
+    const d = profile.defaults || {};
     const defaults = {
-      steps: 25, cfg: 4.0, batch: 1, seed: '', seedMode: 'random',
-      sampler: 'euler', scheduler: 'simple', rgba: false, turbo: false,
+      steps: Number(d.steps) || 25,
+      cfg: Number(d.cfg) || 4.0,
+      batch: 1,
+      seed: '',
+      seedMode: 'random',
+      sampler: d.sampler || 'euler',
+      scheduler: d.scheduler || 'simple',
+      rgba: false,
+      turbo: false,
+      turboProfile: profile.turbo?.[0]?.id || '',
     };
     Object.assign(t2i, defaults);
     patchSettings({ t2i: defaults });
@@ -1221,9 +2003,10 @@ export function createT2IPage(host) {
     syncSeedUi();
     renderSelects();
     renderTurbo();
+    syncDefaultHints();
     syncSizeFields();
     updateSummary();
-    toastSuccess('采样参数已重置');
+    toastSuccess('采样参数已重置为模型默认值');
   });
 
   function refreshHealthSoon() {
@@ -1252,8 +2035,8 @@ export function createT2IPage(host) {
       setSeedMode('fixed');
     }
     if (payload.width && payload.height) {
-      const width = snapUp(payload.width);
-      const height = snapUp(payload.height);
+      const width = snapSize(payload.width);
+      const height = snapSize(payload.height);
       sizeTier = inferTier(width, height);
       applySize(width, height, '');
     }

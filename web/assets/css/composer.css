@@ -3356,8 +3356,34 @@ html[data-theme="dark"] .hr-panel {
   gap: 7px;
 }
 
+/* 第 1 张是「编辑目标」，占满整行做主角，其余按两列排 */
+.refbox-body .wb-upload-list .upload-item:first-child {
+  grid-column: 1 / -1;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+}
+
 .refbox-body .wb-upload-list .upload-item img {
   aspect-ratio: 4 / 3;
+}
+
+.refbox-body .wb-upload-list .upload-item:first-child img {
+  aspect-ratio: 16 / 10;
+}
+
+.refbox-drop[hidden] {
+  display: none;
+}
+
+/* 从小图库 / 历史胶囊拖入时整块参考图区域高亮 */
+.wb-refbox.ref-drop-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow);
+}
+
+.wb-refbox.ref-drop-active .refbox-drop {
+  border-color: var(--accent);
+  background: var(--accent-dim);
 }
 
 .refbox-body .wb-dropzone,
@@ -3393,21 +3419,32 @@ html[data-theme="dark"] .hr-panel {
   font-size: 10px;
 }
 
-/* 已有图片时把拖放区收窄，让高度留给缩略图 */
+/* 已有图片时收成一条窄条，不再占满整个高度 */
 .wb-refbox.has-refs .refbox-drop {
-  flex: 1 1 auto;
-  min-height: 54px;
-  padding: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  height: 38px;
+  flex-direction: row;
+  gap: 7px;
+  padding: 0 12px;
+  border-style: dashed;
+  border-radius: 12px;
 }
 
 .wb-refbox.has-refs .refbox-drop .wb-drop-text small {
   display: none;
 }
 
+.wb-refbox.has-refs .refbox-drop .wb-drop-text b {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .wb-refbox.has-refs .refbox-drop .glyph {
-  width: 24px;
-  height: 24px;
-  font-size: 13px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 12px;
 }
 
 .refbox-foot {

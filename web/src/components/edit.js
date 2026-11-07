@@ -987,6 +987,16 @@ export function createEditPage(host) {
       refs.uploadHint.textContent = `第 1 张：${first.width} × ${first.height}（遮罩与输出以它为准）${images.length > 1 ? ` · 共 ${images.length} 张` : ''}`;
     }
     refs.refBox?.classList.toggle('has-refs', images.length > 0);
+    // 已有参考图时把拖放区改成窄条「添加更多」，满了直接隐藏
+    const dropTitle = refs.dropzone.querySelector('.wb-drop-text b');
+    if (dropTitle) dropTitle.textContent = images.length ? '添加更多参考图' : '拖拽图片到这里';
+    const dropDesc = refs.dropzone.querySelector('.wb-drop-text small');
+    if (dropDesc) {
+      dropDesc.textContent = images.length
+        ? '点击上传，或从左侧小图库拖进来'
+        : '或点击上传 · 第 1 张为「编辑目标」';
+    }
+    refs.dropzone.hidden = images.length >= MAX_IMAGES;
   }
 
   async function addFiles(fileList) {
@@ -1059,10 +1069,39 @@ export function createEditPage(host) {
     refs.dropzone.classList.add('drag');
   });
   refs.dropzone.addEventListener('dragleave', () => refs.dropzone.classList.remove('drag'));
-  refs.dropzone.addEventListener('drop', async (event) => {
+
+  /* 整个参考图区域都是拖放目标：小图库 / 历史胶囊拖进来的图，或本机文件。 */
+  refs.refBox.addEventListener('dragover', (event) => {
+    if (!hasRefDrag(event) && !event.dataTransfer?.types?.includes('Files')) return;
     event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    refs.refBox.classList.add('ref-drop-active');
+  });
+  refs.refBox.addEventListener('dragleave', (event) => {
+    if (refs.refBox.contains(event.relatedTarget)) return;
+    refs.refBox.classList.remove('ref-drop-active');
     refs.dropzone.classList.remove('drag');
-    await addFiles(event.dataTransfer?.files);
+  });
+  refs.refBox.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    refs.refBox.classList.remove('ref-drop-active');
+    refs.dropzone.classList.remove('drag');
+    const payload = readRefDrag(event);
+    if (payload?.src) {
+      let item = refLib.items.find((entry) => entry.src === payload.src);
+      if (!item) {
+        item = await refLib.addItem({
+          src: payload.src,
+          name: payload.name,
+          width: payload.width,
+          height: payload.height,
+          source: 'history',
+        });
+      }
+      if (item) useLibraryItem(item);
+      return;
+    }
+    if (event.dataTransfer?.files?.length) await addFiles(event.dataTransfer.files);
   });
 
   refs.uploadList.addEventListener('click', (event) => {
@@ -1094,6 +1133,8 @@ export function createEditPage(host) {
     item.classList.add('dragging');
   });
   refs.uploadList.addEventListener('dragover', (event) => {
+    // 外部拖入（小图库 / 文件）交给参考图区域处理，只在本区域内排序时才高亮
+    if (hasRefDrag(event) || dragFrom === null) return;
     const item = event.target.closest('[data-image-index]');
     if (!item) return;
     event.preventDefault();
@@ -1105,6 +1146,7 @@ export function createEditPage(host) {
     item?.classList.remove('drop-target');
   });
   refs.uploadList.addEventListener('drop', (event) => {
+    if (hasRefDrag(event) || dragFrom === null) return;
     const item = event.target.closest('[data-image-index]');
     if (!item) return;
     event.preventDefault();

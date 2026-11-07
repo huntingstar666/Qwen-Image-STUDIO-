@@ -27,41 +27,28 @@
   padding: 24px 8px 88px 8px;
   padding-right: var(--rail-reserve);
   padding-left: clamp(24px, 2.6vw, 88px);
-  background:
+  /* 背景统一由 body 承载：所有页面共享同一片星空 / 宣纸底 */
+  background: transparent;
+}
+
+/* ------------------------------------------------------------- 全局背景 */
+
+/* 浅色：宣纸颗粒 + 暖杏与薄荷光晕，覆盖全部页面 */
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(rgba(35, 38, 43, 0.075) 0.8px, transparent 0.8px),
     radial-gradient(940px 620px at 100% 2%, color-mix(in srgb, var(--accent) 17%, transparent), transparent 62%),
     radial-gradient(840px 580px at -2% 102%, color-mix(in srgb, var(--violet) 16%, transparent), transparent 64%),
     radial-gradient(660px 480px at 54% 46%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 72%),
     linear-gradient(168deg, color-mix(in srgb, var(--panel) 34%, transparent), transparent 44%);
+  background-size: 20px 20px, auto, auto, auto, auto;
+  background-attachment: fixed;
 }
 
-/* 暗色：深空底色，星点与银河带由伪元素叠加 */
-html[data-theme="dark"] .wb-page {
-  background:
-    radial-gradient(1100px 640px at 76% -8%, rgba(118, 150, 255, 0.12), transparent 62%),
-    radial-gradient(900px 560px at 6% 104%, rgba(216, 151, 101, 0.07), transparent 66%),
-    radial-gradient(720px 460px at 42% 30%, rgba(143, 120, 255, 0.07), transparent 70%),
-    linear-gradient(162deg, #0b0e14 0%, #0d1118 46%, #090b10 100%);
-}
-
-/* 浅色：宣纸细纹；暗色：星点。都只做背景层，不压内容 */
-.wb-page::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image: radial-gradient(
-    color-mix(in srgb, var(--text) 9%, transparent) 0.8px,
-    transparent 0.8px
-  );
-  background-size: 20px 20px;
-  opacity: 0.4;
-  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.3) 72%, transparent 96%);
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.3) 72%, transparent 96%);
-}
-
-/* 暗色星点：三组不同尺寸的星，错位平铺出自然的疏密 */
-html[data-theme="dark"] .wb-page::before {
+/* 暗色：深空底色 + 星点 + 星云 + 银河带，覆盖全部页面 */
+html[data-theme="dark"] body {
+  background-color: #090b10;
   background-image:
     radial-gradient(1.1px 1.1px at 18px 24px, rgba(255, 255, 255, 0.9), transparent),
     radial-gradient(0.9px 0.9px at 74px 96px, rgba(255, 255, 255, 0.6), transparent),
@@ -71,34 +58,22 @@ html[data-theme="dark"] .wb-page::before {
     radial-gradient(0.9px 0.9px at 296px 168px, rgba(255, 255, 255, 0.65), transparent),
     radial-gradient(1.3px 1.3px at 352px 26px, rgba(184, 210, 255, 0.75), transparent),
     radial-gradient(0.8px 0.8px at 412px 140px, rgba(255, 255, 255, 0.45), transparent),
-    radial-gradient(1px 1px at 226px 196px, rgba(210, 200, 255, 0.55), transparent);
-  background-size: 440px 220px;
-  opacity: 0.72;
-  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.55) 58%, transparent 88%);
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.55) 58%, transparent 88%);
-}
-
-/* 浅色：一道极淡的宣纸光泽；暗色：斜向银河带 */
-.wb-page::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: linear-gradient(
-    114deg,
-    transparent 44%,
-    color-mix(in srgb, var(--accent) 7%, transparent) 50%,
-    transparent 56%
-  );
-}
-
-html[data-theme="dark"] .wb-page::after {
-  background:
-    linear-gradient(112deg, transparent 24%, rgba(124, 154, 255, 0.11) 43%, rgba(204, 182, 255, 0.13) 51%, transparent 70%),
-    linear-gradient(112deg, transparent 36%, rgba(255, 255, 255, 0.05) 50%, transparent 64%);
-  filter: blur(26px);
-  opacity: 0.95;
+    radial-gradient(1px 1px at 226px 196px, rgba(210, 200, 255, 0.55), transparent),
+    radial-gradient(1100px 640px at 76% -8%, rgba(118, 150, 255, 0.12), transparent 62%),
+    radial-gradient(900px 560px at 6% 104%, rgba(216, 151, 101, 0.07), transparent 66%),
+    radial-gradient(720px 460px at 42% 30%, rgba(143, 120, 255, 0.07), transparent 70%),
+    linear-gradient(
+      112deg,
+      transparent 22%,
+      rgba(124, 154, 255, 0.1) 41%,
+      rgba(204, 182, 255, 0.12) 50%,
+      transparent 72%
+    ),
+    linear-gradient(112deg, transparent 34%, rgba(255, 255, 255, 0.05) 50%, transparent 66%),
+    linear-gradient(162deg, #0b0e14 0%, #0d1118 46%, #090b10 100%);
+  background-size: 440px 220px, 440px 220px, 440px 220px, 440px 220px, 440px 220px, 440px 220px,
+    440px 220px, 440px 220px, 440px 220px, auto, auto, auto, auto, auto, auto;
+  background-attachment: fixed;
 }
 
 /* 文艺字做成结果区右下角的淡色落款，不再占用右侧走廊 */

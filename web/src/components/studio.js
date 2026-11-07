@@ -462,6 +462,14 @@ export function createStudioPage(host) {
     getSize() {
       return doc ? doc.size : { width: 0, height: 0 };
     },
+    /** 本次任务 id = 当前工程 id；打开新图会开启新会话，历史互不混用。 */
+    getSessionId() {
+      return projectId;
+    },
+    /** 当前文档是否有未保存的手动改动（撤销栈非空），历史回退前二次确认用。 */
+    hasDocChanges() {
+      return Boolean(doc?.canUndo);
+    },
     getMainThumb() {
       if (!doc) return '';
       try {

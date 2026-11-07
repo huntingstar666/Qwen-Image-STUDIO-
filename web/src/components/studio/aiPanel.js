@@ -44,6 +44,8 @@ import {
 } from './importPicker.js';
 import { hasRefDrag, readRefDrag } from '../refLibrary.js';
 import { createPromptEditor } from './promptEditor.js';
+import { createSessionHistory } from './sessionHistory.js';
+import { mountAiHistory } from './aiHistory.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -206,6 +208,8 @@ export function mountAiPanel(host, ctx) {
         <div class="ai-hint" data-ref="adoptHint" hidden>载入后结果图成为新的主图，蒙版与历史会清空，可继续精修或再次扩图。</div>
         <div class="ai-quality" data-ref="quality" hidden></div>
       </section>
+
+      <section class="ai-section ai-history" data-ref="historyHost"></section>
     </div>`;
 
   const ref = (name) => host.querySelector(`[data-ref="${name}"]`);
@@ -263,6 +267,7 @@ export function mountAiPanel(host, ctx) {
     adoptBtn: ref('adoptBtn'),
     adoptHint: ref('adoptHint'),
     quality: ref('quality'),
+    historyHost: ref('historyHost'),
   };
 
   const editSettings = store.state.edit || {};
@@ -284,6 +289,8 @@ export function mountAiPanel(host, ctx) {
     protection: normalizeProtection(editSettings.protection),
     consistencyOn: editSettings.consistency !== false,
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
+    currentHistoryId: '',
+    resultEntryId: '',
   };
 
   /** 富文本指令框：chip 存储参考图 id，提交时序列化回 `@图N`。 */
@@ -305,6 +312,123 @@ export function mountAiPanel(host, ctx) {
   function notifyPersist() {
     ctx.onPersistChange?.();
   }
+
+  /* ------------------------------------------------------------ 编辑历史 */
+
+  let history = null;
+  let historySession = '';
+  let historyPanel = null;
+
+  /** 一次任务 = 一次文档；换图后自动切换到新会话，历史互不混用。 */
+  function currentHistory() {
+    const sessionId = String(ctx.getSessionId?.() || '');
+    if (!history || historySession !== sessionId) {
+      history?.destroy();
+      historySession = sessionId;
+      history = createSessionHistory({ sessionId });
+      history.load().then(() => {
+        if (historySession === sessionId) historyPanel?.render();
+      });
+    }
+    return history;
+  }
+
+  function renderHistory() {
+    currentHistory();
+    historyPanel?.render();
+    historyPanel?.setBusy(state.busy);
+  }
+
+  function entryPrompt(entry) {
+    const text = String(entry.prompt || '').replace(/\s+/g, ' ').trim();
+    return text || '未填写指令';
+  }
+
+  async function loadHistoryEntry(entry) {
+    if (!entry || state.busy) return;
+    if (ctx.hasDocChanges?.()) {
+      const ok = await confirmDialog({
+        title: `载入历史 #${entry.index}`,
+        message: '将用该结果替换当前主图，裁剪、旋转、调色与蒙版会重置。',
+        confirmText: '载入',
+      });
+      if (!ok) return;
+    }
+    const storeRef = currentHistory();
+    const url = await storeRef.ensureResultUrl(entry.id);
+    if (!url) {
+      toastWarn('该历史结果已不在本机，无法载入');
+      return;
+    }
+    const info = await ctx.adoptResult?.(url, {
+      task: 'history',
+      width: entry.result?.width,
+      height: entry.result?.height,
+    });
+    if (!info) return;
+    // 载入新底图会清空现场，这里把该次记录的参考图与指令补回去，便于继续修改。
+    const restored = await storeRef.refsFor(entry.id);
+    state.refs = restored.slice(0, MAX_REFS);
+    syncEditorRefs();
+    promptEditor.setText(entry.prompt || '');
+    renderRefs();
+    syncPrompt();
+    notifyPersist();
+    state.currentHistoryId = entry.id;
+    historyPanel?.setCurrent(entry.id);
+    historyPanel?.render();
+    toastSuccess(`已载入历史 #${entry.index}，指令${restored.length ? '与参考图' : ''}已恢复`);
+  }
+
+  async function compareHistoryEntry(entry) {
+    if (!entry) return;
+    const source = ctx.getSource?.();
+    if (!source) return;
+    const url = await currentHistory().ensureResultUrl(entry.id);
+    if (!url) {
+      toastWarn('该历史结果已不在本机，无法对比');
+      return;
+    }
+    const label = entryPrompt(entry).slice(0, 12);
+    ctx.compare?.(source.main.data, [{ url, label: `历史 #${entry.index} · ${label}` }]);
+  }
+
+  async function removeHistoryEntry(entry) {
+    if (!entry) return;
+    const removed = await currentHistory().remove(entry.id);
+    if (!removed) return;
+    if (state.currentHistoryId === entry.id) state.currentHistoryId = '';
+    if (state.resultEntryId === entry.id) state.resultEntryId = '';
+    historyPanel?.setCurrent(state.currentHistoryId);
+    historyPanel?.render();
+    toastSuccess(`已删除历史 #${entry.index}`);
+  }
+
+  async function clearHistory() {
+    const entries = currentHistory().entries;
+    if (!entries.length) return;
+    const ok = await confirmDialog({
+      title: '清空编辑历史',
+      message: `删除本次任务的全部 ${entries.length} 条 AI 编辑记录？当前画面不受影响。`,
+      confirmText: '清空',
+    });
+    if (!ok) return;
+    await currentHistory().clear();
+    state.currentHistoryId = '';
+    state.resultEntryId = '';
+    historyPanel?.setCurrent('');
+    historyPanel?.render();
+    toastSuccess('已清空编辑历史');
+  }
+
+  historyPanel = mountAiHistory(refs.historyHost, {
+    getEntries: () => currentHistory().entries,
+    isBusy: () => state.busy,
+    onLoad: (entry) => void loadHistoryEntry(entry),
+    onCompare: (entry) => void compareHistoryEntry(entry),
+    onRemove: (entry) => void removeHistoryEntry(entry),
+    onClear: () => void clearHistory(),
+  });
 
   /** 预设 / 覆盖项 / 保护开关 / 一致性强度跨页共享，写回同一份 settings.edit。 */
   function persistEdit() {
@@ -762,6 +886,7 @@ export function mountAiPanel(host, ctx) {
     refs.submit.disabled = state.busy || !state.prompt.trim();
     refs.submit.textContent = state.busy ? '修改中…' : '修改';
     refs.polish.disabled = state.busy;
+    historyPanel?.setBusy(state.busy);
   }
 
   async function polish() {
@@ -939,6 +1064,49 @@ export function mountAiPanel(host, ctx) {
           ctx.showResult?.(state.resultUrl);
           toastSuccess('修改完成，已叠加到画布预览');
           notifyPersist();
+
+          // 成功的任务落一张历史卡片；一张图都没取到时不记录，避免空记录。
+          const images = (job?.images || [])
+            .map((item) => ({
+              url: api.fileUrl(item.url || item.path || ''),
+              width: item.width,
+              height: item.height,
+            }))
+            .filter((item) => item.url);
+          if (images.length) {
+            void currentHistory()
+              .append({
+                jobId: job?.id || job?.job_id || '',
+                prompt: text,
+                model: 'qwen',
+                params: {
+                  width: images[0].width || payload.meta?.targetSize?.width || source.main.width,
+                  height: images[0].height || payload.meta?.targetSize?.height || source.main.height,
+                  preset: resolved.id,
+                  turbo: payload.turbo?.profile || '',
+                  steps: payload.steps,
+                  cfg: payload.cfg,
+                },
+                refs: state.refs.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  dataUrl: item.dataUrl,
+                  width: item.width,
+                  height: item.height,
+                })),
+                images,
+              })
+              .then((added) => {
+                if (!added.length) return;
+                state.resultEntryId = added[0].id;
+                state.currentHistoryId = added[0].id;
+                historyPanel?.setCurrent(state.currentHistoryId);
+                historyPanel?.render();
+              })
+              .catch(() => {
+                // 历史记录失败不影响本次结果
+              });
+          }
         },
       })
       .finally(() => {
@@ -1293,13 +1461,20 @@ export function mountAiPanel(host, ctx) {
   refs.adoptBtn.addEventListener('click', async () => {
     if (!state.resultUrl || state.busy) return;
     refs.adoptBtn.disabled = true;
+    const entryId = state.resultEntryId;
     try {
       const info = await ctx.adoptResult?.(state.resultUrl, {
         task: state.resultInfo?.task || refs.task.value,
         width: state.resultInfo?.width,
         height: state.resultInfo?.height,
       });
-      if (info) toastSuccess(`已载入新底图 ${info.width} × ${info.height}，可继续精修`);
+      if (info) {
+        if (entryId) {
+          state.currentHistoryId = entryId;
+          historyPanel?.setCurrent(entryId);
+        }
+        toastSuccess(`已载入新底图 ${info.width} × ${info.height}，可继续精修`);
+      }
     } finally {
       refs.adoptBtn.disabled = false;
     }
@@ -1326,17 +1501,19 @@ export function mountAiPanel(host, ctx) {
   /* ------------------------------------------------------------ 对外接口 */
 
   const controller = {
-    /** 主图/蒙版变化后刷新（尺寸、缩略图、叠加层列表） */
+    /** 主图/蒙版变化后刷新（尺寸、缩略图、叠加层列表、编辑历史会话） */
     refresh() {
       renderMeta();
       renderRefs();
       renderLayers();
+      renderHistory();
     },
     /** 底图被替换（载入结果 / 打开新图）：清空结果态，避免旧预览残留 */
     resetResult() {
       state.resultUrl = '';
       state.previewOn = false;
       state.resultInfo = null;
+      state.resultEntryId = '';
       refs.previewBtn.textContent = '画布预览';
       refs.resultActions.hidden = true;
       refs.adoptHint.hidden = true;
@@ -1373,6 +1550,8 @@ export function mountAiPanel(host, ctx) {
     /** 宿主销毁时解绑 document 级菜单监听。 */
     destroy() {
       document.removeEventListener('click', onRefMenuOutside);
+      history?.destroy();
+      history = null;
     },
     /** 本机工程恢复：把保存的 AI 现场写回面板（不改动已提交的任务）。 */
     restoreState(persist, refsData) {

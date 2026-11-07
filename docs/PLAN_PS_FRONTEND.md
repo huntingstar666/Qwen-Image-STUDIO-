@@ -682,6 +682,8 @@ DOM 结构：
 
 - **D6.1 M1 回归与文档（已完成）** —— 按 §12.10 逐条回归并勾选。本轮新增验证：`buildEditPayload` 纯函数实测 `images` 顺序为 `[main, r2]`、`prompt` 中 `@图二/@图一` 正确映射为 `图2/图1`、越界 `@图五` 原样保留、`size_mode/steps/mask` 透传正确；`mapMentions('把 @图二 … @图一 …', 3)` 输出 `把 图2 … 图1 …`；粘贴图片在已有主图时进入参考图（参考图 +1）；`ClipboardEvent` 与拖拽链路均无异常。三档宽度复测 `scrollWidth === innerWidth`；裁剪拖动 4K 图 0 次画布重绘；导出菜单 PNG / JPG / 蒙版 / 复制 / 收藏全部可用。`python -m pytest tests -x -q` → **488 passed**（54s，日志中的 torch/CUDA 提示属环境信息，非失败）；浏览器 `exception` 级日志为空，控制台仅有后端未启动导致的 `ERR_CONNECTION_REFUSED`（环境限制，与前端无关）；`#t2i` 与 `#edit` 路由渲染正常（标题正确、编辑页高度 951px、无异常）。已知限制：素材仓库 / 最近结果依赖后端数据，本轮验证到入口与取图链路，未做真实取图回归。§12.10 十项全部勾选，M1 收口。
 
+- **D16.1 本次任务 AI 编辑历史卡片（已完成）** —— 新增 `web/src/components/studio/sessionHistory.js`：一次任务 = 一个工程 id，元信息写 IndexedDB `wb-studio/aiHistory`（按 `sessionId` 归档，上限 30），结果原图写 `aiResults`（`result:<entryId>`），参考图按 `refId` 去重存 `ref:<refId>` 记录；缩略图统一转 320px WebP dataURL 随元信息持久化，结果原图只在内存缓存最近 6 张 objectURL 并按 LRU 回收。`append()` 支持同一 jobId 多张结果按子序号建卡片、同 id 去重、超限自动淘汰并删 blob；`refsFor()` 回退时把参考图还原为 dataURL，`ensureResultUrl()` 按需取结果图。新增 `web/src/components/studio/aiHistory.js`：AI 面板底部固定「编辑历史 N 次 / 清空」横向卡片轨道（缩略图、`#序号 时间`、指令摘要，当前结果高亮描边），hover / 聚焦显示「载入 · 对比 · 删除」底栏，支持 Tab、Enter 载入、`C` 对比、Delete 删除；空状态与清空二次确认齐备。`aiPanel.js` 在任务 `done` 后落卡片、`refresh()` 跟随工程切换会话、载入历史时先 `adoptResult` 重建文档再恢复参考图与指令（裁剪/旋转/调色/蒙版随新文档重置），运行中禁用载入。`studio.js` 的 AI ctx 追加 `getSessionId()` 与 `hasDocChanges()`，仅当撤销栈非空时载入前二次确认。浏览器实测（后端未启动，用页内动态 import 模拟成功任务写入历史）：写入后刷新仍见卡片与缩略图、计数「1 次」、空状态/清空按钮显隐正确；点击卡片载入后主图变为 `perf-4k-精修.png · 480 × 360`、指令 `把橙色圆形换成蓝色方块，保留背景` 恢复、卡片高亮且原图未变；Delete 删除只减记录不改画面；3 条记录时清空弹窗文案与「清空」入口正确，确认后卡片与 `aiHistory` 记录同时归零；卡片「对比」可拉起 `compare.js` 竖线对比且标签为「历史 #1 · …」。控制台仅环境类 `ERR_CONNECTION_REFUSED / 404`，无 JS 异常。已知限制：未接真实后端任务，`quality` 诊断标签沿用现有结果区；§14.3 模块表中的 `panels/aiHistory.js` 实际落在 `studio/aiHistory.js`。下一步 D16.2：图片对比复用 `compare.js`。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -875,7 +877,7 @@ DOM 结构：
 | `persistence.js` | IndexedDB 工程/草稿、自动保存、恢复、配额与多标签锁 | `document/io` | D17.1~D17.3 |
 | `perf.js` | 帧耗时探针、渲染次数统计、4K 基准数据 | 无 | D18.1 |
 | `panels/recovery.js` | 恢复横幅、最近工程列表 | `persistence` | D17.2 |
-| `panels/aiHistory.js` | AI 编辑历史卡片区 | `sessionHistory` | D16.1 |
+| `studio/aiHistory.js` | AI 编辑历史卡片区 | `sessionHistory` | D16.1 |
 | `compareLauncher.js` | 组装对比数据并调用 `openCompareDialog` | `compare.js` | D16.2 |
 | `io.js` | IndexedDB 自动保存、项目导入导出、图片导出 | `document` | D7 |
 
@@ -1149,7 +1151,7 @@ DOM 结构：
 | D5.2 | 视觉规范与响应式 | 已完成 | 本次提交 | 三档宽度无横向滚动；工作室次要文字对比度提升到 AA（5.23/4.69/4.98） |
 | D5.3 | 裁剪性能优化 | 已完成 | 本次提交 | 选框改 DOM 覆盖层；4K 拖动 0 次画布重绘、0.012ms/move |
 | D6.1 | M1 回归与文档 | 已完成 | 本次提交 | §12.10 十项全勾；pytest 488 passed；三档宽度、导出菜单、粘贴、payload 映射复测通过 |
-| D16.1 | AI 编辑历史卡片 | 未开始 | — | 方案 §15.2 |
+| D16.1 | AI 编辑历史卡片 | 已完成 | 本次提交 | 方案 §15.2；`sessionHistory.js` + `studio/aiHistory.js`，刷新可恢复、载入还原指令/参考图 |
 | D16.2 | 图片对比 | 未开始 | — | 复用 `compare.js`，方案 §15.3 |
 | D18.1 | 性能探针与基线 | 未开始 | — | 探针已在 D5.3 落地（`localStorage.wb.studio.perf`），其余基线待补 |
 | D18.2 | 工作室交互优化 | 未开始 | — | 排查见 §17 |

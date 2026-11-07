@@ -2525,5 +2525,171 @@ html[data-theme='dark'] .page-studio {
   display: none;
 }
 
+/* ============================================================
+ * AI 编辑历史（D16.1）
+ * ============================================================ */
+
+.ai-history {
+  gap: 8px;
+}
+
+.ai-history-head {
+  gap: 8px;
+}
+
+.ai-link {
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.ai-link:hover,
+.ai-link:focus-visible {
+  color: var(--accent);
+}
+
+.ai-history-track {
+  display: flex;
+  gap: 8px;
+  margin: 0 -2px;
+  padding: 2px 2px 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.ai-history-track:empty {
+  display: none;
+}
+
+.ai-history-card {
+  position: relative;
+  flex: 0 0 88px;
+  width: 88px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  overflow: hidden;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.ai-history-card:hover,
+.ai-history-card:focus-visible {
+  border-color: var(--line);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.ai-history-card.is-current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
+.ai-history-card img,
+.ai-history-ph {
+  display: block;
+  width: 100%;
+  height: 62px;
+  object-fit: cover;
+  background: var(--panel);
+}
+
+.ai-history-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.ai-history-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(10, 12, 14, 0.66);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.ai-history-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px 5px;
+}
+
+.ai-history-time {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.ai-history-prompt {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-history-actions {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(12, 14, 17, 0.82);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.ai-history-card:hover .ai-history-actions,
+.ai-history-card:focus-visible .ai-history-actions,
+.ai-history-card:focus-within .ai-history-actions {
+  opacity: 1;
+}
+
+.ai-history-actions button {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.ai-history-actions button:hover,
+.ai-history-actions button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.ai-history-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+
 
 

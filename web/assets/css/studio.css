@@ -858,6 +858,37 @@
   font-size: 10.5px;
 }
 
+/* 调整图层（D9.3）：当前滑杆作用对象提示 */
+.studio-adjust-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-ring);
+  border-radius: var(--radius-xs);
+  background: var(--accent-dim);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.studio-adjust-target[hidden] {
+  display: none;
+}
+
+.studio-adjust-target b {
+  font-weight: 650;
+}
+
+.studio-adjust-target .btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
 .studio-note {
   margin-top: 14px;
   padding: 10px 12px;
@@ -1640,6 +1671,27 @@ html[data-theme='dark'] .page-studio {
 
 .ai-layer.is-dragging {
   opacity: 0.45;
+}
+
+/* 图层显隐（D9.3）与调整图层标识 */
+.ai-layer.is-hidden .ai-layer-name {
+  opacity: 0.5;
+}
+
+.ai-layer.is-adjust {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line-soft));
+}
+
+.ai-layer-kind {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
 }
 
 .ai-layer.is-drop {

@@ -8,6 +8,8 @@
  * 不依赖 studioDoc，避免渲染与文档模型互相引用；目标画布由调用方创建与缓存。
  */
 
+import { applyAdjustmentLayer } from './adjustments.js';
+
 /**
  * 按 `layers[0] → 末尾` 的顺序绘制叠加层（末尾在最上层）。
  * @param {CanvasRenderingContext2D} ctx
@@ -18,7 +20,17 @@ export function drawLayers(ctx, layers, { crop = null } = {}) {
   if (!ctx || !layers?.length) return;
   ctx.save();
   if (crop) ctx.translate(-crop.x, -crop.y);
-  for (const layer of layers) layer.draw(ctx);
+  for (const layer of layers) {
+    // 调整层（D9.3）作用于已合成的下层内容，必须在画布坐标里处理，先归零变换。
+    if (layer.isAdjustment) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      applyAdjustmentLayer(ctx, layer, { crop });
+      ctx.restore();
+      continue;
+    }
+    layer.draw(ctx);
+  }
   ctx.restore();
 }
 

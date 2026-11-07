@@ -5,6 +5,7 @@
  *   getLayers() / selectLayer(id) / removeLayer(id) / cloneLayer(id)
  *   moveLayer(id, delta) / moveLayerTo(id, index) / setLayerOpacity(id, v)
  *   scaleLayer(id, f) / commitLayers() / renameLayer(id, name) / toggleLayerLock(id)
+ *   toggleLayerVisible(id)
  *   toggleLayerMask(id) / editLayerMask(id) / removeLayerMask(id) / getMaskLayer()
  *
  * 数组顺序 `layers[0]` 最底层 → 末尾最上层，面板按同一顺序自上而下渲染。
@@ -32,8 +33,11 @@ export function createLayerPanel(host, ctx) {
         : '显示图层蒙版（Shift 点击删除）'
       : '添加图层蒙版';
     return `
-      <div class="ai-layer${layer.locked ? ' is-locked' : ''}" data-layer="${layer.id}" draggable="true">
+      <div class="ai-layer${layer.locked ? ' is-locked' : ''}${layer.visible === false ? ' is-hidden' : ''}${layer.isAdjustment ? ' is-adjust' : ''}" data-layer="${layer.id}" draggable="true">
         <span class="ai-layer-grip" title="拖动排序">⋮⋮</span>
+        <button class="ai-layer-btn${layer.visible === false ? ' is-off' : ''}" type="button" data-layer-visible="${layer.id}"
+          title="${layer.visible === false ? '显示图层' : '隐藏图层'}">${layer.visible === false ? '◌' : '◉'}</button>
+        ${layer.isAdjustment ? '<span class="ai-layer-kind" title="调整图层">调整</span>' : ''}
         <button class="ai-layer-name" type="button" data-layer-pick="${layer.id}"
           title="单击选中 · 双击重命名">${escapeHtml(layer.name)}</button>
         <button class="${maskClass}" type="button" data-layer-mask="${layer.id}"
@@ -42,8 +46,12 @@ export function createLayerPanel(host, ctx) {
           title="涂抹图层蒙版" ${layer.mask ? '' : 'hidden'}>✎</button>
         <button class="ai-layer-btn" type="button" data-layer-lock="${layer.id}"
           title="${layer.locked ? '解锁图层' : '锁定图层'}">${layer.locked ? '🔒' : '🔓'}</button>
-        <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" title="缩小">−</button>
-        <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" data-dir="1" title="放大">＋</button>
+        ${
+          layer.isAdjustment
+            ? ''
+            : `<button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" title="缩小">−</button>
+        <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" data-dir="1" title="放大">＋</button>`
+        }
         <input class="ai-layer-alpha" type="range" min="0" max="100" step="1" value="${Math.round(layer.opacity * 100)}"
           data-layer-alpha="${layer.id}" title="不透明度" />
         <button class="ai-layer-btn" type="button" data-layer-copy="${layer.id}" title="复制图层">⧉</button>
@@ -73,6 +81,12 @@ export function createLayerPanel(host, ctx) {
     const lock = event.target.closest('[data-layer-lock]');
     if (lock) {
       ctx.toggleLayerLock?.(lock.dataset.layerLock);
+      render();
+      return;
+    }
+    const eye = event.target.closest('[data-layer-visible]');
+    if (eye) {
+      ctx.toggleLayerVisible?.(eye.dataset.layerVisible);
       render();
       return;
     }

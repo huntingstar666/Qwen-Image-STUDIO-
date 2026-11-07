@@ -47,6 +47,7 @@ import {
   wandAlpha,
 } from './studio/selection.js';
 import { histogram, parseCube } from './studio/color.js';
+import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -401,6 +402,10 @@ export function createStudioPage(host) {
             </div>
 
             <div class="studio-pane" data-pane="adjust">
+              <div class="studio-adjust-target" data-ref="adjustTarget" hidden>
+                <span>正在编辑调整图层「<b data-ref="adjustTargetName"></b>」</span>
+                <button class="btn ghost sm" type="button" data-ref="adjustTargetBack">编辑主图</button>
+              </div>
               <div class="studio-pane-title">直方图</div>
               <div class="studio-hist">
                 <canvas class="studio-hist-canvas" width="300" height="72" data-ref="hist"></canvas>
@@ -420,6 +425,11 @@ export function createStudioPage(host) {
                 ).join('')}
               </div>
               <button class="btn ghost sm studio-block" type="button" data-ref="resetAdjust">复位调色</button>
+              <div class="studio-pane-title">调整图层</div>
+              <div class="studio-row">
+                <button class="btn ghost sm" type="button" data-ref="addAdjustLayer">＋ 新建调整图层</button>
+              </div>
+              <div class="studio-note">调整图层作用于它下面的所有内容，可随时回改、显隐、加蒙版；在图层面板选中后，上方滑杆即改为编辑该图层。</div>
               <div class="studio-pane-title">3D LUT</div>
               <div class="studio-row">
                 <button class="btn ghost sm" type="button" data-ref="lutBtn">加载 .cube</button>
@@ -498,6 +508,10 @@ export function createStudioPage(host) {
     statusTool: ref('statusTool'),
     statusMask: ref('statusMask'),
     resetAdjust: ref('resetAdjust'),
+    adjustTarget: ref('adjustTarget'),
+    adjustTargetName: ref('adjustTargetName'),
+    adjustTargetBack: ref('adjustTargetBack'),
+    addAdjustLayer: ref('addAdjustLayer'),
     filterNote: ref('filterNote'),
     hist: ref('hist'),
     histInfo: ref('histInfo'),
@@ -656,7 +670,10 @@ export function createStudioPage(host) {
     selectLayer(id) {
       selectedLayerId = id;
       editingLayerMaskId = '';
-      setTool('move');
+      const layer = doc?.findLayer(id);
+      // 调整图层没有几何，选中它时保持当前工具，右侧滑杆改为编辑该层（D9.3）。
+      if (!layer?.isAdjustment) setTool('move');
+      syncAdjustInputs();
       scheduleDraw();
     },
     removeLayer(id) {
@@ -665,6 +682,7 @@ export function createStudioPage(host) {
         if (selectedLayerId === id) selectedLayerId = null;
         if (editingLayerMaskId === id) editingLayerMaskId = '';
         layerBlobs.delete(id);
+        syncAdjustInputs();
         updateHistoryUi();
         scheduleSave();
         scheduleDraw();
@@ -678,6 +696,7 @@ export function createStudioPage(host) {
       const blob = layerBlobs.get(id);
       if (blob) layerBlobs.set(copy.id, blob);
       selectedLayerId = copy.id;
+      syncAdjustInputs();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -727,6 +746,22 @@ export function createStudioPage(host) {
       layer.locked = !layer.locked;
       if (layer.locked && selectedLayerId === id) selectedLayerId = null;
       doc.commitLayers();
+      syncAdjustInputs();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
+    /** 显示/隐藏图层（D9.3）：隐藏的图层不参与合成与点选，可撤销。 */
+    toggleLayerVisible(id) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      if (!layer) return false;
+      layer.visible = layer.visible === false;
+      if (!layer.visible && selectedLayerId === id) selectedLayerId = null;
+      doc.touchLayers();
+      doc.commitLayers();
+      syncAdjustInputs();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -806,6 +841,9 @@ export function createStudioPage(host) {
     },
     scaleLayer(id, factor) {
       if (!doc) return;
+      const layer = doc.findLayer(id);
+      // 调整图层没有几何尺寸，忽略缩放。
+      if (!layer || layer.isAdjustment) return;
       doc.scaleOverlay(id, factor);
       doc.commitLayers();
       updateHistoryUi();
@@ -1060,6 +1098,8 @@ export function createStudioPage(host) {
     const liveLayers =
       !adjustPreview &&
       doc.layers.length > 0 &&
+      // 调整层会改写已合成内容，不能走「底图缓存 + 实时图层」捷径（D9.3）。
+      !doc.hasAdjustmentLayers &&
       (drag?.mode === 'moveLayer' || (editingLayerMaskId && drag?.mode === 'paint'));
     const image = adjustPreview
       ? doc.renderPreviewBase()
@@ -1170,7 +1210,7 @@ export function createStudioPage(host) {
 
     // 选中叠加层的外框
     const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
-    if (tool === 'move' && activeLayer) {
+    if (tool === 'move' && activeLayer && !activeLayer.isAdjustment) {
       const crop = doc.transform.crop;
       const box = activeLayer.bounds();
       const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
@@ -1480,6 +1520,11 @@ export function createStudioPage(host) {
 
   /** 文档坐标 → 叠加层自身像素坐标的仿射变换（图层蒙版涂抹用）。 */
   function docToLayerTransform(target, layer, offsetX, offsetY) {
+    // 调整层蒙版与文档同坐标（旋转后、未裁剪），只需平移（D9.3）。
+    if (layer.isAdjustment) {
+      target.setTransform(1, 0, 0, 1, offsetX, offsetY);
+      return;
+    }
     const crop = doc.transform.crop;
     const naturalWidth = layer.image?.naturalWidth || layer.image?.width || 0;
     const naturalHeight = layer.image?.naturalHeight || layer.image?.height || 0;
@@ -1953,6 +1998,8 @@ export function createStudioPage(host) {
 
   /** 叠加层优先复用打开时的原始文件；缺失时（撤销/恢复后）再编码一次并缓存。 */
   async function layerBlobFor(layer) {
+    // 调整图层没有位图，只持久化参数与蒙版（D9.3）。
+    if (layer.isAdjustment) return null;
     const cached = layerBlobs.get(layer.id);
     if (cached) return cached;
     const image = layer.image;
@@ -2043,15 +2090,18 @@ export function createStudioPage(host) {
       layers.push({
         id: layer.id,
         props: {
+          kind: layer.isAdjustment ? 'adjustment' : 'overlay',
           name: layer.name,
-          x: layer.x,
-          y: layer.y,
-          scale: layer.scale,
+          x: layer.x ?? 0,
+          y: layer.y ?? 0,
+          scale: layer.scale ?? 1,
           opacity: layer.opacity,
-          rotation: layer.rotation,
+          rotation: layer.rotation ?? 0,
           locked: layer.locked,
+          visible: layer.visible !== false,
           hasMask: Boolean(layer.mask),
           maskVisible: layer.maskVisible,
+          ...(layer.isAdjustment ? { params: { ...layer.params } } : {}),
         },
         blob,
         maskBlob: layerMaskBlob,
@@ -2229,9 +2279,36 @@ export function createStudioPage(host) {
         next.mask.getContext('2d').drawImage(maskImage, 0, 0);
       }
 
+      // 图层蒙版恢复（D8.2 / D9.3）：叠加层与调整层共用。
+      const restoreLayerMask = async (layer, props, blob) => {
+        if (!blob) return;
+        const maskUrl = URL.createObjectURL(blob);
+        urls.push(maskUrl);
+        const maskImage = await loadImage(maskUrl);
+        const maskCanvas = layer.ensureMask();
+        const mctx = maskCanvas.getContext('2d');
+        mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        mctx.drawImage(maskImage, 0, 0, maskCanvas.width, maskCanvas.height);
+        layer.maskVisible = props.maskVisible !== false;
+        layer.touchMask();
+      };
+
       const missing = [];
       for (const record of saved.layers || []) {
         if (record.id === 'base') continue;
+        const props = record.props || {};
+        // D9.3：调整图层没有位图，按参数重建后再恢复蒙版。
+        if (props.kind === 'adjustment') {
+          const layer = next.addAdjustmentLayer(props.params || {}, {
+            name: props.name,
+            opacity: props.opacity,
+          });
+          layer.id = record.id;
+          layer.visible = props.visible !== false;
+          layer.locked = Boolean(props.locked);
+          await restoreLayerMask(layer, props, record.maskBlob);
+          continue;
+        }
         if (!record.bitmapBlob) {
           missing.push(record.props?.name || record.id);
           continue;
@@ -2240,7 +2317,6 @@ export function createStudioPage(host) {
         urls.push(layerUrl);
         try {
           const layerImage = await loadImage(layerUrl);
-          const props = record.props || {};
           const layer = next.addOverlay(layerImage, {
             name: props.name,
             x: props.x,
@@ -2249,22 +2325,12 @@ export function createStudioPage(host) {
             opacity: props.opacity,
             rotation: props.rotation,
             locked: props.locked,
+            visible: props.visible !== false,
           });
           // 保留原图层 id，后续自动保存仍然增量更新同一批记录。
           layer.id = record.id;
           layerBlobs.set(record.id, record.bitmapBlob);
-          // D8.2：图层蒙版随工程恢复。
-          if (record.maskBlob) {
-            const maskUrl = URL.createObjectURL(record.maskBlob);
-            urls.push(maskUrl);
-            const maskImage = await loadImage(maskUrl);
-            const maskCanvas = layer.ensureMask();
-            const mctx = maskCanvas.getContext('2d');
-            mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-            mctx.drawImage(maskImage, 0, 0, maskCanvas.width, maskCanvas.height);
-            layer.maskVisible = props.maskVisible !== false;
-            layer.touchMask();
-          }
+          await restoreLayerMask(layer, props, record.maskBlob);
         } catch {
           missing.push(record.props?.name || record.id);
         }
@@ -2518,15 +2584,26 @@ export function createStudioPage(host) {
     ai?.onMaskChanged?.(stats.coverage);
   }
 
+  /** 当前滑杆作用的调整层（选中且为调整图层时）；null 表示编辑主图。 */
+  function adjustmentTarget() {
+    if (!doc || !selectedLayerId) return null;
+    const layer = doc.findLayer(selectedLayerId);
+    return layer?.isAdjustment ? layer : null;
+  }
+
   function syncAdjustInputs() {
     if (!doc) return;
     adjustPreview = false;
+    const target = adjustmentTarget();
+    const params = target ? target.params : doc.adjust;
     for (const input of host.querySelectorAll('[data-adjust]')) {
-      const value = doc.adjust[input.dataset.adjust] ?? 0;
+      const value = params[input.dataset.adjust] ?? 0;
       input.value = String(value);
       const label = host.querySelector(`[data-value="${input.dataset.adjust}"]`);
       if (label) label.textContent = String(value);
     }
+    refs.adjustTarget.hidden = !target;
+    if (target) refs.adjustTargetName.textContent = target.name;
     syncLutUi();
   }
 
@@ -2941,22 +3018,36 @@ export function createStudioPage(host) {
     input.addEventListener('input', () => {
       if (!doc) return;
       const key = input.dataset.adjust;
-      doc.adjust[key] = Number(input.value);
+      const target = adjustmentTarget();
+      if (target) {
+        // 调整图层（D9.3）：改它自己的参数，作用于所有下层内容。
+        target.params[key] = Number(input.value);
+        doc.touchAdjustment(target.id);
+        doc.touchLayers();
+      } else {
+        doc.adjust[key] = Number(input.value);
+        // 小图（≤1024）预览会直接复用 renderBase，必须让缓存失效才能看到实时变化
+        doc.invalidateBase();
+      }
       // 拖动期间只出低分辨率代理，避免每帧过滤 4K（D18.2）。
       adjustPreview = true;
-      // 小图（≤1024）预览会直接复用 renderBase，必须让缓存失效才能看到实时变化
-      doc.invalidateBase();
       const label = host.querySelector(`[data-value="${key}"]`);
       if (label) label.textContent = input.value;
       scheduleDraw();
     });
     input.addEventListener('change', () => {
       if (!doc) return;
+      const target = adjustmentTarget();
       if (adjustPreview) {
         adjustPreview = false;
         doc.invalidateBase();
       }
-      doc.snapshot();
+      if (target) {
+        doc.touchAdjustment(target.id);
+        doc.commitLayers();
+      } else {
+        doc.snapshot();
+      }
       updateHistoryUi();
       scheduleDraw();
       scheduleSave();
@@ -2965,14 +3056,45 @@ export function createStudioPage(host) {
 
   refs.resetAdjust.addEventListener('click', () => {
     if (!doc) return;
-    doc.adjust = { ...ADJUST_DEFAULTS };
-    doc.invalidateBase();
-    doc.snapshot();
+    const target = adjustmentTarget();
+    if (target) {
+      target.params = { ...ADJUSTMENT_DEFAULTS };
+      doc.touchAdjustment(target.id);
+      doc.commitLayers();
+    } else {
+      doc.adjust = { ...ADJUST_DEFAULTS };
+      doc.invalidateBase();
+      doc.snapshot();
+    }
     syncAdjustInputs();
-    syncLutUi();
     updateHistoryUi();
     scheduleDraw();
     scheduleSave();
+  });
+
+  /* ------------------------------------------------- 调整图层（D9.3） */
+
+  refs.addAdjustLayer.addEventListener('click', () => {
+    if (!doc) {
+      toastWarn('请先打开一张图片');
+      return;
+    }
+    const count = doc.layers.filter((layer) => layer.isAdjustment).length + 1;
+    const layer = doc.addAdjustmentLayer({}, { name: `调整图层 ${count}` });
+    selectedLayerId = layer.id;
+    editingLayerMaskId = '';
+    syncAdjustInputs();
+    ai?.refresh?.();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    toastSuccess(`已创建「${layer.name}」：拖动上方滑杆即可非破坏式调色`);
+  });
+
+  refs.adjustTargetBack.addEventListener('click', () => {
+    selectedLayerId = null;
+    syncAdjustInputs();
+    scheduleDraw();
   });
 
   /* ------------------------------------------------------- 3D LUT（D9.2） */
@@ -2980,15 +3102,19 @@ export function createStudioPage(host) {
   let lutBusy = false;
 
   function syncLutUi() {
-    const lut = doc?.adjust?.lut || null;
+    const target = adjustmentTarget();
+    const lut = target ? null : doc?.adjust?.lut || null;
     const strength = Math.round((lut?.strength ?? 1) * 100);
+    refs.lutBtn.disabled = Boolean(target);
     refs.lutClear.disabled = !lut;
     refs.lutStrength.disabled = !lut;
     refs.lutStrength.value = String(strength);
     refs.lutStrengthVal.textContent = String(strength);
-    refs.lutName.textContent = lut
-      ? `已加载「${lut.name}」· ${lut.size}³（刷新后需重新加载）`
-      : '未加载 LUT（支持 3D .cube，1D 暂不支持）';
+    refs.lutName.textContent = target
+      ? '调整图层不参与 LUT；点「编辑主图」后可加载 LUT'
+      : lut
+        ? `已加载「${lut.name}」· ${lut.size}³（刷新后需重新加载）`
+        : '未加载 LUT（支持 3D .cube，1D 暂不支持）';
   }
 
   refs.lutBtn.addEventListener('click', () => refs.lutInput.click());
@@ -2997,6 +3123,7 @@ export function createStudioPage(host) {
     const file = refs.lutInput.files?.[0];
     refs.lutInput.value = '';
     if (!file || !doc) return;
+    if (adjustmentTarget()) return;
     if (lutBusy) return;
     lutBusy = true;
     try {
@@ -3022,7 +3149,7 @@ export function createStudioPage(host) {
   });
 
   refs.lutStrength.addEventListener('input', () => {
-    if (!doc?.adjust?.lut) return;
+    if (!doc?.adjust?.lut || adjustmentTarget()) return;
     const value = Number(refs.lutStrength.value);
     doc.adjust.lut.strength = value / 100;
     refs.lutStrengthVal.textContent = String(value);
@@ -3032,7 +3159,7 @@ export function createStudioPage(host) {
   });
 
   refs.lutStrength.addEventListener('change', () => {
-    if (!doc?.adjust?.lut) return;
+    if (!doc?.adjust?.lut || adjustmentTarget()) return;
     if (adjustPreview) {
       adjustPreview = false;
       doc.invalidateBase();

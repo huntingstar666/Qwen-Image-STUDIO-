@@ -10,7 +10,7 @@
 let seq = 0;
 
 export class OverlayLayer {
-  constructor(image, { name = '叠加图', x = 0, y = 0, scale = 1, opacity = 1, rotation = 0, locked = false, id = '' } = {}) {
+  constructor(image, { name = '叠加图', x = 0, y = 0, scale = 1, opacity = 1, rotation = 0, locked = false, visible = true, id = '' } = {}) {
     this.id = id || `ov-${(seq += 1)}`;
     this.image = image;
     this.name = name;
@@ -21,6 +21,8 @@ export class OverlayLayer {
     this.rotation = Number(rotation) || 0;
     /** 锁定后仍参与合成，但画布上不可点选/拖动（D7.3 图层面板）。 */
     this.locked = Boolean(locked);
+    /** 显隐（D9.3 图层面板眼睛按钮）；隐藏的图层不参与合成。 */
+    this.visible = visible !== false;
     /**
      * 图层蒙版（D8.2）：尺寸等于图层原图像素，白色 = 显示，黑色 = 隐藏；
      * 只在 draw() 合成时应用，不改变图层几何。
@@ -51,7 +53,7 @@ export class OverlayLayer {
   }
 
   hitTest(px, py) {
-    if (this.locked) return false;
+    if (this.locked || !this.visible) return false;
     const box = this.bounds();
     return px >= box.x && px <= box.x + box.width && py >= box.y && py <= box.y + box.height;
   }
@@ -111,7 +113,7 @@ export class OverlayLayer {
   }
 
   draw(ctx) {
-    if (!this.image || this.opacity <= 0 || this.width < 1 || this.height < 1) return;
+    if (!this.image || !this.visible || this.opacity <= 0 || this.width < 1 || this.height < 1) return;
     const source = this.maskedImage();
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
@@ -136,6 +138,7 @@ export class OverlayLayer {
       opacity: this.opacity,
       rotation: this.rotation,
       locked: this.locked,
+      visible: this.visible,
     });
     if (this.mask) {
       const canvas = document.createElement('canvas');

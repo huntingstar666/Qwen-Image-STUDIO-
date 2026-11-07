@@ -789,6 +789,18 @@ DOM 结构：
   - 顺手修复：调色滑杆 `input` 时补 `invalidateBase()`——此前小图（≤1024）在 `renderPreviewBase` 里直接复用 `renderBase` 缓存，拖动期间画面不刷新；修复后曝光 60 实时变为 `[255,86,65]`，复位回 `[192,57,43]`。
   - 实测（headless Chromium 1440×900，800×600 底图）：直方图绘制 1246/21600 像素、读数「77k 像素 / 无削波」；注入 2³ 反相 `.cube` 后底图 `[192,57,43] → [63,198,212]`（青色），强度 40% 实时得 `[140,113,111]`（理论 140/113/111），移除后回 `[192,57,43]`，撤销同样还原并同步 UI；单测新增 6 项（解析、拒绝 1D、恒等采样、反相强度、直方图分箱、削波），`node --test` → `pass 29 / fail 0`。截图 `.cache/shots/d92-histogram-*.png`。
 
+- **D9.3 调整图层（已完成）** —— 非破坏式调色层，作用于它下面的所有内容：
+  - 新增 `studio/adjustments.js`：`ADJUSTMENT_KEYS/DEFAULTS`、`normalizeAdjustment`（夹到 ±100）、`hasAdjustment`、`applyAdjustment(data, params, strength)`——单次逐像素按「曝光/亮度 → 对比度（0.5 中灰为轴）→ 色温/色调增益（复用 `color.whiteBalanceGains`）→ 饱和度（感知亮度）」计算，`strength` 与原像素线性混合，透明像素跳过；顺序与全局调色观感一致，且不依赖 `ctx.filter`，预览与导出像素完全一致。
+  - `AdjustmentLayer`：`kind='adjustment'`、`isAdjustment=true`、`bounds()` 覆盖整张画面、`hitTest()` 恒 false（画布点选交给图层面板，避免挡住下层拖动）；蒙版与 `doc.mask` 同坐标（旋转后、未裁剪），`ensureMask/toggleMaskVisible/removeMask/clone` 与叠加层接口对齐。
+  - 合成：`applyAdjustmentLayer(ctx, layer, {crop, scale=1})` 先快照当前合成 → `getImageData/putImageData` 逐像素调整 → 蒙版 `destination-in`（按 `crop` 偏移、按 `scale` 缩放，供低分辨率代理）→ `globalAlpha=opacity` 叠回；`renderer.drawLayers` 遇到调整层先归零变换再调用，`renderBase`/`renderPreviewBase` 共用同一函数；`studioDoc.hasAdjustmentLayers` 让拖动叠加层时禁用「底图缓存 + 实时图层」捷径，保证调整层下方的位移也能实时重合成。
+  - 面板：调色页签新增「调整图层」区块（＋新建）与顶部提示条；选中调整层后同一组滑杆/复位改为编辑该层参数（新建时自动选中），LUT 控件禁用并提示「调整图层不参与 LUT」，点「编辑主图」切回全局调色。
+  - 图层系统：`OverlayLayer` 增加 `visible`（隐藏后不参与合成与 `hitTest`）；`layerPanel` 每行新增眼睛按钮（`◉/◌`，`is-hidden` 行降透明度）、调整层「调整」徽标，并对调整层隐藏缩放按钮；`studio.js` 新增 `toggleLayerVisible`（入撤销栈），删除/锁定/克隆/选中后同步调色面板上下文。
+  - 蒙版涂抹：`docToLayerTransform` 对调整层走「单位矩阵 + 平移」分支，画笔/橡皮/形状/套索即可直接涂抹调整层的文档坐标蒙版。
+  - 持久化：工程 schema 的图层 props 增加 `kind / params / visible`；调整层无位图（`layerBlobFor` 返回 null），恢复时按参数重建并回填 `id / visible / locked` 与 `maskBlob`，与原图层顺序一致；LUT 仍只属于主图，不随调整层保存。
+  - 单测：新增 `web/tests/studio/adjustments.test.mjs` 13 项（默认值/夹取、非法值、全零判定、曝光翻倍、亮度压黑、对比度中灰轴、饱和度灰度保亮度、零参数不改像素、strength 混合、透明像素、色温冷暖、色调洋红、组合参数不越界）；`node --test web/tests/studio/adjustments.test.mjs web/tests/studio/color.test.mjs` → `pass 42 / fail 0`。
+  - 实测（headless Chromium 1440×900，800×600 红/绿底图）：新建「调整图层 1」后行内出现「调整」徽标、顶部提示条显示层名；曝光 60 → 红色 `[192,57,43] → [255,86,65]`（input 实时与 change 提交一致）；眼按钮隐藏后回 `[192,57,43]`、再显示回 `[255,86,65]`，行变 `is-hidden`；`◐` 建蒙版后进入 `✎` 自动切画笔，涂抹处回 `[192,57,43]`、未涂抹处仍 `[255,86,65]`（绿色区 `[102,212,115] → [155,255,174]`）；撤销回填、重做复原；改曝光 −40 → `[146,43,33]`，改回 60；「编辑主图」后提示条隐藏、滑杆归 0；删除图层回原始、撤销复原；刷新 `?cb=32#studio` 后参数仍 60、蒙版孔洞保留、选中后提示条正常。另用 1600×1200 底图验证低分辨率代理（1024/1600 比例、蒙版按 scale 缩放）与全分辨率最终像素一致（均为 `[255,86,65]`）。截图 `.screenshots/D9.3-adjust-layer-2026-11-07T17-43-56-734Z.png`。
+  - 已知代价：调整层每次重合成都要整图 `getImageData`，4K 下拖动下层会有可感知延迟；当前先以正确性优先，若后续 D18 基准触发预算再考虑 tile/WebGL 化。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -966,12 +978,12 @@ DOM 结构：
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
-| `layers.js` | `OverlayLayer`（几何 + `mask/maskVisible` + `maskedImage()`）；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2（已落地） |
+| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()`）；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3（已落地） |
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
-| `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})` | `layers` | D7（D7.2 已落地） |
+| `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer` | `layers/adjustments` | D7（D7.2 已落地，D9.3 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
-| `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
+| `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})` | `color` | D9.3（已落地） |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
 | `tools/smudge.js` | 涂抹 | `renderer` | D10 |
@@ -980,7 +992,7 @@ DOM 结构：
 | `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
 | `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
-| `panels/adjust.js` | 调色面板 | `color/adjustments` | D9 |
+| `panels/adjust.js` | 调色面板（D9.1~D9.3 暂内联在 `studio.js` 的 `data-pane="adjust"`，未拆文件） | `color/adjustments` | D9（已落地） |
 | `panels/history.js` | 历史记录面板 | `history` | D7/D12 |
 | `sessionHistory.js` | 本次任务 AI 编辑历史：增删、缩略图、持久化、回退 | `io` | D16.1 |
 | `persistence.js` | IndexedDB 工程/草稿、自动保存、恢复、配额与多标签锁 | `document/io` | D17.1~D17.3 |
@@ -1283,7 +1295,7 @@ DOM 结构：
 | D8.2 | 图层蒙版 | 已完成 | 本次提交 | `OverlayLayer` 增加可画可擦蒙版与 `maskedImage()` 缓存；图层面板 `◐`/`✎`；`docToLayerTransform` 映射涂抹；随工程保存 `maskBlob`；实测见 §12.11 |
 | D9.1 | 调色数学库 | 已完成 | 本次提交 | 新增 `studio/color.js`（曲线/色阶/HSL/色彩平衡/白平衡，纯函数）；新增 `web/tests/studio/color.test.mjs`，`node --test` 23 项全绿；实测见 §12.11 |
 | D9.2 | 直方图 + LUT | 已完成 | 本次提交 | `color.js` 追加 `histogram/parseCube/sampleCube/applyCube`；`studioDoc` 支持 `adjust.lut` 逐像素查表；调色面板加直方图与 .cube 加载/强度；实测见 §12.11 |
-| D9.3 | 调整图层 | 未开始 | — | — |
+| D9.3 | 调整图层 | 已完成 | 本次提交 | 新增 `studio/adjustments.js`（`AdjustmentLayer` + `applyAdjustment` + `applyAdjustmentLayer`）；`renderer`/`studioDoc` 合成管线支持调整层；图层显隐眼睛按钮；面板选中调整层后滑杆接管、LUT 禁用；随工程保存 `kind/params/visible`；实测见 §12.11 |
 | D9.4 | 局部调整 | 未开始 | — | — |
 | D10.1 | 污点修复 | 未开始 | — | — |
 | D10.2 | 仿制图章 / 修复画笔 | 未开始 | — | — |

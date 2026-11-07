@@ -24,6 +24,7 @@ import {
 import { createHistory } from './history.js';
 import { composite } from './renderer.js';
 import { applyCube } from './color.js';
+import { AdjustmentLayer, applyAdjustmentLayer, normalizeAdjustment } from './adjustments.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -372,6 +373,7 @@ export class StudioDoc {
       opacity: options.opacity ?? 1,
       rotation: options.rotation ?? 0,
       locked: options.locked ?? false,
+      visible: options.visible ?? true,
     });
     addLayer(this._doc, layer);
     this._base = null;
@@ -381,6 +383,40 @@ export class StudioDoc {
 
   findLayer(id) {
     return findDocLayer(this._doc, id);
+  }
+
+  /** 是否存在调整层（D9.3）：存在时不能走「底图缓存 + 实时图层」的拖动捷径。 */
+  get hasAdjustmentLayers() {
+    return this.layers.some((layer) => layer.isAdjustment);
+  }
+
+  /**
+   * 新建调整图层（D9.3），默认落在最上层，作用于底图与所有更低图层。
+   * @param {object} [params] 见 ADJUSTMENT_DEFAULTS
+   * @param {{name?: string, opacity?: number}} [options]
+   */
+  addAdjustmentLayer(params = {}, { name = '调整图层', opacity = 1 } = {}) {
+    const oriented = this.oriented;
+    const layer = new AdjustmentLayer({
+      name,
+      params: normalizeAdjustment(params),
+      width: oriented.width,
+      height: oriented.height,
+      opacity,
+    });
+    addLayer(this._doc, layer);
+    this._base = null;
+    this.snapshot();
+    return layer;
+  }
+
+  /** 调整层参数被改动后调用：只失效合成缓存，历史由调用方决定何时落快照。 */
+  touchAdjustment(id) {
+    const layer = this.findLayer(id);
+    if (!layer?.isAdjustment) return false;
+    layer.params = normalizeAdjustment(layer.params);
+    this._base = null;
+    return true;
   }
 
   removeOverlay(id) {
@@ -594,11 +630,18 @@ export class StudioDoc {
       ctx.restore();
     }
     if (this.layers.length) {
-      ctx.save();
-      ctx.scale(ratio, ratio);
-      if (crop) ctx.translate(-crop.x, -crop.y);
-      for (const layer of this.layers) layer.draw(ctx);
-      ctx.restore();
+      for (const layer of this.layers) {
+        if (layer.isAdjustment) {
+          // 调整层作用于已画好的预览内容，按 preview 比例缩放蒙版（D9.3）。
+          applyAdjustmentLayer(ctx, layer, { crop, scale: ratio });
+          continue;
+        }
+        ctx.save();
+        ctx.scale(ratio, ratio);
+        if (crop) ctx.translate(-crop.x, -crop.y);
+        layer.draw(ctx);
+        ctx.restore();
+      }
     }
     this._applyLut(canvas);
     return canvas;

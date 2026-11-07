@@ -363,3 +363,38 @@ SeedVR2 的四个阶段完全沿用上游 `inference_cli._process_frames_core` �
 - `destroy()` 会移除 `paste` 监听，避免离开页面后误导入。
 
 结果弹窗动作：下载 / 收藏素材 / 加入 GIF / 继续编辑（设为源图）/ 送入图像编辑。
+
+## 11. 工作台布局（Apple 三栏 + 底部胶片条）
+
+页面结构由 `imageTools.js` 的 `host.innerHTML` 一次性渲染，`tools.css` 用 grid-areas 摆放：
+
+```
+┌──────┬──────────────────────────────┬─────────────┐
+│ 工具 │  画布                         │ Inspector   │
+│ 轨   ├──────────────────────────────┤ 源图 + 工具  │
+│ 58px │  操作史                       │ 折叠面板     │
+│      ├──────────────────────────────┤ 340px       │
+│      │  结果胶片条（横向滚动）         │             │
+└──────┴──────────────────────────────┴─────────────┘
+```
+
+- 左侧 `.tools-rail`：7 个按钮复用原来的 `[data-tool-group]`，`syncToolGroups()` 只切 `.active`
+  与 `.tool-fold[data-group]` 的 `hidden`，交互逻辑未变；Inspector 的折叠面板按当前工具显隐；
+- 中间 `.tools-main`：画布面板 + 操作史；画布下方新增 `.tools-filmstrip`（grid-area `film`）；
+- 右侧 `.tools-inspector`：源图、工具折叠面板、处理提示；`position: sticky` + 内部滚动，
+  长面板不会把整页撑高；
+- ≤1180px 时退化为单列，工具轨变成横向可滚动条，Inspector 取消 sticky。
+
+### 胶片条与批量操作
+
+- `renderResults()` 改为横向 flex 胶片条（每张 132px，`scroll-snap`），结果卡支持选中态
+  `.is-selected` + 左上角勾选标记；单击切换选中，双击或右上角 `⤢` 打开详情弹窗；
+- 选中集合 `selectedResultIds` 保存在页面闭包内，`renderResults()` 会清理已不存在的结果 id；
+- 批量动作：`全选` / `取消选择` / `收藏`（逐张 `createMaterial`，失败不打断）/ `送入编辑`
+  （全部拉成 data URL 后一次 `setHandoff`）/ `导出`（错峰触发下载）/ `加入 GIF`（逐张入帧并切到动图分组）；
+- 无选中时四个批量按钮自动禁用，标题旁显示「已选 N 张」；
+- 结果卡仍是原有 `data-ref="results"` 容器，因此「最近结果」等既有逻辑无需改动。
+
+> 注：`theme.css` 在 `tools.css` 之后加载，会给 `.tool-canvas` 铺不透明底色；
+> 覆盖层 canvas 用 `.tool-canvas.tool-overlay { background: transparent }` 提升优先级，
+> 否则会把画布图片整块盖住（本次已修复并实测）。

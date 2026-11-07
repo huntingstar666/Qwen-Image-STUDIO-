@@ -306,6 +306,7 @@ export function createImageToolsPage(host) {
   let currentWorkDims = { width: 0, height: 0 };
   let drag = null;
   let resizeObserver = null;
+  const selectedResultIds = new Set();
 
   const state = {
     source: null, // {dataUrl,name,width,height}
@@ -365,7 +366,31 @@ export function createImageToolsPage(host) {
   host.innerHTML = `
     <div class="page page-tools">
       <div class="tools-layout">
-        <aside class="tools-side">
+        <nav class="tools-rail" data-ref="toolRail" aria-label="工具">
+          <button class="tools-rail-btn active" type="button" data-tool-group="adjust" title="调整">
+            <span class="glyph">◐</span><span class="lbl">调整</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="size" title="尺寸">
+            <span class="glyph">⇲</span><span class="lbl">尺寸</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="watermark" title="水印">
+            <span class="glyph">©</span><span class="lbl">水印</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="gif" title="动图">
+            <span class="glyph">▶</span><span class="lbl">动图</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="upscale" title="放大">
+            <span class="glyph">⤢</span><span class="lbl">放大</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="export" title="导出">
+            <span class="glyph">↓</span><span class="lbl">导出</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="outpaint" title="扩图">
+            <span class="glyph">⬚</span><span class="lbl">扩图</span>
+          </button>
+        </nav>
+
+        <aside class="tools-inspector">
           <section class="panel">
             <div class="panel-head">
               <div class="panel-title">源图 <span class="panel-sub">上传后开始处理</span></div>
@@ -394,15 +419,6 @@ export function createImageToolsPage(host) {
           <section class="panel">
             <div class="panel-head"><div class="panel-title">工具 <span class="panel-sub">即时预览 · 可撤销</span></div></div>
             <div class="panel-body tool-stack">
-              <div class="chips tool-rail" data-ref="toolRail">
-                <button class="chip active" type="button" data-tool-group="adjust">调整</button>
-                <button class="chip" type="button" data-tool-group="size">尺寸</button>
-                <button class="chip" type="button" data-tool-group="watermark">水印</button>
-                <button class="chip" type="button" data-tool-group="gif">动图</button>
-                <button class="chip" type="button" data-tool-group="upscale">放大</button>
-                <button class="chip" type="button" data-tool-group="export">导出</button>
-                <button class="chip" type="button" data-tool-group="outpaint">扩图</button>
-              </div>
               <details class="fold tool-fold" data-group="adjust" open>
                 <summary>裁剪 / 宫格</summary>
                 <div class="fold-body">
@@ -734,6 +750,16 @@ export function createImageToolsPage(host) {
               <button class="btn ghost block" type="button" data-ref="sendEdit">→ 送入图生图</button>
             </div>
           </section>
+
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">处理提示</div></div>
+            <div class="panel-body tight">
+              <div class="field-hint">· 处理结果由后端保存到 storage/outputs，并出现在底部「结果」胶片条里。</div>
+              <div class="field-hint">· 胶片条单击选中，可批量收藏 / 送入编辑 / 导出 / 加入 GIF；双击查看大图。</div>
+              <div class="field-hint">· 扩图「去局部重绘」会自动生成遮罩，只需补一句编辑指令。</div>
+              <div class="field-hint">· 位深/色彩由服务端统一处理，PNG 输出会剥离 ICC。</div>
+            </div>
+          </section>
         </aside>
 
         <main class="tools-main">
@@ -770,26 +796,27 @@ export function createImageToolsPage(host) {
           </section>
         </main>
 
-        <aside class="tools-side tools-results">
-          <section class="panel">
-            <div class="panel-head">
-              <div class="panel-title">结果 <span class="panel-sub" data-ref="resultCount">0 张</span></div>
-              <div class="panel-actions"><button class="btn ghost sm" type="button" data-ref="clearResults">清空</button></div>
+        <section class="panel tools-filmstrip">
+          <div class="panel-head">
+            <div class="panel-title">
+              结果
+              <span class="panel-sub" data-ref="resultCount">0 张</span>
+              <span class="panel-sub" data-ref="filmSelected">未选择</span>
             </div>
-            <div class="panel-body tight">
-              <div class="tool-results" data-ref="results"></div>
+            <div class="panel-actions tools-film-actions">
+              <button class="btn ghost sm" type="button" data-ref="filmSelectAll">全选</button>
+              <button class="btn ghost sm" type="button" data-ref="filmClearSelect">取消选择</button>
+              <button class="btn ghost sm" type="button" data-ref="filmFavorite">收藏</button>
+              <button class="btn ghost sm" type="button" data-ref="filmToEdit">送入编辑</button>
+              <button class="btn ghost sm" type="button" data-ref="filmExport">导出</button>
+              <button class="btn ghost sm" type="button" data-ref="filmToGif">加入 GIF</button>
+              <button class="btn ghost sm" type="button" data-ref="clearResults">清空</button>
             </div>
-          </section>
-          <section class="panel">
-            <div class="panel-head"><div class="panel-title">处理提示</div></div>
-            <div class="panel-body tight">
-              <div class="field-hint">· 处理结果由后端保存到 storage/outputs，并出现在「结果」里。</div>
-              <div class="field-hint">· 「送入图生图」会把当前结果作为 image_1 带到图像编辑页。</div>
-              <div class="field-hint">· 扩图「去局部重绘」会自动生成遮罩，只需补一句编辑指令。</div>
-              <div class="field-hint">· 位深/色彩由服务端统一处理，PNG 输出会剥离 ICC。</div>
-            </div>
-          </section>
-        </aside>
+          </div>
+          <div class="panel-body tight">
+            <div class="tool-results" data-ref="results" role="listbox" aria-multiselectable="true"></div>
+          </div>
+        </section>
       </div>
     </div>`;
 
@@ -932,6 +959,13 @@ export function createImageToolsPage(host) {
     opsCount: ref('opsCount'),
     results: ref('results'),
     resultCount: ref('resultCount'),
+    filmSelected: ref('filmSelected'),
+    filmSelectAll: ref('filmSelectAll'),
+    filmClearSelect: ref('filmClearSelect'),
+    filmFavorite: ref('filmFavorite'),
+    filmToEdit: ref('filmToEdit'),
+    filmExport: ref('filmExport'),
+    filmToGif: ref('filmToGif'),
     clearResults: ref('clearResults'),
   };
 
@@ -2675,33 +2709,77 @@ export function createImageToolsPage(host) {
     }
   }
 
+  function selectedResults() {
+    return state.results.filter((item) => selectedResultIds.has(item.id));
+  }
+
+  function syncFilmSelectionUi() {
+    const count = selectedResults().length;
+    refs.filmSelected.textContent = count ? `已选 ${count} 张` : '未选择';
+    for (const button of [refs.filmFavorite, refs.filmToEdit, refs.filmExport, refs.filmToGif]) {
+      button.disabled = count === 0;
+    }
+  }
+
+  function toggleResultSelection(id) {
+    const selected = !selectedResultIds.has(id);
+    if (selected) selectedResultIds.add(id);
+    else selectedResultIds.delete(id);
+    const card = refs.results.querySelector(`[data-result-id="${id}"]`);
+    if (card) {
+      card.classList.toggle('is-selected', selected);
+      card.setAttribute('aria-selected', String(selected));
+    }
+    syncFilmSelectionUi();
+  }
+
   function renderResults() {
+    for (const id of [...selectedResultIds]) {
+      if (!state.results.some((item) => item.id === id)) selectedResultIds.delete(id);
+    }
     refs.resultCount.textContent = `${state.results.length} 张`;
+    syncFilmSelectionUi();
     if (!state.results.length) {
       refs.results.innerHTML = '<div class="field-hint">还没有处理结果。裁剪/缩放/调色/宫格处理后会显示在这里。</div>';
       return;
     }
     refs.results.innerHTML = state.results
-      .map(
-        (item) => `
-        <div class="tool-result-card" data-result-id="${escapeHtml(item.id)}" role="button" tabindex="0">
+      .map((item) => {
+        const selected = selectedResultIds.has(item.id);
+        return `
+        <div class="tool-result-card${selected ? ' is-selected' : ''}" data-result-id="${escapeHtml(item.id)}"
+             role="option" aria-selected="${selected}" tabindex="0" title="单击选择 · 双击查看大图">
           <div class="tool-result-thumb"><img src="${escapeHtml(item.thumbUrl)}" alt="" loading="lazy" /></div>
+          <button class="tool-result-open" type="button" data-open-result="${escapeHtml(item.id)}" title="查看大图" aria-label="查看大图">⤢</button>
+          <span class="tool-result-check" aria-hidden="true">✓</span>
           <div class="tool-result-meta">
             <span class="mono">${fmtNum(item.width)}×${fmtNum(item.height)}</span>
             <span class="kind">${RESULT_KIND_LABEL[item.kind] || '处理'}</span>
           </div>
-        </div>`,
-      )
+        </div>`;
+      })
       .join('');
     for (const card of refs.results.querySelectorAll('[data-result-id]')) {
       const item = state.results.find((entry) => entry.id === card.dataset.resultId);
       if (!item) continue;
-      card.addEventListener('click', () => showResultModal(item));
+      card.addEventListener('click', (event) => {
+        if (event.target.closest('[data-open-result]')) return;
+        toggleResultSelection(item.id);
+      });
+      card.addEventListener('dblclick', () => showResultModal(item));
       card.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          showResultModal(item);
+          toggleResultSelection(item.id);
         }
+      });
+    }
+    for (const button of refs.results.querySelectorAll('[data-open-result]')) {
+      const item = state.results.find((entry) => entry.id === button.dataset.openResult);
+      if (!item) continue;
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        showResultModal(item);
       });
     }
   }
@@ -2801,7 +2879,93 @@ export function createImageToolsPage(host) {
 
   refs.clearResults.addEventListener('click', () => {
     state.results = [];
+    selectedResultIds.clear();
     renderResults();
+  });
+
+  refs.filmSelectAll.addEventListener('click', () => {
+    for (const item of state.results) selectedResultIds.add(item.id);
+    renderResults();
+  });
+
+  refs.filmClearSelect.addEventListener('click', () => {
+    selectedResultIds.clear();
+    renderResults();
+  });
+
+  refs.filmFavorite.addEventListener('click', async () => {
+    const items = selectedResults();
+    if (!items.length) return;
+    let saved = 0;
+    for (const item of items) {
+      try {
+        await api.createMaterial({
+          image: { url: item.url, filename: item.filename },
+          title: item.filename || '',
+          kind: 'upload',
+        });
+        saved += 1;
+      } catch (err) {
+        // 批量收藏时单张失败不打断其余
+      }
+    }
+    if (saved) toastSuccess(`已收藏 ${saved} 张到素材仓库`);
+    if (saved < items.length) toastWarn(`${items.length - saved} 张收藏失败`);
+  });
+
+  refs.filmToEdit.addEventListener('click', async () => {
+    const items = selectedResults();
+    if (!items.length) return;
+    refs.filmToEdit.disabled = true;
+    try {
+      const images = [];
+      for (const item of items) {
+        images.push({
+          dataUrl: await urlToDataUrl(item.url),
+          name: item.filename || 'result.png',
+        });
+      }
+      setHandoff({ images, prompt: '', source: 'image-tools' });
+      goToEditPage();
+    } catch (err) {
+      toastError(err, '送入编辑失败');
+    } finally {
+      syncFilmSelectionUi();
+    }
+  });
+
+  refs.filmExport.addEventListener('click', () => {
+    const items = selectedResults();
+    if (!items.length) return;
+    items.forEach((item, index) => {
+      window.setTimeout(
+        () => downloadUrl(item.url, item.filename || `result-${index + 1}.png`),
+        index * 180,
+      );
+    });
+    toastSuccess(`开始导出 ${items.length} 张`);
+  });
+
+  refs.filmToGif.addEventListener('click', async () => {
+    const items = selectedResults();
+    if (!items.length) return;
+    let added = 0;
+    for (const item of items) {
+      try {
+        const dataUrl = item.url.startsWith('data:') ? item.url : await urlToDataUrl(item.url);
+        addGifFrame(dataUrl, item.filename || 'result.png');
+        added += 1;
+      } catch (err) {
+        // 单张失败不打断批量
+      }
+    }
+    if (added) {
+      state.tool = 'gif';
+      syncToolGroups();
+      toastSuccess(`已加入 ${added} 帧到 GIF`);
+    } else {
+      toastWarn('加入 GIF 失败');
+    }
   });
 
   /* ============================================================

@@ -328,6 +328,8 @@ export function createImageToolsPage(host) {
       scale: 6,
       rotation: 0,
       position: 'bottom-right',
+      x: 0.5,
+      y: 0.5,
       margin: 3,
       tile: false,
       gapX: 20,
@@ -644,8 +646,10 @@ export function createImageToolsPage(host) {
                       <option value="bottom-left">左下</option>
                       <option value="bottom">下中</option>
                       <option value="bottom-right" selected>右下</option>
+                      <option value="custom">自定义（画布拖动）</option>
                     </select></label>
                   </div>
+                  <div class="field-hint">位置选「自定义」后可在画布上拖动水印；方向键微调 1px，Shift 10px。</div>
                   <label class="field"><span class="field-label">不透明度 <span class="tag-hint" data-ref="wmOpacityVal">55%</span></span><input class="range" type="range" min="5" max="100" value="55" data-ref="wmOpacity" /></label>
                   <div class="grid-2">
                     <label class="field"><span class="field-label">大小 <span class="tag-hint" data-ref="wmScaleVal">6%</span></span><input class="range" type="range" min="1" max="20" value="6" data-ref="wmScale" /></label>
@@ -744,7 +748,7 @@ export function createImageToolsPage(host) {
             <div class="tool-stage" data-ref="stage">
               <div class="tool-stage-inner" data-ref="stageInner">
                 <canvas class="tool-canvas" data-ref="imageCanvas"></canvas>
-                <canvas class="tool-canvas tool-overlay" data-ref="overlayCanvas"></canvas>
+                <canvas class="tool-canvas tool-overlay" data-ref="overlayCanvas" tabindex="0"></canvas>
               </div>
               <div class="tool-stage-empty" data-ref="stageEmpty">
                 <div class="glyph">◫</div>
@@ -1005,6 +1009,7 @@ export function createImageToolsPage(host) {
     if (!chip) return;
     state.tool = chip.dataset.toolGroup;
     syncToolGroups();
+    if (state.source) render();
   });
   syncToolGroups();
 
@@ -1378,7 +1383,9 @@ export function createImageToolsPage(host) {
     octx.setTransform(dpr, 0, 0, dpr, 0, 0);
     octx.clearRect(0, 0, display.width, display.height);
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, display);
-    else drawCropOverlay(octx, display);
+    else if (state.tool === 'watermark') {
+      if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) drawWatermarkOverlay(octx, display);
+    } else drawCropOverlay(octx, display);
 
     updateCropSize();
     updateEstimate();
@@ -1461,6 +1468,54 @@ export function createImageToolsPage(host) {
       ctx.lineTo(rect.x + rect.width, rect.y + (rect.height * i) / 3);
       ctx.stroke();
     }
+    ctx.restore();
+  }
+
+  /** 水印拖动把手（近似尺寸；真实尺寸以服务端渲染为准）。 */
+  function watermarkHandleRect(display) {
+    const side = Math.min(display.width, display.height);
+    const scale = (Number(refs.wmScale.value) || 6) / 100;
+    let width = side * scale * 4;
+    let height = side * scale * 1.6;
+    if (state.watermark.kind === 'text') {
+      const text = refs.wmText.value.trim() || '水印';
+      width = side * scale * 0.62 * Math.max(2, text.length);
+      height = side * scale * 1.5;
+    }
+    width = Math.max(28, width);
+    height = Math.max(20, height);
+    return {
+      x: state.watermark.x * display.width - width / 2,
+      y: state.watermark.y * display.height - height / 2,
+      width,
+      height,
+    };
+  }
+
+  const WATERMARK_SNAP = [1 / 3, 0.5, 2 / 3];
+
+  function snapWatermark(value, pixels) {
+    for (const target of WATERMARK_SNAP) {
+      if (Math.abs(value - target) * pixels <= 8) return target;
+    }
+    return value;
+  }
+
+  function drawWatermarkOverlay(ctx, display) {
+    const rect = watermarkHandleRect(display);
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width, rect.height);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('水印', rect.x + rect.width / 2, rect.y + rect.height / 2);
     ctx.restore();
   }
 
@@ -1578,8 +1633,25 @@ export function createImageToolsPage(host) {
   }
 
   refs.overlayCanvas.addEventListener('pointerdown', (event) => {
-    if (!state.source || state.outpaint.active || !kit || event.button !== 0) return;
+    if (!state.source || state.outpaint.active || event.button !== 0) return;
     const point = pointerPoint(event);
+    if (state.tool === 'watermark') {
+      if (refs.wmPosition.value !== 'custom' || refs.wmTile.checked) return;
+      const display = currentDisplaySize();
+      const rect = watermarkHandleRect(display);
+      const inside =
+        point.x >= rect.x - 8 &&
+        point.x <= rect.x + rect.width + 8 &&
+        point.y >= rect.y - 8 &&
+        point.y <= rect.y + rect.height + 8;
+      if (!inside) return;
+      event.preventDefault();
+      refs.overlayCanvas.setPointerCapture?.(event.pointerId);
+      refs.overlayCanvas.focus?.();
+      drag = { type: 'watermark', size: display };
+      return;
+    }
+    if (!kit) return;
     const handle = kit.hitCrop(state.crop.rect, point);
     event.preventDefault();
     refs.overlayCanvas.setPointerCapture?.(event.pointerId);
@@ -1604,8 +1676,33 @@ export function createImageToolsPage(host) {
   });
 
   refs.overlayCanvas.addEventListener('pointermove', (event) => {
-    if (!state.source || state.outpaint.active || !kit) return;
+    if (!state.source || state.outpaint.active) return;
     const point = pointerPoint(event);
+    if (drag?.type === 'watermark') {
+      const display = drag.size;
+      const nx = snapWatermark(point.x / display.width, display.width);
+      const ny = snapWatermark(point.y / display.height, display.height);
+      state.watermark.x = Math.max(0, Math.min(1, nx));
+      state.watermark.y = Math.max(0, Math.min(1, ny));
+      render();
+      return;
+    }
+    if (state.tool === 'watermark') {
+      if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) {
+        const display = currentDisplaySize();
+        const rect = watermarkHandleRect(display);
+        const inside =
+          point.x >= rect.x - 8 &&
+          point.x <= rect.x + rect.width + 8 &&
+          point.y >= rect.y - 8 &&
+          point.y <= rect.y + rect.height + 8;
+        refs.overlayCanvas.style.cursor = inside ? 'move' : 'default';
+      } else {
+        refs.overlayCanvas.style.cursor = 'default';
+      }
+      return;
+    }
+    if (!kit) return;
     if (!drag) {
       const handle = state.crop.rect ? kit.hitCrop(state.crop.rect, point) : null;
       refs.overlayCanvas.style.cursor = handle
@@ -1633,6 +1730,27 @@ export function createImageToolsPage(host) {
   }
   refs.overlayCanvas.addEventListener('pointerup', endDrag);
   refs.overlayCanvas.addEventListener('pointercancel', endDrag);
+
+  // 水印自定义位置：方向键微调 1px，Shift 10px
+  refs.overlayCanvas.addEventListener('keydown', (event) => {
+    if (!state.source || state.tool !== 'watermark') return;
+    if (refs.wmPosition.value !== 'custom' || refs.wmTile.checked) return;
+    const display = currentDisplaySize();
+    const step = event.shiftKey ? 10 : 1;
+    const dx = step / display.width;
+    const dy = step / display.height;
+    let changed = true;
+    if (event.key === 'ArrowLeft') state.watermark.x -= dx;
+    else if (event.key === 'ArrowRight') state.watermark.x += dx;
+    else if (event.key === 'ArrowUp') state.watermark.y -= dy;
+    else if (event.key === 'ArrowDown') state.watermark.y += dy;
+    else changed = false;
+    if (!changed) return;
+    event.preventDefault();
+    state.watermark.x = Math.max(0, Math.min(1, state.watermark.x));
+    state.watermark.y = Math.max(0, Math.min(1, state.watermark.y));
+    render();
+  });
 
   function pushOp(op, label) {
     // 扩图预览是独立模式，一旦应用几何操作就回到普通处理
@@ -2139,6 +2257,30 @@ export function createImageToolsPage(host) {
   });
   syncWatermarkKind();
 
+  refs.wmPosition.addEventListener('change', () => {
+    const previous = state.watermark.position;
+    const next = refs.wmPosition.value;
+    if (next === 'custom') {
+      const m = (Number(refs.wmMargin.value) || 0) / 100;
+      const map = {
+        'top-left': [m + 0.12, m + 0.1],
+        top: [0.5, m + 0.1],
+        'top-right': [1 - m - 0.12, m + 0.1],
+        left: [m + 0.12, 0.5],
+        center: [0.5, 0.5],
+        right: [1 - m - 0.12, 0.5],
+        'bottom-left': [m + 0.12, 1 - m - 0.1],
+        bottom: [0.5, 1 - m - 0.1],
+        'bottom-right': [1 - m - 0.12, 1 - m - 0.1],
+      };
+      const point = map[previous] || [0.5, 0.5];
+      state.watermark.x = point[0];
+      state.watermark.y = point[1];
+    }
+    state.watermark.position = next;
+    if (state.source) render();
+  });
+
   const wmRangeLabels = [
     [refs.wmOpacity, refs.wmOpacityVal, '%'],
     [refs.wmScale, refs.wmScaleVal, '%'],
@@ -2178,11 +2320,12 @@ export function createImageToolsPage(host) {
     });
 
   function watermarkSpec() {
+    const position = refs.wmPosition.value;
     const spec = {
       opacity: Number(refs.wmOpacity.value) / 100,
       scale: Number(refs.wmScale.value) / 100,
       rotation: Number(refs.wmRotation.value) || 0,
-      position: refs.wmPosition.value,
+      position,
       margin: Number(refs.wmMargin.value) / 100,
       tile: {
         enabled: refs.wmTile.checked,
@@ -2197,6 +2340,10 @@ export function createImageToolsPage(host) {
       ops: currentOpsForServer(),
       format: 'png',
     };
+    if (position === 'custom') {
+      spec.x = state.watermark.x;
+      spec.y = state.watermark.y;
+    }
     if (state.watermark.kind === 'text') {
       spec.text = refs.wmText.value.trim();
       spec.font = refs.wmFont.value || state.watermark.font;

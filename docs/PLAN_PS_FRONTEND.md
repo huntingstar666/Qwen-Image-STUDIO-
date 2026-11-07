@@ -656,6 +656,8 @@ DOM 结构：
 
 - **D1.1 导入选择器（已完成）** —— 新增 `web/src/components/studio/importPicker.js`：`openImportPicker({ title, multiple, accept, max, onPick })` 统一三来源，返回 `[{ name, src, width, height, source }]` 且 `src` 已转为 dataURL。本地文件支持多选与拖放（主图模式一次最多 4 张，供调用方拆 1 主图 + 3 参考图），素材仓库走 `api.materials({ limit: 200 })`、最近结果走 `api.history(20)`，两者都按 `src` 去重并经 `api.fileUrl → fetch → FileReader` 转 dataURL；单选模式自动替换选中，多选默认上限 3。弹窗沿用 `.ref-pick-grid` 视觉，只在 `studio.css` 追加 `.ip-*` 样式，未改动 `refLibrary.js`。浏览器实测：本地多图（尺寸读取正确）、仓库多选 2 张、单选替换、最近结果空态、取图转 dataURL 均通过，无 JS 异常。下一步 D1.2：顶栏「导入 ▾」与拖拽矩阵。
 
+- **D1.2 主图导入入口与拖拽矩阵（已完成）** —— 顶栏「打开图片」改为「导入 ▾」下拉（本地文件 / 素材仓库 / 最近结果），支持点击外部关闭、方向键 / Home / End / Escape 键盘操作与 `aria-expanded` 同步；本地走隐藏 `fileInput`，仓库与最近结果复用 D1.1 的 `openImportPicker` 并以 `initialSource` 直接落到对应 tab。新增 `importPicked` / `importLocalFiles` / `openMainPicker` / `importLibraryRef` 四个分流函数：已有主图时拖入/导入的图片全部转参考图，无主图时第一张作主图、其余按顺序进参考图（参考图仍受 3 张上限约束，重复 dataURL 由 `addRefItems` 去重）。画布拖拽同时识别 `Files` 与 `application/x-wb-ref`，图库缩略图先 `urlToDataUrl` 再入参考图。浏览器实测：菜单三项与键盘操作正常、仓库 tab 自动激活并载入 5 张素材、空画布拖入 2 张 = `a.png` 主图（40×30）+ 1 张参考图、已有主图后 `x-wb-ref` 与仓库各补 1 张至 4/4、第 4 张被拦截并提示，无 JS 异常。下一步 D1.3：空状态素材仓库入口。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1110,7 +1112,7 @@ DOM 结构：
 | D17.2 | 恢复流程与横幅 | 已完成 | 本次提交 | 横幅内联在 `studio.js`，最近工程列表落地时再抽 `panels/recovery.js` |
 | D17.3 | 配额、清理与多标签 | 已完成 | 本次提交 | 方案 §16；设置页「关于」新增本机工程占用与清理入口 |
 | D1.1 | 导入选择器 | 已完成 | 本次提交 | 方案 §12.3；新增 `studio/importPicker.js`，未改 `refLibrary.js` |
-| D1.2 | 主图导入入口与拖拽 | 未开始 | — | — |
+| D1.2 | 主图导入入口与拖拽 | 已完成 | 本次提交 | 方案 §12.3；顶栏「导入 ▾」+ 画布拖拽矩阵 |
 | D1.3 | 空状态素材仓库入口 | 未开始 | — | — |
 | D2.1 | 参考图三来源 | 未开始 | — | — |
 | D2.2 | 参考图拖拽与去重 | 未开始 | — | — |

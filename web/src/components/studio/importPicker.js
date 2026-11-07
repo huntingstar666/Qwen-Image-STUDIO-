@@ -123,6 +123,7 @@ function materialCandidates(data) {
  * @param {boolean} [options.multiple] 是否多选（主图默认单选，参考图传 true）
  * @param {'main'|'ref'} [options.accept] 用途，仅影响文案与默认上限
  * @param {number} [options.max] 最多返回张数
+ * @param {'local'|'warehouse'|'history'} [options.initialSource] 打开时默认来源
  * @param {(items: Array<{name:string,src:string,width:number,height:number,source:string}>) => void} [options.onPick]
  * @returns {{close:Function, body:HTMLElement}}
  */
@@ -131,6 +132,7 @@ export function openImportPicker({
   multiple = false,
   accept = 'main',
   max,
+  initialSource = 'local',
   onPick,
 } = {}) {
   const limit = Math.max(1, Number(max) || (multiple ? 3 : 1));
@@ -371,5 +373,8 @@ export function openImportPicker({
   });
 
   renderLocal();
+  if (initialSource === 'warehouse' || initialSource === 'history') {
+    content.querySelector(`[data-source="${initialSource}"]`)?.click();
+  }
   return { close: modal.close, body: content };
 }

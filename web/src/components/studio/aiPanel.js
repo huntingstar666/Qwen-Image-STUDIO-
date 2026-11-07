@@ -571,42 +571,62 @@ export function mountAiPanel(host, ctx) {
     refs.addRef.disabled = state.refs.length >= MAX_REFS;
   }
 
-  async function addRefFiles(files) {
+  /** 统一的参考图入队：接受 dataURL 条目（导入选择器 / 拖拽矩阵）。 */
+  async function addRefItems(items) {
     const before = state.refs.length;
-    for (const file of [...files]) {
+    for (const item of [...items]) {
       if (state.refs.length >= MAX_REFS) {
         toastWarn(`最多再添加 ${MAX_REFS} 张参考图`);
         break;
       }
-      if (!file.type.startsWith('image/')) continue;
+      const dataUrl = item?.dataUrl || item?.src || '';
+      if (!dataUrl) continue;
+      let width = Number(item.width) || 0;
+      let height = Number(item.height) || 0;
+      if (!width || !height) {
+        try {
+          const image = await loadImage(dataUrl);
+          width = image.naturalWidth;
+          height = image.naturalHeight;
+        } catch (err) {
+          toastError(err, '读取参考图失败');
+          continue;
+        }
+      }
+      if (width > MAX_REF_SIDE || height > MAX_REF_SIDE || width * height > MAX_REF_PIXELS) {
+        toastWarn(`参考图尺寸过大（${width}×${height}），已跳过`);
+        continue;
+      }
+      if (state.refs.some((ref) => ref.dataUrl === dataUrl)) continue;
+      state.refs.push({
+        id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: item.name || '参考图',
+        dataUrl,
+        width,
+        height,
+      });
+    }
+    renderRefs();
+    if (state.refs.length > before) insertMention(before + 2);
+    if (state.refs.length !== before) notifyPersist();
+  }
+
+  async function addRefFiles(files) {
+    const items = [];
+    for (const file of [...files]) {
+      if (!file.type?.startsWith('image/')) continue;
       if (file.size > MAX_REF_BYTES) {
         toastWarn(`参考图 ${file.name || ''} 超过 ${Math.round(MAX_REF_BYTES / 1048576)}MB，已跳过`);
         continue;
       }
       try {
-        const dataUrl = await readFile(file);
-        const image = await loadImage(dataUrl);
-        const width = image.naturalWidth;
-        const height = image.naturalHeight;
-        if (width > MAX_REF_SIDE || height > MAX_REF_SIDE || width * height > MAX_REF_PIXELS) {
-          toastWarn(`参考图尺寸过大（${width}×${height}），已跳过`);
-          continue;
-        }
-        state.refs.push({
-          id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: file.name || '参考图',
-          dataUrl,
-          width,
-          height,
-        });
+        items.push({ name: file.name || '参考图', src: await readFile(file) });
       } catch (err) {
         toastError(err, '读取参考图失败');
       }
     }
-    renderRefs();
+    await addRefItems(items);
     refs.refInput.value = '';
-    if (state.refs.length > before) insertMention(before + 2);
-    if (state.refs.length !== before) notifyPersist();
   }
 
   function insertMention(index) {
@@ -1151,6 +1171,14 @@ export function mountAiPanel(host, ctx) {
     },
     focusPrompt() {
       refs.prompt.focus();
+    },
+    /** 宿主拖入 / 选择文件后批量加入参考图。 */
+    addRefFiles(files) {
+      return addRefFiles(files);
+    },
+    /** 宿主从统一导入选择器拿到 dataURL 条目后批量加入参考图。 */
+    addRefItems(items) {
+      return addRefItems(items);
     },
     /** 本机工程恢复：把保存的 AI 现场写回面板（不改动已提交的任务）。 */
     restoreState(persist, refsData) {

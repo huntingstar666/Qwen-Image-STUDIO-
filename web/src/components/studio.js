@@ -20,6 +20,7 @@ import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
+import { REF_MIME, filesFromDataTransfer, openImportPicker, urlToDataUrl } from './studio/importPicker.js';
 import {
   cleanupProjects,
   createProjectLease,
@@ -177,7 +178,14 @@ export function createStudioPage(host) {
             <span class="studio-dims mono" data-ref="dims"></span>
           </div>
           <span class="spacer"></span>
-          <button class="btn ghost sm" type="button" data-ref="openBtn">打开图片</button>
+          <div class="studio-import" data-ref="importWrap">
+            <button class="btn ghost sm" type="button" data-ref="openBtn" aria-haspopup="menu" aria-expanded="false">导入 ▾</button>
+            <div class="studio-import-menu" role="menu" data-ref="importMenu" hidden>
+              <button type="button" role="menuitem" data-import="local">本地文件</button>
+              <button type="button" role="menuitem" data-import="warehouse">素材仓库</button>
+              <button type="button" role="menuitem" data-import="history">最近结果</button>
+            </div>
+          </div>
           <span class="studio-sep"></span>
           <button class="btn ghost sm" type="button" data-ref="favoriteBtn" disabled>收藏</button>
           <button class="btn ghost sm" type="button" data-ref="copyBtn" disabled>复制</button>
@@ -356,7 +364,9 @@ export function createStudioPage(host) {
     dot: ref('dot'),
     fileName: ref('fileName'),
     dims: ref('dims'),
+    importWrap: ref('importWrap'),
     openBtn: ref('openBtn'),
+    importMenu: ref('importMenu'),
     favoriteBtn: ref('favoriteBtn'),
     copyBtn: ref('copyBtn'),
     jpgBtn: ref('jpgBtn'),
@@ -1956,9 +1966,74 @@ export function createStudioPage(host) {
     syncTabs();
   });
 
-  refs.openBtn.addEventListener('click', () => refs.fileInput.click());
+  /* ---------------------------------------------------------- 顶栏导入菜单 */
+
+  function setImportMenu(open) {
+    refs.importMenu.hidden = !open;
+    refs.openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function focusImportItem(index) {
+    const items = [...refs.importMenu.querySelectorAll('[data-import]')];
+    if (!items.length) return;
+    const next = (index + items.length) % items.length;
+    items[next].focus();
+  }
+
+  refs.openBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setImportMenu(refs.importMenu.hidden);
+  });
+
+  refs.openBtn.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    setImportMenu(true);
+    focusImportItem(0);
+  });
+
+  refs.importMenu.addEventListener('keydown', (event) => {
+    const items = [...refs.importMenu.querySelectorAll('[data-import]')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setImportMenu(false);
+      refs.openBtn.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusImportItem(index + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusImportItem(index - 1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      focusImportItem(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      focusImportItem(items.length - 1);
+    }
+  });
+
+  refs.importMenu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-import]');
+    if (!item) return;
+    setImportMenu(false);
+    const source = item.dataset.import;
+    if (source === 'local') refs.fileInput.click();
+    else openMainPicker(source);
+  });
+
+  function onDocumentClick(event) {
+    if (!refs.importMenu.hidden && !refs.importWrap.contains(event.target)) setImportMenu(false);
+  }
+  document.addEventListener('click', onDocumentClick);
+
   refs.emptyOpen.addEventListener('click', () => refs.fileInput.click());
-  refs.fileInput.addEventListener('change', () => openFile(refs.fileInput.files?.[0]));
+  refs.fileInput.addEventListener('change', () => {
+    const files = [...(refs.fileInput.files || [])];
+    refs.fileInput.value = '';
+    void importLocalFiles(files);
+  });
 
   refs.emptySample?.addEventListener('click', async () => {
     try {
@@ -2166,12 +2241,69 @@ export function createStudioPage(host) {
     });
   }
 
+  /* ---------------------------------------------------------- 导入分流（D1.2） */
+
+  /** 统一导入入口：有主图时全部转参考图，无主图时第一张开为主图。 */
+  async function importPicked(items) {
+    const list = Array.isArray(items) ? items.filter((item) => item?.src) : [];
+    if (!list.length) return;
+    if (doc) {
+      await ai.addRefItems(list);
+      return;
+    }
+    const [first, ...rest] = list;
+    const opened = await openUrl(first.src, first.name);
+    if (opened && rest.length) await ai.addRefItems(rest);
+  }
+
+  async function importLocalFiles(fileList) {
+    const files = [...(fileList || [])].filter((file) => file.type?.startsWith('image/'));
+    if (!files.length) {
+      toastWarn('请选择图片文件（PNG / JPG / WebP）');
+      return;
+    }
+    if (doc) {
+      await ai.addRefFiles(files);
+      return;
+    }
+    const [first, ...rest] = files;
+    await openFile(first);
+    if (doc && rest.length) await ai.addRefFiles(rest);
+  }
+
+  function openMainPicker(source) {
+    openImportPicker({
+      title: '导入图片',
+      accept: 'main',
+      multiple: false,
+      initialSource: source,
+      onPick(items) {
+        void importPicked(items);
+      },
+    });
+  }
+
+  /** 小图库 / 历史胶囊的 application/x-wb-ref 载荷 → 参考图。 */
+  async function importLibraryRef(raw) {
+    try {
+      const src = await urlToDataUrl(raw.src);
+      await ai.addRefItems([
+        { name: raw.name || '参考图', src, width: raw.width, height: raw.height },
+      ]);
+    } catch (err) {
+      toastError(err, '读取参考图失败');
+    }
+  }
+
   /* ---------------------------------------------------------- 拖拽与粘贴 */
+
+  const hasType = (event, type) => Boolean(event.dataTransfer && [...event.dataTransfer.types].includes(type));
 
   ['dragenter', 'dragover'].forEach((type) => {
     stageEl.addEventListener(type, (event) => {
-      if (!event.dataTransfer?.types?.includes('Files')) return;
+      if (!hasType(event, 'Files') && !hasType(event, REF_MIME)) return;
       event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       stageEl.classList.add('is-dropping');
     });
   });
@@ -2179,10 +2311,21 @@ export function createStudioPage(host) {
     stageEl.addEventListener(type, (event) => {
       stageEl.classList.remove('is-dropping');
       if (type === 'dragleave') return;
-      const file = event.dataTransfer?.files?.[0];
-      if (!file) return;
+      const refRaw = event.dataTransfer?.getData(REF_MIME);
+      if (refRaw) {
+        event.preventDefault();
+        try {
+          const raw = JSON.parse(refRaw);
+          if (raw?.src) void importLibraryRef(raw);
+        } catch {
+          toastWarn('这张参考图的数据已失效，请重新从图库拖入');
+        }
+        return;
+      }
+      const files = filesFromDataTransfer(event.dataTransfer);
+      if (!files.length) return;
       event.preventDefault();
-      openFile(file);
+      void importLocalFiles(files);
     });
   });
 
@@ -2366,6 +2509,7 @@ export function createStudioPage(host) {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('paste', onPaste);
+      document.removeEventListener('click', onDocumentClick);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       clearTimeout(saveTimer);

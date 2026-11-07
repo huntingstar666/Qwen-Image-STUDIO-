@@ -84,6 +84,50 @@
   white-space: nowrap;
 }
 
+/* ------------------------------------------------------------- 顶栏导入菜单 */
+
+.studio-import {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.studio-import-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 148px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 18%);
+}
+
+.studio-import-menu[hidden] {
+  display: none;
+}
+
+.studio-import-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-import-menu button:hover,
+.studio-import-menu button:focus-visible {
+  background: var(--accent-dim);
+  color: var(--accent);
+  outline: none;
+}
+
 /* ------------------------------------------------------------- 恢复横幅 */
 
 .studio-restore {

@@ -113,10 +113,12 @@ class _FakeEngine:
     def warmup(self, **_kwargs):
         pass
 
-    def encode_text(self, prompt, negative, *, images=None, resolution=0):
+    def encode_text(self, prompt, negative, *, images=None, resolution=0,
+                    encode_negative=True):
         self.seen["prompt"] = prompt
         self.seen["images"] = list(images or [])
         self.seen["resolution"] = int(resolution)
+        self.seen["encode_negative"] = bool(encode_negative)
         return {
             "positive": [prompt],
             "negative": [negative],

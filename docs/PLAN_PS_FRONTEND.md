@@ -772,6 +772,15 @@ DOM 结构：
   - 联动与持久化：`stampMask` / `commitShapePaint` 优先写图层蒙版，选区存在时同样按选区裁剪；图层蒙版涂抹松手后走 `doc.commitLayers()` 落快照（不动文档蒙版状态），撤销/重做与图层几何共用一套历史；工程保存为每个图层追加 `hasMask / maskVisible` 与 `maskBlob`（PNG），恢复时载入 `ensureMask()` 并 `touchMask()`。
   - 实测（headless Chromium，800×600 底图 + 200×200 绿色叠加层）：`✎` 进入后按钮高亮、工具切画笔；竖向涂抹后该区域露出底图红色 `[192,57,43]`、未涂抹处仍为绿色 `[102,212,115]`；切橡皮擦回同一条带恢复绿色；`◐` 关闭蒙版后条带恢复绿色、再开启复原；Shift+点击 `◐` 删除蒙版（按钮回到「添加图层蒙版」）；切「抓手」后 `✎` 取消高亮；`Ctrl+Z` 撤销回绿色、`Ctrl+Shift+Z` 重做回红色；选区联动——先魔棒选黄色圆（5.3%）再涂图层无任何变化，清除选区后同一笔立即生效；等待自动保存后刷新 `?cb=5#studio`，图层仍是 `has-mask` 且条带保持被挖空。截图 `.cache/shots/d82-layer-mask-*.png`、`d82-paint1-*.png`、`d82-eraser-*.png`。
 
+- **D9.1 调色数学库（已完成）** —— 新增 `web/src/components/studio/color.js`，纯函数、零依赖：
+  - 曲线：控制点排序去重 → Fritsch–Carlson 单调三次插值（限制切线，避免过冲/反转）→ 256 项 LUT；`buildChannelLUTs({rgb,r,g,b})` 分别生成复合与单通道 LUT，`applyChannelLUTs` 先查复合表再三通道表。
+  - 色阶：`buildLevelsLUT({black,white,gamma,outBlack,outWhite})`，输入区间归一化 → `t^(1/gamma)` → 输出区间映射；`applyLevels` 原地查表。
+  - HSL：标准 `rgbToHsl/hslToRgb`（h 0~360°，s/l 0~1）；`HSL_BANDS` 定义 8 个色相带（0/45/90/135/180/225/270/315），`applyHSL` 按色相角距离加权（默认 40° 过渡），重叠处加权平均后再调 H/S/L，s/l 用「向 0 或 1 靠拢」的单调映射，±100 可到纯灰或纯色。
+  - 色彩平衡：按感知亮度分阴影/中间调/高光三段重叠权重（和为 1），逐段施加 RGB 偏移，默认把亮度差加回三通道（`preserveLuma`）保证总亮度不变。
+  - 白平衡：`kelvinToGains` 近似 Tanner Helland 黑体公式；`whiteBalanceGains({temperature,tint})` 中滑杆正向对应更低色温（更暖），色调正向压低绿通道（偏洋红），最后按感知亮度归一，既保亮度又保留色偏；`grayPointGains(r,g,b)` 用灰点反推增益，`applyGains(data, gains, strength)` 支持吸取后渐入。
+  - 单测：`web/tests/studio/color.test.mjs` 共 23 项，覆盖恒等曲线、控制点命中、单调性、S 形对比、复合/单通道 LUT、色阶裁切与 gamma、RGB↔HSL 往返、8 色带不串色、色相偏移 +60° 得黄、过渡区加权、色彩平衡分区/保亮度、色温冷暖方向、色调洋红/绿方向、灰点还原、增益强度渐入；`node --test web/tests/studio/color.test.mjs` → `pass 23 / fail 0`。
+  - 说明：`.cube` LUT 解析与直方图统计随 D9.2 继续追加到同一模块；面板接线（`panels/adjust.js`）留到 D9.3。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -953,7 +962,7 @@ DOM 结构：
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})` | `layers` | D7（D7.2 已落地） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
-| `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、LUT、直方图（纯函数） | 无 | D9 |
+| `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、白平衡增益（纯函数）；LUT 解析与直方图随后追加 | 无 | D9.1（已落地） |
 | `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
@@ -1264,7 +1273,7 @@ DOM 结构：
 | D7.4 | 历史记录 + 快捷键 | 已完成 | 本次提交 | 新增 `history.js`：`createHistory({limit, budget})` 双栈 + 字节预算，步数先裁、预算再裁且至少保留初始+最新两帧；`studioDoc` 的 `snapshot/undo/redo/canUndo/canRedo` 委托 `_history`，新增 `historyBytes` / `clearHistory()`，工程恢复改为 `clearHistory + snapshot`。实测 `limit=3` 推 6 帧得 `[3,4,5]`、`budget=100`（40B/帧）推 10 帧得 `[8,9]`（80B）、undo/redo 序列与 `clear` 归零正确；页面 4 笔蒙版可连撤 4 次、重做 2 次，恢复工程后撤销按钮初始禁用。快捷键沿用既有 `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`。图层维度历史断言并入 D7.3 |
 | D8.1 | 选区核心 | 已完成 | 本次提交 | 新增 `studio/selection.js`（alpha 蒙版、魔棒洪泛、羽化/扩展/收缩、蚂蚁线路径）；`studio.js` 加魔棒工具 + `.studio-selbar` 浮条，画笔/形状按选区裁剪；实测见 §12.11 |
 | D8.2 | 图层蒙版 | 已完成 | 本次提交 | `OverlayLayer` 增加可画可擦蒙版与 `maskedImage()` 缓存；图层面板 `◐`/`✎`；`docToLayerTransform` 映射涂抹；随工程保存 `maskBlob`；实测见 §12.11 |
-| D9.1 | 调色数学库 | 未开始 | — | — |
+| D9.1 | 调色数学库 | 已完成 | 本次提交 | 新增 `studio/color.js`（曲线/色阶/HSL/色彩平衡/白平衡，纯函数）；新增 `web/tests/studio/color.test.mjs`，`node --test` 23 项全绿；实测见 §12.11 |
 | D9.2 | 直方图 + LUT | 未开始 | — | — |
 | D9.3 | 调整图层 | 未开始 | — | — |
 | D9.4 | 局部调整 | 未开始 | — | — |

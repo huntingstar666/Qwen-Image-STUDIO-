@@ -128,6 +128,9 @@ export function mountAiPanel(host, ctx) {
 
         <div class="ai-work mono" data-ref="workInfo"></div>
         <div class="ai-warn" data-ref="workWarn" hidden></div>
+        <div class="ai-row">
+          <button class="btn ghost sm" type="button" data-ref="openOutpaint">扩图 / 外补画布 →</button>
+        </div>
       </section>
 
       <section class="ai-section">
@@ -205,6 +208,7 @@ export function mountAiPanel(host, ctx) {
     advanced: ref('advanced'),
     workInfo: ref('workInfo'),
     workWarn: ref('workWarn'),
+    openOutpaint: ref('openOutpaint'),
     turbo: ref('turbo'),
     samplingInfo: ref('samplingInfo'),
     task: ref('task'),
@@ -269,7 +273,7 @@ export function mountAiPanel(host, ctx) {
     idleGlyph: '✦',
   });
 
-  mountGuards(refs.guards, {
+  const guards = mountGuards(refs.guards, {
     value: state.protection,
     onChange(next) {
       state.protection = next;
@@ -354,6 +358,46 @@ export function mountAiPanel(host, ctx) {
       renderPresets();
     },
     onChange: renderMeta,
+  });
+
+  // 扩图面板 / 其他页改的是同一份 settings.edit，这里跟着回显，避免两处状态打架。
+  store.subscribe(() => {
+    const edit = store.state.edit || {};
+    const nextOverrides = edit.overrides && typeof edit.overrides === 'object' ? edit.overrides : {};
+    if (JSON.stringify(nextOverrides) !== JSON.stringify(state.overrides)) {
+      state.overrides = { ...nextOverrides };
+      advanced.refresh();
+      renderPresets();
+      renderMeta();
+    }
+    const nextPreset = String(edit.preset || state.presetId);
+    if (nextPreset !== state.presetId) {
+      state.presetId = nextPreset;
+      const mode = presetTaskMode(findPreset(state.presets, nextPreset));
+      if (mode === 'remove' || mode === 'outpaint') refs.task.value = mode;
+      else if (refs.task.value === 'remove' || refs.task.value === 'outpaint') refs.task.value = 'auto';
+      renderPresets();
+      advanced.refresh();
+      renderMeta();
+      syncGuardNote();
+    }
+    const nextProtection = normalizeProtection(edit.protection);
+    if (
+      nextProtection.color !== state.protection.color ||
+      nextProtection.zeroShift !== state.protection.zeroShift
+    ) {
+      state.protection = nextProtection;
+      guards.sync(nextProtection);
+    }
+    if (edit.consistency !== undefined && Boolean(edit.consistency) !== state.consistencyOn) {
+      state.consistencyOn = Boolean(edit.consistency);
+      refs.consistency.checked = state.consistencyOn;
+      refs.strength.disabled = !state.consistencyOn;
+    }
+    const strength = Number(edit.consistencyStrength);
+    if (Number.isFinite(strength) && Math.abs(strength - state.consistencyStrength) > 1e-6) {
+      setStrength(strength);
+    }
   });
 
   /* ------------------------------------------------------------ 选项 */
@@ -687,7 +731,7 @@ export function mountAiPanel(host, ctx) {
       toastWarn('请先打开一张主图');
       return;
     }
-    if (!source.hasMask) {
+    if (!source.hasMask && refs.task.value !== 'outpaint') {
       const ok = await confirmDialog({
         title: '没有检测到蒙版',
         message: '将按整图重绘，速度更慢且可能改变画面其他部分。推荐先用套索/椭圆圈出要改的区域。',
@@ -837,6 +881,7 @@ export function mountAiPanel(host, ctx) {
 
   refs.polish.addEventListener('click', polish);
   refs.submit.addEventListener('click', submit);
+  refs.openOutpaint.addEventListener('click', () => ctx.openOutpaint?.());
 
   refs.addRef.addEventListener('click', () => refs.refInput.click());
   refs.refInput.addEventListener('change', () => addRefFiles(refs.refInput.files || []));
@@ -1024,6 +1069,17 @@ export function mountAiPanel(host, ctx) {
     },
     focusPrompt() {
       refs.prompt.focus();
+    },
+    /** 扩图面板点「生成扩图」：补默认指令、切 outpaint 任务后直接提交。 */
+    submitOutpaint() {
+      if (!refs.prompt.value.trim()) {
+        refs.prompt.value = '移除图像中的灰色区域，无缝自然延展为完整图像。';
+        syncPrompt();
+      }
+      refs.task.value = 'outpaint';
+      syncGuardNote();
+      renderMeta();
+      return submit();
     },
   };
 

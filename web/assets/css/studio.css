@@ -1757,4 +1757,243 @@
   line-height: 1.5;
 }
 
+/* ===== 扩图 / 外补画布：画布幽灵预览 ===== */
+
+.studio-outpaint {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.studio-outpaint[hidden] {
+  display: none;
+}
+
+.so-shade {
+  position: absolute;
+  border-radius: 3px;
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0 6px, transparent 6px 12px),
+    rgba(122, 132, 148, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.so-frame {
+  position: absolute;
+  border: 1px dashed rgba(255, 255, 255, 0.6);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.so-halo,
+.so-handle,
+.so-cap {
+  position: absolute;
+  pointer-events: none;
+}
+
+.so-halo {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3), 0 0 0 4px var(--accent-ring);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+}
+
+.so-halo[data-edge="top"],
+.so-halo[data-edge="bottom"] {
+  cursor: ns-resize;
+}
+
+.so-halo[data-edge="left"],
+.so-halo[data-edge="right"] {
+  cursor: ew-resize;
+}
+
+.studio-outpaint.is-dragging .so-halo {
+  cursor: grabbing;
+}
+
+.so-handle {
+  border: 1.5px solid #fff;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: nwse-resize;
+}
+
+.so-handle[data-edge="ne"],
+.so-handle[data-edge="sw"] {
+  cursor: nesw-resize;
+}
+
+.so-cap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.so-cap[hidden] {
+  display: none;
+}
+
+/* ===== 扩图面板 ===== */
+
+.studio-pane-outpaint {
+  padding: 0;
+}
+
+.op-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 18px;
+}
+
+.op-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.op-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.op-target {
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-grid {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 54px;
+  grid-template-rows: auto minmax(76px, auto) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.op-top {
+  grid-area: 1 / 2;
+}
+
+.op-left {
+  grid-area: 2 / 1;
+}
+
+.op-right {
+  grid-area: 2 / 3;
+}
+
+.op-bottom {
+  grid-area: 3 / 2;
+}
+
+.op-preview {
+  grid-area: 2 / 2;
+}
+
+.op-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 3px 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.op-cell .input {
+  width: 100%;
+  height: 22px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: center;
+}
+
+.op-cell .input:focus {
+  outline: 1px solid var(--accent-ring);
+  outline-offset: 1px;
+  border-radius: 5px;
+}
+
+.op-cell em {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--dim);
+}
+
+.op-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 76px;
+  padding: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.op-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.op-ratios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.op-warn {
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.op-warn.is-block {
+  background: var(--warn-dim);
+  color: var(--warn);
+}
+
+.op-warn[hidden] {
+  display: none;
+}
+
+
 

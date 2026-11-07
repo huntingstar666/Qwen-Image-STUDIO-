@@ -19,6 +19,7 @@ import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
+import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
@@ -87,6 +88,14 @@ const TOOLS = [
     icon:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M9 6l3-3 3 3"/><path d="M9 18l3 3 3-3"/><path d="M3 12h18"/><path d="M6 9l-3 3 3 3"/><path d="M18 9l3 3-3 3"/></svg>',
   },
+  {
+    id: 'outpaint',
+    label: '扩图 / 外补画布',
+    key: 'X',
+    hint: '拖动画布四边外补；松开手柄可实时看到百分比',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M12 3v2"/><path d="M12 19v2"/><path d="M3 12h2"/><path d="M19 12h2"/><path d="M7 5l5-2 5 2"/><path d="M7 19l5 2 5-2"/><path d="M5 7l-2 5 2 5"/><path d="M19 7l2 5-2 5"/></svg>',
+  },
 ];
 
 const ADJUST_FIELDS = [
@@ -116,6 +125,7 @@ export function createStudioPage(host) {
   let tintDirty = true;
   let selectedLayerId = null;
   let preview = { url: '', image: null, flash: false };
+  let outpaint = null;
 
   host.innerHTML = `
     <div class="page page-studio">
@@ -158,6 +168,25 @@ export function createStudioPage(host) {
 
             <div class="studio-canvas-wrap" data-ref="stage">
               <canvas data-ref="canvas"></canvas>
+              <div class="studio-outpaint" data-ref="outpaintLayer" hidden>
+                <div class="so-shade" data-shade="top"></div>
+                <div class="so-shade" data-shade="bottom"></div>
+                <div class="so-shade" data-shade="left"></div>
+                <div class="so-shade" data-shade="right"></div>
+                <div class="so-frame" data-so="frame"></div>
+                <span class="so-halo" data-edge="top"></span>
+                <span class="so-halo" data-edge="bottom"></span>
+                <span class="so-halo" data-edge="left"></span>
+                <span class="so-halo" data-edge="right"></span>
+                <span class="so-handle" data-edge="nw"></span>
+                <span class="so-handle" data-edge="ne"></span>
+                <span class="so-handle" data-edge="sw"></span>
+                <span class="so-handle" data-edge="se"></span>
+                <span class="so-cap" data-cap="top" hidden></span>
+                <span class="so-cap" data-cap="bottom" hidden></span>
+                <span class="so-cap" data-cap="left" hidden></span>
+                <span class="so-cap" data-cap="right" hidden></span>
+              </div>
               <div class="studio-empty" data-ref="empty">
                 <div class="studio-empty-mark">
                   <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="9" width="34" height="30" rx="4"/><path d="M7 31l9-8 7 6 5-4 13 10"/><circle cx="17" cy="18" r="2.4"/></svg>
@@ -187,6 +216,7 @@ export function createStudioPage(host) {
           <aside class="studio-panel">
             <div class="studio-tabs">
               <button type="button" class="active" data-tab="ai">AI 修改</button>
+              <button type="button" data-tab="outpaint">扩图</button>
               <button type="button" data-tab="adjust">调整</button>
               <button type="button" data-tab="mask">蒙版</button>
               <button type="button" data-tab="transform">变换</button>
@@ -194,6 +224,10 @@ export function createStudioPage(host) {
 
             <div class="studio-pane studio-pane-ai" data-pane="ai">
               <div data-ref="aiPane"></div>
+            </div>
+
+            <div class="studio-pane studio-pane-outpaint" data-pane="outpaint" hidden>
+              <div data-ref="outpaintPane"></div>
             </div>
 
             <div class="studio-pane" data-pane="adjust">
@@ -299,6 +333,8 @@ export function createStudioPage(host) {
     cropClear: ref('cropClear'),
     resetAll: ref('resetAll'),
     aiPane: ref('aiPane'),
+    outpaintLayer: ref('outpaintLayer'),
+    outpaintPane: ref('outpaintPane'),
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
@@ -393,6 +429,13 @@ export function createStudioPage(host) {
       updateHistoryUi();
       scheduleDraw();
     },
+    openOutpaint() {
+      if (!doc) {
+        toastWarn('请先打开一张图片');
+        return;
+      }
+      setTool('outpaint');
+    },
   });
 
   function setPreview(url) {
@@ -410,6 +453,26 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 扩图 / 外补画布（右栏「扩图」）
+   * ============================================================ */
+
+  outpaint = mountOutpaintPanel(refs.outpaintPane, refs.outpaintLayer, {
+    getSize() {
+      if (!doc) return null;
+      const base = doc.renderBase();
+      return { width: base.width, height: base.height };
+    },
+    getView: () => view,
+    onApply() {
+      setTool('view');
+      activeTab = 'ai';
+      syncTabs();
+      ai.submitOutpaint();
+    },
+  });
+  outpaint.init();
+
+  /* ============================================================
    * 工具与画布
    * ============================================================ */
 
@@ -423,6 +486,7 @@ export function createStudioPage(host) {
 
   function setTool(next) {
     if (!TOOLS.some((item) => item.id === next)) return;
+    if (next !== 'outpaint') outpaint?.deactivate?.();
     tool = next;
     if (!MASK_TOOLS.has(next)) {
       cropRect = null;
@@ -437,6 +501,10 @@ export function createStudioPage(host) {
     } else if (MASK_TOOLS.has(next)) {
       activeTab = 'mask';
       syncTabs();
+    } else if (next === 'outpaint') {
+      activeTab = 'outpaint';
+      syncTabs();
+      outpaint?.activate?.();
     }
     for (const button of refs.rail.querySelectorAll('[data-tool]')) {
       button.classList.toggle('active', button.dataset.tool === tool);
@@ -530,7 +598,10 @@ export function createStudioPage(host) {
     const width = refs.canvas.clientWidth;
     const height = refs.canvas.clientHeight;
     ctx.clearRect(0, 0, width, height);
-    if (!doc) return;
+    if (!doc) {
+      outpaint?.syncGhost?.();
+      return;
+    }
     const image = doc.renderBase();
     const w = image.width * view.scale;
     const h = image.height * view.scale;
@@ -672,6 +743,9 @@ export function createStudioPage(host) {
       ctx.stroke();
       ctx.restore();
     }
+
+    // 扩图幽灵层（DOM 覆盖，跟随画布缩放/平移）
+    outpaint?.syncGhost?.();
   }
 
   /* ============================================================
@@ -1135,7 +1209,13 @@ export function createStudioPage(host) {
   host.querySelector('.studio-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');
     if (!button) return;
-    activeTab = button.dataset.tab;
+    const tab = button.dataset.tab;
+    if (tab === 'outpaint') {
+      setTool('outpaint');
+      return;
+    }
+    if (tool === 'outpaint') setTool('view');
+    activeTab = tab;
     syncTabs();
   });
 

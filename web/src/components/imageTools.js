@@ -314,6 +314,11 @@ export function createImageToolsPage(host) {
   let currentWorkDims = { width: 0, height: 0 };
   let drag = null;
   let resizeObserver = null;
+  /* D18.3：工作画布缓存签名（源图 / 操作链 / 扩图结果），拖动选框时不再重算。 */
+  let workKey = { source: null, count: -1, last: null, outpaint: null };
+  /* D18.3：显示画布尺寸签名，只有变化时才重设 canvas.width/height。 */
+  let displayStamp = { width: 0, height: 0, dpr: 0 };
+  let overlayRaf = 0;
   const selectedResultIds = new Set();
 
   const state = {
@@ -1446,6 +1451,101 @@ export function createImageToolsPage(host) {
     }
   }
 
+  /* D18.3：工作画布只在源图 / 操作链 / 扩图结果变化时重建；
+     裁剪与水印拖动只刷新叠加层，不再每次 pointermove 全量重算。 */
+  function markWorkBuilt() {
+    const ops = state.stagedOps;
+    workKey = {
+      source: state.source,
+      count: ops.length,
+      last: ops.length ? ops[ops.length - 1] : null,
+      outpaint: state.outpaint.active ? state.outpaint.result : null,
+    };
+  }
+
+  function workStale() {
+    if (!workCanvas) return true;
+    const ops = state.stagedOps;
+    return (
+      workKey.source !== state.source ||
+      workKey.count !== ops.length ||
+      workKey.last !== (ops.length ? ops[ops.length - 1] : null) ||
+      workKey.outpaint !== (state.outpaint.active ? state.outpaint.result : null)
+    );
+  }
+
+  /** 只在显示尺寸 / DPR 变化时重设 backing store，避免拖动时反复重分配画布。 */
+  function syncCanvasSize(display, dpr) {
+    if (
+      displayStamp.width === display.width &&
+      displayStamp.height === display.height &&
+      displayStamp.dpr === dpr
+    ) {
+      return false;
+    }
+    displayStamp = { width: display.width, height: display.height, dpr };
+    for (const canvas of [refs.imageCanvas, refs.overlayCanvas]) {
+      canvas.width = Math.round(display.width * dpr);
+      canvas.height = Math.round(display.height * dpr);
+      canvas.style.width = `${display.width}px`;
+      canvas.style.height = `${display.height}px`;
+      canvas.style.display = 'block';
+    }
+    return true;
+  }
+
+  function drawDisplay() {
+    if (!workCanvas || !displayStamp.width) return;
+    const ictx = refs.imageCanvas.getContext('2d');
+    ictx.setTransform(displayStamp.dpr, 0, 0, displayStamp.dpr, 0, 0);
+    ictx.clearRect(0, 0, displayStamp.width, displayStamp.height);
+    ictx.imageSmoothingQuality = 'high';
+    ictx.drawImage(workCanvas, 0, 0, displayStamp.width, displayStamp.height);
+  }
+
+  function drawOverlay() {
+    if (!displayStamp.width) return;
+    const octx = refs.overlayCanvas.getContext('2d');
+    octx.setTransform(displayStamp.dpr, 0, 0, displayStamp.dpr, 0, 0);
+    octx.clearRect(0, 0, displayStamp.width, displayStamp.height);
+    if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, displayStamp);
+    else if (state.tool === 'watermark') {
+      if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) drawWatermarkOverlay(octx, displayStamp);
+    } else if (state.tool !== 'tagger') drawCropOverlay(octx, displayStamp);
+  }
+
+  function syncStageReadouts() {
+    updateCropSize();
+    updateEstimate();
+    updateResizeHint();
+    refs.stageStatus.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)} · 显示 ${Math.round(
+      (displayStamp.width / currentWorkDims.width) * 100,
+    )}%`;
+  }
+
+  /** 拖动中只重绘叠加层；工作画布与底图保持不动。 */
+  function paintOverlayOnly() {
+    if (!state.source || !workCanvas || state.crop.pendingReset) {
+      render();
+      return;
+    }
+    const display = currentDisplaySize();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (syncCanvasSize(display, dpr)) drawDisplay();
+    state.crop.rect = clampRect(state.crop.rect, displayStamp);
+    drawOverlay();
+    syncStageReadouts();
+  }
+
+  /** 所有 pointermove 走 rAF 合并，一帧最多重绘一次叠加层。 */
+  function scheduleOverlay() {
+    if (overlayRaf) return;
+    overlayRaf = requestAnimationFrame(() => {
+      overlayRaf = 0;
+      paintOverlayOnly();
+    });
+  }
+
   async function render() {
     const token = (renderToken += 1);
     if (!state.source) {
@@ -1455,36 +1555,33 @@ export function createImageToolsPage(host) {
       refs.stageStatus.textContent = '—';
       return;
     }
-    const image = await loadSourceImage();
-    if (!image || token !== renderToken) return;
+    if (workStale()) {
+      const image = await loadSourceImage();
+      if (!image || token !== renderToken) return;
+      if (state.outpaint.active && state.outpaint.result) {
+        workCanvas = state.outpaint.result.canvas;
+      } else {
+        workCanvas = applyOpsToCanvas(image, state.stagedOps);
+      }
+      currentWorkDims = { width: workCanvas.width, height: workCanvas.height };
+      markWorkBuilt();
+      // 工作画布换了，显示层必须按新尺寸重画一次
+      displayStamp = { width: 0, height: 0, dpr: 0 };
+    }
+    // 调色走 CSS filter，与工作画布缓存无关，每次都要同步到显示层
+    refs.imageCanvas.style.filter =
+      state.outpaint.active && state.outpaint.result
+        ? 'none'
+        : adjustFilterString(
+            state.stagedOps.filter((op) => op.op === 'adjust'),
+            state.adjust,
+          );
+    if (token !== renderToken) return;
     refs.stageEmpty.classList.add('hidden');
-
-    if (state.outpaint.active && state.outpaint.result) {
-      workCanvas = state.outpaint.result.canvas;
-    } else {
-      const adjustOps = state.stagedOps.filter((op) => op.op === 'adjust');
-      workCanvas = applyOpsToCanvas(image, state.stagedOps);
-      refs.imageCanvas.style.filter = adjustFilterString(adjustOps, state.adjust);
-    }
-    if (state.outpaint.active && state.outpaint.result) {
-      refs.imageCanvas.style.filter = 'none';
-    }
-    currentWorkDims = { width: workCanvas.width, height: workCanvas.height };
 
     const display = currentDisplaySize();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    for (const canvas of [refs.imageCanvas, refs.overlayCanvas]) {
-      canvas.width = Math.round(display.width * dpr);
-      canvas.height = Math.round(display.height * dpr);
-      canvas.style.width = `${display.width}px`;
-      canvas.style.height = `${display.height}px`;
-      canvas.style.display = 'block';
-    }
-    const ictx = refs.imageCanvas.getContext('2d');
-    ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ictx.clearRect(0, 0, display.width, display.height);
-    ictx.imageSmoothingQuality = 'high';
-    ictx.drawImage(workCanvas, 0, 0, display.width, display.height);
+    if (syncCanvasSize(display, dpr)) drawDisplay();
 
     if (!state.crop.rect) resetCrop();
     // 前面某次操作（如应用裁剪）要求在新尺寸下重排选框
@@ -1493,21 +1590,9 @@ export function createImageToolsPage(host) {
       state.crop.rect = null;
       resetCrop();
     }
-    state.crop.rect = clampRect(state.crop.rect, display);
-    const octx = refs.overlayCanvas.getContext('2d');
-    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    octx.clearRect(0, 0, display.width, display.height);
-    if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, display);
-    else if (state.tool === 'watermark') {
-      if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) drawWatermarkOverlay(octx, display);
-    } else if (state.tool !== 'tagger') drawCropOverlay(octx, display);
-
-    updateCropSize();
-    updateEstimate();
-    updateResizeHint();
-    refs.stageStatus.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)} · 显示 ${Math.round(
-      (display.width / currentWorkDims.width) * 100,
-    )}%`;
+    state.crop.rect = clampRect(state.crop.rect, displayStamp);
+    drawOverlay();
+    syncStageReadouts();
   }
 
   function clampRect(rect, display) {
@@ -1799,7 +1884,7 @@ export function createImageToolsPage(host) {
       const ny = snapWatermark(point.y / display.height, display.height);
       state.watermark.x = Math.max(0, Math.min(1, nx));
       state.watermark.y = Math.max(0, Math.min(1, ny));
-      render();
+      scheduleOverlay();
       return;
     }
     if (state.tool === 'watermark') {
@@ -1834,7 +1919,7 @@ export function createImageToolsPage(host) {
     } else {
       state.crop.rect = kit.resizeCrop(drag.origin, drag.handle, point, drag.size, drag.ratio);
     }
-    render();
+    scheduleOverlay();
   });
 
   function endDrag(event) {
@@ -3478,6 +3563,7 @@ export function createImageToolsPage(host) {
     },
     destroy() {
       disposed = true;
+      if (overlayRaf) cancelAnimationFrame(overlayRaf);
       resizeObserver?.disconnect();
       window.removeEventListener('resize', onStageResize);
       document.removeEventListener('paste', onPaste);

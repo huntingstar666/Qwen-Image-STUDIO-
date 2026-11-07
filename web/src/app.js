@@ -638,6 +638,11 @@ export async function boot() {
       const id = currentTabId();
       const entry = pages.get(id);
       if (entry) {
+        try {
+          entry.page?.destroy?.();
+        } catch (err) {
+          console.error('[app] 页面销毁失败', err);
+        }
         entry.host.remove();
         pages.delete(id);
         route();

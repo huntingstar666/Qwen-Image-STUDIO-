@@ -647,7 +647,7 @@ export function createStudioPage(host) {
     ctx.drawImage(image, view.x, view.y, w, h);
     ctx.restore();
 
-    // AI 结果预览（覆盖底图；按住 Tab 可临时看回底图）
+    // AI 结果预览（覆盖底图；按住 \ 可临时看回底图）
     if (preview.image && !preview.flash) {
       const pw = preview.image.naturalWidth || preview.image.width;
       const ph = preview.image.naturalHeight || preview.image.height;
@@ -1554,13 +1554,27 @@ export function createStudioPage(host) {
     });
   });
 
-  window.addEventListener('paste', (event) => {
+  async function onPaste(event) {
     if (!isActive()) return;
+    if (isEditableTarget(event.target)) return;
+    if (document.querySelector('.modal-backdrop')) return;
     const item = [...(event.clipboardData?.items || [])].find((entry) => entry.type.startsWith('image/'));
     if (!item) return;
     const file = item.getAsFile();
-    if (file) openFile(file);
-  });
+    if (!file) return;
+    event.preventDefault();
+    // 粘贴会替换主图并清空历史，已有编辑时先确认，避免误丢工作。
+    if (doc) {
+      const ok = await confirmDialog({
+        title: '替换当前图片',
+        message: '粘贴的图片会替换当前主图，未导出的编辑将丢失。确定继续？',
+        confirmText: '替换',
+        danger: true,
+      });
+      if (!ok || !doc) return;
+    }
+    openFile(file);
+  }
 
   /* ---------------------------------------------------------- 键盘 */
 
@@ -1568,11 +1582,22 @@ export function createStudioPage(host) {
     return host.isConnected && host.offsetParent !== null;
   }
 
+  /** 指令框、参考图输入、弹窗内的输入都算可编辑区域，不抢快捷键与粘贴。 */
+  function isEditableTarget(target) {
+    const el = target instanceof Element ? target : null;
+    if (!el) return false;
+    if (el.closest('.modal, .modal-backdrop')) return true;
+    if (el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]')) {
+      return true;
+    }
+    return Boolean(el.isContentEditable);
+  }
+
   function onKeyDown(event) {
     if (!isActive()) return;
-    const tag = event.target?.tagName || '';
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
-    if (event.key === 'Tab' && preview.image) {
+    if (isEditableTarget(event.target)) return;
+    // 按住 \ 临时闪回底图，替代原来被劫持的 Tab（保留键盘导航）。
+    if (event.key === '\\' && preview.image) {
       event.preventDefault();
       preview.flash = true;
       scheduleDraw();
@@ -1586,6 +1611,9 @@ export function createStudioPage(host) {
       return;
     }
     if (event.code === 'Space') {
+      // 按钮/链接获得焦点时保留空格的原生激活行为，不抢来平移。
+      const target = event.target;
+      if (target instanceof Element && target.closest('button, a, [role="button"], summary')) return;
       spaceDown = true;
       refs.canvas.classList.add('is-grab');
       event.preventDefault();
@@ -1630,7 +1658,7 @@ export function createStudioPage(host) {
   }
 
   function onKeyUp(event) {
-    if (event.key === 'Tab' && preview.flash) {
+    if (event.key === '\\' && preview.flash) {
       preview.flash = false;
       scheduleDraw();
       return;
@@ -1642,6 +1670,7 @@ export function createStudioPage(host) {
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('paste', onPaste);
 
   /* ---------------------------------------------------------- 尺寸与交接 */
 
@@ -1683,6 +1712,26 @@ export function createStudioPage(host) {
       if (doc) {
         requestAnimationFrame(fitView);
       }
+    },
+    /** 页面被移除时统一解绑，避免全局监听器与观察器在旧实例上累积。 */
+    destroy() {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('paste', onPaste);
+      resizeObserver.disconnect();
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      spaceDown = false;
+      outpaint?.destroy?.();
+      outpaint = null;
+      tint = null;
+      tintDirty = true;
+      thumbCache = { doc: null, base: null, url: '' };
+      preview = { url: '', image: null, flash: false };
+      doc = null;
+      host.innerHTML = '';
     },
   };
 }

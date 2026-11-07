@@ -1286,6 +1286,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 原生模式 `local.scheme=native`（不用遮罩合成） | ✅ 已落地（5 条 e2e + 真机回归），预处理/32 对齐/裁回全保留 | `server/pipeline.py`、`server/imaging.py`、`server/main.py` |
 | 一致性 LoRA 默认挂载（`consistency` 预设） | ✅ 普通编辑默认挂，`local.consistency` / `consistency_lora` 可关 | `server/pipeline.py` |
 | BlueBox 整图颜色一致性（`imaging.color_consistency`） | ✅ 原生模式默认开，`local.color_restore` 可关（3 条单测） | `server/imaging.py`、`tests/test_imaging.py` |
+| 孤海裁切/接缝移植（`GH_MaskCropV2` + `GH_CropRestore`） | ✅ 已落地（4 条单测 + 真机回归），矩形台阶消失 | `server/imaging.py`、`server/pipeline.py` |
 
 ### 11.2 本轮切片（只做这四件）
 
@@ -1342,6 +1343,12 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
     - 开关清单：`local.scheme`（`a` / `b` / `auto` / `native`）、`local.consistency`、`params.consistency_lora`、`local.color_restore`、`local.color_restore_strength`、`preprocess.enabled`。
     - 一致性 LoRA 默认挂：普通编辑且请求未带 `loras` 时自动 `{"preset": "consistency"}`（与孤海工作流一致）；`remove` / `outpaint` 仍优先挂各自任务预设。注意判断必须写成 `cons_switch is not None and not _truthy(cons_switch)`，否则未传该键时 `_truthy(None) == False` 会把默认值误关。
 31. **`anchor_affine` 遇到纯色通道只校偏移**：标准差 `< 1/255` 的通道（白底商品图、纯色海报）增益没有统计意义，硬套 `sd0/sd1` 会撞到 `0.5` 下界，把物体颜色撕开（实测蓝色通道 10 → 49）。现在这类通道 `scale` 固定 1.0，只应用 `shift`。
+32. **接缝学习孤海 `GH_CropRestore`：先向外膨胀再羽化，不能只往内羽化**。旧实现把 `alpha` 硬钳在原始遮罩内（`alpha *= hard_alpha > 0.5`），模型重绘的那一圈背景在遮罩线处被硬切，真机放大能看到矩形台阶；孤海的做法是把写入范围跨到遮罩外再羽化，接缝自然是渐变的。照此移植（`server/imaging.py` + `server/pipeline.py`）：
+    - **裁切几何**（`GH_MaskCropV2`）：遮罩包围盒短边 × 每向系数（上 1.3 / 下左右 1.4），`fills` 可选填洞，窗口 32 对齐；不再要求前端显式传 `expand_*` 才启用（旧逻辑默认走 `crop_region(1.5, 96px)`，与孤海不是一套几何）。
+    - **裁切块缩放**（孤海节点 8）：长边夹到 `[crop_min_side, crop_max_side]`（默认 `768 ~ 2048`）、两边 32 倍数，**小遮罩也放大**再送模型；`CropInfo.model_w/h` 记录模型输入尺寸，`stitch_region` 与 `crop_mask_for_region` 都按它映射，贴回时再缩回原始裁切尺寸。`local.crop_min_side=0` 可关。
+    - **还原**（`GH_CropRestore`）：`expand_px = int(遮罩包围盒平均边长 × expand_pct/100)`（默认 4）、`feather_px` 同理（默认 5）；先 `dilate_mask` 再 `feather_mask`，高斯核支持之外严格不写。
+    - **颜色还原安全夹取**：`anchor_affine` 加 `scale_clamp=(0.9, 1.1)`、`shift_abs=24/255`（与孤海 `匹配裁剪颜色` 一致），避免把物体真实色差当漂移放大。
+    - **验收口径**：方案 B 的 `outside_max_abs` / `leak_ratio` 以「膨胀 + 羽化」带的外沿为界（`color_report.mask_band`），带外仍要求逐字节 0；带内是用户显式选择的过渡带。
 
 ### 11.4 集成点（改前先看这几处）
 
@@ -1397,6 +1404,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 24. ~~remove/outpaint 允许空提示词、replay 复用 `slim_params`、LoRA 强度校验~~ ✅ 已完成（3 条单测）
 25. ~~真实权重端到端回归（edit / remove / outpaint / turbo9）~~ ✅ 已完成，见 §11.7
 26. ~~原生模式 `local.scheme=native` + 一致性 LoRA 默认挂载 + BlueBox 整图校色（全部带开关）~~ ✅ 已完成（5 条 e2e + 3 条 imaging 单测 + 真机回归，见 §11.7）
+27. ~~移植孤海 `GH_MaskCropV2` / `GH_CropRestore` 的裁切与接缝（含裁切块 768 放大、4%/5% 膨胀羽化、gain 0.9~1.1 夹取）~~ ✅ 已完成（见决策 32、§11.7）
 
 ### 11.7 真机回归记录（2026-11-07，RTX 5090 / torch 2.13.0+cu130）
 
@@ -1436,6 +1444,17 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | 原生 + 关掉校色 | 2.45 | 4 | 5 | 可见整体偏色（对比图 ④ 背景偏品红） |
 
 三组 `max` 均为 111，来自花瓶底部越过遮罩线的真实改动（物体本身），不是漂移。真实照片（1024×768，锚区 79.4%）同样通过：`scale≈1.00`、`shift<=0.005`，视觉无偏色。对照图：`storage/outputs/compare-native-v3.png`。
+
+**孤海接缝移植回归（2026-11-07，seed=777，`smoke_real_edit.py 8711 edit 777`）**：`edit` 裁切块 384×608 → 按长边 768 放大到 480×768 再采样，贴回缩回 384×608；`mask_band = expand 12 / feather 16`（遮罩包围盒平均边长 320 × 4% / 5%），`outside_max_abs=0`（以膨胀+羽化带外沿为界），`zero_shift.verified=true`。与旧版对比（同一 seed、同一提示词）：
+
+| 指标（原遮罩外，画布坐标） | 旧方案 B（仅向内羽化 24px） | 新方案 B（孤海接缝） |
+| --- | --- | --- |
+| mean | 0.00 | 0.02 |
+| p99 | 0 | 0 |
+| max | 155（花瓶底部越过遮罩线） | 31（同处，属于物体本身） |
+| 放大图肉眼 | 遮罩线处可见矩形台阶 | 与背景渐变自然融合 |
+
+`remove`（seed=777）同样干净：无残影、无矩形、背景渐变连续。对照图：`storage/outputs/compare-goho-mask.png`。全量测试 381 passed。
 
 
 

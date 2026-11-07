@@ -754,6 +754,54 @@ def test_crop_region_factors_empty_mask_returns_full_canvas():
     assert (info.x, info.y, info.w, info.h) == (0, 0, 128, 96)
 
 
+def test_crop_region_factors_upscales_small_crop_to_min_side():
+    """孤海节点 8：裁切块长边夹到 [min_side, max_side]，32 倍数，另记模型尺寸。"""
+    canvas = _rgba(512, 384, seed=25)
+    mask = _mask(512, 384, 200, 140, 240, 200)      # 40×60
+    crop, info = imaging.crop_region_factors(canvas, mask, min_side=768)
+    assert max(crop.size) == 768
+    assert crop.size[0] % 32 == 0 and crop.size[1] % 32 == 0
+    assert (info.model_w, info.model_h) == crop.size
+    assert info.target_size() == crop.size
+    # 贴回仍按原始 32 对齐尺寸映射，遮罩按模型尺寸切
+    assert (info.w, info.h) != crop.size
+    assert imaging.crop_mask_for_region(info, mask).shape == (crop.size[1], crop.size[0])
+
+
+def test_crop_region_factors_downscales_crop_over_max_side():
+    canvas = _rgba(4096, 1024, seed=26)
+    mask = _mask(4096, 1024, 0, 0, 4096, 1024)
+    crop, info = imaging.crop_region_factors(canvas, mask, max_side=2048)
+    assert max(crop.size) == 2048
+    assert (info.model_w, info.model_h) == crop.size
+
+
+def test_stitch_region_percentage_band_extends_past_mask():
+    """孤海 GH_CropRestore：遮罩平均边长 ×4% 膨胀 + ×5% 羽化，带外逐字节不变。"""
+    canvas = _rgba(512, 384, seed=27)
+    mask = _mask(512, 384, 200, 140, 260, 220)      # 60×80 → 平均边长 70
+    crop, info = imaging.crop_region_factors(canvas, mask)
+    assert crop.size == (info.w, info.h)             # 未触发 min/max 缩放
+    edited = Image.new("RGBA", crop.size, (0, 0, 0, 255))
+    out = imaging.stitch_region(
+        canvas, edited, info, mask, color_match=False,
+        expand_pct=4, feather_pct=5)
+
+    avg = (60 + 80) / 2.0
+    band = int(avg * 0.04) + int(avg * 0.05)
+    assert band > 0
+    yy, xx = np.mgrid[0:384, 0:512]
+    dist = np.maximum.reduce([
+        np.where(xx < 200, 200 - xx, 0),
+        np.where(xx > 259, xx - 259, 0),
+        np.where(yy < 140, 140 - yy, 0),
+        np.where(yy > 219, yy - 219, 0),
+    ])
+    diff = np.abs(_arr_u8(out) - _arr_u8(canvas)).max(axis=2)
+    assert int(diff[dist > band].max()) == 0, "接缝带之外必须逐字节不变"
+    assert int(diff[(dist >= 1) & (dist <= band)].max()) > 0, "羽化带内应发生混合"
+
+
 def test_crop_with_color_fill_uses_edge_mode_color_outside():
     base = Image.new("RGBA", (64, 64), (10, 20, 30, 255))
     base.putpixel((0, 0), (200, 10, 10, 255))

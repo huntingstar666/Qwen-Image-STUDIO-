@@ -911,27 +911,28 @@ class Pipeline:
         # ---- 方案 B：先裁切局部，只采样这一块（省显存）
         crop_info = None
         if scheme == "b" and mask_canvas is not None:
-            use_factors = any(
-                key in local
-                for key in ("fills", "expand_top", "expand_bottom", "expand_left", "expand_right")
-            )
-            if use_factors:
-                # 孤海语义：短边 × 每向独立系数，越界用边缘众数色补齐
-                crop_img, crop_info = imaging.crop_region_factors(
-                    canvas, mask_canvas,
-                    fills=_truthy(local.get("fills")),
-                    expand_top=float(local.get("expand_top") or 1.3),
-                    expand_bottom=float(local.get("expand_bottom") or 1.4),
-                    expand_left=float(local.get("expand_left") or 1.4),
-                    expand_right=float(local.get("expand_right") or 1.4),
-                    multiple=int(profile.get("snap") or 32),
-                )
-            else:
+            # 默认走孤海 GH_MaskCropV2 的几何：短边 × 每向独立系数（上 1.3 / 其余 1.4），
+            # 遮罩内部空洞按需填充；裁切块长边夹到 [crop_min_side, crop_max_side]，
+            # 小遮罩也放大到 768，模型才有足够分辨率（孤海节点 8）。
+            if _truthy(local.get("legacy_crop")):
                 crop_img, crop_info = imaging.crop_region(
                     canvas, mask_canvas,
                     context_factor=float(local.get("context_factor") or 1.5),
                     context_pixels=int(local.get("context_pixels") or 96),
                     multiple=int(profile.get("snap") or 32),
+                )
+            else:
+                crop_img, crop_info = imaging.crop_region_factors(
+                    canvas, mask_canvas,
+                    fills=_truthy(local.get("fills", task_mode == "remove")),
+                    expand_top=float(local.get("expand_top") or 1.3),
+                    expand_bottom=float(local.get("expand_bottom") or 1.4),
+                    expand_left=float(local.get("expand_left") or 1.4),
+                    expand_right=float(local.get("expand_right") or 1.4),
+                    multiple=int(profile.get("snap") or 32),
+                    max_side=int(local.get("crop_max_side") or 2048),
+                    min_side=int(local.get("crop_min_side")
+                                 if local.get("crop_min_side") is not None else 768),
                 )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
@@ -1070,6 +1071,8 @@ class Pipeline:
             else:
                 color_report = {"mode": "global_affine", "skipped": True, "reason": "disabled"}
         elif crop_info is not None:
+            # 接缝按孤海 GH_CropRestore：遮罩包围盒平均边长 × 4% 向外膨胀、
+            # × 5% 羽化；颜色还原用 gain 0.9~1.1 / offset ±24 的安全夹取。
             composed = imaging.stitch_region(
                 canvas, edited, crop_info, mask_canvas,
                 blend_pixels=int(local.get("blend_pixels") or 24),
@@ -1080,6 +1083,12 @@ class Pipeline:
                 anchor_strength=anchor_strength,
                 band_mode=band_mode,
                 dither=_truthy(local.get("dither", True)),
+                expand_pct=float(local.get("expand_pct")
+                                 if local.get("expand_pct") is not None else 4.0),
+                feather_pct=float(local.get("feather_pct")
+                                  if local.get("feather_pct") is not None else 5.0),
+                color_gain_clamp=(0.9, 1.1),
+                color_shift_abs=24.0 / 255.0,
                 report=color_report,
             )
         else:
@@ -1097,13 +1106,24 @@ class Pipeline:
                 report=color_report,
             )
 
+        # 方案 B 的写入范围 = 遮罩向外膨胀 expand_px + 羽化 feather_px 的过渡带；
+        # 验收「零色差」要以这条带的外沿为界，否则会把有意写入的接缝当成泄漏。
+        band = color_report.get("mask_band") if isinstance(color_report, dict) else None
+        band_px = 0
+        if isinstance(band, dict):
+            band_px = int(band.get("expand_px", 0)) + int(band.get("feather_px", 0))
+        effective_expand = band_px if scheme == "b" else mask_expand
+
         # 原生模式不承诺"遮罩外逐字节保留"，这里如实返回 None，避免误读。
         outside = (None if scheme == "native"
-                   else _outside_max_abs(canvas, composed, mask_canvas, expand=mask_expand))
+                   else _outside_max_abs(canvas, composed, mask_canvas,
+                                         expand=effective_expand))
 
         # 诊断（只读）：模型实际改动比例 / 遮罩外泄漏；失败不影响出图。
         try:
-            diff_stats = align.changed_stats(canvas, composed, mask_canvas)
+            diag_mask = (align.dilate_mask(mask_canvas, effective_expand)
+                         if band_px and mask_canvas is not None else mask_canvas)
+            diff_stats = align.changed_stats(canvas, composed, diag_mask)
         except Exception as exc:  # noqa: BLE001 - 诊断是附加信息，不能拖垮任务
             print(f"[pipeline] 改动诊断跳过：{type(exc).__name__}: {exc}", flush=True)
             diff_stats = {}

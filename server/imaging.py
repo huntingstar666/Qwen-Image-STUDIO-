@@ -175,6 +175,16 @@ class CropInfo:
     h: int
     canvas_w: int
     canvas_h: int
+    #: 模型实际输入尺寸（孤海工作流会把裁切块缩放到「长边 768~2048、32 倍数」）。
+    #: 0 表示没有额外缩放，等同于 ``snap_dims(w, h)``。
+    model_w: int = 0
+    model_h: int = 0
+
+    def target_size(self) -> tuple[int, int]:
+        """模型输入尺寸：有缩放用缩放后的，否则用 32 对齐后的裁切尺寸。"""
+        if int(self.model_w) > 0 and int(self.model_h) > 0:
+            return int(self.model_w), int(self.model_h)
+        return align.snap_dims(int(self.w), int(self.h), SNAP)
 
 
 @dataclass
@@ -1452,6 +1462,7 @@ def crop_region_factors(
     expand_right: float = 1.4,
     multiple: int = 32,
     max_side: int = 0,
+    min_side: int = 0,
 ) -> tuple[Image.Image, CropInfo]:
     """按「短边 × 每向独立系数」裁编辑区，允许越界（用边缘众数色填充）。
 
@@ -1460,6 +1471,8 @@ def crop_region_factors(
     * 扩展量 = ``短边 × (系数 - 1)``，上下左右可独立；
     * ``fills=True`` 先填掉遮罩内部空洞再算包围盒（移除场景）；
     * 窗口中心不动、尺寸向上取整到 ``multiple``，**越界不缩小**而是补色；
+    * 裁切块按「长边」夹到 ``[min_side, max_side]``（孤海节点 8），小遮罩也放大到
+      至少 768 长边，让模型有足够分辨率；贴回时 :func:`stitch_region` 会缩回原尺寸；
     * 空遮罩 → 整画布（不报错）。
 
     返回的 ``CropInfo.w/h`` 恒为 ``multiple`` 的倍数，因此 :func:`stitch_region`
@@ -1498,14 +1511,21 @@ def crop_region_factors(
     x, y = cx - bw // 2, cy - bh // 2
 
     crop = crop_with_color_fill(original, (x, y, x + bw, y + bh))
-    if max_side and max(bw, bh) > int(max_side):
-        s = float(max_side) / float(max(bw, bh))
-        tw = max(multiple, int(round(bw * s / multiple)) * multiple)
-        th = max(multiple, int(round(bh * s / multiple)) * multiple)
-        crop = crop.resize((tw, th), Image.Resampling.LANCZOS)
+    long_side = max(bw, bh)
+    scale = 1.0
+    if max_side and long_side > int(max_side):
+        scale = float(max_side) / float(long_side)
+    elif min_side and long_side < int(min_side):
+        scale = float(min_side) / float(long_side)
+    model_w, model_h = int(bw), int(bh)
+    if scale != 1.0:
+        model_w = max(multiple, int(round(bw * scale / multiple)) * multiple)
+        model_h = max(multiple, int(round(bh * scale / multiple)) * multiple)
+        crop = crop.resize((model_w, model_h), Image.Resampling.LANCZOS)
     return crop, CropInfo(
         x=int(x), y=int(y), w=int(bw), h=int(bh),
         canvas_w=int(width), canvas_h=int(height),
+        model_w=int(model_w), model_h=int(model_h),
     )
 
 
@@ -1571,8 +1591,13 @@ def crop_mask_for_region(crop: CropInfo, mask_canvas: np.ndarray) -> np.ndarray:
     target_w, target_h = align.snap_dims(cw, ch, SNAP)
     pad_l = (target_w - cw) // 2
     pad_t = (target_h - ch) // 2
-    return _crop_canvas_mask_for_region(
+    m = _crop_canvas_mask_for_region(
         mask_canvas, crop, target_w, target_h, pad_l, pad_t)
+    model_w, model_h = crop.target_size()
+    if (model_w, model_h) != (target_w, target_h):
+        # 孤海节点 8：裁切块按长边夹到 [768, 2048] 后再送模型，遮罩跟着缩放
+        m = align.resize_mask(m, model_w, model_h)
+    return m
 
 
 def stitch_region(
@@ -1589,6 +1614,10 @@ def stitch_region(
     anchor_strength: float = 1.0,
     band_mode: str = "lowfreq",
     dither: bool = False,
+    expand_pct: float = 0.0,
+    feather_pct: float = 0.0,
+    color_gain_clamp: tuple[float, float] | None = None,
+    color_shift_abs: float | None = None,
     report: dict | None = None,
 ) -> Image.Image:
     """把解码后的裁切结果贴回原画布（带羽化/曲线/颜色匹配）。
@@ -1618,10 +1647,10 @@ def stitch_region(
 
     x, y = int(crop.x), int(crop.y)
     cw, ch = int(crop.w), int(crop.h)
-    target_w = align.snap_dims(cw, ch, SNAP)[0]
-    target_h = align.snap_dims(cw, ch, SNAP)[1]
+    target_w, target_h = align.snap_dims(cw, ch, SNAP)
     pad_l = (target_w - cw) // 2
     pad_t = (target_h - ch) // 2
+    model_w, model_h = crop.target_size()
 
     edited = edited_crop.convert("RGBA")
     ew, eh = edited.size
@@ -1684,12 +1713,33 @@ def stitch_region(
         hard_alpha = hard_win[top: top + sh, left: left + sw]
         if (sw, sh) != (cw, ch):
             hard_alpha = _resize_mask_nearest(hard_alpha, cw, ch)
-        # 羽化：mask 通常是 0/1 硬边，直接用会把模型重绘的背景/投影按直线切断，
-        # 在原图与重绘区之间留下一圈可见的矩形台阶（真机回归里的「像素块」）。
-        # 这里按 blend_pixels 做高斯羽化，再钳回遮罩内——遮罩外仍然严格 0。
-        if int(blend_pixels) > 0:
-            alpha = align.feather_mask(alpha, int(blend_pixels))
-        alpha = alpha * (hard_alpha > 0.5).astype(np.float32)
+        # 接缝（孤海 GH_CropRestore 语义）：先按「遮罩包围盒平均边长 × 百分比」向外
+        # 膨胀，再做高斯羽化。只往内羽化会把模型重绘的背景在遮罩线处硬切，留下矩形
+        # 台阶；向外扩 + 羽化后，模型自己重绘的那一圈背景才被平滑接回原图。
+        expand_px = feather_px = 0
+        if expand_pct > 0 or feather_pct > 0:
+            ys, xs = np.nonzero(canvas_mask_arr > 0.0)
+            if xs.size:
+                avg_side = 0.5 * ((xs.max() - xs.min() + 1)
+                                  + (ys.max() - ys.min() + 1))
+                expand_px = max(0, int(avg_side * float(expand_pct) / 100.0))
+                feather_px = max(0, int(avg_side * float(feather_pct) / 100.0))
+                base = (hard_alpha > 0.5).astype(np.float32)
+                grown = align.dilate_mask(base, expand_px) if expand_px else base
+                alpha = align.feather_mask(grown, feather_px) if feather_px else grown
+                # 数值兜底：膨胀 + 羽化支持之外严格不写（高斯核支持半径 = feather_px）
+                guard = align.dilate_mask(base, expand_px + feather_px + 1)
+                alpha = alpha * (guard > 0.0).astype(np.float32)
+        if expand_px == 0 and feather_px == 0:
+            # 兼容旧参数：只在硬遮罩内部羽化（mask 外严格 0）
+            if int(blend_pixels) > 0:
+                alpha = align.feather_mask(alpha, int(blend_pixels))
+            alpha = alpha * (hard_alpha > 0.5).astype(np.float32)
+        if report is not None:
+            report["mask_band"] = {
+                "expand_px": int(expand_px), "feather_px": int(feather_px),
+                "expand_pct": float(expand_pct), "feather_pct": float(feather_pct),
+            }
     else:
         hard_alpha = None
         alpha = np.ones((ch, cw), dtype=np.float32)
@@ -1716,8 +1766,16 @@ def stitch_region(
     anchor_ok = False
     if anchor_match and color_match:
         anchor_src = hard_alpha if hard_alpha is not None else np.ones_like(alpha)
+        # 孤海「匹配裁剪颜色」的安全边界：gain 0.9~1.1、offset ±24 级，避免把
+        # 真实的物体颜色差当成漂移放大。None 表示沿用 anchor_affine 的默认夹取。
+        affine_kwargs = {}
+        if color_gain_clamp is not None:
+            affine_kwargs["scale_clamp"] = color_gain_clamp
+        if color_shift_abs is not None:
+            affine_kwargs["shift_abs"] = float(color_shift_abs)
         scale, shift, skipped = align.anchor_affine(
-            region_f, content_f, anchor_src, strength=float(anchor_strength)
+            region_f, content_f, anchor_src, strength=float(anchor_strength),
+            **affine_kwargs,
         )
         color_info["anchor_ratio"] = float((anchor_src <= 0.0).mean())
         color_info["skipped"] = bool(skipped)

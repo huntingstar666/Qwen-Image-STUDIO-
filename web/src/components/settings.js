@@ -982,6 +982,327 @@ function close() {
   }, 180);
 }
 
+/* ============================================================
+ * 首次使用向导：目录 → 自动匹配 → 确认默认
+ * ============================================================ */
+
+const WIZARD_KEY = 'qwen:model-wizard';
+
+let wizard = null;
+
+function wizardDirs(data) {
+  const model = data?.model || {};
+  return {
+    model_root: model.model_root || '',
+    extra: Array.isArray(model.extra_model_roots) ? model.extra_model_roots.join(', ') : '',
+  };
+}
+
+function markWizardSeen(value) {
+  try {
+    localStorage.setItem(WIZARD_KEY, value);
+  } catch {
+    // 隐私模式下写不进去也不影响本次使用
+  }
+}
+
+/** 首次启动：默认方案没匹配上才弹向导，且只提醒一次。 */
+export async function maybeOpenModelWizard() {
+  try {
+    if (localStorage.getItem(WIZARD_KEY)) return;
+  } catch {
+    return;
+  }
+  let data;
+  try {
+    data = await api.getSettings();
+  } catch {
+    return;
+  }
+  if (!data?.model_defaults || data.model_defaults.matched) return;
+  openModelWizard(data);
+}
+
+function closeWizard() {
+  if (!wizard) return;
+  document.removeEventListener('keydown', onWizardKeydown);
+  wizard.overlay?.remove();
+  wizard = null;
+}
+
+function onWizardKeydown(event) {
+  if (event.key === 'Escape' && wizard) {
+    event.preventDefault();
+    dismissWizard();
+  }
+}
+
+function dismissWizard() {
+  markWizardSeen('later');
+  closeWizard();
+}
+
+export function openModelWizard(data = null) {
+  if (wizard) return;
+  const el = document.createElement('div');
+  el.className = 'settings-overlay open wizard-overlay';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.innerHTML = `
+    <div class="settings-panel wizard-panel" role="document">
+      <header class="settings-head">
+        <div class="settings-head-text">
+          <span class="settings-eyebrow">Qwen-Image 2.1</span>
+          <h2 class="settings-title">${t('wizard.title')}</h2>
+          <p class="settings-sub" data-ref="step"></p>
+        </div>
+        <button class="settings-close" type="button" data-wizard="later" aria-label="${t('wizard.later')}">
+          ${icon('close', 15)}
+        </button>
+      </header>
+      <section class="settings-content" data-ref="body"></section>
+      <footer class="settings-foot">
+        <span class="settings-foot-status" data-ref="status"></span>
+        <div class="settings-foot-actions" data-ref="actions"></div>
+      </footer>
+    </div>`;
+  document.body.appendChild(el);
+  wizard = {
+    overlay: el,
+    body: el.querySelector('[data-ref="body"]'),
+    actions: el.querySelector('[data-ref="actions"]'),
+    status: el.querySelector('[data-ref="status"]'),
+    stepEl: el.querySelector('[data-ref="step"]'),
+    step: 1,
+    data,
+    options: null,
+    slots: {},
+    busy: false,
+  };
+  el.addEventListener('click', (event) => {
+    if (event.target.closest('[data-wizard="later"]')) {
+      dismissWizard();
+      return;
+    }
+    const action = event.target.closest('[data-wizard-action]');
+    if (action) {
+      event.preventDefault();
+      handleWizardAction(action.dataset.wizardAction);
+    }
+  });
+  el.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-wiz-slot]');
+    if (select) wizard.slots[select.dataset.wizSlot] = select.value;
+  });
+  document.addEventListener('keydown', onWizardKeydown);
+  loadWizardOptions();
+  renderWizard();
+}
+
+async function loadWizardOptions() {
+  if (!wizard || wizard.options) return;
+  try {
+    const data = await api.options();
+    if (!wizard) return;
+    wizard.options = data?.models || {};
+  } catch {
+    if (!wizard) return;
+    wizard.options = {};
+  }
+  if (wizard?.step === 3) renderWizard();
+}
+
+function setWizardBusy(busy) {
+  if (!wizard) return;
+  wizard.busy = busy;
+  wizard.status.textContent = busy ? t('wizard.loading') : '';
+  wizard.actions.querySelectorAll('button').forEach((button) => {
+    button.disabled = busy;
+  });
+}
+
+function renderWizard() {
+  if (!wizard) return;
+  wizard.stepEl.textContent =
+    wizard.step === 1 ? t('wizard.step1') : wizard.step === 2 ? t('wizard.step2') : t('wizard.step3');
+  wizard.status.textContent = wizard.busy ? t('wizard.loading') : '';
+  if (wizard.step === 1) renderWizardDirs();
+  else if (wizard.step === 2) renderWizardMatch();
+  else renderWizardSlots();
+}
+
+function renderWizardDirs() {
+  const dirs = wizardDirs(wizard.data);
+  const placeholder = wizard.data?.model?.comfy_root || '';
+  wizard.body.innerHTML = `
+    <div class="notice info">${t('wizard.dirHint')}</div>
+    <div class="set-group">
+      ${row(
+        t('wizard.modelRoot'),
+        t('wizard.modelRootDesc'),
+        `<input class="set-input mono" data-wiz="model_root" value="${escapeHtml(dirs.model_root)}"
+          placeholder="${escapeHtml(placeholder)}" />`,
+      )}
+      ${row(
+        t('wizard.extraRoots'),
+        t('wizard.extraHint'),
+        `<input class="set-input mono" data-wiz="extra" value="${escapeHtml(dirs.extra)}"
+          placeholder="D:/models" />`,
+      )}
+    </div>`;
+  wizard.actions.innerHTML = `
+    <button class="set-btn ghost" type="button" data-wizard-action="later">${t('wizard.later')}</button>
+    <button class="set-btn primary" type="button" data-wizard-action="match">${
+      wizard.busy ? t('wizard.loading') : t('wizard.match')
+    }</button>`;
+}
+
+function renderWizardMatch() {
+  const audit = wizard.data?.model_defaults;
+  const slots = Object.entries(audit?.slots || {});
+  const rows = slots
+    .map(([, item]) =>
+      row(
+        escapeHtml(item.label),
+        escapeHtml(item.value || item.expected || '—'),
+        item.found
+          ? `<span class="set-chip ok">${t('defaults.found')}</span>`
+          : `<span class="set-chip warn">${t('defaults.missingSlot')}</span>`,
+      ),
+    )
+    .join('');
+  wizard.body.innerHTML = `
+    ${
+      audit?.matched
+        ? `<div class="notice info">${t('wizard.matchOk')}</div>`
+        : `<div class="notice warn">${t('wizard.matchFail')}</div>`
+    }
+    ${group(t('defaults.title'), rows)}`;
+  wizard.actions.innerHTML = `
+    <button class="set-btn ghost" type="button" data-wizard-action="back">${t('wizard.back')}</button>
+    ${
+      audit?.matched
+        ? `<button class="set-btn primary" type="button" data-wizard-action="finish">${t('wizard.useThese')}</button>`
+        : `<button class="set-btn primary" type="button" data-wizard-action="manual">${t('wizard.manual')}</button>`
+    }`;
+}
+
+function renderWizardSlots() {
+  const audit = wizard.data?.model_defaults;
+  if (!audit) return;
+  if (!wizard.options) {
+    loadWizardOptions();
+    wizard.body.innerHTML = `<p class="set-note">${t('defaults.loading')}</p>`;
+    return;
+  }
+  const rows = Object.entries(audit.slots || {})
+    .map(([key, slot]) => {
+      if (wizard.slots[key] === undefined) wizard.slots[key] = slot.expected || '';
+      const current = wizard.slots[key] || '';
+      const list = (wizard.options[slot.kind] || []).map((item) => ({
+        value: item.value,
+        label: item.label || item.value,
+      }));
+      if (current && !list.some((item) => item.value === current)) {
+        list.unshift({ value: current, label: t('defaults.notScanned', { value: current }) });
+      }
+      const options = list
+        .map(
+          (item) =>
+            `<option value="${escapeHtml(item.value)}" ${item.value === current ? 'selected' : ''}>${escapeHtml(item.label)}</option>`,
+        )
+        .join('');
+      return row(
+        `${escapeHtml(slot.label)}${slot.required ? ' *' : ''}`,
+        escapeHtml(slot.value || slot.expected || '—'),
+        `<select class="set-input set-select mono" data-wiz-slot="${key}">
+          <option value="" ${current ? '' : 'selected'}>${t('defaults.followFactory')}</option>
+          ${options}
+        </select>`,
+      );
+    })
+    .join('');
+  wizard.body.innerHTML = `
+    <div class="notice warn">${t('wizard.matchFail')}</div>
+    ${group(t('defaults.title'), rows, t('wizard.manualHint'))}`;
+  wizard.actions.innerHTML = `
+    <button class="set-btn ghost" type="button" data-wizard-action="back">${t('wizard.back')}</button>
+    <button class="set-btn primary" type="button" data-wizard-action="save">${t('wizard.finish')}</button>`;
+}
+
+function handleWizardAction(action) {
+  if (!wizard || wizard.busy) return;
+  if (action === 'later') {
+    dismissWizard();
+    return;
+  }
+  if (action === 'back') {
+    wizard.step = 1;
+    renderWizard();
+    return;
+  }
+  if (action === 'match') {
+    saveWizardDirs();
+    return;
+  }
+  if (action === 'manual') {
+    wizard.step = 3;
+    loadWizardOptions();
+    renderWizard();
+    return;
+  }
+  if (action === 'finish') {
+    finishWizard();
+    return;
+  }
+  if (action === 'save') {
+    saveWizardSlots();
+  }
+}
+
+async function saveWizardDirs() {
+  const root = wizard.body.querySelector('[data-wiz="model_root"]')?.value.trim() || '';
+  const extra = splitComma(wizard.body.querySelector('[data-wiz="extra"]')?.value);
+  setWizardBusy(true);
+  try {
+    wizard.data = await api.updateSettings({ model_root: root, extra_model_roots: extra });
+    wizard.slots = {};
+    wizard.step = 2;
+    renderWizard();
+    toastSuccess(t('wizard.dirsSaved'));
+    window.dispatchEvent(new CustomEvent('settings:saved', { detail: { modelChanged: true } }));
+  } catch (err) {
+    toastError(err, t('wizard.saveFailed'));
+  } finally {
+    setWizardBusy(false);
+  }
+}
+
+async function saveWizardSlots() {
+  const audit = wizard.data?.model_defaults;
+  const patch = {};
+  for (const key of Object.keys(audit?.slots || {})) {
+    const value = wizard.slots[key] ?? '';
+    if (value !== (audit.slots[key].expected || '')) patch[key] = value;
+  }
+  setWizardBusy(true);
+  try {
+    if (Object.keys(patch).length) {
+      wizard.data = await api.updateSettings({ model_defaults: { slots: patch } });
+    }
+    finishWizard();
+  } catch (err) {
+    toastError(err, t('wizard.saveFailed'));
+    setWizardBusy(false);
+  }
+}
+
+function finishWizard() {
+  markWizardSeen('done');
+  closeWizard();
+  toastSuccess(t('wizard.done'));
+}
+
 export function openSettings(section = 'appearance') {
   const next = ensureState();
   if (!overlay) {

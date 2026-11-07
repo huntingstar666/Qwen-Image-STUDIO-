@@ -19,7 +19,7 @@ import { createHistoryPage } from './components/history.js';
 import { createMaterialsPage } from './components/materials.js';
 import { createGalleryPage } from './components/gallery.js';
 import { createStudioPage } from './components/studio.js';
-import { openSettings } from './components/settings.js';
+import { maybeOpenModelWizard, openSettings } from './components/settings.js';
 
 /* ---------------------------------------------------------------- 图标 */
 
@@ -623,6 +623,7 @@ export async function boot() {
   await loadOptions();
   loadStylesCatalog();
   route();
+  maybeOpenModelWizard();
   window.addEventListener('hashchange', route);
 
   window.addEventListener('unhandledrejection', (event) => {

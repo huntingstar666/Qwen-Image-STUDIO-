@@ -45,6 +45,13 @@ body.settings-open {
   transform: none;
 }
 
+/* 首次使用向导：窄面板，三步走 */
+.wizard-panel {
+  width: min(600px, 96vw);
+  height: auto;
+  max-height: calc(100vh - 56px);
+}
+
 html[data-theme="dark"] .settings-panel {
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(19, 22, 25, 0.94);

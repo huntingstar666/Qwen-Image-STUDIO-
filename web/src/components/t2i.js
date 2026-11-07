@@ -53,12 +53,17 @@ const SIZE_TIERS = [
   { value: 4096, label: '4K' },
 ];
 
-/** 卡片比例网格（5 列，顺序与设计稿一致）。 */
+/** 全景比例：渲染时单独分组，并在提交时追加全景提示词。 */
+const PANORAMA_RATIOS = ['2:1', '3:1', '4:1', '8:1', '21:9'];
+
+/** 卡片比例网格（5 列，顺序与设计稿一致；全景比例统一排在末尾）。 */
 const SIZE_RATIOS = [
   '1:1', '2:3', '3:2', '9:16', '16:9',
-  '3:4', '4:3', '5:4', '4:5', '21:9',
-  '1:4', '1:8', '4:1', '8:1', '2:1',
+  '3:4', '4:3', '5:4', '4:5', '1:4', '1:8',
+  ...PANORAMA_RATIOS,
 ];
+
+const PANORAMA_PROMPT = 'seamless ultra-wide panoramic photograph, consistent horizon, no duplicated subjects';
 
 export function createT2IPage(host) {
   const t2i = store.state.t2i;
@@ -256,6 +261,12 @@ export function createT2IPage(host) {
                   <div class="size-tier-row" data-ref="sizeTiers"></div>
                   <div class="size-pop-head"><span>比例</span></div>
                   <div class="size-ratio-grid" data-ref="sizeRatios"></div>
+                  <div class="size-pano-row" data-ref="panoPromptRow" hidden>
+                    <label class="studio-check">
+                      <input type="checkbox" data-ref="panoPrompt" checked />
+                      <span>自动追加全景提示词</span>
+                    </label>
+                  </div>
                   <div class="size-pop-foot">
                     <label class="size-custom">
                       <span>自定义</span>
@@ -338,6 +349,8 @@ export function createT2IPage(host) {
     sizePopDims: ref('sizePopDims'),
     sizeTiers: ref('sizeTiers'),
     sizeRatios: ref('sizeRatios'),
+    panoPromptRow: ref('panoPromptRow'),
+    panoPrompt: ref('panoPrompt'),
     popWidth: ref('popWidth'),
     popHeight: ref('popHeight'),
     sizeApply: ref('sizeApply'),
@@ -1083,7 +1096,7 @@ export function createT2IPage(host) {
       });
     });
 
-    refs.sizeRatios.innerHTML = SIZE_RATIOS.map((id) => {
+    const renderRatio = (id) => {
       const { rw, rh } = ratioPair(id);
       const scale = Math.min(18 / rw, 16 / rh);
       const gw = Math.max(2, Math.round(rw * scale));
@@ -1093,7 +1106,12 @@ export function createT2IPage(host) {
           <span class="ratio-glyph" style="width:${gw}px;height:${gh}px"></span>
           <span class="ratio-label">${id}</span>
         </button>`;
-    }).join('');
+    };
+    refs.sizeRatios.innerHTML = [
+      ...SIZE_RATIOS.filter((id) => !PANORAMA_RATIOS.includes(id)).map(renderRatio),
+      '<div class="size-ratio-group">全景</div>',
+      ...PANORAMA_RATIOS.map(renderRatio),
+    ].join('');
     refs.sizeRatios.querySelectorAll('[data-ratio]').forEach((button) => {
       button.addEventListener('click', () => {
         const size = sizeForRatio(button.dataset.ratio, sizeTier);
@@ -1114,6 +1132,7 @@ export function createT2IPage(host) {
     refs.sizeRatios.querySelectorAll('[data-ratio]').forEach((button) => {
       button.classList.toggle('active', button.dataset.ratio === ratioId);
     });
+    refs.panoPromptRow.hidden = !PANORAMA_RATIOS.includes(ratioId);
     if (document.activeElement !== refs.popWidth) refs.popWidth.value = String(width);
     if (document.activeElement !== refs.popHeight) refs.popHeight.value = String(height);
   }
@@ -1673,9 +1692,16 @@ export function createT2IPage(host) {
     const bboxEnabled = Boolean(caps.bbox && bbox.enabled && bbox.items.length);
     const slgStateValue = slgState();
 
+    const composedPrompt = stylePicker.composePrompt(refs.prompt.value.trim());
+    const panoActive = PANORAMA_RATIOS.includes(detectRatioId(width, height));
+    const promptFinal = panoActive && refs.panoPrompt.checked
+      && !/panoram/i.test(composedPrompt)
+      ? `${composedPrompt}${composedPrompt ? ', ' : ''}${PANORAMA_PROMPT}`
+      : composedPrompt;
+
     return {
       // 正文保持原文，预设/视角在这里合成为最终提示词
-      prompt: stylePicker.composePrompt(refs.prompt.value.trim()),
+      prompt: promptFinal,
       model: profile.id,
       negative_prompt: negative || (caps.rgba && !modelDefaults().negative_prompt ? '' : null),
       width,

@@ -1770,6 +1770,19 @@ html[data-theme="dark"] .feed-empty {
   gap: 6px;
 }
 
+.size-ratio-group {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.size-pano-row {
+  padding: 4px 2px 0;
+  font-size: 12px;
+}
+
 .size-ratio-item {
   display: flex;
   flex-direction: column;

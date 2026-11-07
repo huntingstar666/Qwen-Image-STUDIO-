@@ -279,9 +279,7 @@ export function createStudioPage(host) {
           <aside class="studio-panel">
             <div class="studio-tabs">
               <button type="button" class="active" data-tab="ai">AI 修改</button>
-              <button type="button" data-tab="outpaint">扩图</button>
               <button type="button" data-tab="adjust">调整</button>
-              <button type="button" data-tab="mask">蒙版</button>
               <button type="button" data-tab="transform">变换</button>
             </div>
 
@@ -610,7 +608,11 @@ export function createStudioPage(host) {
 
   function setTool(next) {
     if (!TOOLS.some((item) => item.id === next)) return;
-    if (next !== 'outpaint') outpaint?.deactivate?.();
+    if (next !== 'outpaint') {
+      outpaint?.deactivate?.();
+      if (activeTab === 'outpaint') activeTab = 'ai';
+    }
+    if (!MASK_TOOLS.has(next) && activeTab === 'mask') activeTab = 'ai';
     tool = next;
     if (!MASK_TOOLS.has(next)) {
       cropRect = null;
@@ -638,6 +640,16 @@ export function createStudioPage(host) {
     refs.canvas.dataset.tool = tool;
     scheduleDraw();
     scheduleSave(1200);
+  }
+
+  const TAB_IDS = new Set(['ai', 'adjust', 'transform']);
+
+  /** 恢复会话时把历史的 5 tab 归一化：蒙版 / 扩图只在对应工具下保留。 */
+  function normalizeTab(tab) {
+    if (TAB_IDS.has(tab)) return tab;
+    if (tab === 'mask' && MASK_TOOLS.has(tool)) return 'mask';
+    if (tab === 'outpaint' && tool === 'outpaint') return 'outpaint';
+    return 'ai';
   }
 
   function syncTabs() {
@@ -1574,7 +1586,7 @@ export function createStudioPage(host) {
         refs.cropInfo.textContent = `${Math.round(cropRect.width)} × ${Math.round(cropRect.height)}`;
       }
       if (session.activeTab) {
-        activeTab = session.activeTab;
+        activeTab = normalizeTab(session.activeTab);
         syncTabs();
       }
       if (session.viewport && session.viewport.scale > 0) {
@@ -1956,13 +1968,8 @@ export function createStudioPage(host) {
   host.querySelector('.studio-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');
     if (!button) return;
-    const tab = button.dataset.tab;
-    if (tab === 'outpaint') {
-      setTool('outpaint');
-      return;
-    }
     if (tool === 'outpaint') setTool('view');
-    activeTab = tab;
+    activeTab = button.dataset.tab;
     syncTabs();
   });
 

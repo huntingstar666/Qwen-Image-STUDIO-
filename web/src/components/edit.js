@@ -85,6 +85,17 @@ export function createEditPage(host) {
           <div class="panel-body">
             <div class="ai-presets edit-presets" data-ref="presetCards"></div>
             <div class="ai-hint" data-ref="presetHint"></div>
+            <label class="ai-field">
+              <span>任务</span>
+              <select class="select" data-ref="taskMode">
+                <option value="auto">跟随预设</option>
+                <option value="edit">通用编辑</option>
+                <option value="inpaint">局部重绘</option>
+                <option value="remove">元素移除</option>
+                <option value="outpaint">扩图</option>
+              </select>
+            </label>
+            <div class="ai-hint" data-ref="taskNote"></div>
             <div data-ref="guardsHost"></div>
             <div class="ai-guard-note" data-ref="guardNote" hidden></div>
           </div>
@@ -413,6 +424,8 @@ export function createEditPage(host) {
     presetCards: ref('presetCards'),
     presetNote: ref('presetNote'),
     presetHint: ref('presetHint'),
+    taskMode: ref('taskMode'),
+    taskNote: ref('taskNote'),
     guardsHost: ref('guardsHost'),
     guardNote: ref('guardNote'),
     advancedHost: ref('advancedHost'),
@@ -1614,11 +1627,45 @@ export function createEditPage(host) {
     },
   });
 
+  function activeTaskMode() {
+    const preset = currentPreset();
+    const fallback = preset ? presetTaskMode(preset) : 'edit';
+    const explicit = String(edit.taskMode || 'auto');
+    return explicit === 'auto' ? fallback : explicit;
+  }
+
+  const TASK_NOTES = {
+    remove: '元素移除：提交时强制 fills=true + 绿色提示图，并自动补「移除图像中的绿色区域」；遮罩外逐字节保留。',
+    outpaint: '扩图：用「⤢ 扩图」的四边百分比外补，提交时强制 fills=false + 灰色提示。',
+    inpaint: '局部重绘：只重绘蒙版内，其余逐像素保留。',
+  };
+
+  function renderTaskMode() {
+    refs.taskMode.value = String(edit.taskMode || 'auto');
+    const note = TASK_NOTES[activeTaskMode()] || '';
+    refs.taskNote.textContent = note;
+    refs.taskNote.hidden = !note;
+  }
+
+  refs.taskMode.addEventListener('change', () => {
+    edit.taskMode = refs.taskMode.value;
+    // 移除 / 扩图有专属 LoRA 与提示图约定，显式选任务时同步到对应预设
+    if (edit.taskMode === 'remove' || edit.taskMode === 'outpaint') {
+      if (findPreset(presetList, edit.taskMode)) edit.preset = edit.taskMode;
+    }
+    patchSettings({ edit: { taskMode: edit.taskMode, preset: edit.preset } });
+    renderTaskMode();
+    renderPresets();
+    syncLocalControls();
+    advanced.refresh();
+  });
+
   function renderPresets() {
     if (!presetList.length) {
       refs.presetCards.innerHTML = '<div class="ai-hint">未连接后端，暂不能选择预设（提交时回退旧参数集）</div>';
       refs.presetNote.textContent = '';
       refs.presetHint.textContent = '';
+      renderTaskMode();
       refs.guardNote.hidden = true;
       return;
     }
@@ -1640,6 +1687,7 @@ export function createEditPage(host) {
       .join('');
     refs.presetNote.textContent = `v${presetVersion}`;
     refs.presetHint.textContent = preset?.summary || '';
+    renderTaskMode();
     syncGuardNote();
   }
 
@@ -1660,9 +1708,12 @@ export function createEditPage(host) {
     const preset = findPreset(presetList, button.dataset.preset);
     if (!preset) return;
     edit.preset = preset.id;
-    patchSettings({ edit: { preset: preset.id } });
+    // 选预设即回到「跟随预设」，避免任务与预设打架
+    edit.taskMode = 'auto';
+    patchSettings({ edit: { preset: preset.id, taskMode: 'auto' } });
     syncLocalControls();
     renderPresets();
+    renderTaskMode();
     advanced.refresh();
   });
 
@@ -2126,14 +2177,23 @@ export function createEditPage(host) {
     const resolvedPreset = resolvePresetForMask(wantedPreset, hasMask);
     const presetMeta = findPreset(presetList, resolvedPreset.id);
     const presetId = presetMeta ? resolvedPreset.id : '';
-    const taskMode = presetId ? presetTaskMode(presetMeta) : 'edit';
+    const presetTask = presetId ? presetTaskMode(presetMeta) : 'edit';
+    const taskMode = String(edit.taskMode || 'auto') === 'auto'
+      ? presetTask
+      : String(edit.taskMode);
+    // 元素移除：任务约定要求绿提示图，并把「移除绿色区域」写进指令
+    const basePrompt = stylePicker.composePrompt(promptText);
+    const promptFinal =
+      taskMode === 'remove' && !basePrompt.includes('移除图像中的绿色区域')
+        ? `${basePrompt}${basePrompt ? '；' : ''}移除图像中的绿色区域`
+        : basePrompt;
     const consistency = consistencyOn
       ? { name: refs.consistencyLora.value, strength: Number(refs.consistencyStrength.value) }
       : false;
 
     const payload = {
       // 指令正文保持原文，风格/滤镜/视角在这里合成
-      prompt: stylePicker.composePrompt(promptText),
+      prompt: promptFinal,
       negative_prompt: refs.negative.value.trim(),
       images: images.map((image) => ({ name: image.name, data: image.dataUrl })),
       size_mode: mode,
@@ -2234,6 +2294,13 @@ export function createEditPage(host) {
         blend_pixels: Math.round(Number(edit.blendPixels) || 0),
         consistency: consistencyOn,
       };
+      if (taskMode === 'remove') {
+        payload.local.fills = true;
+        payload.local.hint = 'green_overlay';
+      } else if (taskMode === 'outpaint') {
+        payload.local.fills = false;
+        payload.local.hint = 'gray_fill';
+      }
     }
     return payload;
   }
@@ -2304,6 +2371,11 @@ export function createEditPage(host) {
       }
       // 预设摘要必须先就绪：决定 preset / task.mode 与覆盖项合并
       await ensurePresets();
+      // 明确选「元素移除」时必须已有蒙版，否则会提交一次无效任务
+      if (String(edit.taskMode || 'auto') === 'remove' && !images[0]?.mask?.dataUrl) {
+        toastWarn('元素移除需要先开启局部编辑并涂抹蒙版');
+        return;
+      }
       const payload = collectPayload(maskResult);
       const maskOverlay = payload.__maskOverlay;
       delete payload.__maskOverlay;
@@ -2430,6 +2502,7 @@ export function createEditPage(host) {
       </div>`;
     let panel = null;
     const previousPreset = edit.preset;
+    const previousTask = edit.taskMode || 'auto';
     let applied = false;
     const modal = openModal({
       title: '扩图 / 外补画布',
@@ -2443,7 +2516,8 @@ export function createEditPage(host) {
         // 取消时回到原预设，避免后续普通编辑被当成扩图提交
         if (!applied) {
           edit.preset = previousPreset;
-          patchSettings({ edit: { preset: previousPreset } });
+          edit.taskMode = previousTask;
+          patchSettings({ edit: { preset: previousPreset, taskMode: previousTask } });
         }
         renderPresets();
         syncLocalControls();
@@ -2468,6 +2542,9 @@ export function createEditPage(host) {
     });
     panel.init();
     panel.activate();
+    // 扩图面板接管任务，任务下拉回到「跟随预设」
+    edit.taskMode = 'auto';
+    patchSettings({ edit: { taskMode: 'auto' } });
     // 图片尺寸就绪后再对齐幽灵层（否则 getView 拿到 0 宽）
     if (stageImg.complete) requestAnimationFrame(() => panel?.syncGhost());
     else stageImg.addEventListener('load', () => requestAnimationFrame(() => panel?.syncGhost()), { once: true });
@@ -2577,7 +2654,8 @@ export function createEditPage(host) {
         refs.localEnabled.checked = true;
         // 旧流程产出了新画布 + 遮罩，落回局部编辑预设
         edit.preset = 'mask_edit';
-        patchSettings({ edit: { prompt: result.prompt, localEnabled: true, preset: 'mask_edit' } });
+        edit.taskMode = 'auto';
+        patchSettings({ edit: { prompt: result.prompt, localEnabled: true, preset: 'mask_edit', taskMode: 'auto' } });
         renderPresets();
         syncLocalControls();
         advanced.refresh();

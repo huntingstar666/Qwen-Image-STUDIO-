@@ -40,6 +40,7 @@ const DEFAULT_EDIT = {
   prompt: '',
   // 编辑预设（两页共用，数值由 /api/meta.edit_presets 下发）
   preset: 'mask_edit',
+  taskMode: 'auto',
   overrides: {},
   protection: { color: true, zeroShift: true },
   // 旧字段（羽化/外扩/校色…）已迁移到 overrides 的一次性标记

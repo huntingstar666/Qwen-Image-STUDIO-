@@ -243,7 +243,11 @@ def _cap_reference_images(images: list[Image.Image], max_side: int) -> list[Imag
 
 
 def _pose_reference(pose: dict[str, Any], size: tuple[int, int]) -> Image.Image:
-    """把姿态图等比放黑底画布，尺寸与采样画布严格一致。"""
+    """把姿态图等比放进白底画布，尺寸与采样画布严格一致。
+
+    VNCCS 姿态 LoRA 是在白底人偶图上训练的，补边也必须是白色，
+    否则黑边会把「画布边缘」误当成画面内容，姿态跟随会明显变弱。
+    """
     raw = pose.get("image") or pose.get("data") or pose.get("dataURL")
     try:
         image = imaging.decode_image(_entry_bytes(raw))
@@ -256,7 +260,7 @@ def _pose_reference(pose: dict[str, Any], size: tuple[int, int]) -> Image.Image:
         (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
         resample,
     )
-    canvas = Image.new("RGB", size, (5, 7, 10))
+    canvas = Image.new("RGB", size, (255, 255, 255))
     canvas.paste(fitted, ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2))
     return canvas
 

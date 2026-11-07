@@ -32,3 +32,9 @@ ISS_Falling/
 # 需要时用 scripts/sync_style_assets.ps1 从原项目同步过来
 web/creative-presets/
 web/mj-styles/
+
+# 3D 姿态编辑器的大体积资源（人体数据 82MB + 皮肤贴图 4.5MB + 骨架图库 1.5MB）
+# 编辑器代码随仓库走；这些二进制用 scripts/sync_pose3d_assets.ps1 从插件目录同步
+web/vendor/pose3d/vnccs/assets/
+web/vendor/pose3d/vnccs/textures/
+web/vendor/pose3d/poses/

@@ -4091,185 +4091,96 @@ html[data-theme="dark"] .hr-panel {
   color: color-mix(in srgb, var(--accent) 72%, var(--dim));
 }
 
-.pose-dialog-modal {
-  width: min(1080px, 94vw) !important;
-  max-width: min(1080px, 94vw) !important;
+/* 3D 姿态编辑器：iframe 内是 web/vendor/pose3d 的 freepose（VNCCS 人偶内核） */
+
+.modal.pose3d-dialog {
+  width: min(1500px, calc(100vw - 40px));
+  max-width: min(1500px, calc(100vw - 40px));
+  height: min(960px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
 }
 
-.pose-studio {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 258px;
-  gap: 16px;
-  min-width: 0;
+.modal.pose3d-dialog .modal-head {
+  flex: none;
 }
 
-.pose-stage {
-  position: relative;
+.modal.pose3d-dialog .modal-body {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: radial-gradient(circle at 50% 18%, #121820, #05070a 72%);
+  flex: 1;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
   overflow: hidden;
+  min-height: 0;
 }
 
-.pose-canvas {
-  display: block;
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: min(64vh, 620px);
-  border-radius: 10px;
-  touch-action: none;
-}
-
-.pose-canvas.dragging {
-  cursor: grabbing;
-}
-
-.pose-stage-tip {
-  position: absolute;
-  left: 50%;
-  bottom: 10px;
-  transform: translateX(-50%);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.58);
-  color: #cfd6dd;
-  font-size: 10.5px;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.pose-side {
+.pose3d {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 14px;
-  min-width: 0;
-  max-height: min(64vh, 620px);
-  padding-right: 2px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  min-height: 0;
 }
 
-.pose-block {
+.pose3d-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #f4f6f8;
+}
+
+.pose3d-bar {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.pose-block-title {
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-.pose-presets {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.pose-preset {
-  height: 30px;
-  padding: 0 4px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel-2);
-  color: var(--text-2);
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.pose-preset:hover {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-
-.pose-preset.active {
-  border-color: var(--accent);
-  background: var(--accent-dim);
-  color: var(--accent);
-}
-
-.pose-slider {
-  display: flex;
+  flex: none;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
   color: var(--muted);
   font-size: 11px;
+}
+
+.pose3d-strength {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   white-space: nowrap;
 }
 
-.pose-slider input {
-  flex: 1;
-  min-width: 0;
+.pose3d-strength input {
+  width: 128px;
 }
 
-.pose-slider span {
-  width: 40px;
+.pose3d-strength span {
+  width: 34px;
   color: var(--text-2);
   font-size: 10.5px;
   text-align: right;
 }
 
-.pose-btn-row {
+.pose3d-check {
   display: flex;
+  align-items: center;
   gap: 6px;
-}
-
-.pose-btn-row .btn {
-  flex: 1;
-}
-
-.pose-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
   color: var(--text-2);
-  font-size: 11px;
-  line-height: 1.5;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.pose-check input {
-  margin-top: 2px;
-}
-
-.pose-check small {
-  display: block;
-  color: var(--dim);
-  font-size: 10px;
-  line-height: 1.55;
-}
-
-.pose-note {
-  padding: 9px 10px;
-  border-radius: 10px;
-  background: var(--panel-2);
+.pose3d-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--dim);
   font-size: 10.5px;
-  line-height: 1.65;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 860px) {
-  .pose-studio {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .pose-side {
-    max-height: none;
-  }
-
-  .pose-canvas {
-    max-height: 42vh;
+  .pose3d-hint {
+    display: none;
   }
 }
 

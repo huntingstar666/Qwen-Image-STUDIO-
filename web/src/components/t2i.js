@@ -931,14 +931,12 @@ export function createT2IPage(host) {
 
   function openPoseDialog() {
     openPoseStudio({
-      initial: poseState
-        ? {
-            joints: poseState.joints,
-            preset: poseState.preset,
-            strength: poseState.strength,
-            useLora: poseState.useLora,
-          }
-        : null,
+      initial: {
+        // 3D 编辑器：把上次的姿势原样带回去，接着改
+        pose3d: poseState?.pose3d || '',
+        strength: poseState?.strength,
+        useLora: poseState?.useLora,
+      },
       onApply: (pose) => {
         poseState = pose;
         syncPoseUi();
@@ -1750,8 +1748,6 @@ export function createT2IPage(host) {
             image: poseState.dataUrl,
             width: poseState.width,
             height: poseState.height,
-            joints: poseState.joints,
-            preset: poseState.preset,
             label: poseState.label,
             summary: poseState.summary,
             strength: poseState.strength,
@@ -1765,7 +1761,7 @@ export function createT2IPage(host) {
         rawPrompt: refs.prompt.value.trim(),
         creativePresets: pickerMeta.creativePresets,
         imageAngle: pickerMeta.imageAngle,
-        pose: poseState ? { preset: poseState.preset, summary: poseState.summary } : null,
+        pose: poseState ? { label: poseState.label, summary: poseState.summary } : null,
         client: 'qwen-image2.1-web',
       },
     };

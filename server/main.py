@@ -1895,6 +1895,34 @@ for _sub in ("creative-presets", "mj-styles"):
     if os.path.isdir(_dir):
         app.mount(f"/{_sub}", StaticFiles(directory=_dir), name=_sub)
 
+# 3D 姿态编辑器（Gaoshang-Pose 的 freepose）内置骨架图库。
+# 编辑器写死了这两条 ComfyUI 路由，纯静态托管给不出文件列表，这里补上。
+POSE3D_POSES_DIR = os.path.join(config.WEB_DIR, "vendor", "pose3d", "poses")
+_POSE_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def _list_builtin_poses() -> list[str]:
+    if not os.path.isdir(POSE3D_POSES_DIR):
+        return []
+    names = [name for name in os.listdir(POSE3D_POSES_DIR) if name.lower().endswith(_POSE_IMAGE_EXT)]
+    # 编号图 1.png、2.png … 按数字排，其余按文件名排在后面
+    def sort_key(name: str) -> tuple[float, str]:
+        stem = os.path.splitext(name)[0]
+        return (int(stem) if stem.isdigit() else float("inf"), name)
+    return sorted(names, key=sort_key)
+
+
+@app.get("/gaoshang_pose/builtin_poses")
+def api_builtin_poses() -> dict[str, Any]:
+    return {"files": _list_builtin_poses()}
+
+
+@app.get("/gaoshang_pose/builtin_poses/{name}")
+def api_builtin_pose_file(name: str) -> FileResponse:
+    if name not in _list_builtin_poses():
+        raise ApiError("姿势图不存在", code="not_found", status=404)
+    return FileResponse(os.path.join(POSE3D_POSES_DIR, name))
+
 
 @app.get("/")
 def index() -> FileResponse:

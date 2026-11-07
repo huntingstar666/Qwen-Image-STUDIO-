@@ -517,14 +517,14 @@ export function createEditPage(host) {
 
   function openPoseDialog() {
     openPoseStudio({
-      initial: poseState
-        ? {
-            joints: poseState.joints,
-            preset: poseState.preset,
-            strength: poseState.strength,
-            useLora: poseState.useLora,
-          }
-        : null,
+      initial: {
+        // 3D 编辑器：把上次的姿势原样带回去，接着改
+        pose3d: poseState?.pose3d || '',
+        strength: poseState?.strength,
+        useLora: poseState?.useLora,
+        // 当前编辑目标顺手放进编辑器右栏，摆姿时能对着人物参考
+        referencePreview: images[0]?.dataUrl || null,
+      },
       onApply: (pose) => {
         poseState = pose;
         syncPoseUi();
@@ -2273,8 +2273,6 @@ export function createEditPage(host) {
             image: poseState.dataUrl,
             width: poseState.width,
             height: poseState.height,
-            joints: poseState.joints,
-            preset: poseState.preset,
             label: poseState.label,
             summary: poseState.summary,
             strength: poseState.strength,

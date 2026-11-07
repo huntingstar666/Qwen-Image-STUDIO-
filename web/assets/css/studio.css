@@ -2693,3 +2693,102 @@ html[data-theme='dark'] .page-studio {
 
 
 
+
+/* ============================================================
+ * 高清放大弹窗（D15.1）
+ * ============================================================ */
+.up-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.up-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.up-label {
+  flex: 0 0 40px;
+  padding-top: 4px;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.up-chips {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.up-hint {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.up-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.up-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(127, 127, 127, 0.22);
+}
+
+.up-bar span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+
+.up-result {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.up-result img {
+  width: 132px;
+  height: 132px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.12);
+  object-fit: contain;
+}
+
+.up-result-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.up-meta {
+  color: var(--text-2);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.up-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.up-main {
+  justify-content: flex-end;
+}

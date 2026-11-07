@@ -20,6 +20,7 @@ import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
+import { openUpscaleDialog } from './studio/upscaleDialog.js';
 import { REF_MIME, filesFromDataTransfer, openImportPicker, urlToDataUrl } from './studio/importPicker.js';
 import {
   cleanupProjects,
@@ -215,6 +216,7 @@ export function createStudioPage(host) {
               <button type="button" role="menuitem" data-export="favorite">收藏到素材仓库</button>
             </div>
           </div>
+          <button class="btn ghost sm" type="button" data-ref="upscaleBtn" disabled title="高清放大当前画面（VOSR2 / SeedVR2 / FlashVSR）">放大</button>
           <button class="btn primary sm" type="button" data-ref="sendBtn" disabled>送入图像编辑</button>
           <input type="file" accept="image/*" hidden data-ref="fileInput" />
         </div>
@@ -402,6 +404,7 @@ export function createStudioPage(host) {
     exportBtn: ref('exportBtn'),
     exportMenu: ref('exportMenu'),
     compareAllBtn: ref('compareAllBtn'),
+    upscaleBtn: ref('upscaleBtn'),
     sendBtn: ref('sendBtn'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
@@ -1866,7 +1869,7 @@ export function createStudioPage(host) {
     refs.dot.classList.add('is-live');
     refs.fileName.textContent = doc.name;
     refs.dims.textContent = '';
-    for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn']) refs[key].disabled = false;
+    for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = false;
     syncAdjustInputs();
     updateSizeInfo();
     updateHistoryUi();
@@ -2221,6 +2224,16 @@ export function createStudioPage(host) {
   refs.sendBtn.addEventListener('click', sendToEdit);
   refs.compareAllBtn.addEventListener('click', () => {
     void ai?.compareAll?.();
+  });
+  refs.upscaleBtn.addEventListener('click', () => {
+    if (!doc || previewBlocked('放大')) return;
+    flushAdjustPreview();
+    openUpscaleDialog({
+      getImage: () => doc.bake('image/png'),
+      getSize: () => doc.size,
+      onAdopt: (url, name) => openUrl(url, name),
+      onCompare: (url) => ai?.compareAll?.({ extra: [{ url, label: '放大结果' }] }),
+    });
   });
 
   refs.undoBtn.addEventListener('click', () => {

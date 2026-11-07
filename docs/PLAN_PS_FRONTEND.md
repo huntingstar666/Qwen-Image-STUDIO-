@@ -716,6 +716,13 @@ DOM 结构：
   4. **真机 GPU 目检**：自动化环境无法覆盖 HiDPI 真实合成器差异（D18.4 已记录 headed 窗口被遮挡时 rAF 被节流），保留为人工项，不阻塞本条销项。
   5. **S-25 实测**：在 iframe 新 realm 中把 `CanvasRenderingContext2D.prototype.filter` 改为「setter 空实现、读取恒为 `none`」，再动态 import `studioDoc.js`，得到 `supportsCanvasFilter === false`（同页主 realm 仍为 `true`），探针能正确识别不支持环境；该分支下 `applyCanvasFilterCapability()` 禁用曝光 / 亮度 / 对比度 / 饱和度四个滑杆并显示说明，色温与色调保留。
 
+- **D15.1 高清放大入口（已完成）** —— 顶栏新增「放大」按钮（`data-ref="upscaleBtn"`，无主图禁用；AI 预览态先被 `previewBlocked('放大')` 拦住，避免放大错版本）。点击后打开 `studio/upscaleDialog.js` 弹窗：
+  - 引擎来自 `api.upscaleModels()` 的 `ready` 项，文案映射 VOSR2 细节优先 / SeedVR2 质量优先 / FlashVSR 速度优先，默认取响应的 `default_engine`；倍率 2× / 4×，默认取 `defaults.scale`。
+  - 输入是 `doc.bake('image/png')`（含变换、调色、叠加层），提交 `api.upscale({ image, engine, scale })`，用 `pollJob` 每 700ms 刷新进度条与状态文案；失败/取消/超时都有明确状态，可中途「取消任务」（`api.cancelJob`）。
+  - 完成后结果卡片显示 `宽 × 高` 与文件名，「载入为主图」走 `openUrl(url, name-2x.png)` 成为新工程（可继续编辑、导出、送编辑），「与当前主图对比」走 `ai.compareAll({ extra: [{ url, label: '放大结果' }] })` 复用竖线对比。
+  - 实测（headless Chromium，512×384 底图，vosr2 2×）：弹窗正确列出 3 个就绪引擎、VOSR2 与 2× 默认选中、提示「当前画面 512 × 384」；任务 ~1.5s 完成，结果卡显示 `1,024 × 768 · out-…_upscale-vosr2.png` 且缩略图 `naturalWidth = 1024`；载入后顶栏尺寸变 `1,024 × 768`、文件名 `…-2x.png`、弹窗关闭。
+  - 已知取舍：载入结果会 `beginProject()` 开新工程，旧工程历史不参与对比栈；需要前后对照时请在弹窗内先点「与当前主图对比」。
+
 - **D0.1 预检与基线（已完成·补记）** —— 该项在 M0 阶段已随 D6.1 / D18.1 实际完成，本轮补齐证据与记录：工作区快照见 §0 与 §14.2（他人未提交文件每次开工前复核）；三页基线截图本轮重新采集到 `.cache/shots/baseline-2026-11-07-{t2i,edit,studio}-*.png`（1440×900、Chromium headless），文生图 / 图像编辑 / 图片精修均正常渲染，`exception` 日志为空；测试基线 `python -m pytest tests` → **497 passed（46.33s）**（计划编写时 419，D6.1 时 488）；`node -v` → **v24.13.0**（≥18，可用内置 `node --test`）；浏览器基线以 Chromium 为准，Safari 抽检未做（不阻塞验收）。原计划目录 `.cache/shots/` 此前未落地，本轮已创建并补齐。
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
@@ -916,6 +923,7 @@ DOM 结构：
 | `panels/recovery.js` | 恢复横幅、最近工程列表 | `persistence` | D17.2 |
 | `studio/aiHistory.js` | AI 编辑历史卡片区 | `sessionHistory` | D16.1 |
 | `compareLauncher.js` | 组装对比数据并调用 `openCompareDialog` | `compare.js` | D16.2 |
+| `studio/upscaleDialog.js` | 高清放大弹窗：引擎/倍率、任务进度、结果回流主图 | `api.upscale` + `pollJob` | D15.1 |
 | `io.js` | IndexedDB 自动保存、项目导入导出、图片导出 | `document` | D7 |
 
 `studio.js` 只保留装配：工具切换、画布事件、面板挂载；不再新增业务算法。
@@ -1227,7 +1235,7 @@ DOM 结构：
 | D13.2 | 内容识别填充 | 未开始 | — | 待后端 |
 | D13.3 | 透视变换 / 路径文字 | 未开始 | — | — |
 | D14.1 | 全景图入口 | 未开始 | — | 待全景后端 |
-| D15.1 | 高清放大入口 | 未开始 | — | 待 VOSR2 提交 |
+| D15.1 | 高清放大入口 | 已完成 | 本次提交 | 顶栏「放大」→ `upscaleDialog.js`：读取 `api.upscaleModels()` 列出就绪引擎（VOSR2 / SeedVR2 / FlashVSR，默认 VOSR2），倍率 2×/4×，提交当前烘焙主图后按 `pollJob` 显示进度、可取消；结果卡片显示输出尺寸与文件名，可「载入为主图」（新工程，可继续编辑 / 导出）或「与当前主图对比」（走 `ai.compareAll({ extra })`）。实测 512×384 → 1024×768（vosr2 2×），载入后尺寸与文件名同步 |
 
 ### 14.13 启动顺序（等通知后）
 

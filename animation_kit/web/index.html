@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>定格工坊 · GIF / Stop Motion</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/assets/app.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Zm3 1v9h10v-9H7Zm2.2 2.2 4.6 2.3-4.6 2.3V9.7Z" fill="currentColor"/></svg>
+        </span>
+        <span class="brand-text">定格工坊<em>STOP&nbsp;MOTION</em></span>
+      </div>
+
+      <div class="project-switch">
+        <label class="sr-only" for="project-select">项目</label>
+        <select id="project-select" class="select"></select>
+        <button id="btn-new-project" class="icon-btn" title="新建项目" aria-label="新建项目">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" fill="currentColor"/></svg>
+        </button>
+        <input id="project-name" class="project-name" spellcheck="false" aria-label="项目名称" />
+      </div>
+
+      <div class="save-state" id="save-state" data-state="saved">
+        <span class="dot"></span><span class="text">已保存</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="btn-import" class="btn">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 3l4 4h-3v6h-2V7H8l4-4ZM5 15h2v4h10v-4h2v6H5v-6Z" fill="currentColor"/></svg>
+          导入帧
+        </button>
+        <button id="btn-export" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 16 8 12h3V4h2v8h3l-4 4ZM5 18h14v2H5v-2Z" fill="currentColor"/></svg>
+          导出
+        </button>
+        <button id="btn-theme" class="icon-btn" title="切换主题" aria-label="切换主题">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><path d="M11 2h2v3h-2V2Zm0 17h2v3h-2v-3ZM2 11h3v2H2v-2Zm17 0h3v2h-3v-2ZM4.8 3.4l2.1 2.1-1.4 1.4-2.1-2.1 1.4-1.4Zm12.3 12.3 2.1 2.1-1.4 1.4-2.1-2.1 1.4-1.4Zm0-11 1.4 1.4-2.1 2.1-1.4-1.4 2.1-2.1ZM4.8 20.6l-1.4-1.4 2.1-2.1 1.4 1.4-2.1 2.1Z" fill="currentColor"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2Z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="left-panel" aria-label="工具面板">
+        <section class="panel-section">
+          <div class="panel-head">
+            <h2>画布</h2>
+            <span class="chip" id="canvas-chip">—</span>
+          </div>
+          <div class="field-grid two">
+            <label class="field"><span>宽度</span><input id="canvas-width" type="number" min="1" max="8192" step="1" /></label>
+            <label class="field"><span>高度</span><input id="canvas-height" type="number" min="1" max="8192" step="1" /></label>
+          </div>
+          <label class="field"><span>适配方式</span>
+            <select id="canvas-fit" class="select">
+              <option value="contain">完整显示（contain）</option>
+              <option value="cover">填满裁切（cover）</option>
+              <option value="stretch">强制拉伸（stretch）</option>
+              <option value="none">原始尺寸（none）</option>
+            </select>
+          </label>
+          <div class="field-grid two">
+            <label class="field"><span>锚点</span>
+              <select id="canvas-anchor" class="select">
+                <option value="center">居中</option>
+                <option value="top">顶部</option>
+                <option value="bottom">底部</option>
+              </select>
+            </label>
+            <label class="field"><span>背景</span>
+              <div class="inline-control">
+                <input id="canvas-bg" type="color" value="#ffffff" title="背景色" />
+                <label class="switch"><input id="canvas-transparent" type="checkbox" /><i></i><span>透明</span></label>
+              </div>
+            </label>
+          </div>
+          <p class="hint" id="canvas-hint">画布尺寸变化不会重采样已有帧，只改变合成范围。</p>
+        </section>
+
+        <section class="panel-section">
+          <div class="panel-head">
+            <h2>时间轴</h2>
+            <span class="chip" id="timeline-chip">—</span>
+          </div>
+          <div class="field-grid two">
+            <label class="field"><span>帧率</span><input id="timeline-fps" type="number" min="1" max="60" step="1" /></label>
+            <label class="field"><span>默认停顿</span><input id="timeline-hold" type="number" min="1" max="240" step="1" /></label>
+          </div>
+          <div class="field-grid two">
+            <label class="field"><span>方向</span>
+              <select id="timeline-direction" class="select">
+                <option value="forward">正放</option>
+                <option value="pingpong">乒乓</option>
+              </select>
+            </label>
+            <label class="field"><span>循环</span><input id="timeline-loop" type="number" min="0" max="999" step="1" title="0 表示无限循环" /></label>
+          </div>
+          <button id="btn-apply-hold" class="btn btn-ghost btn-block">把默认停顿应用到全部帧</button>
+        </section>
+
+        <section class="panel-section">
+          <div class="panel-head">
+            <h2>自动稳定</h2>
+            <span class="chip chip-warm">整数位移</span>
+          </div>
+          <p class="hint">FFT 相位相关估计主体抖动，只做整数平移补偿，不重采样。</p>
+          <div class="field-grid two">
+            <label class="field"><span>参考</span>
+              <select id="align-reference" class="select">
+                <option value="first">首帧</option>
+                <option value="previous">上一帧</option>
+                <option value="median">全片中位</option>
+              </select>
+            </label>
+            <label class="field"><span>最大位移</span><input id="align-max" type="number" min="0" max="512" step="1" value="64" /></label>
+          </div>
+          <label class="field"><span>置信度阈值</span><input id="align-confidence" type="range" min="0" max="0.5" step="0.01" value="0.08" /><b class="range-value" id="align-confidence-value">0.08</b></label>
+          <button id="btn-align" class="btn btn-block">分析并补偿抖动</button>
+          <div class="result-box" id="align-result" hidden></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="panel-head">
+            <h2>色彩一致</h2>
+            <span class="chip chip-warm">alpha 不变</span>
+          </div>
+          <p class="hint">逐通道 gain / offset 匹配，消除逐帧明暗与色温跳动；透明通道逐字节保留。</p>
+          <div class="field-grid two">
+            <label class="field"><span>参考</span>
+              <select id="color-reference" class="select">
+                <option value="median">全片中位</option>
+                <option value="first">首帧</option>
+              </select>
+            </label>
+            <label class="field"><span>范围</span>
+              <select id="color-scope" class="select">
+                <option value="subject">仅主体</option>
+                <option value="full">整帧</option>
+              </select>
+            </label>
+          </div>
+          <label class="field"><span>强度</span><input id="color-strength" type="range" min="0" max="1" step="0.05" value="0.8" /><b class="range-value" id="color-strength-value">0.8</b></label>
+          <div class="button-row">
+            <button id="btn-color" class="btn">应用校正</button>
+            <button id="btn-color-revert" class="btn btn-ghost">还原原图</button>
+          </div>
+          <div class="result-box" id="color-result" hidden></div>
+        </section>
+      </aside>
+
+      <section class="stage-area" aria-label="舞台与时间轴">
+        <div class="stage-toolbar">
+          <div class="transport">
+            <button id="btn-prev" class="icon-btn" title="上一帧" aria-label="上一帧">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M7 5h2v14H7V5Zm3 7 8-7v14l-8-7Z" fill="currentColor"/></svg>
+            </button>
+            <button id="btn-play" class="icon-btn icon-btn-accent" title="播放 / 暂停（空格）" aria-label="播放">
+              <svg class="icon-play" viewBox="0 0 24 24" width="17" height="17"><path d="M7 4.5 19 12 7 19.5v-15Z" fill="currentColor"/></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" width="17" height="17" hidden><path d="M7 4h4v16H7V4Zm6 0h4v16h-4V4Z" fill="currentColor"/></svg>
+            </button>
+            <button id="btn-next" class="icon-btn" title="下一帧" aria-label="下一帧">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M15 5h2v14h-2V5ZM6 5l8 7-8 7V5Z" fill="currentColor"/></svg>
+            </button>
+            <span class="time-readout" id="time-readout">00:00.00 / 00:00.00</span>
+          </div>
+
+          <div class="toolbar-group onion-control">
+            <label class="switch"><input id="onion-enabled" type="checkbox" checked /><i></i><span>洋葱皮</span></label>
+            <input id="onion-opacity" type="range" min="0.05" max="0.6" step="0.01" value="0.26" title="洋葱皮透明度" />
+            <select id="onion-mode" class="select select-compact">
+              <option value="both">前后帧</option>
+              <option value="prev">仅前一帧</option>
+              <option value="next">仅后一帧</option>
+            </select>
+          </div>
+
+          <div class="toolbar-group">
+            <label class="switch"><input id="show-guides" type="checkbox" /><i></i><span>辅助线</span></label>
+            <button class="icon-btn" id="btn-zoom-out" title="缩小" aria-label="缩小">−</button>
+            <button class="btn btn-ghost btn-compact" id="btn-zoom-fit">适应</button>
+            <button class="btn btn-ghost btn-compact" id="btn-zoom-100">100%</button>
+            <button class="icon-btn" id="btn-zoom-in" title="放大" aria-label="放大">+</button>
+          </div>
+        </div>
+
+        <div class="stage-viewport" id="stage-viewport">
+          <div class="stage-board" id="stage-board">
+            <canvas id="stage-canvas"></canvas>
+            <div class="stage-empty" id="stage-empty">
+              <div class="empty-mark" aria-hidden="true">
+                <svg viewBox="0 0 64 64" width="52" height="52"><path d="M10 12h44v40H10V12Zm4 4v32h36V16H14Zm6 4h10v10H20V20Zm14 0h10v10H34V20ZM20 34h10v10H20V34Zm14 0h10v10H34V34Z" fill="currentColor"/></svg>
+              </div>
+              <h3>还没有帧</h3>
+              <p>导入一张 4×4 透明宫格，或多张连续画面开始制作。</p>
+              <button class="btn btn-primary" data-action="import">导入第一组帧</button>
+            </div>
+            <div class="playhead-badge" id="playhead-badge" hidden></div>
+          </div>
+        </div>
+
+        <div class="filmstrip-area">
+          <div class="filmstrip-head">
+            <div class="filmstrip-meta" id="filmstrip-meta">0 帧</div>
+            <div class="filmstrip-tip">拖动缩略图可调整顺序 · ← → 切换 · 空格播放</div>
+          </div>
+          <div class="filmstrip" id="filmstrip" role="listbox" aria-label="帧列表"></div>
+        </div>
+      </section>
+
+      <aside class="right-panel" id="inspector" aria-label="帧属性"></aside>
+    </main>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="modal-root"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

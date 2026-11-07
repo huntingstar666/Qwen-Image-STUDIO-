@@ -829,6 +829,35 @@
   margin-top: 12px;
 }
 
+/* 直方图（D9.2）：低分辨率代理统计，120ms 节流刷新 */
+.studio-hist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+}
+
+.studio-hist-canvas {
+  display: block;
+  width: 100%;
+  height: 72px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #000 24%, var(--panel-2));
+}
+
+.studio-hist-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
 .studio-note {
   margin-top: 14px;
   padding: 10px 12px;

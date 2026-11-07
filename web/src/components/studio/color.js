@@ -410,3 +410,172 @@ export function applyGains(data, gains, strength = 1) {
   }
   return data;
 }
+
+/* -------------------------------------------------------------- 直方图 */
+
+/**
+ * RGB + 亮度直方图。按 `sampleLimit` 抽样，4K 也只需约 20 万像素。
+ * @param {Uint8ClampedArray} data RGBA
+ * @param {{sampleLimit?:number}} [options]
+ * @returns {{r:Uint32Array,g:Uint32Array,b:Uint32Array,luma:Uint32Array,total:number,sampled:number,clipLow:number,clipHigh:number}}
+ */
+export function histogram(data, options = {}) {
+  const limit = Math.max(1, Number(options.sampleLimit ?? 200000));
+  const pixels = Math.floor(data.length / 4);
+  const stride = Math.max(1, Math.ceil(pixels / limit));
+  const r = new Uint32Array(256);
+  const g = new Uint32Array(256);
+  const b = new Uint32Array(256);
+  const lum = new Uint32Array(256);
+  let sampled = 0;
+  let clipLow = 0;
+  let clipHigh = 0;
+  for (let i = 0; i < pixels; i += stride) {
+    const offset = i * 4;
+    const rv = data[offset];
+    const gv = data[offset + 1];
+    const bv = data[offset + 2];
+    r[rv] += 1;
+    g[gv] += 1;
+    b[bv] += 1;
+    const lv = Math.round(luma(rv, gv, bv));
+    lum[lv] += 1;
+    if (lv <= 2) clipLow += 1;
+    if (lv >= 253) clipHigh += 1;
+    sampled += 1;
+  }
+  return {
+    r,
+    g,
+    b,
+    luma: lum,
+    total: pixels,
+    sampled,
+    clipLow: sampled ? clipLow / sampled : 0,
+    clipHigh: sampled ? clipHigh / sampled : 0,
+  };
+}
+
+/* ------------------------------------------------------------ 3D LUT */
+
+/**
+ * 解析标准 `.cube` 文件（`LUT_3D_SIZE` + RGB 三列，红分量变化最快）。
+ * @param {string} text
+ * @returns {{title:string,size:number,domainMin:number[],domainMax:number[],data:Float32Array}}
+ */
+export function parseCube(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  let title = '';
+  let size = 0;
+  let domainMin = [0, 0, 0];
+  let domainMax = [1, 1, 1];
+  const values = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const upper = line.toUpperCase();
+    if (upper.startsWith('TITLE')) {
+      title = line.slice(5).trim().replace(/^"|"$/g, '');
+      continue;
+    }
+    if (upper.startsWith('LUT_3D_SIZE')) {
+      size = Number(line.split(/\s+/)[1]) || 0;
+      continue;
+    }
+    if (upper.startsWith('LUT_1D_SIZE')) {
+      throw new Error('暂不支持 1D LUT（LUT_1D_SIZE）');
+    }
+    if (upper.startsWith('DOMAIN_MIN')) {
+      domainMin = line.split(/\s+/).slice(1, 4).map(Number);
+      continue;
+    }
+    if (upper.startsWith('DOMAIN_MAX')) {
+      domainMax = line.split(/\s+/).slice(1, 4).map(Number);
+      continue;
+    }
+    if (upper.startsWith('LUT_3D_INPUT_RANGE')) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 3) continue;
+    const rv = Number(parts[0]);
+    const gv = Number(parts[1]);
+    const bv = Number(parts[2]);
+    if (![rv, gv, bv].every((value) => Number.isFinite(value))) {
+      throw new Error(`无法解析 LUT 数据行：${line.slice(0, 40)}`);
+    }
+    values.push(rv, gv, bv);
+  }
+  if (!size || size < 2) throw new Error('缺少有效的 LUT_3D_SIZE');
+  const expected = size * size * size * 3;
+  if (values.length !== expected) {
+    throw new Error(`LUT 数据长度不符：期望 ${expected}，实际 ${values.length}`);
+  }
+  return {
+    title,
+    size,
+    domainMin,
+    domainMax,
+    data: Float32Array.from(values),
+  };
+}
+
+/**
+ * 三线性插值取色。
+ * @param {{size:number,data:Float32Array,domainMin:number[],domainMax:number[]}} cube
+ * @param {number} r 0~255
+ * @returns {[number,number,number]} 0~255
+ */
+export function sampleCube(cube, r, g, b) {
+  const { size, data } = cube;
+  const [r0, g0, b0] = cube.domainMin || [0, 0, 0];
+  const [r1, g1, b1] = cube.domainMax || [1, 1, 1];
+  const nr = clamp((r / 255 - r0) / Math.max(1e-6, r1 - r0), 0, 1) * (size - 1);
+  const ng = clamp((g / 255 - g0) / Math.max(1e-6, g1 - g0), 0, 1) * (size - 1);
+  const nb = clamp((b / 255 - b0) / Math.max(1e-6, b1 - b0), 0, 1) * (size - 1);
+  const x0 = Math.floor(nr);
+  const y0 = Math.floor(ng);
+  const z0 = Math.floor(nb);
+  const x1 = Math.min(size - 1, x0 + 1);
+  const y1 = Math.min(size - 1, y0 + 1);
+  const z1 = Math.min(size - 1, z0 + 1);
+  const fx = nr - x0;
+  const fy = ng - y0;
+  const fz = nb - z0;
+  const at = (x, y, z) => ((z * size + y) * size + x) * 3;
+  const out = [0, 0, 0];
+  for (let c = 0; c < 3; c += 1) {
+    const c000 = data[at(x0, y0, z0) + c];
+    const c100 = data[at(x1, y0, z0) + c];
+    const c010 = data[at(x0, y1, z0) + c];
+    const c110 = data[at(x1, y1, z0) + c];
+    const c001 = data[at(x0, y0, z1) + c];
+    const c101 = data[at(x1, y0, z1) + c];
+    const c011 = data[at(x0, y1, z1) + c];
+    const c111 = data[at(x1, y1, z1) + c];
+    const c00 = c000 + (c100 - c000) * fx;
+    const c10 = c010 + (c110 - c010) * fx;
+    const c01 = c001 + (c101 - c001) * fx;
+    const c11 = c011 + (c111 - c011) * fx;
+    const c0 = c00 + (c10 - c00) * fy;
+    const c1 = c01 + (c11 - c01) * fy;
+    out[c] = clamp((c0 + (c1 - c0) * fz) * 255, 0, 255);
+  }
+  return out;
+}
+
+/**
+ * 把 3D LUT 应用到 RGBA 缓冲，`strength` 为强度 0~1。
+ * @param {Uint8ClampedArray} data
+ * @param {ReturnType<typeof parseCube>} cube
+ * @param {number} [strength]
+ */
+export function applyCube(data, cube, strength = 1) {
+  const amount = clamp(Number(strength) || 0, 0, 1);
+  if (!cube || amount <= 0) return data;
+  for (let i = 0; i < data.length; i += 4) {
+    const [r, g, b] = sampleCube(cube, data[i], data[i + 1], data[i + 2]);
+    data[i] = Math.round(data[i] + (r - data[i]) * amount);
+    data[i + 1] = Math.round(data[i + 1] + (g - data[i + 1]) * amount);
+    data[i + 2] = Math.round(data[i + 2] + (b - data[i + 2]) * amount);
+  }
+  return data;
+}

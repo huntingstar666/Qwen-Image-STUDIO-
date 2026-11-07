@@ -10,6 +10,7 @@ import {
   HSL_BANDS,
   applyChannelLUTs,
   applyColorBalance,
+  applyCube,
   applyGains,
   applyHSL,
   applyLevels,
@@ -17,10 +18,13 @@ import {
   buildCurveLUT,
   buildLevelsLUT,
   grayPointGains,
+  histogram,
   hslToRgb,
   kelvinToGains,
   monotoneCubic,
+  parseCube,
   rgbToHsl,
+  sampleCube,
   whiteBalanceGains,
 } from '../../src/components/studio/color.js';
 
@@ -252,4 +256,80 @@ test('增益：strength 控制渐入', () => {
   near(half[0], 150, 2);
   near(half[2], 75, 2);
   assert.equal(half[1], 100);
+});
+
+/* ------------------------------------------------------------ 3D LUT */
+
+const IDENTITY_CUBE = `TITLE "identity"
+LUT_3D_SIZE 2
+0 0 0
+1 0 0
+0 1 0
+1 1 0
+0 0 1
+1 0 1
+0 1 1
+1 1 1
+`;
+
+const INVERT_CUBE = `LUT_3D_SIZE 2
+1 1 1
+0 1 1
+1 0 1
+0 0 1
+1 1 0
+0 1 0
+1 0 0
+0 0 0
+`;
+
+test('LUT：解析 .cube 元信息与数据长度', () => {
+  const cube = parseCube(IDENTITY_CUBE);
+  assert.equal(cube.title, 'identity');
+  assert.equal(cube.size, 2);
+  assert.equal(cube.data.length, 2 * 2 * 2 * 3);
+  assert.deepEqual(cube.domainMin, [0, 0, 0]);
+  assert.deepEqual(cube.domainMax, [1, 1, 1]);
+});
+
+test('LUT：拒绝 1D LUT 与长度不符', () => {
+  assert.throws(() => parseCube('LUT_1D_SIZE 16\n'), /1D/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\n0 0 0\n'), /长度不符/);
+});
+
+test('LUT：恒等表采样保持原色', () => {
+  const cube = parseCube(IDENTITY_CUBE);
+  const color = sampleCube(cube, 12, 200, 99);
+  near(color[0], 12, 1);
+  near(color[1], 200, 1);
+  near(color[2], 99, 1);
+});
+
+test('LUT：反相表按强度混合', () => {
+  const cube = parseCube(INVERT_CUBE);
+  const data = px(192, 57, 43);
+  applyCube(data, cube, 0.3);
+  near(data[0], 153, 2); // 192 + (63 - 192) * 0.3
+  near(data[1], 99, 2);
+  near(data[2], 94, 2);
+});
+
+/* ------------------------------------------------------------ 直方图 */
+
+test('直方图：分箱计数与抽样', () => {
+  const data = new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255]);
+  const stats = histogram(data);
+  assert.equal(stats.total, 3);
+  assert.equal(stats.sampled, 3);
+  assert.equal(stats.r[0], 1);
+  assert.equal(stats.r[255], 1);
+  assert.equal(stats.r[128], 1);
+  assert.equal(stats.luma[128], 1);
+});
+
+test('直方图：削波统计', () => {
+  const data = new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255, 120, 120, 120, 255]);
+  const stats = histogram(data);
+  near(stats.clipLow, 1 / 3, 0.01);
+  near(stats.clipHigh, 1 / 3, 0.01);
 });

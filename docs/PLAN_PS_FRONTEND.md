@@ -781,6 +781,14 @@ DOM 结构：
   - 单测：`web/tests/studio/color.test.mjs` 共 23 项，覆盖恒等曲线、控制点命中、单调性、S 形对比、复合/单通道 LUT、色阶裁切与 gamma、RGB↔HSL 往返、8 色带不串色、色相偏移 +60° 得黄、过渡区加权、色彩平衡分区/保亮度、色温冷暖方向、色调洋红/绿方向、灰点还原、增益强度渐入；`node --test web/tests/studio/color.test.mjs` → `pass 23 / fail 0`。
   - 说明：`.cube` LUT 解析与直方图统计随 D9.2 继续追加到同一模块；面板接线（`panels/adjust.js`）留到 D9.3。
 
+- **D9.2 直方图 + LUT（已完成）** —— 调色面板可视化与 3D LUT 落地：
+  - 直方图：`histogram(data, {sampleLimit=200000})` 按步长抽样，输出 R/G/B/亮度四组 256 桶 + 阴影/高光削波比例；面板用 `doc.renderPreviewBase(320)` 取样（约 7.7 万像素），`draw()` 内 120ms 节流刷新，切到「调色」页签强制刷新一次。绘制为亮度底 + RGB `lighter` 叠色，附 1/4 网格与「77k 像素 / 无削波」读数。
+  - `.cube`：`parseCube(text)` 支持 `TITLE / LUT_3D_SIZE / DOMAIN_MIN / DOMAIN_MAX`，校验数据长度（`size³×3`），明确拒绝 `LUT_1D_SIZE`；`sampleCube` 用三线性插值，`applyCube(data, cube, strength)` 按强度与原像素混合。
+  - 渲染管线：`ADJUST_DEFAULTS.lut = null`；`studioDoc._applyLut(canvas)` 在 `renderUnderlay()` 与 `renderPreviewBase()` 末尾各执行一次，结果随 `_underlay` 缓存，拖动叠加层不重复计算。调色（含 LUT）作用于底图，与曝光/亮度等既有行为一致，不影响叠加层。
+  - 面板：调色页签顶部加直方图；底部「3D LUT」区块支持加载 `.cube`、强度 0~100、移除，未加载时强度与移除禁用；加载/强度提交/移除都会 `invalidateBase + snapshot`，可撤销。LUT 体积大（33³×Float32）且来自本地文件，会话保存时主动剔除，刷新后需重新加载（界面有提示）。
+  - 顺手修复：调色滑杆 `input` 时补 `invalidateBase()`——此前小图（≤1024）在 `renderPreviewBase` 里直接复用 `renderBase` 缓存，拖动期间画面不刷新；修复后曝光 60 实时变为 `[255,86,65]`，复位回 `[192,57,43]`。
+  - 实测（headless Chromium 1440×900，800×600 底图）：直方图绘制 1246/21600 像素、读数「77k 像素 / 无削波」；注入 2³ 反相 `.cube` 后底图 `[192,57,43] → [63,198,212]`（青色），强度 40% 实时得 `[140,113,111]`（理论 140/113/111），移除后回 `[192,57,43]`，撤销同样还原并同步 UI；单测新增 6 项（解析、拒绝 1D、恒等采样、反相强度、直方图分箱、削波），`node --test` → `pass 29 / fail 0`。截图 `.cache/shots/d92-histogram-*.png`。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -962,7 +970,7 @@ DOM 结构：
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})` | `layers` | D7（D7.2 已落地） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
-| `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、白平衡增益（纯函数）；LUT 解析与直方图随后追加 | 无 | D9.1（已落地） |
+| `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
 | `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
@@ -1274,7 +1282,7 @@ DOM 结构：
 | D8.1 | 选区核心 | 已完成 | 本次提交 | 新增 `studio/selection.js`（alpha 蒙版、魔棒洪泛、羽化/扩展/收缩、蚂蚁线路径）；`studio.js` 加魔棒工具 + `.studio-selbar` 浮条，画笔/形状按选区裁剪；实测见 §12.11 |
 | D8.2 | 图层蒙版 | 已完成 | 本次提交 | `OverlayLayer` 增加可画可擦蒙版与 `maskedImage()` 缓存；图层面板 `◐`/`✎`；`docToLayerTransform` 映射涂抹；随工程保存 `maskBlob`；实测见 §12.11 |
 | D9.1 | 调色数学库 | 已完成 | 本次提交 | 新增 `studio/color.js`（曲线/色阶/HSL/色彩平衡/白平衡，纯函数）；新增 `web/tests/studio/color.test.mjs`，`node --test` 23 项全绿；实测见 §12.11 |
-| D9.2 | 直方图 + LUT | 未开始 | — | — |
+| D9.2 | 直方图 + LUT | 已完成 | 本次提交 | `color.js` 追加 `histogram/parseCube/sampleCube/applyCube`；`studioDoc` 支持 `adjust.lut` 逐像素查表；调色面板加直方图与 .cube 加载/强度；实测见 §12.11 |
 | D9.3 | 调整图层 | 未开始 | — | — |
 | D9.4 | 局部调整 | 未开始 | — | — |
 | D10.1 | 污点修复 | 未开始 | — | — |

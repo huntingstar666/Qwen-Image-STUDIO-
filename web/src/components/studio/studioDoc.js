@@ -23,6 +23,7 @@ import {
 } from './document.js';
 import { createHistory } from './history.js';
 import { composite } from './renderer.js';
+import { applyCube } from './color.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -31,6 +32,8 @@ export const ADJUST_DEFAULTS = {
   saturation: 0,
   temperature: 0,
   tint: 0,
+  /** D9.2：{name, size, cube, strength}，null 表示未加载 3D LUT */
+  lut: null,
 };
 
 const HISTORY_LIMIT = 30;
@@ -443,6 +446,20 @@ export class StudioDoc {
   }
 
   /**
+   * 3D LUT 逐像素查表（D9.2）。只在加载了 LUT 时多一次 getImageData/putImageData，
+   * 结果随 `_underlay` 缓存，拖动叠加层不会重复计算。
+   */
+  _applyLut(canvas) {
+    const lut = this.adjust?.lut;
+    if (!lut || !lut.cube || !(lut.strength > 0)) return canvas;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    applyCube(image.data, lut.cube, lut.strength);
+    ctx.putImageData(image, 0, 0);
+    return canvas;
+  }
+
+  /**
    * 「原图 + 变换 + 调色 + 裁剪」的合成画布（不含叠加层），单独缓存。
    * 叠加层拖动时只需重画 `_base`，底层 4K 合成可以复用（D18.2）。
    */
@@ -496,6 +513,7 @@ export class StudioDoc {
       }
     }
 
+    this._applyLut(canvas);
     this._underlay = canvas;
     return canvas;
   }
@@ -582,6 +600,7 @@ export class StudioDoc {
       for (const layer of this.layers) layer.draw(ctx);
       ctx.restore();
     }
+    this._applyLut(canvas);
     return canvas;
   }
 

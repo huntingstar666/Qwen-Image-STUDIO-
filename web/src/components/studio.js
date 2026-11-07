@@ -46,6 +46,7 @@ import {
   coverageAlpha,
   wandAlpha,
 } from './studio/selection.js';
+import { histogram, parseCube } from './studio/color.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -400,6 +401,14 @@ export function createStudioPage(host) {
             </div>
 
             <div class="studio-pane" data-pane="adjust">
+              <div class="studio-pane-title">直方图</div>
+              <div class="studio-hist">
+                <canvas class="studio-hist-canvas" width="300" height="72" data-ref="hist"></canvas>
+                <div class="studio-hist-meta mono">
+                  <span data-ref="histInfo">—</span>
+                  <span data-ref="histClip"></span>
+                </div>
+              </div>
               <div class="studio-pane-title">色调</div>
               <div class="studio-sliders">
                 ${ADJUST_FIELDS.map(
@@ -411,6 +420,17 @@ export function createStudioPage(host) {
                 ).join('')}
               </div>
               <button class="btn ghost sm studio-block" type="button" data-ref="resetAdjust">复位调色</button>
+              <div class="studio-pane-title">3D LUT</div>
+              <div class="studio-row">
+                <button class="btn ghost sm" type="button" data-ref="lutBtn">加载 .cube</button>
+                <button class="btn ghost sm" type="button" data-ref="lutClear" disabled>移除</button>
+                <input type="file" accept=".cube,text/plain" data-ref="lutInput" hidden />
+              </div>
+              <label class="studio-slider">
+                <span class="studio-slider-head"><span>强度</span><span class="mono" data-ref="lutStrengthVal">100</span></span>
+                <input type="range" min="0" max="100" step="1" value="100" data-ref="lutStrength" disabled />
+              </label>
+              <div class="studio-note" data-ref="lutName">未加载 LUT（支持 3D .cube，1D 暂不支持）</div>
               <div class="studio-note">调色为非破坏式，随时可以撤销；导出时才真正写入像素。</div>
               <div class="studio-note" data-ref="filterNote" hidden></div>
             </div>
@@ -479,6 +499,15 @@ export function createStudioPage(host) {
     statusMask: ref('statusMask'),
     resetAdjust: ref('resetAdjust'),
     filterNote: ref('filterNote'),
+    hist: ref('hist'),
+    histInfo: ref('histInfo'),
+    histClip: ref('histClip'),
+    lutBtn: ref('lutBtn'),
+    lutInput: ref('lutInput'),
+    lutClear: ref('lutClear'),
+    lutName: ref('lutName'),
+    lutStrength: ref('lutStrength'),
+    lutStrengthVal: ref('lutStrengthVal'),
     maskbar: ref('maskbar'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
@@ -1188,6 +1217,8 @@ export function createStudioPage(host) {
 
     // 扩图幽灵层（DOM 覆盖，跟随画布缩放/平移）
     outpaint?.syncGhost?.();
+
+    if (activeTab === 'adjust') updateHistogram();
 
     perf.end(t0);
   }
@@ -1963,6 +1994,8 @@ export function createStudioPage(host) {
       crop: current.transform.crop ? { ...current.transform.crop } : null,
     };
     const adjust = { ...current.adjust };
+    // 3D LUT 体积大（33³ × Float32）且来自本地 .cube 文件，不写进会话
+    delete adjust.lut;
     const layerList = current.layers.slice();
     const name = current.name;
     const size = current.size;
@@ -2494,6 +2527,72 @@ export function createStudioPage(host) {
       const label = host.querySelector(`[data-value="${input.dataset.adjust}"]`);
       if (label) label.textContent = String(value);
     }
+    syncLutUi();
+  }
+
+  /* --------------------------------------------------- 直方图（D9.2） */
+
+  let histAt = 0;
+
+  /** 用低分辨率代理画直方图，避免每帧读 4K 像素。 */
+  function updateHistogram(force = false) {
+    if (!doc || activeTab !== 'adjust') return;
+    const now = performance.now();
+    if (!force && now - histAt < 120) return;
+    histAt = now;
+    const source = doc.renderPreviewBase(320);
+    const data = source.getContext('2d').getImageData(0, 0, source.width, source.height).data;
+    const stats = histogram(data);
+    paintHistogram(stats);
+  }
+
+  function paintHistogram(stats) {
+    const canvas = refs.hist;
+    if (!canvas) return;
+    const g = canvas.getContext('2d');
+    const { width, height } = canvas;
+    g.clearRect(0, 0, width, height);
+
+    // 1/4 网格
+    g.strokeStyle = 'rgba(255,255,255,0.08)';
+    g.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      const x = Math.round((width * i) / 4) + 0.5;
+      g.beginPath();
+      g.moveTo(x, 0);
+      g.lineTo(x, height);
+      g.stroke();
+    }
+
+    const peak = Math.max(1, ...stats.luma);
+    const top = 3;
+    const plot = (bins, fill) => {
+      g.beginPath();
+      g.moveTo(0, height);
+      for (let i = 0; i < 256; i += 1) {
+        const x = (i / 255) * width;
+        const y = height - Math.min(1, bins[i] / peak) * (height - top);
+        g.lineTo(x, y);
+      }
+      g.lineTo(width, height);
+      g.closePath();
+      g.fillStyle = fill;
+      g.fill();
+    };
+
+    // 亮度做底，RGB 叠加提亮，和 Photoshop 的观感一致
+    plot(stats.luma, 'rgba(220,220,220,0.16)');
+    g.globalCompositeOperation = 'lighter';
+    plot(stats.r, 'rgba(255,64,64,0.45)');
+    plot(stats.g, 'rgba(64,220,96,0.45)');
+    plot(stats.b, 'rgba(72,128,255,0.5)');
+    g.globalCompositeOperation = 'source-over';
+
+    refs.histInfo.textContent = `${Math.round(stats.sampled / 1000)}k 像素`;
+    const clip = [];
+    if (stats.clipHigh > 0.001) clip.push(`高光 ${(stats.clipHigh * 100).toFixed(1)}%`);
+    if (stats.clipLow > 0.001) clip.push(`阴影 ${(stats.clipLow * 100).toFixed(1)}%`);
+    refs.histClip.textContent = clip.length ? `削波 ${clip.join(' / ')}` : '无削波';
   }
 
   /** 不支持 Canvas filter 时禁用相关滑杆并说明，避免「滑杆有反应但画面没变」。 */
@@ -2643,6 +2742,7 @@ export function createStudioPage(host) {
     if (tool === 'outpaint') setTool('view');
     activeTab = button.dataset.tab;
     syncTabs();
+    if (activeTab === 'adjust') updateHistogram(true);
   });
 
   /* ---------------------------------------------------------- 顶栏导入菜单 */
@@ -2844,6 +2944,8 @@ export function createStudioPage(host) {
       doc.adjust[key] = Number(input.value);
       // 拖动期间只出低分辨率代理，避免每帧过滤 4K（D18.2）。
       adjustPreview = true;
+      // 小图（≤1024）预览会直接复用 renderBase，必须让缓存失效才能看到实时变化
+      doc.invalidateBase();
       const label = host.querySelector(`[data-value="${key}"]`);
       if (label) label.textContent = input.value;
       scheduleDraw();
@@ -2867,6 +2969,86 @@ export function createStudioPage(host) {
     doc.invalidateBase();
     doc.snapshot();
     syncAdjustInputs();
+    syncLutUi();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+  });
+
+  /* ------------------------------------------------------- 3D LUT（D9.2） */
+
+  let lutBusy = false;
+
+  function syncLutUi() {
+    const lut = doc?.adjust?.lut || null;
+    const strength = Math.round((lut?.strength ?? 1) * 100);
+    refs.lutClear.disabled = !lut;
+    refs.lutStrength.disabled = !lut;
+    refs.lutStrength.value = String(strength);
+    refs.lutStrengthVal.textContent = String(strength);
+    refs.lutName.textContent = lut
+      ? `已加载「${lut.name}」· ${lut.size}³（刷新后需重新加载）`
+      : '未加载 LUT（支持 3D .cube，1D 暂不支持）';
+  }
+
+  refs.lutBtn.addEventListener('click', () => refs.lutInput.click());
+
+  refs.lutInput.addEventListener('change', async () => {
+    const file = refs.lutInput.files?.[0];
+    refs.lutInput.value = '';
+    if (!file || !doc) return;
+    if (lutBusy) return;
+    lutBusy = true;
+    try {
+      const cube = parseCube(await file.text());
+      doc.adjust.lut = {
+        name: file.name.replace(/\.cube$/i, ''),
+        size: cube.size,
+        cube,
+        strength: 1,
+      };
+      doc.invalidateBase();
+      doc.snapshot();
+      syncLutUi();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+      toastSuccess(`已加载 LUT「${doc.adjust.lut.name}」（${cube.size}³）`);
+    } catch (error) {
+      toastError(`LUT 加载失败：${error.message}`);
+    } finally {
+      lutBusy = false;
+    }
+  });
+
+  refs.lutStrength.addEventListener('input', () => {
+    if (!doc?.adjust?.lut) return;
+    const value = Number(refs.lutStrength.value);
+    doc.adjust.lut.strength = value / 100;
+    refs.lutStrengthVal.textContent = String(value);
+    adjustPreview = true;
+    doc.invalidateBase();
+    scheduleDraw();
+  });
+
+  refs.lutStrength.addEventListener('change', () => {
+    if (!doc?.adjust?.lut) return;
+    if (adjustPreview) {
+      adjustPreview = false;
+      doc.invalidateBase();
+    }
+    doc.snapshot();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+  });
+
+  refs.lutClear.addEventListener('click', () => {
+    if (!doc?.adjust?.lut) return;
+    doc.adjust.lut = null;
+    doc.invalidateBase();
+    doc.snapshot();
+    syncLutUi();
     updateHistoryUi();
     scheduleDraw();
     scheduleSave();

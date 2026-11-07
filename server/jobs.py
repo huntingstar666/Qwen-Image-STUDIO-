@@ -69,6 +69,8 @@ class Job:
     align: dict[str, Any] | None = None
     quality: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
+    error_meta: dict[str, Any] | None = None
     traceback: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -112,6 +114,8 @@ class Job:
             "align": self.align,
             "quality": self.quality,
             "error": self.error,
+            "error_code": self.error_code,
+            "error_meta": self.error_meta,
             "prompt": self.prompt,
             "params": slim_params(self.params),
             "meta": self.meta,
@@ -138,6 +142,8 @@ class Job:
             "align": self.align,
             "quality": self.quality,
             "error": self.error,
+            "error_code": self.error_code,
+            "error_meta": self.error_meta,
             "elapsed_ms": self.elapsed_ms(),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.created_at)),
         }
@@ -222,6 +228,8 @@ class JobQueue:
             # 注意顺序：先把 error/traceback 写全，最后才改 status。
             # 否则轮询方可能在 status=error 的瞬间读到 error=None（偶发竞态）。
             job.error = error_text(exc)
+            job.error_code = getattr(exc, "code", None)
+            job.error_meta = getattr(exc, "meta", None)
             job.traceback = "".join(traceback.format_exc())[-4000:]
             job.status = "error"
         finally:
@@ -393,6 +401,8 @@ class JobQueue:
                 job.align = item.get("align")
                 job.quality = item.get("quality")
                 job.error = item.get("error")
+                job.error_code = item.get("error_code")
+                job.error_meta = item.get("error_meta")
                 # 上次进程退出时还没跑完的任务 → 标成中断（内存队列无法跨进程恢复）
                 if job.status in ("queued", "running"):
                     job.status = "error"

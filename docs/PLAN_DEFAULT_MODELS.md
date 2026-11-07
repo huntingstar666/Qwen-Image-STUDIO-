@@ -166,6 +166,7 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 > 进度：
 > - S1 已完成 —— `server/model_slots.py`（8 槽位注册表、`resolve_plan` 四层合并、`match_slots` 精确/后缀/同名匹配、`audit`）与 `tests/test_model_slots.py`。
 > - S2 已完成 —— `GET /api/settings` 返回 `model_defaults` 审计视图；`POST /api/settings` 支持 `model_defaults.slots / preset_overrides`（空串=清空回落出厂，未知槽位 400），并把生效值同步回旧顶层键。`tests/test_model_slots.py` 10 项全绿；TestClient 往返验证：matched=true、清空后 `source=factory`、非法槽位 400。
+> - S3 已完成 —— `/api/options.defaults` 改由 `resolve_plan` 产出（含 `slots / preset_overrides`）；`pipeline._resolve_models` 兜底走槽位并按预设覆盖，`_build_loras` 的 remove / outpaint 预设可被槽位替换（一致性 LoRA 保持原预设）；缺模型/缺 LoRA 抛 `PipelineError(code="missing_models", meta={missing:[{slot,expected,searched_dirs}]})`，`job.error_code / error_meta` 随 `/api/jobs/{id}` 下发。`tests/test_pipeline_defaults.py` 5 项全绿，槽位+预设回归 20 项全绿；`/api/options` 实测与 `resolve_plan` 一致。
 
 ## 10. 测试计划
 

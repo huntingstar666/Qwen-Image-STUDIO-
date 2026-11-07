@@ -378,11 +378,10 @@ def api_options() -> dict[str, Any]:
         "steps_presets": config.STEPS_PRESETS,
         "lora_presets": config.lora_presets_public(),
         "defaults": {
-            "unet": cfg.get("unet"),
-            "clip": cfg.get("clip"),
-            "vae": cfg.get("vae"),
-            "turbo_lora": cfg.get("turbo_lora"),
-            "consistency_lora": cfg.get("consistency_lora"),
+            # 模型类默认值统一由槽位解析（系统设置 > 出厂），参数类仍来自 config
+            **model_slots.resolve_plan(cfg),
+            "slots": model_slots.resolve_plan(cfg),
+            "preset_overrides": model_slots.section(cfg).get("preset_overrides") or {},
             "steps": cfg["steps"],
             "cfg": cfg["cfg"],
             "sampler": cfg["sampler"],

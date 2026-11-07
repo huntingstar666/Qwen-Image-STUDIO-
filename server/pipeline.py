@@ -27,11 +27,20 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from . import align, config, imaging, models, moss, presets, storage
+from . import align, config, imaging, model_slots, models, moss, presets, storage
 
 
 class PipelineError(RuntimeError):
-    """管线内部错误（会作为任务 error 返回给前端）。"""
+    """管线内部错误（会作为任务 error 返回给前端）。
+
+    ``code`` / ``meta`` 供前端做结构化提示（例如缺模型时跳转系统设置）。
+    """
+
+    def __init__(self, message: str, *, code: str | None = None,
+                 meta: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.meta = meta
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -304,16 +313,29 @@ def _resolve_models(cfg: dict[str, Any], params: dict[str, Any],
     requested = dict(params.get("models") or {})
     if turbo_unet:
         requested["unet"] = turbo_unet
+    plan = model_slots.resolve_plan(cfg, params.get("preset") or None)
     out: dict[str, str] = {}
+    missing: list[dict[str, Any]] = []
     for key in ("unet", "clip", "vae"):
         value = requested.get(key)
-        path = config.resolve_model(cfg, key, value) if value else profile.get(key)
+        expected = value or plan.get(key) or profile.get(key)
+        path = config.resolve_model(cfg, key, expected) if expected else None
         if not path:
-            raise PipelineError(
-                f"找不到 {key} 模型：{value or profile.get(key)!r}。请检查 config.json 的 "
-                f"model_root / {key}，或在请求里显式指定绝对路径。"
-            )
+            missing.append({
+                "slot": key,
+                "expected": expected,
+                "searched_dirs": config.model_search_dirs(cfg).get(key) or [],
+            })
+            continue
         out[key] = path
+    if missing:
+        first = missing[0]
+        raise PipelineError(
+            f"找不到默认 {first['slot']} 模型：{first['expected']!r}。"
+            "请到「系统设置 → 默认模型」重新选择，或检查模型目录。",
+            code="missing_models",
+            meta={"missing": missing},
+        )
     return out
 
 
@@ -322,11 +344,20 @@ def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str,
     """收集 LoRA：请求里显式的 + 加速档位要求的 + 一致性 LoRA。"""
     loras: list[dict[str, Any]] = []
     accel = profile.get("accelerator") or {}
+    plan = model_slots.resolve_plan(cfg, params.get("preset") or None)
 
-    def _add(name: str | None, strength: float) -> None:
+    def _add(name: str | None, strength: float, slot: str | None = None) -> None:
         path = config.resolve_model(cfg, "lora", name)
         if not path:
-            raise PipelineError(f"找不到 LoRA：{name!r}（检查 models/lora 路径）")
+            raise PipelineError(
+                f"找不到 LoRA：{name!r}（检查 models/lora 路径，或在系统设置里改默认）",
+                code="missing_models",
+                meta={"missing": [{
+                    "slot": slot or "lora",
+                    "expected": name,
+                    "searched_dirs": config.model_search_dirs(cfg).get("lora") or [],
+                }]},
+            )
         if any(item["name"] == path for item in loras):
             return
         loras.append({"name": path, "strength": float(strength)})
@@ -341,7 +372,12 @@ def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str,
                 raise PipelineError(
                     f"未知 LoRA 预设：{preset!r}（可选 "
                     f"{', '.join(config.LORA_TASKS)}）")
-            _add(spec["name"], float(item.get("strength", spec["strength"])))
+            # 系统设置里的默认 LoRA 槽位只接管 remove / outpaint；
+            # 一致性 LoRA 仍按已验证的预设强度走，避免改变现网表现。
+            slot = {"remove": "remove_lora", "outpaint": "outpaint_lora"}.get(
+                str(preset).strip().lower())
+            name = (plan.get(slot) if slot else None) or spec["name"]
+            _add(name, float(item.get("strength", spec["strength"])), slot)
             continue
         _add(item.get("name") or item.get("value"), float(item.get("strength", 1.0)))
 

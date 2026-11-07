@@ -1855,6 +1855,12 @@ PRESET_VERSION = 1
 | P13-5 | 图生图页复用同一预设与开关 | `web/src/components/edit.js` | 无蒙版时按 `canvas` 降级并提示；扩图可用 |
 | P13-6 | 真机回归三预设（照片素材）+ 对照图 | `.cache/smoke_real_edit.py` | `mask_edit`/`remove`/`outpaint` 各出一组；`outside_max_abs=0`（native 为 null）、`zero_shift.verified=true`、无矩形台阶 |
 
+**施工状态（2026-11-07）：**
+
+- **P13-1 ✅** 新增 `server/presets.py`（5 预设 + `PRESET_VERSION=1` + 「显式 > 预设 > 内置默认」合并，只补缺不覆盖）；新增 `GET /api/meta` 下发 `edit_presets`。采样档复用已有 `turbo9_ckpt`（与文档里的 "turbo9_gh" 是同一份 Turbo 权重 + 9 段 sigma，不新增重复档位）。验证：`tests/test_edit_presets.py` 8 条全绿。
+- **P13-2 ✅** `zero_shift` 默认开（仅 `size_mode=follow`；custom/ratio/扩图仍自动关），显式关闭时写 `quality.warnings`。验证：`test_zero_shift_defaults_on_and_can_be_disabled`、全量 **391 passed**。
+- **P13-3 ⏳** 代码接线已完成（见 P14-2），真机大幅外补回归待跑。
+
 **总验收口径：** 切到任一预设不改任何高级项，直接出图即为该预设的最佳效果；关掉两个保护开关后能回到旧行为；图片精修与图生图用同一预设出图参数一致（同 seed 同图）。
 
 ---
@@ -2108,6 +2114,10 @@ settings.edit = {
 | P14-4 | 扩图面板 + 幽灵预览 + 拖边 + 快捷比例 + 32 对齐尺寸提示 | `studio.js`、`studio/outpaintPanel.js`（新）、`app.css` | 拖边实时刷新 %/px/目标尺寸；Shift 同步；Esc 不落状态 |
 | P14-5 | 结果回流：再次扩图 / 继续精修 | `studio.js`、`aiPanel.js` | 结果可一键载入画布，尺寸标记正确 |
 | P14-6 | 真机回归：小扩（+10%）/ 大扩（+235%）/ 单侧扩；照片素材 | `.cache/smoke_real_edit.py` | 原图区域 `outside_max_abs=0`、无灰边残留、无硬接缝；与孤海同图对照不差于它 |
+
+**施工状态（2026-11-07）：**
+
+- **P14-2 ✅** `outpaint.max_side` 已透传到 `imaging.outpaint_canvas`（缺省 5120，服务端校验 1024~8192，超范围 400）；扩图裁块下限默认 **1024**、接缝默认 **3%/3%**，编辑档仍是 768 / 4%/5%（决策 37 分家）。验证：`test_generate_edit_outpaint_honors_max_side`、`test_generate_edit_outpaint_preset_uses_1024_crop_and_3pct_seam`；全量 **391 passed**。
 
 ### 14.10 决策（钉死）
 

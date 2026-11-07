@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (
     __version__, config, imageops, imaging, jobs, materials, ollama as ollama_client,
-    pipeline, prompt_polish, storage, styles,
+    pipeline, presets, prompt_polish, storage, styles,
 )
 from . import models as image_models
 
@@ -397,13 +397,13 @@ def api_options() -> dict[str, Any]:
             "custom_sigmas": True,
             "rgba": True,
             "max_ref_images": 10,
-            "local_edit_schemes": ["a", "b", "native"],
+            "local_edit_schemes": ["a", "b", "auto", "native"],
             "size_modes": ["follow", "custom", "ratio", "fixed_point"],
             "fits": ["pad", "crop"],
             "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint"],
             "hint_modes": ["none", "green_overlay", "gray_fill"],
             "outpaint_percent": {"min": 0, "max": 200},
-            "outpaint_max_side": 8192,
+            "outpaint_max_side": {"min": 1024, "max": 8192, "default": 5120},
             "preprocess_max_side": {"min": 256, "max": 8192},
             "feather": {"min": 0, "max": 256},
             "context_factor": {"min": 1.0, "max": 4.0},
@@ -414,6 +414,17 @@ def api_options() -> dict[str, Any]:
             "选「自动切换 Turbo 底模」会把扩散模型换成仓库里的 Turbo 权重且不挂加速 LoRA。"
             "开启后自动沿用上次选择的预设，其他 LoRA 仍可手动叠加。"
         ),
+    }
+
+
+@app.get("/api/meta")
+def api_meta() -> dict[str, Any]:
+    """编辑预设的唯一事实源：图片精修与图生图都从这里渲染，不在前端复制数值。"""
+    return {
+        "version": __version__,
+        "preset_version": presets.PRESET_VERSION,
+        "default_preset": presets.default_preset_id(),
+        "edit_presets": presets.public_presets(),
     }
 
 
@@ -574,6 +585,10 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
             "follow", "custom", "ratio", "fixed_point"):
         raise ApiError(f"未知 size_mode：{size_mode!r}")
 
+    preset = payload.get("preset")
+    if preset is not None and str(preset).strip() and presets.get_preset(preset) is None:
+        raise ApiError(f"未知编辑预设：{preset!r}")
+
     pre = payload.get("preprocess")
     if pre is not None:
         if not isinstance(pre, dict):
@@ -652,6 +667,13 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 raise ApiError(f"outpaint.{key} 必须是数字（百分比）")
             if not 0 <= value <= 200:
                 raise ApiError(f"outpaint.{key} 必须在 0~200（百分比）")
+        if outpaint.get("max_side") is not None:
+            try:
+                max_side = int(outpaint["max_side"])
+            except (TypeError, ValueError):
+                raise ApiError("outpaint.max_side 必须是整数")
+            if not 1024 <= max_side <= 8192:
+                raise ApiError("outpaint.max_side 必须在 1024~8192")
 
     local = payload.get("local")
     if local is not None:

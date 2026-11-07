@@ -273,6 +273,40 @@ def test_generate_edit_outpaint_keeps_expanded_canvas():
         quality["output"]["w"], quality["output"]["h"])
 
 
+def test_generate_edit_outpaint_honors_max_side():
+    """outpaint.max_side 必须透传到 imaging.outpaint_canvas，超限直接拒绝。"""
+    src = _noise_image(400, 300, seed=9)
+    fake = _FakeEngine()
+    with pytest.raises(pipeline.PipelineError, match="扩图参数不可用"):
+        _run_edit({
+            "images": [{"data": _src_url(src)}],
+            "task": {"mode": "outpaint"},
+            "outpaint": {"left": 100, "right": 100, "top": 100, "bottom": 100,
+                         "max_side": 1024},
+        }, fake)
+
+
+def test_generate_edit_outpaint_preset_uses_1024_crop_and_3pct_seam():
+    """扩图预设：裁块下限 1024（不是编辑档 768）、接缝 3%/3%。"""
+    src = _noise_image(400, 300, seed=10)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "preset": "outpaint",
+        # 显式关 Turbo：单测不依赖本机 Turbo 权重文件；同时验证显式 > 预设
+        "turbo": {"enabled": False},
+        "outpaint": {"left": 5, "right": 5, "top": 5, "bottom": 5},
+    }, fake)
+
+    quality = job.quality
+    assert quality["preset"] == "outpaint"
+    assert quality["task_mode"] == "outpaint"
+    assert job.align["crop"]["model_w"] >= 1024
+    band = quality["color"]["mask_band"]
+    assert band["expand_pct"] == 3.0
+    assert band["feather_pct"] == 3.0
+
+
 def test_generate_edit_remove_task_paints_green_hint_inside_mask():
     src = _noise_image(1000, 700, seed=5)
     box = (400, 250, 600, 450)

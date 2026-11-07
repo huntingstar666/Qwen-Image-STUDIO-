@@ -27,7 +27,7 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from . import align, config, imaging, models, moss, storage
+from . import align, config, imaging, models, moss, presets, storage
 
 
 class PipelineError(RuntimeError):
@@ -441,9 +441,13 @@ def _zero_shift_spec(params: dict[str, Any], profile: dict[str, Any],
     严格模式（前端默认）：``resolution`` 必须为 0（画布跟随源图）、``snap`` 必须
     等于模型对齐值。任何一条不满足都直接拒绝，避免"看起来没偏移、其实重采样过"。
     """
-    zs = params.get("zero_shift") or {}
+    zs = params.get("zero_shift")
+    if not isinstance(zs, dict):
+        zs = {}
     snap = int(zs.get("snap") or profile.get("snap") or 32)
-    enabled = _truthy(zs.get("enabled")) and size_mode == "follow"
+    # 默认开启（§13.7：图片精修零偏移默认开），只有显式 false 才关闭。
+    raw_enabled = zs.get("enabled")
+    enabled = (True if raw_enabled is None else _truthy(raw_enabled)) and size_mode == "follow"
     if not enabled:
         return {"enabled": False, "snap": snap, "resolution": 0}
     resolution = int(zs.get("resolution") or 0)
@@ -713,6 +717,15 @@ class Pipeline:
     def generate_edit(self, job) -> None:
         cfg = config.load_config()
         params = job.params
+        # 预设合并：显式 > preset > 内置默认。不带 preset 时原样返回（老前端无感）。
+        try:
+            params, preset_info = presets.merge(params)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        if preset_info is not None:
+            job.params["preset"] = preset_info["id"]
+            job.params["preset_version"] = preset_info["version"]
+            job.meta["preset"] = preset_info
         profile = self._profile(cfg, params)
         if not profile["capabilities"].get("edit"):
             raise PipelineError(f"{profile['label']} 暂不支持参考图编辑（当前只支持文生图）")
@@ -758,8 +771,13 @@ class Pipeline:
                 warnings.append("未设置外扩比例，扩图已按普通编辑处理")
             else:
                 try:
+                    op_max_side = int(op.get("max_side") or 5120)
+                except (TypeError, ValueError) as exc:
+                    raise PipelineError(f"outpaint.max_side 必须是整数：{exc}") from exc
+                try:
                     op_canvas, op_info = imaging.outpaint_canvas(
-                        src, multiple=int(profile.get("snap") or 32), **pads)
+                        src, multiple=int(profile.get("snap") or 32),
+                        max_side=op_max_side, **pads)
                 except ValueError as exc:
                     raise PipelineError(f"扩图参数不可用：{exc}") from exc
 
@@ -768,6 +786,11 @@ class Pipeline:
             zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
         else:
             zs_spec = _zero_shift_spec(params, profile, size_mode)
+            if (size_mode == "follow"
+                    and isinstance(params.get("zero_shift"), dict)
+                    and params["zero_shift"].get("enabled") is not None
+                    and not _truthy(params["zero_shift"].get("enabled"))):
+                warnings.append("已关闭零像素偏移保护，可能出现亚像素偏移或 1~31px 位移")
 
         # 大图预处理：只缩不放，出图后还原。仅 follow 模式启用（custom/ratio 是
         # 用户指定新尺寸，预处理会把这条路径搅乱）；扩图自身已决定画布大小。
@@ -922,6 +945,12 @@ class Pipeline:
                     multiple=int(profile.get("snap") or 32),
                 )
             else:
+                # 扩图与编辑的参数分家（决策 37）：裁块下限 1024（孤海扩图档位），
+                # 用户显式传的 local.crop_min_side 仍然优先。
+                default_crop_min = 1024 if task_mode == "outpaint" else 768
+                crop_min_side = int(
+                    local.get("crop_min_side")
+                    if local.get("crop_min_side") is not None else default_crop_min)
                 crop_img, crop_info = imaging.crop_region_factors(
                     canvas, mask_canvas,
                     fills=_truthy(local.get("fills", task_mode == "remove")),
@@ -931,8 +960,7 @@ class Pipeline:
                     expand_right=float(local.get("expand_right") or 1.4),
                     multiple=int(profile.get("snap") or 32),
                     max_side=int(local.get("crop_max_side") or 2048),
-                    min_side=int(local.get("crop_min_side")
-                                 if local.get("crop_min_side") is not None else 768),
+                    min_side=crop_min_side,
                 )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
@@ -1083,10 +1111,13 @@ class Pipeline:
                 anchor_strength=anchor_strength,
                 band_mode=band_mode,
                 dither=_truthy(local.get("dither", True)),
+                # 扩图接缝按孤海扩图档位 3%/3%，编辑档位仍是 4%/5%（决策 37）。
                 expand_pct=float(local.get("expand_pct")
-                                 if local.get("expand_pct") is not None else 4.0),
+                                 if local.get("expand_pct") is not None
+                                 else (3.0 if task_mode == "outpaint" else 4.0)),
                 feather_pct=float(local.get("feather_pct")
-                                  if local.get("feather_pct") is not None else 5.0),
+                                  if local.get("feather_pct") is not None
+                                  else (3.0 if task_mode == "outpaint" else 5.0)),
                 color_gain_clamp=(0.9, 1.1),
                 color_shift_abs=24.0 / 255.0,
                 report=color_report,
@@ -1156,6 +1187,8 @@ class Pipeline:
         job.quality = {
             "outside_max_abs": outside,
             "size_match": size_match,
+            "preset": (preset_info or {}).get("id"),
+            "preset_version": (preset_info or {}).get("version"),
             "canvas": {"w": plan.width, "h": plan.height},
             "source": {"w": src.width, "h": src.height},
             "output": {"w": final.width, "h": final.height},

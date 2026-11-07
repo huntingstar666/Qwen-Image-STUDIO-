@@ -1695,9 +1695,7 @@ export function createStudioPage(host) {
         }
       }
 
-      next.history.length = 0;
-      next.future.length = 0;
-      next._historyBytes = 0;
+      next.clearHistory();
       next.snapshot();
 
       projectId = saved.project.id;

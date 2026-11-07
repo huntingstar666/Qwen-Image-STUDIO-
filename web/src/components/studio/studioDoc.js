@@ -21,6 +21,8 @@ import {
   moveLayer,
   removeLayer,
 } from './document.js';
+import { createHistory } from './history.js';
+import { composite } from './renderer.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -85,8 +87,7 @@ export class StudioDoc {
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
     /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
     this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
-    this.history = [];
-    this.future = [];
+    this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
     this._base = null;
     this.snapshot();
   }
@@ -134,16 +135,7 @@ export class StudioDoc {
       layers: this.layers.map((layer) => layer.clone()),
       bytes,
     };
-    this.history.push(state);
-    this._historyBytes = (this._historyBytes || 0) + bytes;
-    while (this.history.length > HISTORY_LIMIT) {
-      this._historyBytes -= this.history.shift().bytes || 0;
-    }
-    // 4K 蒙版单张约 33MB，按总预算淘汰比单纯限制步数更能避免内存爆掉。
-    while (this.history.length > 2 && this._historyBytes > HISTORY_BUDGET) {
-      this._historyBytes -= this.history.shift().bytes || 0;
-    }
-    this.future.length = 0;
+    this._history.push(state);
     this._base = null;
     return this;
   }
@@ -160,29 +152,35 @@ export class StudioDoc {
   }
 
   get canUndo() {
-    return this.history.length > 1;
+    return this._history.canUndo;
   }
 
   get canRedo() {
-    return this.future.length > 0;
+    return this._history.canRedo;
+  }
+
+  /** 历史总字节占用（调试 / 台账用） */
+  get historyBytes() {
+    return this._history.bytes;
   }
 
   undo() {
-    if (!this.canUndo) return false;
-    const state = this.history.pop();
-    this._historyBytes = Math.max(0, (this._historyBytes || 0) - (state.bytes || 0));
-    this.future.push(state);
-    this.restore(this.history[this.history.length - 1]);
+    const state = this._history.undo();
+    if (!state) return false;
+    this.restore(state);
     return true;
   }
 
   redo() {
-    if (!this.future.length) return false;
-    const state = this.future.pop();
-    this.history.push(state);
-    this._historyBytes = (this._historyBytes || 0) + (state.bytes || 0);
+    const state = this._history.redo();
+    if (!state) return false;
     this.restore(state);
     return true;
+  }
+
+  /** 清空历史（工程恢复后用，避免旧快照串项目） */
+  clearHistory() {
+    this._history.clear();
   }
 
   /* ---------------------------------------------------------- 变换 */
@@ -512,14 +510,8 @@ export class StudioDoc {
       return underlay;
     }
     const canvas = makeCanvas(underlay.width, underlay.height);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(underlay, 0, 0);
-    // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移
-    const crop = this.transform.crop;
-    ctx.save();
-    if (crop) ctx.translate(-crop.x, -crop.y);
-    for (const layer of this.layers) layer.draw(ctx);
-    ctx.restore();
+    // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移（见 renderer.js）
+    composite(canvas.getContext('2d'), underlay, this.layers, { crop: this.transform.crop });
     this._base = canvas;
     return canvas;
   }

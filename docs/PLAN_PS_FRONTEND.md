@@ -755,6 +755,23 @@ DOM 结构：
   - 已知取舍：载入结果会 `beginProject()` 开新工程，旧工程历史不参与对比栈；需要前后对照时请在弹窗内先点「与当前主图对比」。
 
 - **D0.1 预检与基线（已完成·补记）** —— 该项在 M0 阶段已随 D6.1 / D18.1 实际完成，本轮补齐证据与记录：工作区快照见 §0 与 §14.2（他人未提交文件每次开工前复核）；三页基线截图本轮重新采集到 `.cache/shots/baseline-2026-11-07-{t2i,edit,studio}-*.png`（1440×900、Chromium headless），文生图 / 图像编辑 / 图片精修均正常渲染，`exception` 日志为空；测试基线 `python -m pytest tests` → **497 passed（46.33s）**（计划编写时 419，D6.1 时 488）；`node -v` → **v24.13.0**（≥18，可用内置 `node --test`）；浏览器基线以 Chromium 为准，Safari 抽检未做（不阻塞验收）。原计划目录 `.cache/shots/` 此前未落地，本轮已创建并补齐。
+- **D8.1 选区核心（已完成）** —— 新增 `web/src/components/studio/selection.js`（纯函数、零依赖，Node 可直接冒烟）：
+  - 坐标系：选区统一为 `Uint8ClampedArray` alpha 蒙版（0~255），尺寸与 `doc.mask` 一致（旋转后、未裁剪），显示时按 `crop` 偏移平移，与文档蒙版共用同一套坐标，避免旋转/裁剪后错位。
+  - API：`createAlpha / rectAlpha / ellipseAlpha / lassoAlpha / wandAlpha / combineAlpha / invertAlpha / featherAlpha / expandAlpha / contractAlpha / coverageAlpha / boundsAlpha / alphaToCanvas / canvasToAlpha / buildOutlinePath`。
+  - 算法：魔棒从 `doc.renderBase()` 取 RGBA，按 RGB 三通道最大差 ≤ 容差判定相似，`contiguous` 用 `Int32Array` 栈做 BFS 洪泛，否则全图取样；羽化 = 三次盒式模糊（Float32 前缀和，O(n)）；扩展/收缩 = 二值形态学（Uint8 行列前缀和分离式膨胀/腐蚀）；蚂蚁线由 `buildOutlinePath` 按 step 采样生成 `Path2D` 边线段，超过 6000 段自动翻倍 step 降采样。
+  - UI：左栏「选区」组新增魔棒（`W`），画布底部新增 `.studio-selbar` 浮条——容差 0~255、连续、半径、反选 / 羽化 / 扩展 / 收缩 / 清除选区与「选区 N%」读数；Shift 加选、Alt 减选、Shift+Alt 交集，单击即完成。
+  - 蚂蚁线：`draw()` 在蒙版着色之后、形状预览之前，按 `view` 平移缩放后画「黑描边 + 白色虚线」，`lineDashOffset` 由 120ms 定时器推进，切换工具/清除选区即 `stopAnts()`。
+  - 与画笔联动：`stampMask` 先把 dab 画进小尺寸 scratch，再 `destination-in` 选区后合成回蒙版（整图 scratch 只用于形状/套索），避免每笔整图合成；`commitShapePaint` 同样支持选区裁剪。
+  - 实测（headless Chromium 1440×900，800×600 底图）：魔棒点黄色圆 → `选区 5.3%`，浮条显示「容差 32 / 连续 / 半径 8」；扩展 → 6.5%、收缩 → 5.3%、羽化 → 5.2%、反选 → 94.8%、清除 → 「未选区」；截图 `.cache/shots/d81-wand-ants-*.png` 可见流动虚线；在选区内跨红/蓝涂抹后文档蒙版仅存在于圆内（覆盖率 2.3%，截图 `.cache/shots/d81-brush-clip-*.png`）；模块级 Node 冒烟：rect 0.16 / bounds(3,3,4,4)、invert 0.84、feather 有软边、expand 0.36、contract 0.04、wand 0.5、add 0.58。
+
+- **D8.2 图层蒙版（已完成）** —— 让叠加层拥有独立于文档的像素蒙版：
+  - `layers.js`：`OverlayLayer` 增加 `mask / maskVisible / _masked`，`ensureMask()` 建全白（= 完全显示）蒙版，`maskedImage()` 用 `destination-in` 把蒙版合到图层位图并缓存，`touchMask()` 失效缓存；`toggleMaskVisible / removeMask / hasMask` + `naturalWidth/naturalHeight` 访问器；`clone()` 深拷贝蒙版与显隐。
+  - 语义：白 = 显示。画笔 `destination-out` 挖掉蒙版（隐藏），橡皮 `source-over` 补白（恢复）；形状/套索涂抹同样走 `destination-out`。首版误用「白色 source-over」，表现为涂抹毫无效果，实测采样仍是原绿色后修正。
+  - 坐标映射：新增 `docToLayerTransform()`，把 doc 空间（含 crop 偏移、图层 x/y/scale/rotation）的一次性 dab 仿射到图层自身像素坐标，旋转/缩放图层也能正确涂抹。
+  - UI：图层面板每行新增 `◐`（添加/显隐蒙版，Shift 点击删除）与 `✎`（进入涂抹模式，仅有蒙版时显示，激活时高亮）；进入后自动切画笔并提示「画笔隐藏，橡皮擦恢复」，切到非蒙版工具自动退出。
+  - 联动与持久化：`stampMask` / `commitShapePaint` 优先写图层蒙版，选区存在时同样按选区裁剪；图层蒙版涂抹松手后走 `doc.commitLayers()` 落快照（不动文档蒙版状态），撤销/重做与图层几何共用一套历史；工程保存为每个图层追加 `hasMask / maskVisible` 与 `maskBlob`（PNG），恢复时载入 `ensureMask()` 并 `touchMask()`。
+  - 实测（headless Chromium，800×600 底图 + 200×200 绿色叠加层）：`✎` 进入后按钮高亮、工具切画笔；竖向涂抹后该区域露出底图红色 `[192,57,43]`、未涂抹处仍为绿色 `[102,212,115]`；切橡皮擦回同一条带恢复绿色；`◐` 关闭蒙版后条带恢复绿色、再开启复原；Shift+点击 `◐` 删除蒙版（按钮回到「添加图层蒙版」）；切「抓手」后 `✎` 取消高亮；`Ctrl+Z` 撤销回绿色、`Ctrl+Shift+Z` 重做回红色；选区联动——先魔棒选黄色圆（5.3%）再涂图层无任何变化，清除选区后同一笔立即生效；等待自动保存后刷新 `?cb=5#studio`，图层仍是 `has-mask` 且条带保持被挖空。截图 `.cache/shots/d82-layer-mask-*.png`、`d82-paint1-*.png`、`d82-eraser-*.png`。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -932,10 +949,10 @@ DOM 结构：
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
-| `layers.js` | `createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 |
+| `layers.js` | `OverlayLayer`（几何 + `mask/maskVisible` + `maskedImage()`）；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2（已落地） |
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})` | `layers` | D7（D7.2 已落地） |
-| `selection.js` | `rectSelect/ellipseSelect/lassoSelect/wandSelect`、`feather/expand/invert`、`toMask()` | 无 | D8 |
+| `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、LUT、直方图（纯函数） | 无 | D9 |
 | `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
@@ -955,7 +972,7 @@ DOM 结构：
 | `studio/aiHistory.js` | AI 编辑历史卡片区 | `sessionHistory` | D16.1 |
 | `compareLauncher.js` | 组装对比数据并调用 `openCompareDialog` | `compare.js` | D16.2 |
 | `studio/upscaleDialog.js` | 高清放大弹窗：引擎/倍率、任务进度、结果回流主图 | `api.upscale` + `pollJob` | D15.1 |
-| `studio/layerPanel.js` | 图层条：列表渲染、拖拽排序、双击重命名、锁定、不透明度 | `utils.escapeHtml` | D7.3 |
+| `studio/layerPanel.js` | 图层条：列表渲染、拖拽排序、双击重命名、锁定、不透明度、图层蒙版 `◐`/`✎` | `utils.escapeHtml` | D7.3 / D8.2（已落地） |
 | `io.js` | IndexedDB 自动保存、项目导入导出、图片导出 | `document` | D7 |
 
 `studio.js` 只保留装配：工具切换、画布事件、面板挂载；不再新增业务算法。
@@ -1245,8 +1262,8 @@ DOM 结构：
 | D7.2 | 合成渲染器 | 已完成 | 本次提交 | 新增 `renderer.js`：`drawLayers(ctx, layers, {crop})` 按底→顶逐层绘制并在 `crop` 时整体平移，`composite(ctx, underlay, layers, {crop})` 先底图后图层；`studioDoc.renderBase()` 改为调用 `composite`，底图/图层绘制顺序集中一处。模块级实测顶层覆盖底层、裁剪平移 10px 生效，§17.7 导出像素一致性未回退 |
 | D7.3 | 图层面板 | 已完成 | 本次提交 | 新增 `layerPanel.js`：拖拽行落到目标下标、双击就地重命名、锁定按钮（`OverlayLayer.locked` 让 `hitTest` 返回 false，画布不可选/拖但继续合成）、不透明度滑杆；`studio.js` 新增 `moveLayerTo/renameLayer/toggleLayerLock`（均入撤销栈），工程保存 props 增加 `locked`。实测：重命名/锁定/拖拽排序/不透明度四项均修改成功且撤销还原，不透明度重做回滚正确；模块级锁定命中测试 false、clone 保留 locked。移除 aiPanel 重复监听后修复「撤销原地不动」。`docToJSON/fromJSON` 不实现（持久化已用 Blob + props） |
 | D7.4 | 历史记录 + 快捷键 | 已完成 | 本次提交 | 新增 `history.js`：`createHistory({limit, budget})` 双栈 + 字节预算，步数先裁、预算再裁且至少保留初始+最新两帧；`studioDoc` 的 `snapshot/undo/redo/canUndo/canRedo` 委托 `_history`，新增 `historyBytes` / `clearHistory()`，工程恢复改为 `clearHistory + snapshot`。实测 `limit=3` 推 6 帧得 `[3,4,5]`、`budget=100`（40B/帧）推 10 帧得 `[8,9]`（80B）、undo/redo 序列与 `clear` 归零正确；页面 4 笔蒙版可连撤 4 次、重做 2 次，恢复工程后撤销按钮初始禁用。快捷键沿用既有 `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`。图层维度历史断言并入 D7.3 |
-| D8.1 | 选区核心 | 未开始 | — | — |
-| D8.2 | 图层蒙版 | 未开始 | — | — |
+| D8.1 | 选区核心 | 已完成 | 本次提交 | 新增 `studio/selection.js`（alpha 蒙版、魔棒洪泛、羽化/扩展/收缩、蚂蚁线路径）；`studio.js` 加魔棒工具 + `.studio-selbar` 浮条，画笔/形状按选区裁剪；实测见 §12.11 |
+| D8.2 | 图层蒙版 | 已完成 | 本次提交 | `OverlayLayer` 增加可画可擦蒙版与 `maskedImage()` 缓存；图层面板 `◐`/`✎`；`docToLayerTransform` 映射涂抹；随工程保存 `maskBlob`；实测见 §12.11 |
 | D9.1 | 调色数学库 | 未开始 | — | — |
 | D9.2 | 直方图 + LUT | 未开始 | — | — |
 | D9.3 | 调整图层 | 未开始 | — | — |

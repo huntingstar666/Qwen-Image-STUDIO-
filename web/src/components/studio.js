@@ -34,6 +34,18 @@ import {
 } from './studio/persistence.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 import { createPerfProbe } from './studio/perf.js';
+import {
+  buildOutlinePath,
+  combineAlpha,
+  contractAlpha,
+  createAlpha,
+  expandAlpha,
+  featherAlpha,
+  invertAlpha,
+  alphaToCanvas,
+  coverageAlpha,
+  wandAlpha,
+} from './studio/selection.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -97,6 +109,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5c0 2.6-1.8 4.9-4.5 5.9-1 .4-1.6 1-1.6 2" stroke-dasharray="3 2.4"/><circle cx="13.4" cy="19.4" r="1.3"/></svg>',
   },
   {
+    id: 'wand',
+    label: '魔棒选区',
+    key: 'W',
+    hint: '点一下选中相近颜色；Shift 加选，Alt 减选',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5-3 3-5-5 3-3z"/><path d="M11.5 7.5L4 15l5 5 7.5-7.5"/><path d="M6.5 17.5l-.8 2.2 2.2-.8"/><path d="M18 14.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8.8-1.7z"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -124,11 +144,13 @@ const ADJUST_FIELDS = [
 ];
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
+/** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
+const WAND_TOOLS = new Set(['wand']);
 
 /** 左栏分组：只影响 DOM 分组，工具行为仍走 setTool。 */
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
-  { id: 'select', title: '选区', tools: ['brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
+  { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -153,6 +175,15 @@ export function createStudioPage(host) {
   /* D18.2：调色滑杆拖动期间用低分辨率代理预览，change 后再全分辨率合成。 */
   let adjustPreview = false;
   let selectedLayerId = null;
+  /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
+  let selection = null;
+  let selPath = null;
+  let antsTimer = 0;
+  let antsOffset = 0;
+  let wand = { tolerance: 32, contiguous: true };
+  let selRadius = 8;
+  /* D8.2 图层蒙版：当前正在涂抹的叠加层 id（空 = 涂抹文档蒙版） */
+  let editingLayerMaskId = '';
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
   /* D5.3：拖动期间复用的画布矩形，避免 pointermove 触发同步布局。 */
@@ -286,6 +317,27 @@ export function createStudioPage(host) {
                 <span class="spacer"></span>
                 <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
                 <button class="btn ghost sm" type="button" data-ref="maskClear">清除蒙版</button>
+              </div>
+              <div class="studio-selbar" data-ref="selbar" hidden>
+                <span class="studio-selbar-title">选区</span>
+                <label class="studio-maskbar-field">
+                  <span>容差</span>
+                  <input type="range" min="0" max="255" step="1" value="32" data-sel="tolerance" />
+                  <span class="mono" data-value="tolerance">32</span>
+                </label>
+                <label class="studio-check"><input type="checkbox" data-ref="wandContig" checked /><span>连续</span></label>
+                <span class="studio-sep"></span>
+                <label class="studio-maskbar-field">
+                  <span>半径</span>
+                  <input class="studio-selbar-num" type="number" min="0" max="200" step="1" value="8" data-ref="selRadius" />
+                </label>
+                <button class="btn ghost sm" type="button" data-sel-op="invert">反选</button>
+                <button class="btn ghost sm" type="button" data-sel-op="feather">羽化</button>
+                <button class="btn ghost sm" type="button" data-sel-op="expand">扩展</button>
+                <button class="btn ghost sm" type="button" data-sel-op="contract">收缩</button>
+                <button class="btn ghost sm" type="button" data-sel-op="clear">清除选区</button>
+                <span class="spacer"></span>
+                <span class="mono" data-ref="selInfo">未选区</span>
               </div>
               <div class="studio-outpaint" data-ref="outpaintLayer" hidden>
                 <div class="so-shade" data-shade="top"></div>
@@ -431,6 +483,10 @@ export function createStudioPage(host) {
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
+    selbar: ref('selbar'),
+    wandContig: ref('wandContig'),
+    selRadius: ref('selRadius'),
+    selInfo: ref('selInfo'),
     rotateLeft: ref('rotateLeft'),
     rotateRight: ref('rotateRight'),
     flipH: ref('flipH'),
@@ -557,6 +613,7 @@ export function createStudioPage(host) {
       const layer = doc.addOverlay(image, { name: file.name || '叠加图' });
       layerBlobs.set(layer.id, file);
       selectedLayerId = layer.id;
+      editingLayerMaskId = '';
       setTool('move');
       updateHistoryUi();
       scheduleDraw();
@@ -569,6 +626,7 @@ export function createStudioPage(host) {
     },
     selectLayer(id) {
       selectedLayerId = id;
+      editingLayerMaskId = '';
       setTool('move');
       scheduleDraw();
     },
@@ -576,6 +634,7 @@ export function createStudioPage(host) {
       if (!doc) return;
       if (doc.removeOverlay(id)) {
         if (selectedLayerId === id) selectedLayerId = null;
+        if (editingLayerMaskId === id) editingLayerMaskId = '';
         layerBlobs.delete(id);
         updateHistoryUi();
         scheduleSave();
@@ -648,6 +707,66 @@ export function createStudioPage(host) {
       if (!doc) return;
       doc.setOverlayOpacity(id, value);
       scheduleDraw();
+    },
+    /** 当前正在涂抹蒙版的图层 id（图层面板高亮用）。 */
+    getMaskLayer() {
+      return editingLayerMaskId;
+    },
+    /** 添加/显隐图层蒙版（D8.2）：无蒙版则创建，有蒙版则切换显示。 */
+    toggleLayerMask(id) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      if (!layer) return false;
+      if (!layer.mask) {
+        layer.ensureMask();
+        toast(`已为「${layer.name}」添加蒙版：用画笔涂抹隐藏，橡皮擦恢复`);
+      } else {
+        layer.toggleMaskVisible();
+        if (!layer.maskVisible && editingLayerMaskId === id) editingLayerMaskId = '';
+      }
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
+    /** 进入/退出图层蒙版涂抹模式。 */
+    editLayerMask(id) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      if (!layer) return false;
+      layer.ensureMask();
+      if (editingLayerMaskId === id) {
+        editingLayerMaskId = '';
+        setTool('move');
+      } else {
+        editingLayerMaskId = id;
+        selectedLayerId = id;
+        setTool('brush');
+        if (!layer.maskVisible) layer.maskVisible = true;
+        toast(`正在涂抹「${layer.name}」的图层蒙版：画笔隐藏，橡皮擦恢复`);
+      }
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
+    /** 删除图层蒙版（恢复完整显示）。 */
+    removeLayerMask(id) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      if (!layer?.mask) return false;
+      layer.removeMask();
+      if (editingLayerMaskId === id) editingLayerMaskId = '';
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
     },
     /** 滑杆松手后落一次快照，让不透明度调整可以撤销。 */
     commitLayers() {
@@ -737,9 +856,17 @@ export function createStudioPage(host) {
     refs.maskbar.hidden = !MASK_TOOLS.has(next);
     if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
+    if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
+      editingLayerMaskId = '';
+      ai?.refresh();
+    }
     if (!MASK_TOOLS.has(next)) {
       cropRect = null;
       refs.cropbar.hidden = true;
+    }
+    if (next === 'wand' && doc) {
+      activeTab = 'adjust';
+      syncTabs();
     }
     if (next === 'crop' && doc) {
       activeTab = 'transform';
@@ -758,6 +885,7 @@ export function createStudioPage(host) {
     const meta = TOOLS.find((item) => item.id === tool);
     refs.statusTool.textContent = meta ? `${meta.label} · ${meta.hint}` : '';
     refs.canvas.dataset.tool = tool;
+    updateSelectionUi();
     scheduleDraw();
     scheduleSave(1200);
   }
@@ -899,7 +1027,11 @@ export function createStudioPage(host) {
       return;
     }
     // 叠加层拖动（D18.2）：底层合成复用缓存，叠加层按视口实时重画，避免每帧重建 4K base。
-    const liveLayers = !adjustPreview && drag?.mode === 'moveLayer' && doc.layers.length > 0;
+    // 图层蒙版涂抹同理：只重绘图层，底图继续走 underlay 缓存。
+    const liveLayers =
+      !adjustPreview &&
+      doc.layers.length > 0 &&
+      (drag?.mode === 'moveLayer' || (editingLayerMaskId && drag?.mode === 'paint'));
     const image = adjustPreview
       ? doc.renderPreviewBase()
       : liveLayers
@@ -949,6 +1081,25 @@ export function createStudioPage(host) {
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(tint, view.x, view.y, w, h);
       ctx.restore();
+    }
+
+    // 选区蚂蚁线（D8.1）：黑白虚线交替，antsOffset 每 120ms 前进，形成流动感。
+    if (selection) {
+      const path = selectionOutline();
+      if (path) {
+        const crop = doc.transform.crop;
+        ctx.save();
+        ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+        ctx.scale(view.scale, view.scale);
+        ctx.lineWidth = 1.4 / view.scale;
+        ctx.strokeStyle = 'rgba(0,0,0,0.88)';
+        ctx.stroke(path);
+        ctx.strokeStyle = 'rgba(255,255,255,0.98)';
+        ctx.setLineDash([4 / view.scale, 4 / view.scale]);
+        ctx.lineDashOffset = -antsOffset / view.scale;
+        ctx.stroke(path);
+        ctx.restore();
+      }
     }
 
     // 形状预览
@@ -1078,34 +1229,210 @@ export function createStudioPage(host) {
     };
   }
 
-  function stampMask(point) {
+  /* ============================================================
+   * 选区（D8.1）
+   * ============================================================ */
+
+  function maskSize() {
+    return doc ? { width: doc.mask.width, height: doc.mask.height } : { width: 0, height: 0 };
+  }
+
+  function selectionHasPixels(alpha) {
+    for (let i = 0; i < alpha.length; i += 1) {
+      if (alpha[i] > 0) return true;
+    }
+    return false;
+  }
+
+  function updateSelectionUi() {
+    const has = Boolean(selection);
+    const coverage = has ? coverageAlpha(selection.alpha) : 0;
+    refs.selbar.hidden = !(has || WAND_TOOLS.has(tool));
+    refs.selInfo.textContent = has ? `选区 ${(coverage * 100).toFixed(1)}%` : '未选区';
+  }
+
+  function ensureAnts() {
+    if (antsTimer || !selection) return;
+    antsTimer = window.setInterval(() => {
+      if (!selection) return;
+      antsOffset = (antsOffset + 2) % 8;
+      scheduleDraw();
+    }, 120);
+  }
+
+  function stopAnts() {
+    if (!antsTimer) return;
+    window.clearInterval(antsTimer);
+    antsTimer = 0;
+  }
+
+  function setSelectionAlpha(alpha, width, height) {
+    if (!alpha || !width || !height) {
+      clearSelection();
+      return;
+    }
+    selection = { width, height, alpha, canvas: alphaToCanvas(alpha, width, height) };
+    selPath = null;
+    antsOffset = 0;
+    updateSelectionUi();
+    ensureAnts();
+    scheduleDraw();
+  }
+
+  function clearSelection(silent = false) {
+    stopAnts();
+    if (!selection && silent) return;
+    selection = null;
+    selPath = null;
+    updateSelectionUi();
+    if (!silent) scheduleDraw();
+  }
+
+  /** 蚂蚁线路径按需构建并缓存；大图自动降采样。 */
+  function selectionOutline() {
+    if (!selection) return null;
+    if (!selPath || selPath.width !== selection.width || selPath.height !== selection.height) {
+      const step = Math.max(1, Math.ceil(Math.max(selection.width, selection.height) / 1536));
+      selPath = {
+        width: selection.width,
+        height: selection.height,
+        path: buildOutlinePath(selection.alpha, selection.width, selection.height, step),
+      };
+    }
+    return selPath.path;
+  }
+
+  /** 当前可见范围（裁剪后反选只作用于裁剪框内）。 */
+  function visibleBounds() {
+    if (!doc) return null;
+    const crop = doc.transform.crop;
+    return crop ? { ...crop } : { x: 0, y: 0, width: doc.mask.width, height: doc.mask.height };
+  }
+
+  /** 魔棒：从合成图取色洪泛，再换算回「旋转后、未裁剪」的蒙版坐标。 */
+  function wandSelectAt(point, mode) {
     if (!doc) return;
-    const mctx = doc.mask.getContext('2d');
-    const radius = Math.max(1, brush.size / 2);
+    const base = doc.renderBase();
+    const width = base.width;
+    const height = base.height;
+    const x = Math.floor(point.x);
+    const y = Math.floor(point.y);
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const data = base.getContext('2d').getImageData(0, 0, width, height).data;
+    const display = wandAlpha(data, width, height, x, y, {
+      tolerance: wand.tolerance,
+      contiguous: wand.contiguous,
+    });
+    const mask = maskSize();
+    const crop = doc.transform.crop;
+    let next = display;
+    if (crop || mask.width !== width || mask.height !== height) {
+      next = createAlpha(mask.width, mask.height);
+      const offX = crop?.x || 0;
+      const offY = crop?.y || 0;
+      const limit = Math.max(0, Math.min(width, mask.width - offX));
+      for (let row = 0; row < height; row += 1) {
+        const targetY = row + offY;
+        if (targetY < 0 || targetY >= mask.height) continue;
+        const src = row * width;
+        const dst = targetY * mask.width + offX;
+        for (let col = 0; col < limit; col += 1) {
+          if (display[src + col] >= 128) next[dst + col] = 255;
+        }
+      }
+    }
+    const merged = combineAlpha(selection?.alpha || null, next, mode);
+    if (!selectionHasPixels(merged)) {
+      clearSelection();
+      toastWarn('该位置没有可选的区域，可调高容差再试');
+      return;
+    }
+    setSelectionAlpha(merged, mask.width, mask.height);
+  }
+
+  /** 反选 / 羽化 / 扩展 / 收缩 / 清除。 */
+  function runSelectionOp(op) {
+    if (!doc) return;
+    if (op === 'clear') {
+      clearSelection();
+      return;
+    }
+    if (!selection) {
+      toastWarn('还没有选区：先用魔棒点选一块区域');
+      return;
+    }
+    const mask = maskSize();
+    if (selection.width !== mask.width || selection.height !== mask.height) {
+      clearSelection();
+      return;
+    }
+    let next = null;
+    if (op === 'invert') next = invertAlpha(selection.alpha, mask.width, mask.height, visibleBounds());
+    if (op === 'feather') next = featherAlpha(selection.alpha, mask.width, mask.height, selRadius);
+    if (op === 'expand') next = expandAlpha(selection.alpha, mask.width, mask.height, selRadius);
+    if (op === 'contract') next = contractAlpha(selection.alpha, mask.width, mask.height, selRadius);
+    if (!next) return;
+    if (!selectionHasPixels(next)) {
+      clearSelection();
+      return;
+    }
+    setSelectionAlpha(next, mask.width, mask.height);
+  }
+
+  /* ============================================================
+   * 蒙版笔刷（D8.1 选区裁剪 / D8.2 图层蒙版）
+   * ============================================================ */
+
+  let dabScratch = null;
+  let shapeScratch = null;
+
+  function scratch(size) {
+    if (!dabScratch) dabScratch = document.createElement('canvas');
+    if (dabScratch.width !== size || dabScratch.height !== size) {
+      dabScratch.width = size;
+      dabScratch.height = size;
+    }
+    return dabScratch;
+  }
+
+  function fullScratch(width, height) {
+    if (!shapeScratch) shapeScratch = document.createElement('canvas');
+    if (shapeScratch.width !== width || shapeScratch.height !== height) {
+      shapeScratch.width = width;
+      shapeScratch.height = height;
+    }
+    return shapeScratch;
+  }
+
+  function paintDab(target, x, y, radius, erase) {
     const soft = 1 - brush.hardness;
-    mctx.save();
-    mctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-    mctx.globalAlpha = brush.opacity;
+    target.save();
+    target.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+    target.globalAlpha = brush.opacity;
     if (soft > 0.02) {
-      const gradient = mctx.createRadialGradient(
-        point.x,
-        point.y,
+      const gradient = target.createRadialGradient(
+        x,
+        y,
         Math.max(0, radius * brush.hardness),
-        point.x,
-        point.y,
+        x,
+        y,
         radius,
       );
       gradient.addColorStop(0, 'rgba(255,255,255,1)');
       gradient.addColorStop(1, 'rgba(255,255,255,0)');
-      mctx.fillStyle = gradient;
+      target.fillStyle = gradient;
     } else {
-      mctx.fillStyle = '#ffffff';
+      target.fillStyle = '#ffffff';
     }
-    mctx.beginPath();
-    mctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    mctx.fill();
-    mctx.restore();
-    doc.markMaskChanged(tool !== 'eraser');
+    target.beginPath();
+    target.arc(x, y, radius, 0, Math.PI * 2);
+    target.fill();
+    target.restore();
+  }
+
+  function afterStamp(radius, point, erase) {
+    if (!doc) return;
+    doc.markMaskChanged(!erase);
     // 只记录画笔包围盒，让 tint 增量重绘（D18.2）；若已有整图失效，保持整图重绘。
     if (!tintDirty) {
       const dirty = { x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2 };
@@ -1118,6 +1445,97 @@ export function createStudioPage(host) {
           }
         : dirty;
     }
+  }
+
+  /** 文档坐标 → 叠加层自身像素坐标的仿射变换（图层蒙版涂抹用）。 */
+  function docToLayerTransform(target, layer, offsetX, offsetY) {
+    const crop = doc.transform.crop;
+    const naturalWidth = layer.image?.naturalWidth || layer.image?.width || 0;
+    const naturalHeight = layer.image?.naturalHeight || layer.image?.height || 0;
+    const theta = ((layer.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+    const scale = layer.scale || 1;
+    const cx = layer.x + (naturalWidth * scale) / 2;
+    const cy = layer.y + (naturalHeight * scale) / 2;
+    const a = cos / scale;
+    const b = -sin / scale;
+    const c = sin / scale;
+    const d = cos / scale;
+    const dx = offsetX - (crop?.x || 0);
+    const dy = offsetY - (crop?.y || 0);
+    const e = naturalWidth / 2 - (cos * cx + sin * cy) / scale + a * dx + c * dy;
+    const f = naturalHeight / 2 - (-sin * cx + cos * cy) / scale + b * dx + d * dy;
+    target.setTransform(a, b, c, d, e, f);
+  }
+
+  /** 当前要涂抹的图层蒙版（未进入图层蒙版模式时返回 null）。 */
+  function layerMaskTarget() {
+    if (!doc || !editingLayerMaskId) return null;
+    const layer = doc.findLayer(editingLayerMaskId);
+    return layer?.mask ? layer : null;
+  }
+
+  function stampLayerMask(layer, point, radius, erase) {
+    const pad = 2;
+    const size = Math.ceil(radius * 2) + pad * 2;
+    const x0 = Math.floor(point.x - radius) - pad;
+    const y0 = Math.floor(point.y - radius) - pad;
+    const scratchCanvas = scratch(size);
+    const sctx = scratchCanvas.getContext('2d');
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, size, size);
+    paintDab(sctx, point.x - x0, point.y - y0, radius, false);
+    if (selection) {
+      sctx.globalCompositeOperation = 'destination-in';
+      sctx.drawImage(selection.canvas, -x0, -y0);
+      sctx.globalCompositeOperation = 'source-over';
+    }
+    const mctx = layer.mask.getContext('2d');
+    mctx.save();
+    docToLayerTransform(mctx, layer, x0, y0);
+    // 图层蒙版语义：白 = 显示。画笔涂抹 = 挖掉蒙版（隐藏），橡皮 = 补回白色（恢复）。
+    mctx.globalCompositeOperation = erase ? 'source-over' : 'destination-out';
+    mctx.drawImage(scratchCanvas, 0, 0);
+    mctx.restore();
+    layer.touchMask();
+    doc.touchLayers();
+    if (selectedLayerId !== layer.id) selectedLayerId = layer.id;
+  }
+
+  function stampMask(point) {
+    if (!doc) return;
+    const radius = Math.max(1, brush.size / 2);
+    const erase = tool === 'eraser';
+    const layer = layerMaskTarget();
+    if (layer) {
+      stampLayerMask(layer, point, radius, erase);
+      return;
+    }
+    if (!selection) {
+      paintDab(doc.mask.getContext('2d'), point.x, point.y, radius, erase);
+      afterStamp(radius, point, erase);
+      return;
+    }
+    // 有选区时先画到小画布，再按选区 alpha 裁剪，避免每次整图合成。
+    const pad = 2;
+    const size = Math.ceil(radius * 2) + pad * 2;
+    const x0 = Math.floor(point.x - radius) - pad;
+    const y0 = Math.floor(point.y - radius) - pad;
+    const scratchCanvas = scratch(size);
+    const sctx = scratchCanvas.getContext('2d');
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, size, size);
+    paintDab(sctx, point.x - x0, point.y - y0, radius, false);
+    sctx.globalCompositeOperation = 'destination-in';
+    sctx.drawImage(selection.canvas, -x0, -y0);
+    sctx.globalCompositeOperation = 'source-over';
+    const mctx = doc.mask.getContext('2d');
+    mctx.save();
+    mctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+    mctx.drawImage(scratchCanvas, 0, 0, size, size, x0, y0, size, size);
+    mctx.restore();
+    afterStamp(radius, point, erase);
   }
 
   function strokeTo(point) {
@@ -1137,23 +1555,74 @@ export function createStudioPage(host) {
     return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
   }
 
-  function fillShape(rect) {
-    if (!doc || rect.width < 1 || rect.height < 1) return;
-    const mctx = doc.mask.getContext('2d');
-    mctx.save();
-    mctx.globalAlpha = brush.opacity;
-    mctx.fillStyle = '#ffffff';
-    mctx.beginPath();
-    if (tool === 'ellipse') {
-      mctx.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
-    } else {
-      mctx.rect(rect.x, rect.y, rect.width, rect.height);
+  /**
+   * 把「蒙版空间」的白色形状落到目标蒙版：有选区就按选区裁剪，
+   * 图层蒙版模式下再经仿射变换写入图层自身坐标。
+   */
+  function commitShapePaint(paint) {
+    if (!doc) return false;
+    const layer = layerMaskTarget();
+    if (layer) {
+      const canvas = fullScratch(doc.mask.width, doc.mask.height);
+      const sctx = canvas.getContext('2d');
+      sctx.setTransform(1, 0, 0, 1, 0, 0);
+      sctx.clearRect(0, 0, canvas.width, canvas.height);
+      paint(sctx);
+      if (selection) {
+        sctx.globalCompositeOperation = 'destination-in';
+        sctx.drawImage(selection.canvas, 0, 0);
+        sctx.globalCompositeOperation = 'source-over';
+      }
+      const mctx = layer.mask.getContext('2d');
+      mctx.save();
+      docToLayerTransform(mctx, layer, 0, 0);
+      // 形状 = 隐藏蒙版区域（白蒙版语义），与画笔一致。
+      mctx.globalCompositeOperation = 'destination-out';
+      mctx.drawImage(canvas, 0, 0);
+      mctx.restore();
+      layer.touchMask();
+      doc.touchLayers();
+      doc.commitLayers();
+      return true;
     }
-    mctx.fill();
-    mctx.restore();
+    if (!selection) {
+      paint(doc.mask.getContext('2d'));
+      doc.markMaskChanged(true);
+      tintDirty = true;
+      doc.snapshot();
+      return true;
+    }
+    const canvas = fullScratch(doc.mask.width, doc.mask.height);
+    const sctx = canvas.getContext('2d');
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, canvas.width, canvas.height);
+    paint(sctx);
+    sctx.globalCompositeOperation = 'destination-in';
+    sctx.drawImage(selection.canvas, 0, 0);
+    sctx.globalCompositeOperation = 'source-over';
+    doc.mask.getContext('2d').drawImage(canvas, 0, 0);
     doc.markMaskChanged(true);
     tintDirty = true;
     doc.snapshot();
+    return true;
+  }
+
+  function fillShape(rect) {
+    if (!doc || rect.width < 1 || rect.height < 1) return;
+    const committed = commitShapePaint((target) => {
+      target.save();
+      target.globalAlpha = brush.opacity;
+      target.fillStyle = '#ffffff';
+      target.beginPath();
+      if (tool === 'ellipse') {
+        target.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
+      } else {
+        target.rect(rect.x, rect.y, rect.width, rect.height);
+      }
+      target.fill();
+      target.restore();
+    });
+    if (!committed) return;
     updateHistoryUi();
     updateMaskStatus();
   }
@@ -1161,19 +1630,18 @@ export function createStudioPage(host) {
   /** 套索：把自由路径自动闭合后填充成蒙版。 */
   function fillLasso(points) {
     if (!doc || points.length < 3) return;
-    const mctx = doc.mask.getContext('2d');
-    mctx.save();
-    mctx.globalAlpha = brush.opacity;
-    mctx.fillStyle = '#ffffff';
-    mctx.beginPath();
-    mctx.moveTo(points[0].x, points[0].y);
-    for (const point of points.slice(1)) mctx.lineTo(point.x, point.y);
-    mctx.closePath();
-    mctx.fill();
-    mctx.restore();
-    doc.markMaskChanged(true);
-    tintDirty = true;
-    doc.snapshot();
+    const committed = commitShapePaint((target) => {
+      target.save();
+      target.globalAlpha = brush.opacity;
+      target.fillStyle = '#ffffff';
+      target.beginPath();
+      target.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) target.lineTo(point.x, point.y);
+      target.closePath();
+      target.fill();
+      target.restore();
+    });
+    if (!committed) return;
     updateHistoryUi();
     updateMaskStatus();
   }
@@ -1196,6 +1664,14 @@ export function createStudioPage(host) {
     if (tool === 'crop') {
       drag = { mode: 'crop', start: point, rect: null };
       syncCropOverlay(null);
+      return;
+    }
+    if (tool === 'wand') {
+      // Shift 加选，Alt 减选，Shift+Alt 交集，默认替换；单击即完成，不产生拖拽。
+      const mode =
+        event.shiftKey && event.altKey ? 'intersect' : event.altKey ? 'sub' : event.shiftKey ? 'add' : 'new';
+      drag = null;
+      wandSelectAt(point, mode);
       return;
     }
     if (tool === 'brush' || tool === 'eraser') {
@@ -1285,8 +1761,13 @@ export function createStudioPage(host) {
     const points = drag.points;
     drag = null;
     if (mode === 'paint') {
-      doc?.markMaskChanged(tool !== 'eraser');
-      doc?.snapshot();
+      if (editingLayerMaskId) {
+        // 图层蒙版：几何与蒙版都由 commitLayers 一次性落快照，不动文档蒙版状态。
+        doc?.commitLayers();
+      } else {
+        doc?.markMaskChanged(tool !== 'eraser');
+        doc?.snapshot();
+      }
       updateHistoryUi();
       updateMaskStatus();
     } else if (mode === 'shape' && rect) {
@@ -1518,6 +1999,14 @@ export function createStudioPage(host) {
       } catch {
         blob = null;
       }
+      let layerMaskBlob = null;
+      if (layer.mask) {
+        try {
+          layerMaskBlob = await canvasToBlob(layer.mask, 'image/png');
+        } catch {
+          layerMaskBlob = null;
+        }
+      }
       layers.push({
         id: layer.id,
         props: {
@@ -1528,8 +2017,11 @@ export function createStudioPage(host) {
           opacity: layer.opacity,
           rotation: layer.rotation,
           locked: layer.locked,
+          hasMask: Boolean(layer.mask),
+          maskVisible: layer.maskVisible,
         },
         blob,
+        maskBlob: layerMaskBlob,
       });
     }
     // 旋转/重置会清空叠加层，顺带释放不再需要的 Blob 引用。
@@ -1728,6 +2220,18 @@ export function createStudioPage(host) {
           // 保留原图层 id，后续自动保存仍然增量更新同一批记录。
           layer.id = record.id;
           layerBlobs.set(record.id, record.bitmapBlob);
+          // D8.2：图层蒙版随工程恢复。
+          if (record.maskBlob) {
+            const maskUrl = URL.createObjectURL(record.maskBlob);
+            urls.push(maskUrl);
+            const maskImage = await loadImage(maskUrl);
+            const maskCanvas = layer.ensureMask();
+            const mctx = maskCanvas.getContext('2d');
+            mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            mctx.drawImage(maskImage, 0, 0, maskCanvas.width, maskCanvas.height);
+            layer.maskVisible = props.maskVisible !== false;
+            layer.touchMask();
+          }
         } catch {
           missing.push(record.props?.name || record.id);
         }
@@ -1922,6 +2426,8 @@ export function createStudioPage(host) {
     doc = next;
     if (!options.restore) layerBlobs.clear();
     cropRect = null;
+    clearSelection(true);
+    editingLayerMaskId = '';
     tint = null;
     tintDirty = true;
     tintRect = null;
@@ -2017,6 +2523,7 @@ export function createStudioPage(host) {
       if (!ok || !doc) return;
     }
     action();
+    clearSelection();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -2410,6 +2917,23 @@ export function createStudioPage(host) {
     downloadDataUrl(dataUrl, `${baseName(doc.name)}-mask.png`);
   });
 
+  /* 选区浮条（D8.1）：容差 / 连续 / 半径 + 反选、羽化、扩展、收缩、清除。 */
+  const selTolerance = host.querySelector('[data-sel="tolerance"]');
+  selTolerance?.addEventListener('input', () => {
+    wand.tolerance = Math.max(0, Math.min(255, Math.round(Number(selTolerance.value) || 0)));
+    const label = host.querySelector('.studio-selbar [data-value="tolerance"]');
+    if (label) label.textContent = String(wand.tolerance);
+  });
+  refs.wandContig?.addEventListener('change', () => {
+    wand.contiguous = Boolean(refs.wandContig.checked);
+  });
+  refs.selRadius?.addEventListener('input', () => {
+    selRadius = Math.max(0, Math.min(200, Math.round(Number(refs.selRadius.value) || 0)));
+  });
+  for (const button of host.querySelectorAll('[data-sel-op]')) {
+    button.addEventListener('click', () => runSelectionOp(button.dataset.selOp));
+  }
+
   refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));
   refs.rotateRight.addEventListener('click', () => commitTransform('向右旋转', () => doc?.rotateRight()));
   refs.flipH.addEventListener('click', () => commitTransform('水平翻转', () => doc?.flip('h')));
@@ -2757,6 +3281,10 @@ export function createStudioPage(host) {
     destroy() {
       flushSave();
       stopLease();
+      stopAnts();
+      selection = null;
+      selPath = null;
+      editingLayerMaskId = '';
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('paste', onPaste);

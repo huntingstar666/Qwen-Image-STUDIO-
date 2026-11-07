@@ -164,7 +164,7 @@ export async function saveStudioProject(project) {
   const pendingLayers = [];
   for (const layer of layers) {
     keepIds.add(layer.id);
-    const signature = `${blobTag(layer.blob)}|${JSON.stringify(layer.props || {})}`;
+    const signature = `${blobTag(layer.blob)}|${blobTag(layer.maskBlob)}|${JSON.stringify(layer.props || {})}`;
     if (layerSignatures.get(`${projectId}:${layer.id}`) === signature) continue;
     pendingLayers.push({ layer, signature });
   }
@@ -221,7 +221,7 @@ export async function saveStudioProject(project) {
         projectId,
         props: layer.props || {},
         bitmapBlob: layer.blob || null,
-        maskBlob: null,
+        maskBlob: layer.maskBlob || null,
         version: SCHEMA_VERSION,
         updatedAt,
       },

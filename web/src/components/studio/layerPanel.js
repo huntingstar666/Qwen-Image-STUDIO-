@@ -5,6 +5,7 @@
  *   getLayers() / selectLayer(id) / removeLayer(id) / cloneLayer(id)
  *   moveLayer(id, delta) / moveLayerTo(id, index) / setLayerOpacity(id, v)
  *   scaleLayer(id, f) / commitLayers() / renameLayer(id, name) / toggleLayerLock(id)
+ *   toggleLayerMask(id) / editLayerMask(id) / removeLayerMask(id) / getMaskLayer()
  *
  * 数组顺序 `layers[0]` 最底层 → 末尾最上层，面板按同一顺序自上而下渲染。
  */
@@ -17,11 +18,28 @@ export function createLayerPanel(host, ctx) {
   const list = () => ctx.getLayers?.() || [];
 
   function rowHtml(layer) {
+    const maskEditing = ctx.getMaskLayer?.() === layer.id;
+    const maskClass = [
+      'ai-layer-btn',
+      layer.mask ? 'has-mask' : '',
+      layer.mask && !layer.maskVisible ? 'is-off' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const maskTitle = layer.mask
+      ? layer.maskVisible
+        ? '隐藏图层蒙版（Shift 点击删除）'
+        : '显示图层蒙版（Shift 点击删除）'
+      : '添加图层蒙版';
     return `
       <div class="ai-layer${layer.locked ? ' is-locked' : ''}" data-layer="${layer.id}" draggable="true">
         <span class="ai-layer-grip" title="拖动排序">⋮⋮</span>
         <button class="ai-layer-name" type="button" data-layer-pick="${layer.id}"
           title="单击选中 · 双击重命名">${escapeHtml(layer.name)}</button>
+        <button class="${maskClass}" type="button" data-layer-mask="${layer.id}"
+          title="${maskTitle}">◐</button>
+        <button class="ai-layer-btn${maskEditing ? ' is-active' : ''}" type="button" data-layer-mask-edit="${layer.id}"
+          title="涂抹图层蒙版" ${layer.mask ? '' : 'hidden'}>✎</button>
         <button class="ai-layer-btn" type="button" data-layer-lock="${layer.id}"
           title="${layer.locked ? '解锁图层' : '锁定图层'}">${layer.locked ? '🔒' : '🔓'}</button>
         <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" title="缩小">−</button>
@@ -55,6 +73,20 @@ export function createLayerPanel(host, ctx) {
     const lock = event.target.closest('[data-layer-lock]');
     if (lock) {
       ctx.toggleLayerLock?.(lock.dataset.layerLock);
+      render();
+      return;
+    }
+    const mask = event.target.closest('[data-layer-mask]');
+    if (mask) {
+      const layer = list().find((item) => item.id === mask.dataset.layerMask);
+      if (event.shiftKey && layer?.mask) ctx.removeLayerMask?.(layer.id);
+      else ctx.toggleLayerMask?.(mask.dataset.layerMask);
+      render();
+      return;
+    }
+    const maskEdit = event.target.closest('[data-layer-mask-edit]');
+    if (maskEdit) {
+      ctx.editLayerMask?.(maskEdit.dataset.layerMaskEdit);
       render();
       return;
     }

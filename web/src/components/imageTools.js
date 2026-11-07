@@ -16,9 +16,17 @@
 import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { openModal } from './modal.js';
-import { setHandoff, goToEditPage } from '../handoff.js';
+import { setHandoff, goToEditPage, setT2IHandoff, goToT2IPage } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
-import { downloadUrl, escapeHtml, fmtNum, probeImageSize, readFileAsDataURL, snapUp } from '../utils.js';
+import {
+  copyText,
+  downloadUrl,
+  escapeHtml,
+  fmtNum,
+  probeImageSize,
+  readFileAsDataURL,
+  snapUp,
+} from '../utils.js';
 
 const NEUTRAL_ADJUST = Object.freeze({
   brightness: 1,
@@ -361,6 +369,14 @@ export function createImageToolsPage(host) {
       status: '',
       percent: 0,
     },
+    tagger: {
+      models: null,
+      model: '',
+      threshold: 0.35,
+      characterThreshold: 0.85,
+      busy: false,
+      result: null,
+    },
   };
 
   host.innerHTML = `
@@ -387,6 +403,9 @@ export function createImageToolsPage(host) {
           </button>
           <button class="tools-rail-btn" type="button" data-tool-group="outpaint" title="扩图">
             <span class="glyph">⬚</span><span class="lbl">扩图</span>
+          </button>
+          <button class="tools-rail-btn" type="button" data-tool-group="tagger" title="反推">
+            <span class="glyph">⌗</span><span class="lbl">反推</span>
           </button>
         </nav>
 
@@ -631,6 +650,52 @@ export function createImageToolsPage(host) {
                     <button class="btn ghost sm hidden" type="button" data-ref="upscaleCancel">取消</button>
                   </div>
                   <div class="field-hint" data-ref="upscaleHint">放大走后台任务队列：SeedVR2 单图质量优先，FlashVSR 更快，VOSR2 单步细节恢复。</div>
+                </div>
+              </details>
+
+              <details class="fold tool-fold" data-group="tagger">
+                <summary>反推提示词 <span class="tag-hint">WD14 / Danbooru</span></summary>
+                <div class="fold-body">
+                  <label class="field">
+                    <span class="field-label">模型</span>
+                    <select class="select" data-ref="taggerModel">
+                      <option value="">正在读取模型…</option>
+                    </select>
+                  </label>
+                  <div class="grid-2">
+                    <label class="field">
+                      <span class="field-label">通用阈值 <span class="tag-hint" data-ref="taggerThresholdVal">0.35</span></span>
+                      <input class="range" type="range" min="0" max="1" step="0.01" value="0.35" data-ref="taggerThreshold" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">角色阈值 <span class="tag-hint" data-ref="taggerCharThresholdVal">0.85</span></span>
+                      <input class="range" type="range" min="0" max="1" step="0.01" value="0.85" data-ref="taggerCharThreshold" />
+                    </label>
+                  </div>
+                  <label class="field">
+                    <span class="field-label">排除标签</span>
+                    <input class="input" type="text" placeholder="英文逗号分隔，如 watermark, text" data-ref="taggerExclude" />
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" data-ref="taggerReplace" />
+                    <span class="switch-track"></span>
+                    <span class="switch-label">下划线转空格<small>long_hair → long hair</small></span>
+                  </label>
+                  <label class="switch">
+                    <input type="checkbox" data-ref="taggerTrailing" />
+                    <span class="switch-track"></span>
+                    <span class="switch-label">末尾逗号<small>方便继续拼接提示词</small></span>
+                  </label>
+                  <div class="row">
+                    <button class="btn primary sm" type="button" data-ref="taggerGo" disabled>反推标签</button>
+                    <button class="btn ghost sm" type="button" data-ref="taggerCopy" disabled>复制</button>
+                  </div>
+                  <textarea class="input mono" rows="4" readonly placeholder="识别结果会出现在这里" data-ref="taggerResult"></textarea>
+                  <div class="row hidden" data-ref="taggerActions">
+                    <button class="btn ghost sm" type="button" data-ref="taggerToT2i">→ 文生图</button>
+                    <button class="btn ghost sm" type="button" data-ref="taggerToEdit">→ 图生图</button>
+                  </div>
+                  <div class="field-hint" data-ref="taggerStatus">首次使用会自动下载所选模型（约 300MB～1GB），请保持网络畅通。</div>
                 </div>
               </details>
 
@@ -945,6 +1010,21 @@ export function createImageToolsPage(host) {
     upscaleGo: ref('upscaleGo'),
     upscaleCancel: ref('upscaleCancel'),
     upscaleHint: ref('upscaleHint'),
+    taggerModel: ref('taggerModel'),
+    taggerThreshold: ref('taggerThreshold'),
+    taggerThresholdVal: ref('taggerThresholdVal'),
+    taggerCharThreshold: ref('taggerCharThreshold'),
+    taggerCharThresholdVal: ref('taggerCharThresholdVal'),
+    taggerExclude: ref('taggerExclude'),
+    taggerReplace: ref('taggerReplace'),
+    taggerTrailing: ref('taggerTrailing'),
+    taggerGo: ref('taggerGo'),
+    taggerCopy: ref('taggerCopy'),
+    taggerResult: ref('taggerResult'),
+    taggerActions: ref('taggerActions'),
+    taggerToT2i: ref('taggerToT2i'),
+    taggerToEdit: ref('taggerToEdit'),
+    taggerStatus: ref('taggerStatus'),
     sendEdit: ref('sendEdit'),
     undo: ref('undo'),
     resetAll: ref('resetAll'),
@@ -1115,6 +1195,7 @@ export function createImageToolsPage(host) {
     renderOps();
     updateOutpaintSummary();
     syncUpscaleButton();
+    syncTaggerButton();
   }
 
   async function loadSourceImage() {
@@ -1419,7 +1500,7 @@ export function createImageToolsPage(host) {
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, display);
     else if (state.tool === 'watermark') {
       if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) drawWatermarkOverlay(octx, display);
-    } else drawCropOverlay(octx, display);
+    } else if (state.tool !== 'tagger') drawCropOverlay(octx, display);
 
     updateCropSize();
     updateEstimate();
@@ -2073,6 +2154,7 @@ export function createImageToolsPage(host) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   initUpscale();
+  initTagger();
 
   async function initUpscale() {
     try {
@@ -2249,6 +2331,169 @@ export function createImageToolsPage(host) {
       await sleep(1000);
     }
   }
+
+  /* ============================================================
+   * 反推提示词（WD14 / Danbooru）
+   * ============================================================ */
+  async function initTagger() {
+    refs.taggerThreshold.value = String(state.tagger.threshold);
+    refs.taggerThresholdVal.textContent = state.tagger.threshold.toFixed(2);
+    refs.taggerCharThreshold.value = String(state.tagger.characterThreshold);
+    refs.taggerCharThresholdVal.textContent = state.tagger.characterThreshold.toFixed(2);
+    syncTaggerButton();
+    try {
+      const data = await api.taggerModels();
+      if (disposed) return;
+      renderTaggerModels(data);
+    } catch (err) {
+      if (disposed) return;
+      refs.taggerModel.innerHTML = '<option value="">模型清单读取失败</option>';
+      setTaggerStatus(`读取反推模型失败：${err?.message || err}`);
+    }
+  }
+
+  function renderTaggerModels(data) {
+    state.tagger.models = data;
+    const models = data?.models || [];
+    if (!models.length) {
+      refs.taggerModel.innerHTML = '<option value="">没有可用模型</option>';
+      setTaggerStatus('没有可用的反推模型，请确认服务端已安装 onnxruntime。');
+      syncTaggerButton();
+      return;
+    }
+    const preferred =
+      models.find((item) => item.name === data.default && item.installed)?.name ||
+      models.find((item) => item.installed)?.name ||
+      data.default ||
+      models[0].name;
+    state.tagger.model = preferred;
+    refs.taggerModel.innerHTML = models
+      .map((item) => {
+        const suffix = item.installed ? `已安装 · ${fmtNum(item.size_mb)} MB` : '需下载';
+        return `<option value="${escapeHtml(item.name)}" ${
+          item.name === preferred ? 'selected' : ''
+        }>${escapeHtml(item.label)}（${suffix}）</option>`;
+      })
+      .join('');
+    renderTaggerStatus();
+    syncTaggerButton();
+  }
+
+  function renderTaggerStatus() {
+    const current = (state.tagger.models?.models || []).find(
+      (item) => item.name === state.tagger.model,
+    );
+    if (current?.installed) {
+      setTaggerStatus(`模型目录：${current.dir}`);
+    } else {
+      setTaggerStatus(`首次反推会下载到 ${state.tagger.models?.dir || '模型目录'}（约 300MB～1GB）。`);
+    }
+  }
+
+  function setTaggerStatus(text) {
+    refs.taggerStatus.textContent = text;
+  }
+
+  function syncTaggerButton() {
+    refs.taggerGo.disabled = state.tagger.busy || !state.source || !state.tagger.model;
+    const hasPrompt = Boolean(state.tagger.result?.prompt);
+    refs.taggerCopy.disabled = !hasPrompt;
+    refs.taggerActions.classList.toggle('hidden', !hasPrompt);
+  }
+
+  refs.taggerModel.addEventListener('change', () => {
+    state.tagger.model = refs.taggerModel.value;
+    renderTaggerStatus();
+    syncTaggerButton();
+  });
+
+  refs.taggerThreshold.addEventListener('input', () => {
+    state.tagger.threshold = Number(refs.taggerThreshold.value);
+    refs.taggerThresholdVal.textContent = state.tagger.threshold.toFixed(2);
+  });
+
+  refs.taggerCharThreshold.addEventListener('input', () => {
+    state.tagger.characterThreshold = Number(refs.taggerCharThreshold.value);
+    refs.taggerCharThresholdVal.textContent = state.tagger.characterThreshold.toFixed(2);
+  });
+
+  refs.taggerGo.addEventListener('click', async () => {
+    if (!state.source) {
+      toastWarn('请先上传图片');
+      return;
+    }
+    if (!state.tagger.model) {
+      toastWarn('没有可用的反推模型');
+      return;
+    }
+    const installed = (state.tagger.models?.models || []).find(
+      (item) => item.name === state.tagger.model,
+    )?.installed;
+    state.tagger.busy = true;
+    setTaggerStatus(installed ? '正在反推标签…' : '首次使用，正在下载模型…');
+    syncTaggerButton();
+    try {
+      const resp = await api.tagImage({
+        image: state.source.dataUrl,
+        model: state.tagger.model,
+        threshold: state.tagger.threshold,
+        character_threshold: state.tagger.characterThreshold,
+        exclude_tags: refs.taggerExclude.value.trim(),
+        replace_underscore: refs.taggerReplace.checked,
+        trailing_comma: refs.taggerTrailing.checked,
+      });
+      if (disposed) return;
+      state.tagger.busy = false;
+      state.tagger.result = resp;
+      refs.taggerResult.value = resp.prompt || '';
+      const detail = `${resp.count} 个标签 · ${resp.model} · ${resp.elapsed_ms}ms`;
+      setTaggerStatus(resp.downloaded ? `${detail}（模型已下载到 ${resp.model_dir}）` : detail);
+      toastSuccess(`反推完成：${resp.count} 个标签`);
+      syncTaggerButton();
+    } catch (err) {
+      if (disposed) return;
+      state.tagger.busy = false;
+      state.tagger.result = null;
+      refs.taggerResult.value = '';
+      setTaggerStatus(err?.message || String(err));
+      toastError(err, '反推失败');
+      syncTaggerButton();
+    }
+  });
+
+  refs.taggerCopy.addEventListener('click', async () => {
+    const prompt = state.tagger.result?.prompt;
+    if (!prompt) return;
+    const ok = await copyText(prompt);
+    if (ok) toastSuccess('已复制反推提示词');
+    else toastError(new Error('浏览器拒绝写入剪贴板'), '复制失败');
+  });
+
+  refs.taggerToT2i.addEventListener('click', () => {
+    const prompt = state.tagger.result?.prompt;
+    if (!prompt) return;
+    try {
+      setT2IHandoff({ prompt, toast: '已把反推提示词发送到文生图' });
+      goToT2IPage();
+    } catch (err) {
+      toastError(err, '发送失败');
+    }
+  });
+
+  refs.taggerToEdit.addEventListener('click', () => {
+    const prompt = state.tagger.result?.prompt;
+    if (!prompt || !state.source) return;
+    try {
+      setHandoff({
+        images: [{ dataUrl: state.source.dataUrl, name: state.source.name }],
+        prompt,
+        toast: '已把图片与反推提示词送入图像编辑',
+      });
+      goToEditPage();
+    } catch (err) {
+      toastError(err, '发送失败');
+    }
+  });
 
   /* ============================================================
    * 水印 / 动图

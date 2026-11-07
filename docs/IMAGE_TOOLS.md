@@ -397,7 +397,7 @@ VOSR2 三件套模型包完整性判定与引擎构造、非法倍率拒绝、
 └──────┴──────────────────────────────┴─────────────┘
 ```
 
-- 左侧 `.tools-rail`：7 个按钮复用原来的 `[data-tool-group]`，`syncToolGroups()` 只切 `.active`
+- 左侧 `.tools-rail`：8 个按钮复用原来的 `[data-tool-group]`，`syncToolGroups()` 只切 `.active`
   与 `.tool-fold[data-group]` 的 `hidden`，交互逻辑未变；Inspector 的折叠面板按当前工具显隐；
 - 中间 `.tools-main`：画布面板 + 操作史；画布下方新增 `.tools-filmstrip`（grid-area `film`）；
 - 右侧 `.tools-inspector`：源图、工具折叠面板、处理提示；`position: sticky` + 内部滚动，
@@ -417,3 +417,101 @@ VOSR2 三件套模型包完整性判定与引擎构造、非法倍率拒绝、
 > 注：`theme.css` 在 `tools.css` 之后加载，会给 `.tool-canvas` 铺不透明底色；
 > 覆盖层 canvas 用 `.tool-canvas.tool-overlay { background: transparent }` 提升优先级，
 > 否则会把画布图片整块盖住（本次已修复并实测）。
+
+## 12. 图片反推（WD14 / Danbooru，`server/tagger.py`）
+
+把一张图反推成 Danbooru 风格标签并拼成提示词，供文生图 / 图生图继续使用。
+只依赖 `onnxruntime + numpy + Pillow`，不经过 ComfyUI 服务，也不依赖
+`ComfyUI-WD14-Tagger` 节点（模型仓库与预处理逻辑与它保持一致）。
+
+### 12.1 模型目录与下载
+
+查找顺序（`tagger.search_dirs`）：
+
+1. `config.tagger.dir`（设置里显式指定）；
+2. `<model_root>/onnx`、`<model_root>/wd14_tagger`（复用 ComfyUI 的模型目录）；
+3. `<storage>/models/wd14`（项目自带回退目录）。
+
+目录下需要成对存在 `<name>.onnx` 与 `<name>.csv`（`selected_tags.csv` 重命名而来）。
+首次反推时若模型缺失会自动从 HuggingFace 下载到 `tagger.dir`（未配置时落到
+`<model_root>/onnx`，再回退到 storage）。下载目录没有网络时，可设置环境变量
+`HF_ENDPOINT=https://hf-mirror.com` 走镜像后重启服务。
+
+内置 11 个 SmilingWolf 模型（默认 `wd-v1-4-moat-tagger-v2`），未安装的项也会出现在
+模型下拉框里并标注「需下载」。
+
+### 12.2 接口
+
+`GET /api/image/tagger/models`：模型清单。
+
+```jsonc
+{
+  "default": "wd-v1-4-moat-tagger-v2",
+  "dir": "D:/ComfyUI/models/onnx",          // 未安装时的下载目录
+  "dirs": ["...", "..."],                    // 全部候选目录
+  "models": [
+    {"name": "wd-v1-4-moat-tagger-v2", "label": "WD v1.4 Moat v2（推荐）",
+     "installed": true, "size_mb": 302.4, "dir": "...", "known": true}
+  ]
+}
+```
+
+`POST /api/image/tagger`：反推一张图。
+
+```jsonc
+{
+  "image": "data:image/png;base64,...",     // 或 /files/ 路径
+  "model": "wd-v1-4-moat-tagger-v2",
+  "threshold": 0.35,                        // general 标签阈值
+  "character_threshold": 0.85,              // character 标签阈值
+  "exclude_tags": "watermark, text",        // 英文逗号分隔，忽略大小写
+  "replace_underscore": false,              // long_hair → long hair
+  "trailing_comma": false,                  // 提示词末尾追加逗号
+  "download": true                          // 缺失时允许自动下载
+}
+```
+
+返回：
+
+```jsonc
+{
+  "model": "wd-v1-4-moat-tagger-v2",
+  "prompt": "hatsune_miku, long_hair, ...",
+  "count": 12,
+  "tags": [{"tag": "hatsune_miku", "score": 0.98, "category": "character"}],
+  "width": 1024, "height": 1024,
+  "downloaded": false,
+  "model_dir": "...",
+  "elapsed_ms": 420
+}
+```
+
+### 12.3 预处理与分类
+
+- 输入尺寸取自 ONNX 首个输入：v2 为 `[1, H, W, 3]`（NHWC），v3 为 `[1, 3, H, W]`（NCHW）；
+- 等比缩放后**白底 letterbox** 到正方形；
+- 颜色保持 **BGR、0~255、不除以 255**（与 WD14 原生节点一致）；
+- `selected_tags.csv` 第 3 列分类：`0` general、`4` character、`9` rating；
+  rating 不输出，character 排在 general 前，各自按分数降序；
+- 输出时把括号转义为 `\(` `\)`，再用 `", "` 拼接。
+
+### 12.4 前端面板
+
+「图像处理 → 工具轨 → 反推」：
+
+- 模型下拉框显示安装状态与体积；切换未安装模型会提示下载目录；
+- 通用阈值 / 角色阈值滑杆、排除标签、下划线转空格、末尾逗号；
+- 「反推标签」调用接口（首次下载给 10 分钟超时），结果显示在只读文本框；
+- 「复制」写入剪贴板；`→ 文生图` 用 `setT2IHandoff` 只把提示词带到工作台，
+  `→ 图生图` 用 `setHandoff` 同时带图与提示词；
+- 反推分组下不绘制裁剪框，避免遮住画面。
+
+### 12.5 测试
+
+```powershell
+& "<python>" -m pytest tests/test_tagger.py -q
+```
+
+覆盖：CSV 三类标签切分、无 character 段回退、模型目录扫描（缺 csv 不算已安装）、
+缺失模型拒绝自动下载时的错误码、NHWC/NCHW 预处理与 BGR 通道、阈值过滤、
+character 优先排序、排除标签与末尾逗号。测试使用伪造 session，不加载真实 ONNX。

@@ -20,6 +20,9 @@ transformers>=4.50
 scipy>=1.11
 einops>=0.7
 
+# 图片反推（WD14 / Danbooru 标签）；缺失时「图像处理 → 反推」会提示安装
+onnxruntime>=1.16
+
 # 可选（Turbo/加速相关，缺失不影响基本出图）
 # torchvision
 # triton

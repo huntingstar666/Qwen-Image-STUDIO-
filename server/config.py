@@ -180,6 +180,14 @@ DEFAULTS: dict[str, Any] = {
         # 放大模型空闲多少分钟后自动卸载（0 = 不自动卸载）
         "idle_unload_minutes": 10,
     },
+    # 图片反推（WD14 ONNX）。dir 留空时按 model_root/onnx → model_root/wd14_tagger →
+    # storage/models/wd14 的顺序查找；首次使用会自动下载到 model_root/onnx。
+    "tagger": {
+        "dir": "",
+        "model": "wd-v1-4-moat-tagger-v2",
+        "threshold": 0.35,
+        "character_threshold": 0.85,
+    },
 }
 
 #: Turbo 加速预设：用户只选方案，调度 / 加速 LoRA / 底模全部由预设决定。

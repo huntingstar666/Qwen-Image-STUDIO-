@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from . import (
     __version__, config, imageops, imaging, jobs, llm_client, materials, mediaops,
     model_slots, ollama as ollama_client, pipeline, presets, prompt_polish, storage, styles,
+    tagger,
 )
 from . import models as image_models
 from .upscalers import manager as upscale_manager
@@ -1109,6 +1110,44 @@ def api_image_process(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     except imageops.ImageOpsError as exc:
         raise ApiError(str(exc), code=getattr(exc, "code", "invalid_ops")) from exc
     return result
+
+
+@app.get("/api/image/tagger/models")
+def api_tagger_models() -> dict[str, Any]:
+    """WD14 反推模型清单（未安装项也会列出，首次调用时自动下载）。"""
+    return tagger.list_models()
+
+
+@app.post("/api/image/tagger")
+def api_image_tagger(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """图片反推 Danbooru 标签：返回标签分数与可拼接的提示词。"""
+    raw = payload.get("image")
+    if not raw:
+        raise ApiError("缺少 image（data URL 或 /files/ 路径）", code="missing_field")
+    try:
+        data = _decode_image_payload(raw)
+    except ApiError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ApiError(f"图片数据无法解析：{exc}") from exc
+    try:
+        threshold = float(payload.get("threshold", 0.35))
+        character_threshold = float(payload.get("character_threshold", 0.85))
+    except (TypeError, ValueError) as exc:
+        raise ApiError("threshold / character_threshold 必须是数字") from exc
+    try:
+        return tagger.tag_image(
+            data,
+            model=str(payload.get("model") or ""),
+            threshold=threshold,
+            character_threshold=character_threshold,
+            exclude_tags=str(payload.get("exclude_tags") or ""),
+            replace_underscore=bool(payload.get("replace_underscore")),
+            trailing_comma=bool(payload.get("trailing_comma")),
+            allow_download=bool(payload.get("download", True)),
+        )
+    except tagger.TaggerError as exc:
+        raise ApiError(exc.message, code=exc.code) from exc
 
 
 @app.post("/api/image/outpaint-plan")

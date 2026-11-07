@@ -218,6 +218,16 @@ export const api = {
     return request('/api/image/upscale', { method: 'POST', body: payload, timeout: 30000 });
   },
 
+  /** GET /api/image/tagger/models —— WD14 反推模型清单 */
+  taggerModels() {
+    return request('/api/image/tagger/models', { timeout: 20000 });
+  },
+
+  /** POST /api/image/tagger —— 图片反推标签（首次会下载模型，给足超时） */
+  tagImage(payload) {
+    return request('/api/image/tagger', { method: 'POST', body: payload, timeout: 600000 });
+  },
+
   /** GET /api/image/watermark/fonts —— 水印可用字体 */
   watermarkFonts() {
     return request('/api/image/watermark/fonts', { timeout: 15000 });

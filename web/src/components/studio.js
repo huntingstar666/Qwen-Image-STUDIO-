@@ -124,6 +124,14 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 
+/** 左栏分组：只影响 DOM 分组，工具行为仍走 setTool。 */
+const TOOL_GROUPS = [
+  { id: 'view', title: '查看', tools: ['view'] },
+  { id: 'select', title: '选区', tools: ['brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
+  { id: 'transform', title: '变换', tools: ['crop', 'move'] },
+  { id: 'generate', title: '生成', tools: ['outpaint'] },
+];
+
 export function createStudioPage(host) {
   let doc = null;
   let thumbCache = { doc: null, base: null, url: '' };
@@ -187,10 +195,16 @@ export function createStudioPage(host) {
             </div>
           </div>
           <span class="studio-sep"></span>
-          <button class="btn ghost sm" type="button" data-ref="favoriteBtn" disabled>收藏</button>
-          <button class="btn ghost sm" type="button" data-ref="copyBtn" disabled>复制</button>
-          <button class="btn ghost sm" type="button" data-ref="jpgBtn" disabled>导出 JPG</button>
-          <button class="btn ghost sm" type="button" data-ref="pngBtn" disabled>导出 PNG</button>
+          <div class="studio-import" data-ref="exportWrap">
+            <button class="btn ghost sm" type="button" data-ref="exportBtn" disabled aria-haspopup="menu" aria-expanded="false">导出 ▾</button>
+            <div class="studio-import-menu studio-export-menu" role="menu" data-ref="exportMenu" hidden>
+              <button type="button" role="menuitem" data-export="png">导出 PNG</button>
+              <button type="button" role="menuitem" data-export="jpg">导出 JPG</button>
+              <button type="button" role="menuitem" data-export="mask">导出蒙版</button>
+              <button type="button" role="menuitem" data-export="copy">复制到剪贴板</button>
+              <button type="button" role="menuitem" data-export="favorite">收藏到素材仓库</button>
+            </div>
+          </div>
           <button class="btn primary sm" type="button" data-ref="sendBtn" disabled>送入图像编辑</button>
           <input type="file" accept="image/*" hidden data-ref="fileInput" />
         </div>
@@ -371,10 +385,9 @@ export function createStudioPage(host) {
     importWrap: ref('importWrap'),
     openBtn: ref('openBtn'),
     importMenu: ref('importMenu'),
-    favoriteBtn: ref('favoriteBtn'),
-    copyBtn: ref('copyBtn'),
-    jpgBtn: ref('jpgBtn'),
-    pngBtn: ref('pngBtn'),
+    exportWrap: ref('exportWrap'),
+    exportBtn: ref('exportBtn'),
+    exportMenu: ref('exportMenu'),
     sendBtn: ref('sendBtn'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
@@ -606,12 +619,21 @@ export function createStudioPage(host) {
    * 工具与画布
    * ============================================================ */
 
-  refs.rail.innerHTML = TOOLS.map(
-    (item) => `
-      <button class="studio-tool${item.id === tool ? ' active' : ''}" type="button" data-tool="${item.id}" title="${item.label}（${item.key}）">
+  refs.rail.innerHTML = TOOL_GROUPS.map(
+    (group) => `
+      <div class="studio-tool-group" data-group="${group.id}">
+        <span class="studio-tool-group-title">${group.title}</span>
+        ${group.tools
+          .map((id) => {
+            const item = TOOLS.find((entry) => entry.id === id);
+            if (!item) return '';
+            return `<button class="studio-tool${item.id === tool ? ' active' : ''}" type="button" data-tool="${item.id}" title="${item.label}（${item.key}）">
         ${item.icon}
         <span class="studio-tool-key">${item.key}</span>
-      </button>`,
+      </button>`;
+          })
+          .join('')}
+      </div>`,
   ).join('');
 
   function setTool(next) {
@@ -1772,7 +1794,7 @@ export function createStudioPage(host) {
     refs.dot.classList.add('is-live');
     refs.fileName.textContent = doc.name;
     refs.dims.textContent = '';
-    for (const key of ['favoriteBtn', 'copyBtn', 'jpgBtn', 'pngBtn', 'sendBtn']) refs[key].disabled = false;
+    for (const key of ['exportBtn', 'sendBtn']) refs[key].disabled = false;
     syncAdjustInputs();
     updateSizeInfo();
     updateHistoryUi();
@@ -1900,9 +1922,7 @@ export function createStudioPage(host) {
   async function collect() {
     if (!doc) return;
     if (previewBlocked('收藏')) return;
-    refs.favoriteBtn.disabled = true;
-    const original = refs.favoriteBtn.textContent;
-    refs.favoriteBtn.textContent = '收藏中…';
+    refs.exportBtn.disabled = true;
     try {
       const blob = await doc.bakeBlob('image/png');
       await favoriteImage({
@@ -1917,8 +1937,7 @@ export function createStudioPage(host) {
     } catch (err) {
       toastError(err, '收藏失败');
     } finally {
-      refs.favoriteBtn.disabled = false;
-      refs.favoriteBtn.textContent = original;
+      refs.exportBtn.disabled = false;
     }
   }
 
@@ -1947,8 +1966,7 @@ export function createStudioPage(host) {
   async function exportImage(type, name) {
     if (!doc) return;
     if (previewBlocked('导出')) return;
-    const buttons = [refs.jpgBtn, refs.pngBtn];
-    for (const button of buttons) button.disabled = true;
+    refs.exportBtn.disabled = true;
     try {
       const blob = await doc.bakeBlob(type, 0.92);
       const url = URL.createObjectURL(blob);
@@ -1957,7 +1975,7 @@ export function createStudioPage(host) {
     } catch (err) {
       toastError(err, '导出失败');
     } finally {
-      for (const button of buttons) button.disabled = false;
+      refs.exportBtn.disabled = false;
     }
   }
 
@@ -1994,6 +2012,7 @@ export function createStudioPage(host) {
 
   refs.openBtn.addEventListener('click', (event) => {
     event.stopPropagation();
+    setExportMenu(false);
     setImportMenu(refs.importMenu.hidden);
   });
 
@@ -2035,8 +2054,82 @@ export function createStudioPage(host) {
     else openMainPicker(source);
   });
 
+  /* ---------------------------------------------------------- 顶栏导出菜单 */
+
+  function setExportMenu(open) {
+    refs.exportMenu.hidden = !open;
+    refs.exportBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function focusExportItem(index) {
+    const items = [...refs.exportMenu.querySelectorAll('[data-export]')];
+    if (!items.length) return;
+    items[(index + items.length) % items.length].focus();
+  }
+
+  function runExport(action) {
+    if (!doc) return;
+    const name = baseName(doc.name);
+    if (action === 'png') exportImage('image/png', `${name}-edited.png`);
+    else if (action === 'jpg') exportImage('image/jpeg', `${name}-edited.jpg`);
+    else if (action === 'copy') copyToClipboard();
+    else if (action === 'favorite') void collect();
+    else if (action === 'mask') {
+      const dataUrl = doc.maskPng();
+      if (!dataUrl) {
+        toastWarn('还没有涂抹蒙版');
+        return;
+      }
+      downloadDataUrl(dataUrl, `${name}-mask.png`);
+    }
+  }
+
+  refs.exportBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (refs.exportBtn.disabled) return;
+    setImportMenu(false);
+    setExportMenu(refs.exportMenu.hidden);
+  });
+
+  refs.exportBtn.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' || refs.exportBtn.disabled) return;
+    event.preventDefault();
+    setExportMenu(true);
+    focusExportItem(0);
+  });
+
+  refs.exportMenu.addEventListener('keydown', (event) => {
+    const items = [...refs.exportMenu.querySelectorAll('[data-export]')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setExportMenu(false);
+      refs.exportBtn.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusExportItem(index + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusExportItem(index - 1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      focusExportItem(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      focusExportItem(items.length - 1);
+    }
+  });
+
+  refs.exportMenu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-export]');
+    if (!item) return;
+    setExportMenu(false);
+    runExport(item.dataset.export);
+  });
+
   function onDocumentClick(event) {
     if (!refs.importMenu.hidden && !refs.importWrap.contains(event.target)) setImportMenu(false);
+    if (!refs.exportMenu.hidden && !refs.exportWrap.contains(event.target)) setExportMenu(false);
   }
   document.addEventListener('click', onDocumentClick);
 
@@ -2048,16 +2141,6 @@ export function createStudioPage(host) {
     void importLocalFiles(files);
   });
 
-  refs.favoriteBtn.addEventListener('click', collect);
-  refs.copyBtn.addEventListener('click', copyToClipboard);
-  refs.jpgBtn.addEventListener('click', () => {
-    if (!doc) return;
-    exportImage('image/jpeg', `${baseName(doc.name)}-edited.jpg`);
-  });
-  refs.pngBtn.addEventListener('click', () => {
-    if (!doc) return;
-    exportImage('image/png', `${baseName(doc.name)}-edited.png`);
-  });
   refs.sendBtn.addEventListener('click', sendToEdit);
 
   refs.undoBtn.addEventListener('click', () => {

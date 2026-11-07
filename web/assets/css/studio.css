@@ -24,6 +24,8 @@
 /* ------------------------------------------------------------- 顶部信息条 */
 
 .studio-bar {
+  position: relative;
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -118,6 +120,13 @@
   display: none;
 }
 
+/* 导出菜单贴在按钮右侧，避免超出视口 */
+.studio-export-menu {
+  left: auto;
+  right: 0;
+  min-width: 168px;
+}
+
 .studio-import-menu button,
 .ai-ref-menu button {
   padding: 7px 10px;
@@ -204,6 +213,44 @@
   padding: 10px 0;
   border-right: 1px solid var(--line-soft);
   background: var(--panel-2);
+}
+
+/* 左栏分组：组间 1px 分隔线，hover 时才显示组标题 */
+.studio-tool-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 40px;
+}
+
+.studio-tool-group + .studio-tool-group {
+  margin-top: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.studio-tool-group-title {
+  position: absolute;
+  top: 10px;
+  left: calc(100% + 8px);
+  z-index: 20;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.studio-tool-group:hover .studio-tool-group-title {
+  opacity: 1;
+  transform: none;
 }
 
 .studio-tool {
@@ -797,6 +844,24 @@
     flex: 0 0 auto;
     width: 38px;
     height: 36px;
+  }
+
+  .studio-tool-group {
+    flex-direction: row;
+    width: auto;
+  }
+
+  .studio-tool-group + .studio-tool-group {
+    margin-top: 0;
+    margin-left: 3px;
+    padding-top: 0;
+    padding-left: 6px;
+    border-top: 0;
+    border-left: 1px solid var(--line-soft);
+  }
+
+  .studio-tool-group-title {
+    display: none;
   }
 
   .studio-stage {

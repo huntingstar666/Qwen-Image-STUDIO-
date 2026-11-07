@@ -1456,5 +1456,200 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 
 `remove`（seed=777）同样干净：无残影、无矩形、背景渐变连续。对照图：`storage/outputs/compare-goho-mask.png`。全量测试 381 passed。
 
+---
+
+## 12. 设置界面参数契约（方案先定，2026-11-07 冻结 v1）
+
+> 设置界面正在并行开发，本节先冻结「前端能调什么、字段叫什么、默认是什么、越界怎么办、结果怎么回显」。
+> **只定契约，不代表前端已落地**：标 ⏳ 的是设置界面还需要接的字段。
+> 后端读取位置以 `server/pipeline.py#generate_edit`（L732 起）为准，改字段必须同步本节。
+
+### 12.1 三条硬约定
+
+1. **命名只此一份**：局部编辑一律放 `local.*`（snake_case），预处理放 `preprocess.*`，一致性 LoRA 放 `consistency_lora`。不新增同义字段（`raw`、`green`、`overlay` 只是后端兼容别名，不要在新界面里出现）。
+2. **传了 `local.scheme` 就必须同时传 `local.enabled: true`**。后端把 `local.enabled` 当总开关（缺省 = `false` → `scheme` 被忽略成 `none`）。`none` 在**有遮罩**时等同方案 A、**无遮罩**时才自动 native；所以"选了原生但没开 enabled"会静默退回方案 A。这是当前最容易踩的一脚。
+3. **新开关默认值 = 当前最佳实践**，关掉要能回到旧行为；不允许出现"必须打开才正确"的默认值。`remove` / `outpaint` 的训练约定（绿提示 / 灰边 / 任务 LoRA）由后端兜底，界面只做只读说明。
+
+### 12.2 模式组（决定整条管线走哪支）
+
+| 字段 | 类型 | 默认 | 取值 | 作用 / 后果 |
+| --- | --- | --- | --- | --- |
+| `local.enabled` | bool | `false`（**界面必须传 `true`**） | `true/false` | 局部编辑总开关。假 → `scheme=none`（有遮罩=方案 A 合成；无遮罩=native） |
+| `local.scheme` | string | `"a"` | `a` / `b` / `auto` / `native` | `a`=整画布采样 + 遮罩羽化合成；`b`=按遮罩 bbox 裁块采样 + 接缝贴回；`auto`=覆盖率 2%~45% 走 `b`，否则 `a`；`native`=不合成，整画布即输出（`raw` 是别名） |
+| `local.consistency` | bool | `true` | `true/false` | 普通编辑默认挂一致性 LoRA。等价关闭开关 |
+| `params.consistency_lora` | `false` / `{name, strength}` | `null`（=默认挂 `consistency` 预设，strength `0.48`） | — | 强度建议界面暴露 `0.3~0.8`；`false` 与 `local.consistency=false` 等效 |
+| `params.loras` | array | `[]` | `[{preset?/name, strength}]` | **非空时覆盖自动挂载**（任务 LoRA 与一致性 LoRA 都不再自动加） |
+
+> `native` 的承诺差异：不做遮罩合成、不写遮罩外、不做软阈值压回，`quality.outside_max_abs` 回 `null`；只保留预处理 → 32 对齐 → `resolution=0` → latent==画布 → 整数裁回 → 预处理还原，最后做整图锚区校色。
+
+### 12.3 裁切组（仅 `scheme=b`；`auto` 落到 B 时同样生效）
+
+| 字段 | 类型 | 默认 | 建议范围 | 作用 |
+| --- | --- | --- | --- | --- |
+| `local.expand_top` | float | `1.3` | `1.0~3.0` | 向上扩展系数（× 遮罩包围盒**短边**） |
+| `local.expand_bottom` | float | `1.4` | `1.0~3.0` | 向下扩展系数 |
+| `local.expand_left` | float | `1.4` | `1.0~3.0` | 向左扩展系数 |
+| `local.expand_right` | float | `1.4` | `1.0~3.0` | 向右扩展系数 |
+| `local.crop_min_side` | int | `768` | `0~2048` | 裁切块长边下限；小遮罩会**放大**到该值再送模型（孤海节点 8）。传 `0` 关闭放大 |
+| `local.crop_max_side` | int | `2048` | `512~4096` | 裁切块长边上限（防 OOM）；须 ≥ `crop_min_side` |
+| `local.fills` | bool | `task.mode == "remove"` | `true/false` | 裁切前填掉遮罩闭合孔洞（移除场景必须开） |
+| `local.legacy_crop` | bool | `false` | `true/false` | 回退旧裁切几何（`context_factor` / `context_pixels`）。仅排查用，默认隐藏 |
+| `local.context_factor` | float | `1.5` | `1.0~4.0`（已校验） | 旧几何：包围盒倍数（仅在 `legacy_crop=true` 时生效） |
+| `local.context_pixels` | int | `96` | `0~1024`（已校验） | 旧几何：额外上下文像素 |
+
+> `expand_*` 写 `0` 会被当成缺省（`or` 兜底），要收紧上下文请往下调但别写 0；`crop_min_side` 例外，`0` 是合法值（显式关闭放大），需要用 `null` 表示"用默认 768"。
+
+### 12.4 接缝组（仅 `scheme=b`）
+
+| 字段 | 类型 | 默认 | 建议范围 | 作用 |
+| --- | --- | --- | --- | --- |
+| `local.expand_pct` | float | `4.0` | `0~20` | 贴回时先向外**膨胀**占遮罩包围盒平均边长的百分比（`0` 合法，表示不外扩） |
+| `local.feather_pct` | float | `5.0` | `0~30` | 膨胀后再高斯羽化的百分比（同上，`0` 合法） |
+| `local.blend_pixels` | int | `24` | `0~256`（已校验） | 仅当 `expand_pct` 与 `feather_pct` **都为 0** 时生效的向内羽化像素（旧行为）。默认路径下被忽略 |
+| `local.dither` | bool | `true` | `true/false` | 过渡带确定性抖动（IGN，<1/255），消除 8bit 色阶断层。建议界面显示为"抗色阶断层"，默认开 |
+
+> 实际写入范围 = 遮罩 bbox 膨胀 `expand_px` + 羽化 `feather_px`（真机 `edit` 实测 12 / 16）。验收 `outside_max_abs` 以这条带的外沿为界；带内属于用户显式选择的过渡带，不是泄漏。
+
+### 12.5 合成组（`scheme=a`，以及 `enabled=false` 但有遮罩时）
+
+| 字段 | 类型 | 默认 | 建议范围 | 作用 |
+| --- | --- | --- | --- | --- |
+| `local.feather` | int | `32` | `0~256`（已校验） | 遮罩向内羽化半径（像素）。写 `0` 会被兜底成 `32`，要"硬边"请传 `1` |
+| `local.mask_expand` | int | `0` | `0~256`（已校验） | 主动把写入范围外扩 N 像素（会把遮罩外像素也算作可改） |
+| `local.color_match` | bool | `true` | `true/false` | 颜色匹配总开关；关掉则锚区仿射 / 低频移植整条颜色链路都不做 |
+| `local.color_strength` | float | `0.6` | `0~1` | Reinhard 强度；方案 B 内部取 `max(strength, 0.7)` 保接缝 |
+| `local.band_mode` | string | `"lowfreq"` | `lowfreq` / `alpha` | 过渡带方式：低频移植（默认，抗亮度台阶）/ 纯 alpha 混合。非法值回落 `lowfreq` |
+
+### 12.6 颜色一致性（A / B / native 都生效，建议独立成一组）
+
+| 字段 | 类型 | 默认 | 建议范围 | 作用 |
+| --- | --- | --- | --- | --- |
+| `local.color_restore` | bool | `true` | `true/false` | BlueBox 锚区仿射：用"几乎没变"的像素估逐通道 gain/shift 拉回整体漂移。native 模式下是唯一校色手段 |
+| `local.color_restore_strength` | float | `1.0` | `0~1` | 校色强度；`0` = 只统计不应用 |
+
+提示图（独立小项，不建议做成可编辑控件）：
+
+| 字段 | 类型 | 默认 | 取值 | 作用 |
+| --- | --- | --- | --- | --- |
+| `local.hint` | string | `""`（=auto） | `""` / `auto` / `none` / `green_overlay` / `gray_fill` | 缺省时 `remove` 自动绿提示、其余 `none`；`remove` 强制 `green_overlay`、`outpaint` 强制 `gray_fill`。普通编辑建议显式传 `none` |
+
+### 12.7 预处理组（大图必开）
+
+| 字段 | 类型 | 默认 | 约束 | 作用 |
+| --- | --- | --- | --- | --- |
+| `preprocess.enabled` | bool | 界面 `true`（后端缺省 `false`，**必须显式传**） | bool | 仅 `size_mode=follow` 且非扩图时生效；长边超 `max_side` 才真正缩，出图后按记录还原 |
+| `preprocess.max_side` | int | `2048` | `256~8192`（已校验） | 预处理长边上限 |
+| `preprocess.min_side` | int | `768` | `256~8192`，且 ≤ `max_side`（已校验） | 仅 `mode=clamp_range` 时作为下限（默认模式不放大） |
+| `preprocess.multiple` | int | `32` | `8~256`（已校验） | 32 对齐倍数，建议固定 32、界面不暴露 |
+| `preprocess.mode` | string | `"downscale_only"` | `downscale_only` / `clamp_range` | 只缩不放（默认）/ 夹到区间（会放大小图） |
+
+> 预处理是零偏移闭环的一部分：它缩小后，画布、遮罩、裁回都按同一组整数记录走。界面可以关，但要在提示里说明"关掉后 4K 原图会更慢，且可能 OOM"。
+
+### 12.8 界面分组与控件建议（照抄即可）
+
+| 分组 | 控件 | 绑定字段 | 显隐规则 |
+| --- | --- | --- | --- |
+| 编辑方式 | 分段选择：自动 / 全画布 / 裁切 / 原生 | `local.enabled=true` + `local.scheme` | 始终显示；选「原生」时禁用 12.4、12.5 两组 |
+| 裁切 | 四个数字（上/下/左/右，step 0.05）+「最小裁切长边」下拉（512/768/1024）+「最大裁切长边」下拉（1536/2048/3072）+ 两个开关 | `expand_top/bottom/left/right`、`crop_min_side`、`crop_max_side`、`fills`、`legacy_crop` | 仅 `scheme ∈ {b, auto}`；`legacy_crop` 收进「高级」默认折叠 |
+| 接缝 | 两个滑块（4% / 5%）+ 开关 | `expand_pct`、`feather_pct`、`dither` | 仅 `scheme=b`；建议收进「高级」 |
+| 合成 | 羽化像素、外扩像素、颜色匹配开关 + 强度滑块 | `feather`、`mask_expand`、`color_match`、`color_strength` | 仅 `scheme=a` |
+| 颜色一致性 | 开关 + 强度滑块 | `color_restore`、`color_restore_strength` | 始终显示（三种方案都需要） |
+| 一致性 LoRA | 开关 + 强度滑块（0.3~0.8） | `local.consistency` + `consistency_lora.strength` | 始终显示；任务为 remove/outpaint 时标注"已改用任务 LoRA" |
+| 大图预处理 | 开关 + 长边下拉（1024/1536/2048/3072） | `preprocess.enabled`、`preprocess.max_side` | 始终显示 |
+| 移除提示 | 只读标签 | `local.hint` | 仅 `task.mode=remove`，显示"绿色选区提示（训练约定，不可关）" |
+
+### 12.9 缺省与兼容（不传键时到底发生什么）
+
+| 情形 | 实际行为 |
+| --- | --- |
+| `local` 整个缺失 | `enabled=false` → `scheme=none`：有遮罩=方案 A，无遮罩=native |
+| 传 `scheme` 但没传 `enabled` | `scheme` 被忽略（同上）。**界面必须成对传** |
+| `preprocess` 缺失 | 预处理**不启用**（不是默认 2048）。界面必须显式传 `enabled` |
+| `zero_shift` 缺失 | 不启用零偏移校验（不传就只是普通画布）；建议界面默认传 `{enabled:true, snap:32, resolution:0}`，`resolution` 恒为 0 |
+| `hint` 传 `green` / `overlay` / `mask` | 归一为 `green_overlay`；`gray` / `grey` → `gray_fill`（旧数据兼容，新界面不要再用） |
+| `scheme` 传 `raw` | 归一为 `native` |
+| `scheme=auto` 但无遮罩 | 直接 native（无"遮罩外"可保留） |
+| `task.mode=remove` 但没遮罩 | 后端退回 `edit` 并写 `quality.warnings` |
+| `task.mode=outpaint` 但四边全 0 | 退回 `edit` 并写 `quality.warnings` |
+
+### 12.10 服务端校验（越界一律 400，不静默夹取）
+
+已实现：`local.scheme` 枚举、`feather` / `mask_expand` / `blend_pixels`（0~256）、`context_pixels`（0~1024）、`context_factor`（1~4）、`preprocess.max_side` / `min_side`（256~8192 且 min ≤ max）、`preprocess.multiple`（8~256）、`preprocess.mode` 枚举、`loras[].strength`（0~2）。
+
+⏳ 建议随设置界面一起补（本轮未改 `main.py`，避免与并行开发冲突）：
+
+| 字段 | 建议规则 |
+| --- | --- |
+| `local.expand_top/bottom/left/right` | 数字，`1.0~3.0` |
+| `local.crop_min_side` | 整数 `0~2048` |
+| `local.crop_max_side` | 整数 `512~4096`，且 ≥ `crop_min_side`（`crop_min_side>0` 时） |
+| `local.expand_pct` | 数字 `0~20` |
+| `local.feather_pct` | 数字 `0~30` |
+| `local.color_strength` / `color_restore_strength` | 数字 `0~1` |
+| `local.band_mode` | 枚举 `lowfreq` / `alpha` |
+| `local.hint` | 枚举 `""` / `auto` / `none` / `green_overlay` / `gray_fill` |
+| `local.dither` / `fills` / `legacy_crop` / `consistency` / `color_restore` | 布尔（允许 `0/1`、`"true"/"false"`） |
+
+### 12.11 结果回显（界面右上角「本次生效」面板）
+
+| 字段 | 含义 | 展示建议 |
+| --- | --- | --- |
+| `job.quality.scheme` | 实际走的方案（`a` / `b` / `native` / `none`） | 徽标："全画布 / 裁切 / 原生" |
+| `job.quality.zero_shift.verified` | 零偏移几何硬验收是否通过 | 通过显示 ✓，未启用显示"未校验" |
+| `job.quality.preprocess.{applied, scale, work.w/h, canvas.w/h}` | 预处理是否真的缩放、缩放比与前后尺寸 | "4096×2304 → 2048×1152"（`scale` 约 0.5） |
+| `job.quality.source.{w, h}` / `output.{w, h}` | 源图与最终输出尺寸 | 用于确认"回到源尺寸" |
+| `job.quality.canvas.{w, h}` | 采样画布（32 倍数） | 折叠显示 |
+| `job.quality.color.mask_band.{expand_px, feather_px}` | 方案 B 实际过渡带 | 高级信息，默认折叠 |
+| `job.quality.outside_max_abs` | 遮罩外最大字节差；`0` = 逐字节保留；`null` = 原生模式不承诺 | 显示"遮罩外 0 变化"或"原生态" |
+| `job.quality.changed_ratio` / `leak_ratio` | 改动比例 / 泄漏比例（诊断，只读） | 异常时才提示 |
+| `job.quality.warnings` | 回退/强制说明（未选区、扩图退回、绿提示强制等） | 黄条列出 |
+| `job.align.crop` | 裁切几何（`top/bottom/left/right`、`model_w/h`） | 调试信息 |
+
+### 12.12 请求示例
+
+最小可用（带遮罩的普通编辑，全部走默认最佳实践，⏳ 表示界面待接）：
+
+```json
+{
+  "prompt": "把红色外套换成米白色",
+  "images": [{"data": "data:image/png;base64,..."}],
+  "mask": {"data": "data:image/png;base64,..."},
+  "size_mode": "follow",
+  "resolution": 0,
+  "zero_shift": {"enabled": true, "snap": 32, "resolution": 0},
+  "preprocess": {"enabled": true, "max_side": 2048},
+  "local": {
+    "enabled": true,
+    "scheme": "auto",
+    "consistency": true,
+    "expand_top": 1.3,
+    "expand_bottom": 1.4,
+    "expand_left": 1.4,
+    "expand_right": 1.4,
+    "crop_min_side": 768,
+    "crop_max_side": 2048,
+    "expand_pct": 4,
+    "feather_pct": 5,
+    "dither": true,
+    "feather": 32,
+    "color_match": true,
+    "color_strength": 0.6,
+    "color_restore": true,
+    "color_restore_strength": 1.0,
+    "mask_expand": 0,
+    "band_mode": "lowfreq"
+  },
+  "consistency_lora": {"strength": 0.48}
+}
+```
+
+原生（孤海同款路径）：把 `local.scheme` 换成 `"native"`，`local.enabled` 仍必须是 `true`；`expand_pct` / `feather_pct` / `feather` / `mask_expand` 全部失效，只保留 `color_restore` 与 `color_restore_strength`。
+
+### 12.13 待拍板（界面开工前确认）
+
+1. **默认方案**：建议有遮罩时默认「自动」，无遮罩自动落「原生」；不要默认「裁切」，小图裁块会放大反而更慢。
+2. **高级参数是否默认折叠**：`expand_pct` / `feather_pct` / `band_mode` / `legacy_crop` 建议只放折叠区，默认值已是真机验证过的最优点。
+3. **一致性 LoRA 强度是否暴露**：建议暴露（0.3~0.8，默认 0.48）；关掉一致性 LoRA 时本地编辑的整体漂移会明显变大，需要文案提示。
+
 
 

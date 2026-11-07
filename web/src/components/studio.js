@@ -150,6 +150,17 @@ export function createStudioPage(host) {
   let selectedLayerId = null;
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
+  /* D5.3：拖动期间复用的画布矩形，避免 pointermove 触发同步布局。 */
+  let dragRect = null;
+  let cropBoxStyle = { left: '', top: '', width: '', height: '' };
+  const perfOn = (() => {
+    try {
+      return localStorage.getItem('wb.studio.perf') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  let perfFrames = [];
 
   /* 本机工程持久化（D17.1）：工程 id、主图源 Blob、叠加层 Blob 与自动保存节流。 */
   let projectId = '';
@@ -245,6 +256,9 @@ export function createStudioPage(host) {
 
             <div class="studio-canvas-wrap" data-ref="stage">
               <canvas data-ref="canvas"></canvas>
+              <div class="studio-crop-overlay" data-ref="cropOverlay" hidden>
+                <div class="studio-crop-box" data-ref="cropBox"></div>
+              </div>
               <div class="studio-maskbar" data-ref="maskbar" hidden>
                 <select class="select studio-maskbar-tool" data-ref="maskTool" aria-label="蒙版工具">
                   <option value="brush">画笔</option>
@@ -397,6 +411,8 @@ export function createStudioPage(host) {
     maskVisible: ref('maskVisible'),
     stage: ref('stage'),
     canvas: ref('canvas'),
+    cropOverlay: ref('cropOverlay'),
+    cropBox: ref('cropBox'),
     empty: ref('empty'),
     emptyOpen: ref('emptyOpen'),
     emptyWarehouse: ref('emptyWarehouse'),
@@ -761,11 +777,39 @@ export function createStudioPage(host) {
     });
   }
 
+  /**
+   * 裁剪框改为 DOM 覆盖层（D5.3）：拖动选框只写 left/top/width/height，
+   * 画布不再重绘，4K 图下也不会出现整图重绘卡顿。
+   */
+  function syncCropOverlay(rect = cropRect) {
+    const visible = tool === 'crop' && doc && rect && rect.width > 1 && rect.height > 1;
+    if (!visible) {
+      if (!refs.cropOverlay.hidden) refs.cropOverlay.hidden = true;
+      return;
+    }
+    if (refs.cropOverlay.hidden) refs.cropOverlay.hidden = false;
+    const next = {
+      left: `${Math.round(view.x + rect.x * view.scale)}px`,
+      top: `${Math.round(view.y + rect.y * view.scale)}px`,
+      width: `${Math.max(1, Math.round(rect.width * view.scale))}px`,
+      height: `${Math.max(1, Math.round(rect.height * view.scale))}px`,
+    };
+    const style = refs.cropBox.style;
+    for (const key of ['left', 'top', 'width', 'height']) {
+      if (cropBoxStyle[key] !== next[key]) {
+        style[key] = next[key];
+        cropBoxStyle[key] = next[key];
+      }
+    }
+  }
+
   function draw() {
+    const t0 = perfOn ? performance.now() : 0;
     const width = refs.canvas.clientWidth;
     const height = refs.canvas.clientHeight;
     ctx.clearRect(0, 0, width, height);
     if (!doc) {
+      syncCropOverlay();
       outpaint?.syncGhost?.();
       return;
     }
@@ -773,12 +817,9 @@ export function createStudioPage(host) {
     const w = image.width * view.scale;
     const h = image.height * view.scale;
 
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.26)';
-    ctx.shadowBlur = 26;
-    ctx.shadowOffsetY = 10;
+    // 底图阴影交给 CSS drop-shadow（见 .studio-canvas-wrap canvas），
+    // 避免每帧对整图做 shadowBlur 模糊。
     ctx.drawImage(image, view.x, view.y, w, h);
-    ctx.restore();
 
     // AI 结果预览（覆盖底图；按住 \ 可临时看回底图）
     if (preview.image && !preview.flash) {
@@ -803,35 +844,6 @@ export function createStudioPage(host) {
       ctx.globalAlpha = 0.42;
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(tint, view.x, view.y, w, h);
-      ctx.restore();
-    }
-
-    // 裁剪框
-    if (tool === 'crop' && cropRect) {
-      const rx = view.x + cropRect.x * view.scale;
-      const ry = view.y + cropRect.y * view.scale;
-      const rw = cropRect.width * view.scale;
-      const rh = cropRect.height * view.scale;
-      ctx.save();
-      ctx.fillStyle = 'rgba(12, 14, 16, 0.5)';
-      ctx.beginPath();
-      ctx.rect(view.x, view.y, w, h);
-      ctx.rect(rx, ry, rw, rh);
-      ctx.fill('evenodd');
-      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(rx, ry, rw, rh);
-      ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-      for (let i = 1; i < 3; i += 1) {
-        ctx.beginPath();
-        ctx.moveTo(rx + (rw * i) / 3, ry);
-        ctx.lineTo(rx + (rw * i) / 3, ry + rh);
-        ctx.moveTo(rx, ry + (rh * i) / 3);
-        ctx.lineTo(rx + rw, ry + (rh * i) / 3);
-        ctx.stroke();
-      }
       ctx.restore();
     }
 
@@ -916,19 +928,32 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 裁剪框由 DOM 覆盖层绘制，这里只同步位置
+    syncCropOverlay();
+
     // 扩图幽灵层（DOM 覆盖，跟随画布缩放/平移）
     outpaint?.syncGhost?.();
+
+    if (perfOn) {
+      perfFrames.push(performance.now() - t0);
+      if (perfFrames.length >= 60) {
+        const avg = perfFrames.reduce((sum, value) => sum + value, 0) / perfFrames.length;
+        const max = Math.max(...perfFrames);
+        console.info(`[studio perf] draw 平均 ${avg.toFixed(2)}ms / 最大 ${max.toFixed(2)}ms（${perfFrames.length} 帧）`);
+        perfFrames = [];
+      }
+    }
   }
 
   /* ============================================================
    * 坐标与蒙版绘制
    * ============================================================ */
 
-  function toImage(clientX, clientY) {
-    const rect = refs.canvas.getBoundingClientRect();
+  function toImage(clientX, clientY, rect = null) {
+    const box = rect || refs.canvas.getBoundingClientRect();
     return {
-      x: (clientX - rect.left - view.x) / view.scale,
-      y: (clientY - rect.top - view.y) / view.scale,
+      x: (clientX - box.left - view.x) / view.scale,
+      y: (clientY - box.top - view.y) / view.scale,
     };
   }
 
@@ -1053,7 +1078,8 @@ export function createStudioPage(host) {
   refs.canvas.addEventListener('pointerdown', (event) => {
     if (!doc) return;
     refs.canvas.setPointerCapture?.(event.pointerId);
-    const point = clampPoint(toImage(event.clientX, event.clientY));
+    dragRect = refs.canvas.getBoundingClientRect();
+    const point = clampPoint(toImage(event.clientX, event.clientY, dragRect));
 
     if (event.button === 1 || spaceDown || tool === 'view') {
       drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
@@ -1062,6 +1088,7 @@ export function createStudioPage(host) {
     }
     if (tool === 'crop') {
       drag = { mode: 'crop', start: point, rect: null };
+      syncCropOverlay(null);
       return;
     }
     if (tool === 'brush' || tool === 'eraser') {
@@ -1096,7 +1123,7 @@ export function createStudioPage(host) {
   });
 
   refs.canvas.addEventListener('pointermove', (event) => {
-    const rect = refs.canvas.getBoundingClientRect();
+    const rect = dragRect || refs.canvas.getBoundingClientRect();
     cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     if (!drag) {
       if (MASK_TOOLS.has(tool)) scheduleDraw();
@@ -1108,7 +1135,7 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
-    const point = clampPoint(toImage(event.clientX, event.clientY));
+    const point = clampPoint(toImage(event.clientX, event.clientY, rect));
     if (drag.mode === 'paint') {
       strokeTo(maskPoint(point));
       scheduleDraw();
@@ -1116,7 +1143,7 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'crop') {
       drag.rect = normalizeRect(drag.start, point);
-      scheduleDraw();
+      syncCropOverlay(drag.rect);
       return;
     }
     if (drag.mode === 'shape') {
@@ -1144,6 +1171,7 @@ export function createStudioPage(host) {
 
   function endDrag() {
     refs.canvas.classList.remove('is-grabbing');
+    dragRect = null;
     if (!drag) return;
     const mode = drag.mode;
     const rect = drag.rect;

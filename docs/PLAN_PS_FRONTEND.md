@@ -678,6 +678,8 @@ DOM 结构：
 
 - **D5.2 视觉规范与响应式（已完成）** —— 三档宽度实测：1440 / 1280 / 1024 下 `documentElement.scrollWidth === innerWidth`，顶栏 `scrollWidth - clientWidth = 0`、tab 栏无溢出、画布按容器等比显示不变形；1024 时走桌面栅格（面板 262px + 工具轨 58px + 画布 542px），未触发 980 断点的纵向堆叠，布局仍可用。对比度按 WCAG 计算并修正：原先 `.ai-hint`（白底 3.21）、`.studio-status`（面板底 2.87）、`.studio-tool-key`（2.28）、`.ai-label`（2.54）均不达 AA，改为在 `.page-studio` 作用域内覆盖 `--dim: #6b6862`、`--muted: #6f6c66`（暗色单独覆盖 `--dim: #98a1a9`，暗色 `--muted` 原值已达标不改），实测亮色下提示 5.23 / 状态 4.69 / 快捷键角标 4.98 / 字段标签 5.55 / 组标题 5.59，暗色下 5.3~7.4，均 ≥ 4.5；覆盖只作用于工作室，不影响其他页面。浏览器实测：亮/暗两套截图目检正常，颜色加深后次要信息可读且不抢主标题，无 JS 异常。下一步 D5.3：裁剪性能优化。
 
+- **D5.3 裁剪性能优化（已完成）** —— 按 §15.1 落地 1/2/3/4/7：裁剪框从 Canvas 挪到 DOM 覆盖层（`.studio-crop-overlay > .studio-crop-box`，`box-shadow: 0 0 0 9999px` 做外侧变暗、两层渐变做三分网格），`pointermove`（crop）只调 `syncCropOverlay()` 写 `left/top/width/height`，不再 `scheduleDraw()`；`draw()` 删除 `shadowBlur:26 / shadowOffsetY:10`，改为画布 CSS `filter: drop-shadow(...)`；`pointerdown` 缓存画布矩形到 `dragRect`，`pointermove` 不再 `getBoundingClientRect()`，`toImage` 增加可选 `rect` 参数；`syncCropOverlay` 做 1px 取整 + 样式缓存去重；新增 `localStorage.wb.studio.perf='1'` 探针，每 60 帧输出 draw 均值/最大值。§15.1 未做项 5（底图视口缓存）、6（文档版本号）明确留给 D18.2。4096² 实测：拖框 60 次 move 期间 `clearRect` 0 次、单次 move 平均 0.012ms / 最大 0.2ms；`1867 × 1244` 尺寸回显、应用裁剪后 `1,867 × 1,244`、覆盖层隐藏正确；画笔涂抹照常 2 帧重绘、覆盖率与撤销正常；截图目检选框虚线/网格/外遮罩与底图投影均正常，无 JS 异常。下一步 D6.1：M1 回归与文档。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1143,7 +1145,7 @@ DOM 结构：
 | D4.3 | AI 更多设置折叠 | 已完成 | 本次提交 | 默认只显示指令/参考图/修改；摘要随预设、输出、Turbo 实时更新 |
 | D5.1 | 左栏分组 + 顶栏菜单 | 已完成 | 本次提交 | 方案 §12.5；`TOOL_GROUPS` 四组 + 「导出 ▾」菜单（PNG/JPG/蒙版/复制/收藏） |
 | D5.2 | 视觉规范与响应式 | 已完成 | 本次提交 | 三档宽度无横向滚动；工作室次要文字对比度提升到 AA（5.23/4.69/4.98） |
-| D5.3 | 裁剪性能优化 | 未开始 | — | 含卡顿根因与优化方案 §15.1 |
+| D5.3 | 裁剪性能优化 | 已完成 | 本次提交 | 选框改 DOM 覆盖层；4K 拖动 0 次画布重绘、0.012ms/move |
 | D6.1 | M1 回归与文档 | 未开始 | — | — |
 | D16.1 | AI 编辑历史卡片 | 未开始 | — | 方案 §15.2 |
 | D16.2 | 图片对比 | 未开始 | — | 复用 `compare.js`，方案 §15.3 |
@@ -1226,6 +1228,20 @@ DOM 结构：
 | 5 | 底图按视口缓存 | 新增 `viewCache`：缩放/平移结束后把 `renderBase()` 按显示分辨率绘到离屏 Canvas；拖动时只 `drawImage` 缓存，不再缩放原图 |
 | 6 | 文档版本号 | `studioDoc` 增加 `version`，`draw()` 仅在版本变化或视口变化时重绘；裁剪叠加层独立更新 |
 | 7 | 性能探针 | `localStorage.wb.studio.perf='1'` 时在控制台输出最近 60 帧均值/最大值，便于回归对比 |
+
+#### 实施结果（D5.3，已完成）
+
+| # | 方案 | 状态 | 落地说明 |
+| --- | --- | --- | --- |
+| 1 | 裁剪框改 DOM 覆盖层 | 已实现 | `.studio-crop-overlay > .studio-crop-box`，外侧变暗用 `box-shadow: 0 0 0 9999px rgba(12,14,16,.5)`，三分网格用两层 CSS 渐变；`pointermove`（crop）只调 `syncCropOverlay()`，**不再触发 `scheduleDraw()`** |
+| 2 | 阴影移出 Canvas | 已实现 | 删除 `ctx.shadowBlur/shadowOffsetY`，改为画布 CSS `filter: drop-shadow(0 10px 26px rgba(0,0,0,.26))`（跟随图像 alpha，视觉与原来一致） |
+| 3 | 缓存视口矩形 | 已实现 | `pointerdown` 缓存 `canvas.getBoundingClientRect()` 到 `dragRect`，`pointermove` 复用，`endDrag` 清空；`toImage(x, y, rect)` 支持传入缓存 |
+| 4 | 帧内去重 | 已实现 | `syncCropOverlay()` 比较 `cropBoxStyle`，坐标取整到 1px，未变化不写 DOM |
+| 5 | 底图按视口缓存 | 未做 | 平移/缩放的整图重绘留给 D18.2 统一处理，避免与 D5.3 混在一起 |
+| 6 | 文档版本号 | 未做 | 同上，归入 D18.2 |
+| 7 | 性能探针 | 已实现 | `localStorage.wb.studio.perf='1'` 时，`draw()` 累计 60 帧后输出均值/最大值 |
+
+实测（4096×4096 JPEG、1440×900、Chromium headless）：裁剪拖动 60 次 `pointermove` 期间 `clearRect` 调用 **0 次**（优化前每帧 1 次整图重绘 + 阴影模糊），单次 move 处理平均 **0.012ms**、最大 0.2ms；选框位置/尺寸、`1867 × 1244` 尺寸回显、应用裁剪后画布变为 `1,867 × 1,244`、覆盖层隐藏均正确；画笔涂抹仍正常重绘（3 次指针事件合并为 2 帧）且蒙版覆盖率和撤销不受影响；旋转/取消裁剪沿用原有清空逻辑。
 
 #### 交互细节
 
@@ -1537,7 +1553,7 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 
 | # | 模块 / 功能 | 触发路径 | 现状（代码证据） | 等级 |
 | --- | --- | --- | --- | --- |
-| 1 | 工作室 · 裁剪 | `pointermove → scheduleDraw → draw()` | 全画布清空 + 整图 `drawImage` + `shadowBlur:26` + 选框再绘制；见 `studio.js` `draw()` | **高**（D5.3） |
+| 1 | 工作室 · 裁剪 | `pointermove → scheduleDraw → draw()` | ~~全画布清空 + 整图 `drawImage` + `shadowBlur:26` + 选框再绘制~~ **D5.3 已优化**：选框改 DOM 覆盖层，拖动 0 次画布重绘 | 已解决（D5.3） |
 | 2 | 工作室 · 平移 / 缩放 | 拖拽、滚轮 | 与裁剪同一条 `draw()` 路径，每帧整图 + 阴影 | **高** |
 | 3 | 工作室 · 蒙版画笔悬停 | 未按下时 `pointermove` | `MASK_TOOLS` 命中即 `scheduleDraw()`，光标移动也整图重绘 | **高** |
 | 4 | 工作室 · 蒙版涂抹 | `stampMask` → `tintDirty=true` → `draw()` | 每帧全尺寸 `renderMaskTint()`（4K 再开一张画布）+ 整图重绘 | **高** |
@@ -1611,7 +1627,7 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 
 | 场景 | 分辨率 | 当前 | 目标 |
 | --- | --- | --- | --- |
-| 裁剪拖动 | 4096² | 待测 | <16ms/帧 |
+| 裁剪拖动 | 4096² | 0.012ms/move、0 次重绘（D5.3 实测） | <16ms/帧 |
 | 平移 / 缩放 | 4096² | 待测 | <16ms/帧 |
 | 蒙版涂抹 | 4096² | 待测 | <16ms/帧 |
 | 叠加层拖动 | 4096² | 待测 | <16ms/帧 |

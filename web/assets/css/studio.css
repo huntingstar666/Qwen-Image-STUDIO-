@@ -410,6 +410,27 @@
   display: block;
   touch-action: none;
   cursor: default;
+  /* 底图投影改由 CSS 承担，画布不再逐帧做 shadowBlur */
+  filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.26));
+}
+
+/* 裁剪框（DOM 覆盖层）：拖动选框只改几何，Canvas 不重绘 */
+.studio-crop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.studio-crop-box {
+  position: absolute;
+  outline: 1px dashed rgba(255, 255, 255, 0.92);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 9999px rgba(12, 14, 16, 0.5);
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.26) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.26) 1px, transparent 1px);
+  background-size: 33.333% 100%, 100% 33.333%;
 }
 
 .studio-canvas-wrap canvas[data-tool="view"] {

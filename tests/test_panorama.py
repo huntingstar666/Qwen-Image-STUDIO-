@@ -95,6 +95,53 @@ def test_mask_covers_only_generated_area():
     assert float(mask[plan.top + 10, plan.left + 10]) == 0.0
 
 
+def test_seam_level_removes_step_at_source_edge():
+    arr = np.full((40, 320, 3), 100, dtype=np.uint8)
+    arr[:, :128] = 40  # 左扩展区比源图暗 60 级
+    out, report = imaging.seam_level(
+        arr, {"left": 128, "right": 0, "top": 0, "bottom": 0}, band=16)
+    assert out.dtype == np.uint8
+    before = float(np.abs(arr[:, 128].astype(int) - arr[:, 127].astype(int)).mean())
+    after = float(np.abs(out[:, 128].astype(int) - out[:, 127].astype(int)).mean())
+    assert before > 50
+    assert after <= 1
+    # 源图区域一个像素都不动
+    assert np.array_equal(out[:, 128:], arr[:, 128:])
+    # 光晕修正窗口（96px）之外仍保持模型原样
+    assert np.array_equal(out[:, :32], arr[:, :32])
+    assert report["sides"]["left"]["before_mean_abs"] > 50
+
+
+def test_seam_level_flattens_glow_inside_extension():
+    arr = np.full((40, 320, 3), 100, dtype=np.uint8)
+    arr[:, 108:128] = 150                # 交界内侧 20px 处的光晕带（不影响交界本身）
+    out, report = imaging.seam_level(
+        arr, {"left": 128}, band=48, flatten=64)
+    before = float(arr[:, 108].astype(int).mean() - arr[:, 200].astype(int).mean())
+    after = float(out[:, 108].astype(int).mean() - out[:, 200].astype(int).mean())
+    assert before > 40
+    assert after < before * 0.65
+    assert np.array_equal(out[:, 128:], arr[:, 128:])
+    assert report["sides"]["left"]["flatten_mean_abs"] > 1
+
+
+def test_seam_level_skips_without_pads():
+    arr = np.zeros((16, 16, 3), dtype=np.uint8)
+    out, report = imaging.seam_level(arr, {"left": 0, "right": 0})
+    assert report["skipped"] is True
+    assert np.array_equal(np.asarray(out), arr)
+
+
+def test_seam_level_keeps_pil_mode():
+    im = Image.new("RGB", (96, 24), (120, 120, 120))
+    for x in range(24):
+        for y in range(24):
+            im.putpixel((x, y), (60, 60, 60))
+    out, _ = imaging.seam_level(im, {"left": 24}, band=8)
+    assert isinstance(out, Image.Image)
+    assert out.size == im.size and out.mode == im.mode
+
+
 def test_wrap_seam_blend_reduces_edge_gap():
     arr = np.zeros((64, 128, 3), dtype=np.uint8)
     arr[:, 64:] = 255

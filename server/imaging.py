@@ -1234,6 +1234,151 @@ def panorama_canvas(im: Image.Image, plan: PanoramaPlan) -> Image.Image:
     return canvas
 
 
+def _smooth_1d(values: np.ndarray, radius: int) -> np.ndarray:
+    """沿第 0 维做均值平滑（edge padding），用于抹掉逐行/逐列的噪声。"""
+    radius = int(radius)
+    if radius <= 0 or values.shape[0] < 3:
+        return values.astype(np.float32, copy=False)
+    radius = min(radius, max(1, values.shape[0] // 2))
+    kernel = np.ones(2 * radius + 1, dtype=np.float32) / (2 * radius + 1)
+    padded = np.pad(values, ((radius, radius), (0, 0)), mode="edge")
+    out = np.empty(values.shape, dtype=np.float32)
+    for channel in range(values.shape[1]):
+        out[:, channel] = np.convolve(padded[:, channel], kernel, mode="valid")
+    return out
+
+
+def _smooth_axis1(values: np.ndarray, radius: int) -> np.ndarray:
+    """沿第 1 维（宽/列）做均值平滑。"""
+    rows, cols = values.shape[0], values.shape[1]
+    flat = np.swapaxes(values, 0, 1).reshape(cols, -1)
+    smoothed = _smooth_1d(flat, radius)
+    return np.swapaxes(smoothed.reshape(cols, rows, values.shape[2]), 0, 1)
+
+
+def seam_level(
+    image: Image.Image | np.ndarray,
+    pads: dict[str, int] | None,
+    *,
+    band: int = 48,
+    smooth: int = 16,
+    flatten: int = 96,
+    flatten_clip: float = 32.0,
+) -> tuple[Image.Image | np.ndarray, dict[str, Any]]:
+    """把源图与扩展区交界的亮度阶跃摊成渐变（只改扩展区一侧）。
+
+    ``pads`` 为输出画布的 ``{left, right, top, bottom}``。分两步：
+
+    1. **边界阶跃**：取交界两侧像素的逐行（左右）或逐列（上下）色差，向扩展区内做
+       ``band`` 像素的线性衰减偏移，让交界处与源图对齐。
+    2. **低频光晕**：模型常在灰边边界内侧画出一条约 20~40px 宽的竖/横亮带。把源图
+       边缘的低频灰度走向镜像到扩展区一侧，按 ``flatten`` 像素衰减做修正（限幅
+       ``flatten_clip``），只抹掉低频偏差，保留纹理细节。
+
+    源图区域不参与写入，因此 ``outside_max_abs`` 仍为 0。
+    """
+    is_pil = isinstance(image, Image.Image)
+    raw = np.asarray(image)
+    if raw.ndim != 3:
+        return image, {"skipped": True, "reason": "shape"}
+    pads = {k: max(0, int(v or 0)) for k, v in (pads or {}).items()}
+    sides = ("left", "right", "top", "bottom")
+    if not any(pads.get(k) for k in sides):
+        return image, {"skipped": True, "reason": "no_pads"}
+
+    height, width = raw.shape[:2]
+    rgb = raw[..., :3].astype(np.float32)
+    report: dict[str, Any] = {
+        "mode": "edge_offset_ramp",
+        "band": int(band),
+        "flatten": int(flatten),
+        "sides": {},
+    }
+
+    def _record(name: str, delta: np.ndarray, after: np.ndarray,
+                flatten_abs: float | None = None) -> None:
+        entry = {
+            "pad": pads.get(name, 0),
+            "band": int(min(band, pads.get(name, 0))),
+            "before_mean_abs": round(float(np.abs(delta).mean()), 2),
+            "before_max_abs": round(float(np.abs(delta).max()), 2),
+            "after_mean_abs": round(float(np.abs(after).mean()), 2),
+        }
+        if flatten_abs is not None:
+            entry["flatten_mean_abs"] = round(float(flatten_abs), 2)
+        report["sides"][name] = entry
+
+    # 第一步：交界列/行的阶跃对齐
+    left = min(pads.get("left", 0), width // 2)
+    if left > 0:
+        span = min(band, left)
+        delta = rgb[:, left] - rgb[:, left - 1]
+        ramp = np.linspace(0.0, 1.0, span, dtype=np.float32)
+        rgb[:, left - span:left] += _smooth_1d(delta, smooth)[:, None, :] * ramp[None, :, None]
+        _record("left", delta, rgb[:, left] - rgb[:, left - 1])
+
+    right = min(pads.get("right", 0), width // 2)
+    if right > 0:
+        span = min(band, right)
+        delta = rgb[:, width - right - 1] - rgb[:, width - right]
+        ramp = np.linspace(1.0, 0.0, span, dtype=np.float32)
+        rgb[:, width - right:width - right + span] += (
+            _smooth_1d(delta, smooth)[:, None, :] * ramp[None, :, None])
+        _record("right", delta, rgb[:, width - right - 1] - rgb[:, width - right])
+
+    top = min(pads.get("top", 0), height // 2)
+    if top > 0:
+        span = min(band, top)
+        delta = rgb[top, :] - rgb[top - 1, :]
+        ramp = np.linspace(0.0, 1.0, span, dtype=np.float32)
+        rgb[top - span:top, :] += _smooth_1d(delta, smooth)[None, :, :] * ramp[:, None, None]
+        _record("top", delta, rgb[top, :] - rgb[top - 1, :])
+
+    bottom = min(pads.get("bottom", 0), height // 2)
+    if bottom > 0:
+        span = min(band, bottom)
+        delta = rgb[height - bottom - 1, :] - rgb[height - bottom, :]
+        ramp = np.linspace(1.0, 0.0, span, dtype=np.float32)
+        rgb[height - bottom:height - bottom + span, :] += (
+            _smooth_1d(delta, smooth)[None, :, :] * ramp[:, None, None])
+        _record("bottom", delta, rgb[height - bottom - 1, :] - rgb[height - bottom, :])
+
+    # 第二步：把源图边缘的低频走向镜像到扩展区，压掉模型画出的光晕带
+    if flatten > 1:
+        for name in ("left", "right"):
+            pad = min(pads.get(name, 0), width // 2)
+            span = min(int(flatten), pad)
+            if span < 4:
+                continue
+            if name == "left":
+                gen = rgb[:, left - span:left][:, ::-1]
+                src = rgb[:, left:left + span]
+            else:
+                gen = rgb[:, width - right:width - right + span]
+                src = rgb[:, width - right - span:width - right][:, ::-1]
+            gen_s = _smooth_axis1(gen, max(2, smooth // 4))
+            src_s = _smooth_axis1(src, max(2, smooth // 4))
+            weight = 1.0 - np.arange(span, dtype=np.float32) / max(1, span - 1)
+            corr = np.clip(
+                (src_s - src_s[:, :1] - (gen_s - gen_s[:, :1]))
+                * weight[None, :, None],
+                -flatten_clip, flatten_clip)
+            if name == "left":
+                rgb[:, left - span:left] += corr[:, ::-1]
+            else:
+                rgb[:, width - right:width - right + span] += corr
+            report["sides"][name]["flatten_mean_abs"] = round(float(np.abs(corr).mean()), 2)
+
+    out = np.array(raw, copy=True)
+    if raw.dtype == np.uint8:
+        out[..., :3] = np.rint(np.clip(rgb, 0.0, 255.0)).astype(np.uint8)
+    else:
+        out[..., :3] = np.clip(rgb, 0.0, 255.0)
+    if is_pil:
+        return Image.fromarray(out, mode=image.mode), report
+    return out, report
+
+
 def wrap_seam_blend(
     image: Image.Image | np.ndarray,
     *,

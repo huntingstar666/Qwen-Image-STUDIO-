@@ -1211,7 +1211,7 @@ class Pipeline:
         edited_list = self._decode(engine, samples)
         edited = edited_list[0]
 
-        feather = int(local.get("feather") or 32)
+        feather = int(local.get("feather") if local.get("feather") is not None else 32)
         color_match = _truthy(local.get("color_match", True))
         color_strength = float(local.get("color_strength") if local.get("color_strength") is not None else 0.6)
         mask_expand = int(local.get("mask_expand") or 0)
@@ -1312,6 +1312,17 @@ class Pipeline:
                 # 预处理还原：先整数裁掉 32 补边，再唯一一次重采样回原尺寸
                 final = imaging.restore_preprocess(final, pp)
             expected_size = src.size
+        # 源图与扩展区的交界：模型补全结果和源图边缘常有十几到三十级的亮度阶跃，
+        # 合成后就是一条竖向亮带。这里只在扩展区一侧做渐变对齐，源图像素不动。
+        seam_report = None
+        if task_mode == "panorama" and pano_plan is not None:
+            final, seam_report = imaging.seam_level(
+                final,
+                {
+                    "left": pano_plan.left, "right": pano_plan.right,
+                    "top": pano_plan.top, "bottom": pano_plan.bottom,
+                },
+            )
         # 360° 环绕接缝：仅全景可开，属于实验能力（官方未承诺等距柱状投影）。
         if task_mode == "panorama" and pano_wrap and pano_seam_blend > 0:
             final, wrap_report = imaging.wrap_seam_blend(
@@ -1358,6 +1369,7 @@ class Pipeline:
                     "top": pano_plan.top, "bottom": pano_plan.bottom,
                 },
                 "scale": pano_plan.scale,
+                "seam_report": seam_report,
                 "wrap_report": wrap_report,
             } if pano_plan is not None else None),
             "preprocess": {

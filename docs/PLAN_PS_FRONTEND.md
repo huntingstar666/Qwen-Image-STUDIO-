@@ -723,7 +723,19 @@ DOM 结构：
   - `studio.js`：图层控制器新增 `cloneLayer(id)`（同步沿用源图层 Blob，便于自动保存）与 `moveLayer(id, delta)`（把 delta 换算成目标下标），操作后统一 `updateHistoryUi / scheduleSave / scheduleDraw`。
   - `aiPanel.js`：图层条每行新增「⧉ 复制 / ↓ 下移 / ↑ 上移」三个小按钮，事件里调用 `ctx.cloneLayer` / `ctx.moveLayer` 后重绘列表。
   - 实测（headless Chromium，1024×768 工程，叠加 `overlay-a.png` + `overlay-b.png`）：初始 `[a, b]` → 复制后 `[a, a 副本, b]`（副本紧跟源层上方）；对已在顶层的 `b` 点「上移」为 no-op；`b` 点「下移」→ `[a, b, a 副本]`；删除首层后剩两层，`撤销` 逐级还原到空；全程控制台无报错。
-  - 范围说明：`history.js`（D7.4）与 `renderer.js`（D7.2）本次未拆分，图层渲染仍由 `studioDoc.renderBase()` 统一合成（已被 §17.7 导出像素一致性覆盖）；`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时再实现，当前工程持久化仍走 Blob + 快照。
+  - 范围说明：`history.js`（D7.4）与 `renderer.js`（D7.2）当时未拆分，图层渲染仍由 `studioDoc.renderBase()` 统一合成（已被 §17.7 导出像素一致性覆盖）；`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时再实现，当前工程持久化仍走 Blob + 快照。
+
+- **D7.2 合成渲染器（已完成）** —— 把图层合成从 `studioDoc` 里抽成独立模块：
+  - 新增 `studio/renderer.js`：`drawLayers(ctx, layers, { crop })` 按 `layers[0] → 末尾` 顺序逐层 `draw`，`crop` 非空时先 `ctx.translate(-crop.x, -crop.y)`；`composite(ctx, underlay, layers, { crop })` 先画底图再叠图层。全程 `save/restore`，不泄漏变换状态。
+  - `studioDoc.renderBase()` 改为 `composite(canvas.getContext('2d'), underlay, this.layers, { crop: this.transform.crop })`，底图与图层的绘制顺序集中到一处，后续新图层类型（文字/贴纸）只需实现 `draw(ctx)`。
+  - 实测（模块级，独立 canvas）：底层红 40×40、顶层绿 40×40，输出中心为绿、中心外为底；`drawLayers` 传 `crop={x:10,y:10}` 后图形整体左移 10px，与 `composite` 的裁剪语义一致；页面级导出/渲染像素一致性回归沿用 §17.7 结论，未回退。
+
+- **D7.4 历史记录 + 快捷键（已完成）** —— 把撤销栈从 `studioDoc` 内部数组抽成独立模块并加字节预算：
+  - 新增 `studio/history.js`：`createHistory({ limit = 30, budget = 256MB })`，`past/future` 双栈 + 累计 `bytes`；`push` 后先按步数裁尾、再按预算淘汰，且**至少保留「初始 + 最新」两帧**，否则撤销会直接失效；新 `push` 清空 `future`；`undo` / `redo` 同步维护字节计数；`clear()` 归零。
+  - `studioDoc`：`snapshot/undo/redo/canUndo/canRedo` 全部委托 `_history`，新增 `historyBytes` 与 `clearHistory()`；`studio.js` 工程恢复处改为 `next.clearHistory(); next.snapshot();`，避免旧工程快照串项目。
+  - 快捷键沿用既有绑定（`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做，输入框内不触发），本轮只换内核不改按键映射。
+  - 实测（模块级）：`limit=3` 连推 6 帧 → `past=[3,4,5]`；`budget=100`、每帧 40B 连推 10 帧 → `past=[8,9]`、`bytes=80`（保留最新两帧）；三次 `undo` 返回 `1 / 0 / null`，`redo` 返回 `1`，新 `push` 后 `canRedo=false`、`past=[0,1,9]`，`clear()` 后 `past=0 / bytes=0`。页面级（1024×768 工程）：恢复工程后 `undoBtn.disabled=true`（`clearHistory` 生效）；蒙版画笔 4 笔后撤销可用、重做不可用，连点撤销 4 次回到初始（按钮转禁用），重做 2 次恢复；控制台无报错。
+  - 遗留：图层维度的历史断言（复制/排序/锁定/不透明度可撤销）并入 D7.3 图层面板实测。
 
 - **D15.1 高清放大入口（已完成）** —— 顶栏新增「放大」按钮（`data-ref="upscaleBtn"`，无主图禁用；AI 预览态先被 `previewBlocked('放大')` 拦住，避免放大错版本）。点击后打开 `studio/upscaleDialog.js` 弹窗：
   - 引擎来自 `api.upscaleModels()` 的 `ready` 项，文案映射 VOSR2 细节优先 / SeedVR2 质量优先 / FlashVSR 速度优先，默认取响应的 `default_engine`；倍率 2× / 4×，默认取 `defaults.scale`。
@@ -909,10 +921,10 @@ DOM 结构：
 | `flags.js` | `isEnabled(name)` | 无 | 不实施（D0.2 已合并进 D18.1 探针开关） |
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
-| `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`、`docToJSON/fromJSON` | 无 | D7 |
+| `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
 | `layers.js` | `createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 |
-| `history.js` | `createHistory(limit)` → `push/undo/redo/jump/snapshot` | 无 | D7 |
-| `renderer.js` | `render(doc, viewport)`、`renderLayer(layer)`、`dirty(rect)` | `layers` | D7 |
+| `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
+| `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})` | `layers` | D7（D7.2 已落地） |
 | `selection.js` | `rectSelect/ellipseSelect/lassoSelect/wandSelect`、`feather/expand/invert`、`toMask()` | 无 | D8 |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、LUT、直方图（纯函数） | 无 | D9 |
 | `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
@@ -1219,9 +1231,9 @@ DOM 结构：
 | D19.5 | 事件与生命周期 | 已完成 | 本次提交 | §18 S-21~S-24 |
 | D19.6 | 兼容与降级 | 已完成 | 本次提交 | §18 S-25 |
 | D7.1 | 文档模型 + 图层创建 | 已完成 | 本次提交 | `document.js` 提供 `createDocument / addLayer / removeLayer / moveLayer / cloneLayer / findLayer / indexOf / layerCount`（纯函数、零依赖，`layers[0]` 为最底层）；`StudioDoc.layers` 改为图层栈访问器，`addOverlay / removeOverlay` 走内核，新增 `cloneOverlay / moveOverlay`；AI 面板图层条加「⧉ 复制 / ↓ 上移 / ↑ 下移」，操作均入撤销栈。实测 1024×768 工程叠加两张扣图：复制插在源层上方（`overlay-a.png 副本`）、对顶层再上移为 no-op、下移后顺序 `[a, b, a副本]`、删除后两层、撤销逐级还原至空；控制台无报错。`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时实现（当前持久化仍走 Blob + 工程快照） |
-| D7.2 | 合成渲染器 | 未开始 | — | — |
+| D7.2 | 合成渲染器 | 已完成 | 本次提交 | 新增 `renderer.js`：`drawLayers(ctx, layers, {crop})` 按底→顶逐层绘制并在 `crop` 时整体平移，`composite(ctx, underlay, layers, {crop})` 先底图后图层；`studioDoc.renderBase()` 改为调用 `composite`，底图/图层绘制顺序集中一处。模块级实测顶层覆盖底层、裁剪平移 10px 生效，§17.7 导出像素一致性未回退 |
 | D7.3 | 图层面板 | 未开始 | — | — |
-| D7.4 | 历史记录 + 快捷键 | 未开始 | — | — |
+| D7.4 | 历史记录 + 快捷键 | 已完成 | 本次提交 | 新增 `history.js`：`createHistory({limit, budget})` 双栈 + 字节预算，步数先裁、预算再裁且至少保留初始+最新两帧；`studioDoc` 的 `snapshot/undo/redo/canUndo/canRedo` 委托 `_history`，新增 `historyBytes` / `clearHistory()`，工程恢复改为 `clearHistory + snapshot`。实测 `limit=3` 推 6 帧得 `[3,4,5]`、`budget=100`（40B/帧）推 10 帧得 `[8,9]`（80B）、undo/redo 序列与 `clear` 归零正确；页面 4 笔蒙版可连撤 4 次、重做 2 次，恢复工程后撤销按钮初始禁用。快捷键沿用既有 `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`。图层维度历史断言并入 D7.3 |
 | D8.1 | 选区核心 | 未开始 | — | — |
 | D8.2 | 图层蒙版 | 未开始 | — | — |
 | D9.1 | 调色数学库 | 未开始 | — | — |

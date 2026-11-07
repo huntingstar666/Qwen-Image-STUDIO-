@@ -71,11 +71,17 @@ _TASK_ALIASES = {
     "replace": "edit",
     "remove": "remove",
     "outpaint": "outpaint",
+    "panorama": "panorama",
 }
 
 #: 任务指令：与 LoRA 的训练提示词保持一致（缺了会留下灰边 / 绿区）。
 _OUTPAINT_INSTRUCTION = "移除图像中的灰色区域，无缝自然延展为完整图像。"
 _REMOVE_INSTRUCTION = "移除图像中的绿色区域。"
+#: 全景：灰边外补 + 横向连续性，重点是地平线/透视/光线与避免重复元素。
+_PANORAMA_INSTRUCTION = (
+    "把灰色扩展区域补全为连续的全景画面，保持地平线、透视、光线和主体一致，"
+    "左右两侧自然衔接，不要出现重复的人物、建筑或纹理。"
+)
 
 #: 去水印补全：模型默认只把“水印”理解成文字，徽章 / 编号需要点名（见测试 11a~11d）。
 _WATERMARK_INSTRUCTION = (
@@ -839,6 +845,12 @@ class Pipeline:
         # 扩图：先补灰边画板，模型把灰色去掉，最后保留整张外扩图。
         op_info: imaging.OutpaintInfo | None = None
         op_canvas: Image.Image | None = None
+        pano_plan: imaging.PanoramaPlan | None = None
+        pano_aspect = "2:1"
+        pano_long_side = 3072
+        pano_wrap = False
+        pano_seam_blend = 24
+        wrap_report: dict[str, Any] | None = None
         if task_mode == "outpaint":
             op = params.get("outpaint") or {}
             try:
@@ -861,8 +873,31 @@ class Pipeline:
                 except ValueError as exc:
                     raise PipelineError(f"扩图参数不可用：{exc}") from exc
 
-        if task_mode == "outpaint":
-            # 扩图输出的是"外扩后的大图"，零偏移语义不适用（尺寸本就要变）。
+        elif task_mode == "panorama":
+            # 全景：按目标比例算最小外扩画布，源图等比缩到画布内（只缩不放）。
+            pan = params.get("panorama") or {}
+            pano_aspect = str(pan.get("aspect") or "2:1")
+            pano_wrap = _truthy(pan.get("wrap"))
+            try:
+                pano_long_side = int(pan.get("long_side") or 3072)
+                pano_seam_blend = int(pan.get("seam_blend") or 24)
+            except (TypeError, ValueError) as exc:
+                raise PipelineError(f"全景参数必须是整数：{exc}") from exc
+            try:
+                pano_plan = imaging.panorama_plan(
+                    src.width, src.height,
+                    aspect=pano_aspect,
+                    long_side=pano_long_side,
+                    multiple=int(profile.get("snap") or 32),
+                    max_side=int(cfg.get("max_side") or 4096),
+                )
+            except ValueError as exc:
+                raise PipelineError(f"全景参数不可用：{exc}") from exc
+            op_canvas = imaging.panorama_canvas(src, pano_plan)
+            op_info = pano_plan.to_outpaint_info()
+
+        if task_mode in ("outpaint", "panorama"):
+            # 扩图/全景输出的是"更大的画布"，零偏移语义不适用（尺寸本就要变）。
             zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
         else:
             zs_spec = _zero_shift_spec(params, profile, size_mode)
@@ -878,7 +913,7 @@ class Pipeline:
         pp = imaging.preprocess_plan(
             src.width, src.height,
             enabled=_truthy(pp_params.get("enabled")) and size_mode == "follow"
-            and task_mode != "outpaint",
+            and task_mode not in ("outpaint", "panorama"),
             max_side=int(pp_params.get("max_side") or 2048),
             min_side=int(pp_params.get("min_side") or 768),
             multiple=int(pp_params.get("multiple") or profile.get("snap") or 32),
@@ -926,10 +961,10 @@ class Pipeline:
         coverage: float | None = None
         if mask_canvas is not None:
             coverage = float((mask_canvas > 0.01).mean())
-            if task_mode != "outpaint" and coverage > 0.9:
+            if task_mode not in ("outpaint", "panorama") and coverage > 0.9:
                 warnings.append(f"选区覆盖 {coverage:.0%}，接近整图重绘，遮罩外像素也会被模型重画")
             job.meta["mask_coverage"] = round(coverage, 4)
-        elif task_mode != "outpaint":
+        elif task_mode not in ("outpaint", "panorama"):
             warnings.append("未圈选区域，本次将按整图重绘")
 
         # 记录输入图，供历史回看
@@ -950,7 +985,8 @@ class Pipeline:
             "zero_shift": dict(zs_spec),
         }
         if op_info is not None:
-            job.align["outpaint"] = dataclasses.asdict(op_info)
+            align_key = "panorama" if task_mode == "panorama" else "outpaint"
+            job.align[align_key] = dataclasses.asdict(op_info)
 
         scheme = (str(local.get("scheme") or "a").strip().lower()
                   if _truthy(local.get("enabled")) else "none")
@@ -964,6 +1000,9 @@ class Pipeline:
             # 与前端 resolveScheme 同口径：小遮罩走整画布（接缝最稳），
             # 中等遮罩才裁局部（省显存）；无遮罩/超大遮罩一律回整画布。
             scheme = "b" if coverage is not None and 0.02 < coverage < 0.45 else "a"
+        if task_mode == "panorama":
+            # 全景必须整画布采样：裁块会切断横向连续性，接缝无法还原。
+            scheme = "a"
         sampling = _sampling_plan(params, cfg, profile)
         # 记录真正生效的采样参数：前端通常传 seed=null，历史/回放要靠这里才能复现。
         job.params.update({
@@ -1058,7 +1097,7 @@ class Pipeline:
         # 兼容前端写法（"green"）与旧数据（"overlay"）：统一归一到规范名。
         hint_mode = str(local.get("hint") or "").strip().lower()
         hint_mode = _HINT_ALIASES.get(hint_mode, hint_mode)
-        if task_mode == "outpaint":
+        if task_mode in ("outpaint", "panorama"):
             hint_mode = "gray_fill"
         else:
             if hint_mode in ("", "auto"):
@@ -1084,7 +1123,12 @@ class Pipeline:
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         prompt_text = job.prompt or ""
         # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
-        if task_mode == "outpaint" and not any(
+        if task_mode == "panorama" and not any(
+                key in prompt_text.lower()
+                for key in ("全景", "panorama", "panoramic", "宽幅")):
+            prompt_text = _PANORAMA_INSTRUCTION + prompt_text
+            job.meta["prompt_augmented"] = "panorama"
+        elif task_mode == "outpaint" and not any(
                 key in prompt_text for key in ("灰色", "灰边", "gray", "grey")):
             prompt_text = _OUTPAINT_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "outpaint"
@@ -1256,7 +1300,7 @@ class Pipeline:
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
         # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸；
         # 扩图同理——输出的就是外扩后的大图。
-        if task_mode == "outpaint":
+        if task_mode in ("outpaint", "panorama"):
             final = composed
             expected_size = (plan.width, plan.height)
         elif size_mode in ("custom", "ratio"):
@@ -1268,6 +1312,10 @@ class Pipeline:
                 # 预处理还原：先整数裁掉 32 补边，再唯一一次重采样回原尺寸
                 final = imaging.restore_preprocess(final, pp)
             expected_size = src.size
+        # 360° 环绕接缝：仅全景可开，属于实验能力（官方未承诺等距柱状投影）。
+        if task_mode == "panorama" and pano_wrap and pano_seam_blend > 0:
+            final, wrap_report = imaging.wrap_seam_blend(
+                final, blend_px=pano_seam_blend)
         size_match = final.size == expected_size
 
         # 零偏移硬验收：任何几何走样都在这里拦下，不落盘。
@@ -1296,7 +1344,22 @@ class Pipeline:
             "task_requested": requested_task,
             "seed": sampling["seed"],
             "warnings": warnings,
-            "outpaint": dataclasses.asdict(op_info) if op_info is not None else None,
+            "outpaint": (dataclasses.asdict(op_info)
+                         if op_info is not None and task_mode != "panorama" else None),
+            "panorama": ({
+                "aspect": pano_aspect,
+                "long_side": pano_long_side,
+                "wrap": pano_wrap,
+                "seam_blend": pano_seam_blend,
+                "canvas": {"w": pano_plan.canvas_w, "h": pano_plan.canvas_h},
+                "work": {"w": pano_plan.work_w, "h": pano_plan.work_h},
+                "pads": {
+                    "left": pano_plan.left, "right": pano_plan.right,
+                    "top": pano_plan.top, "bottom": pano_plan.bottom,
+                },
+                "scale": pano_plan.scale,
+                "wrap_report": wrap_report,
+            } if pano_plan is not None else None),
             "preprocess": {
                 "applied": bool(use_pp),
                 "scale": round(float(pp.scale), 6),

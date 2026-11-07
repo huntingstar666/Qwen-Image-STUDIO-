@@ -216,6 +216,55 @@ def test_generate_edit_follow_is_pixel_exact_outside_mask():
     assert _outside_diff(src, final, box) == 0
 
 
+def test_generate_edit_panorama_keeps_source_pixels_and_expands_canvas():
+    src = _noise_image(1000, 700, seed=21)
+    fake = _FakeEngine()
+    job, sink = _run_edit({
+        "preset": "panorama",
+        "images": [{"data": _src_url(src)}],
+        "panorama": {"aspect": "2:1", "long_side": 2048},
+    }, fake)
+
+    quality = job.quality
+    assert quality["task_mode"] == "panorama"
+    assert quality["preset"] == "panorama"
+    assert quality["panorama"]["aspect"] == "2:1"
+    assert quality["panorama"]["canvas"] == {"w": 1408, "h": 704}
+    assert quality["panorama"]["wrap_report"] is None
+    assert (quality["output"]["w"], quality["output"]["h"]) == (1408, 704)
+    assert quality["outside_max_abs"] == 0
+    # 全景必须整画布采样，参考图画布与采样画布一致
+    assert fake.seen["resolution"] == 0
+    assert fake.seen["latent_size"] == fake.seen["canvas"] == (1408, 704)
+    final = imaging.decode_image(sink["png"])
+    assert final.size == (1408, 704)
+    # 源图区域（居中贴放）保持字节级不变
+    plan = imaging.panorama_plan(1000, 700, aspect="2:1", long_side=2048)
+    pasted = final.crop((plan.left, plan.top,
+                         plan.left + plan.work_w, plan.top + plan.work_h))
+    assert (plan.work_w, plan.work_h) == src.size
+    assert int(np.abs(
+        np.asarray(src.convert("RGB"), dtype=np.int16)
+        - np.asarray(pasted.convert("RGB"), dtype=np.int16)).max()) == 0
+
+
+def test_generate_edit_panorama_wrap_reports_seam():
+    src = _noise_image(1000, 700, seed=22)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "preset": "panorama",
+        "images": [{"data": _src_url(src)}],
+        "panorama": {"aspect": "2:1", "long_side": 1024,
+                     "wrap": True, "seam_blend": 8},
+    }, fake)
+
+    quality = job.quality
+    assert quality["panorama"]["wrap"] is True
+    report = quality["panorama"]["wrap_report"]
+    assert report is not None and report["blend_px"] == 8
+    assert report["after_max_abs"] <= report["before_max_abs"]
+
+
 def test_generate_edit_preprocess_restores_source_size():
     src = _noise_image(3000, 2000)
     box = (1400, 900, 1600, 1100)

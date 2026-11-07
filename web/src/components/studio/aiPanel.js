@@ -46,6 +46,7 @@ import { hasRefDrag, readRefDrag } from '../refLibrary.js';
 import { createPromptEditor } from './promptEditor.js';
 import { createSessionHistory } from './sessionHistory.js';
 import { mountAiHistory } from './aiHistory.js';
+import { openStudioCompare } from './compareLauncher.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -339,11 +340,6 @@ export function mountAiPanel(host, ctx) {
     historyPanel?.setBusy(state.busy);
   }
 
-  function entryPrompt(entry) {
-    const text = String(entry.prompt || '').replace(/\s+/g, ' ').trim();
-    return text || '未填写指令';
-  }
-
   async function loadHistoryEntry(entry) {
     if (!entry || state.busy) return;
     if (ctx.hasDocChanges?.()) {
@@ -380,17 +376,30 @@ export function mountAiPanel(host, ctx) {
     toastSuccess(`已载入历史 #${entry.index}，指令${restored.length ? '与参考图' : ''}已恢复`);
   }
 
+  /**
+   * 统一对比入口：references = 本次结果 + 参考图 + 编辑历史，results = 当前主图。
+   * 顶部「对比」、结果卡片、历史卡片都走这里，避免三套数据组装。
+   */
+  async function compareAll({ extra = [], initialHistoryId = '', initialUrl = '' } = {}) {
+    if (state.busy) {
+      toastWarn('修改进行中，完成后再对比');
+      return null;
+    }
+    const store = currentHistory();
+    return openStudioCompare({
+      getMain: () => ctx.getMainImage?.() || null,
+      getRefs: () => state.refs,
+      getHistory: () => store.entries,
+      getHistoryUrl: (entry) => store.ensureResultUrl(entry.id, { pin: true }),
+      extra,
+      initialHistoryId,
+      initialUrl,
+    });
+  }
+
   async function compareHistoryEntry(entry) {
     if (!entry) return;
-    const source = ctx.getSource?.();
-    if (!source) return;
-    const url = await currentHistory().ensureResultUrl(entry.id);
-    if (!url) {
-      toastWarn('该历史结果已不在本机，无法对比');
-      return;
-    }
-    const label = entryPrompt(entry).slice(0, 12);
-    ctx.compare?.(source.main.data, [{ url, label: `历史 #${entry.index} · ${label}` }]);
+    await compareAll({ initialHistoryId: entry.id });
   }
 
   async function removeHistoryEntry(entry) {
@@ -1481,21 +1490,18 @@ export function mountAiPanel(host, ctx) {
   });
 
   refs.compareBtn.addEventListener('click', () => {
-    const source = ctx.getSource?.();
-    if (!source) return;
-    const results = [];
-    if (state.resultUrl) results.push({ url: state.resultUrl, label: '本次结果' });
-    const past = runner.getResults?.() || [];
-    for (const item of past) {
-      if (item.url && !results.some((entry) => entry.url === item.url)) {
-        results.push({ url: item.url, label: item.label || '历史结果' });
+    const extra = [];
+    if (state.resultUrl) extra.push({ url: state.resultUrl, label: '本次结果' });
+    for (const item of runner.getResults?.() || []) {
+      if (item.url && !extra.some((entry) => entry.url === item.url)) {
+        extra.push({ url: item.url, label: item.label || '历史结果' });
       }
     }
-    if (!results.length) {
+    if (!extra.length) {
       toastWarn('还没有可对比的结果');
       return;
     }
-    ctx.compare?.(source.main.data, results);
+    void compareAll({ extra, initialUrl: state.resultUrl });
   });
 
   /* ------------------------------------------------------------ 对外接口 */
@@ -1539,6 +1545,8 @@ export function mountAiPanel(host, ctx) {
     focusPrompt() {
       promptEditor.focus();
     },
+    /** 图片对比：顶部按钮 / Shift+C 共用。 */
+    compareAll,
     /** 宿主拖入 / 选择文件后批量加入参考图。 */
     addRefFiles(files) {
       return addRefFiles(files);

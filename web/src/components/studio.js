@@ -31,7 +31,6 @@ import {
   saveStudioProject,
   storageAvailable,
 } from './studio/persistence.js';
-import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
 const MAX_IMAGE_SIDE = 8192;
@@ -206,6 +205,7 @@ export function createStudioPage(host) {
             </div>
           </div>
           <span class="studio-sep"></span>
+          <button class="btn ghost sm" type="button" data-ref="compareAllBtn" disabled title="对比参考图与历史结果（Shift+C）">对比</button>
           <div class="studio-import" data-ref="exportWrap">
             <button class="btn ghost sm" type="button" data-ref="exportBtn" disabled aria-haspopup="menu" aria-expanded="false">导出 ▾</button>
             <div class="studio-import-menu studio-export-menu" role="menu" data-ref="exportMenu" hidden>
@@ -402,6 +402,7 @@ export function createStudioPage(host) {
     exportWrap: ref('exportWrap'),
     exportBtn: ref('exportBtn'),
     exportMenu: ref('exportMenu'),
+    compareAllBtn: ref('compareAllBtn'),
     sendBtn: ref('sendBtn'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
@@ -500,6 +501,12 @@ export function createStudioPage(host) {
         hasMask: stats.has,
       };
     },
+    /** 当前主图（含调色/变换/叠加层，不含 AI 结果预览），用于图片对比。 */
+    getMainImage() {
+      if (!doc) return null;
+      const size = doc.size;
+      return { url: doc.bake('image/png'), label: '当前主图', width: size.width, height: size.height };
+    },
     showResult(url) {
       setPreview(url);
     },
@@ -529,12 +536,6 @@ export function createStudioPage(host) {
         if (token === openSeq) toastError(err, '载入结果失败');
         return null;
       }
-    },
-    compare(referenceUrl, results) {
-      openCompareDialog({
-        references: [{ url: referenceUrl, label: '底图（主图）' }],
-        results,
-      });
     },
     async addOverlay(file) {
       if (!doc) throw new Error('请先打开一张主图');
@@ -1830,7 +1831,7 @@ export function createStudioPage(host) {
     refs.dot.classList.add('is-live');
     refs.fileName.textContent = doc.name;
     refs.dims.textContent = '';
-    for (const key of ['exportBtn', 'sendBtn']) refs[key].disabled = false;
+    for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn']) refs[key].disabled = false;
     syncAdjustInputs();
     updateSizeInfo();
     updateHistoryUi();
@@ -2178,6 +2179,9 @@ export function createStudioPage(host) {
   });
 
   refs.sendBtn.addEventListener('click', sendToEdit);
+  refs.compareAllBtn.addEventListener('click', () => {
+    void ai?.compareAll?.();
+  });
 
   refs.undoBtn.addEventListener('click', () => {
     if (doc?.undo()) {
@@ -2515,6 +2519,11 @@ export function createStudioPage(host) {
       spaceDown = true;
       refs.canvas.classList.add('is-grab');
       event.preventDefault();
+      return;
+    }
+    if (!mod && event.shiftKey && event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      void ai?.compareAll?.();
       return;
     }
     if (mod) return;

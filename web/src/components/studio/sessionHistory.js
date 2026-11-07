@@ -143,14 +143,16 @@ export function createSessionHistory({ sessionId, limit = 30 } = {}) {
   function dropUrl(entryId) {
     const cached = resultUrls.get(entryId);
     if (!cached) return;
-    URL.revokeObjectURL(cached);
+    URL.revokeObjectURL(cached.url);
     resultUrls.delete(entryId);
   }
 
   function trimUrls() {
-    while (resultUrls.size > MAX_URL_CACHE) {
-      const oldest = resultUrls.keys().next().value;
-      dropUrl(oldest);
+    for (const entryId of [...resultUrls.keys()]) {
+      if (resultUrls.size <= MAX_URL_CACHE) break;
+      // 对比弹窗正在展示的 URL 会被 pin 住，不允许回收。
+      if (resultUrls.get(entryId)?.pinned) continue;
+      dropUrl(entryId);
     }
   }
 
@@ -297,18 +299,22 @@ export function createSessionHistory({ sessionId, limit = 30 } = {}) {
     }
   }
 
-  /** 历史结果图的 objectURL（最多缓存 6 张）。 */
-  async function ensureResultUrl(entryId) {
+  /**
+   * 历史结果图的 objectURL（默认内存缓存 6 张，LRU 回收）。
+   * pin=true 用于对比弹窗：URL 正在展示，不参与 LRU，等实例销毁或清空时统一释放。
+   */
+  async function ensureResultUrl(entryId, { pin = false } = {}) {
     const cached = resultUrls.get(entryId);
     if (cached) {
+      if (pin) cached.pinned = true;
       resultUrls.delete(entryId);
       resultUrls.set(entryId, cached);
-      return cached;
+      return cached.url;
     }
     const record = await dbGet(BLOB_STORE, `${sessionId}:result:${entryId}`).catch(() => null);
     if (!record?.blob) return '';
     const url = URL.createObjectURL(record.blob);
-    resultUrls.set(entryId, url);
+    resultUrls.set(entryId, { url, pinned: Boolean(pin) });
     trimUrls();
     return url;
   }

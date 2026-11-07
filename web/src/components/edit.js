@@ -66,7 +66,7 @@ export function createEditPage(host) {
             <div class="panel-title">尺寸与画布 <span class="panel-sub">零偏移对齐</span></div>
           </div>
           <div class="panel-body">
-            <div data-ref="modeRows"></div>
+            <div class="wb-adv-rows" data-ref="modeRows"></div>
             <div class="grid-2">
               <label class="field">
                 <span class="field-label">适配方式</span>
@@ -101,7 +101,7 @@ export function createEditPage(host) {
               <span class="switch-label">开启局部编辑<small>遮罩外逐像素保留原图（零色差）</small></span>
             </label>
             <div class="notice warn hidden" data-ref="localDisabledNote">局部编辑已关闭：当前遮罩不会提交，整张图按全局编辑处理。</div>
-            <div data-ref="localOptions">
+            <div class="wb-adv-rows" data-ref="localOptions">
               <div class="field">
                 <span class="field-label">编辑方案</span>
                 <div class="radio-row">
@@ -184,10 +184,10 @@ export function createEditPage(host) {
         <details class="fold">
           <summary>高级：模型、LoRA 与一致性</summary>
           <div class="fold-body">
-            <div data-ref="modelsHost"></div>
+            <div class="wb-adv-stack" data-ref="modelsHost"></div>
             <div class="field">
               <span class="field-label">LoRA <span class="tag-hint">按需添加 · 可调强度</span></span>
-              <div data-ref="loraHost"></div>
+              <div class="wb-adv-stack" data-ref="loraHost"></div>
             </div>
             <label class="switch">
               <input type="checkbox" data-ref="consistencyEnabled" />

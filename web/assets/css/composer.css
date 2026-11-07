@@ -172,16 +172,15 @@ html[data-theme="dark"] body {
   z-index: 62;
   display: flex;
   flex-direction: column;
-  width: 336px;
+  width: 360px;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
-  border-radius: 22px;
-  background: color-mix(in srgb, var(--panel) 86%, transparent);
-  -webkit-backdrop-filter: blur(26px) saturate(1.35);
-  backdrop-filter: blur(26px) saturate(1.35);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6),
-    -28px 0 70px color-mix(in srgb, var(--text) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 20px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(30px) saturate(1.4);
+  backdrop-filter: blur(30px) saturate(1.4);
+  box-shadow: var(--shadow-float);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -193,9 +192,8 @@ html[data-theme="dark"] body {
 
 /* 暗色下用深色玻璃与黑色投影，和右侧历史抽屉保持一致 */
 html[data-theme="dark"] .wb-adv {
-  border-color: rgba(255, 255, 255, 0.09);
-  background: rgba(22, 27, 35, 0.78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), -28px 0 80px rgba(0, 0, 0, 0.56);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(19, 22, 25, 0.9);
 }
 
 .wb-layout.adv-open .wb-adv {
@@ -209,11 +207,12 @@ html[data-theme="dark"] .wb-adv {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 13px 16px 12px;
+  padding: 18px 20px 13px;
   border-bottom: 1px solid var(--line-soft);
-  font-size: 12.5px;
+  color: var(--text);
+  font-size: 15px;
   font-weight: 650;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
@@ -221,35 +220,35 @@ html[data-theme="dark"] .wb-adv {
   margin-left: auto;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel-2);
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--panel-3);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .wb-adv-close:hover {
+  background: var(--line);
   color: var(--text);
-  border-color: var(--line-strong);
 }
 
 .wb-adv-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
   flex: 1;
   min-height: 0;
-  padding: 14px 16px 18px;
+  padding: 16px 18px 24px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-/* 侧栏内部用扁平分节，避免面板套面板 */
+/* 分组：标题在卡片外，卡片内是一行行设置（Apple 设置页结构） */
 .wb-adv .panel {
   border: 0;
   border-radius: 0;
@@ -258,42 +257,519 @@ html[data-theme="dark"] .wb-adv {
 }
 
 .wb-adv .panel + .panel {
-  padding-top: 14px;
-  border-top: 1px solid var(--line-soft);
+  padding-top: 0;
+  border-top: 0;
 }
 
 .wb-adv .panel-head {
-  padding: 0 0 8px;
-  border-bottom: 0;
+  padding: 0 4px 8px;
+  border: 0;
   background: none;
   border-radius: 0;
-}
-
-.wb-adv .panel-body {
-  padding: 0;
-  gap: 10px;
 }
 
 .wb-adv .panel-title {
   font-family: var(--font);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.01em;
 }
 
 .wb-adv .panel-title::before {
-  height: 12px;
+  display: none;
 }
 
-.wb-adv-note {
+.wb-adv .panel-sub {
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.wb-adv .panel-body {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  gap: 0;
+}
+
+.wb-adv .panel-body.tight {
+  gap: 0;
+}
+
+.wb-adv .wb-model-bar {
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+
+.wb-adv .wb-model-bar .btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wb-adv .wb-model-bar .btn:hover {
+  background: var(--line);
+  color: var(--text);
+}
+
+.wb-adv .wb-model-bar-files {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* 行容器：统一 12/14 内边距 + 发丝线分隔 */
+.wb-adv .panel-body > *,
+.wb-adv .wb-adv-rows > *,
+.wb-adv .fold > .fold-body > * {
+  padding: 12px 14px;
+}
+
+.wb-adv .panel-body > * + *,
+.wb-adv .wb-adv-rows > * + *,
+.wb-adv .fold > .fold-body > * + * {
+  border-top: 1px solid var(--line-soft);
+}
+
+.wb-adv .panel-body > .wb-adv-rows,
+.wb-adv .panel-body > .wb-adv-stack,
+.wb-adv .fold > .fold-body > .wb-adv-stack,
+.wb-adv .fold > .fold-body > .wb-adv-rows,
+.wb-adv .panel-body > .grid-2,
+.wb-adv .panel-body > .grid-3,
+.wb-adv .panel-body > .grid-4,
+.wb-adv .wb-adv-rows > .grid-2,
+.wb-adv .wb-adv-rows > .grid-3,
+.wb-adv .fold > .fold-body > .grid-2,
+.wb-adv .fold > .fold-body > .grid-3 {
+  padding: 0;
+}
+
+.wb-adv .grid-2,
+.wb-adv .grid-3,
+.wb-adv .grid-4 {
+  display: block;
+}
+
+.wb-adv .grid-2 > .field,
+.wb-adv .grid-3 > .field,
+.wb-adv .grid-4 > .field,
+.wb-adv .wb-adv-stack > .model-selects > .field,
+.wb-adv .turbo-box > .field {
+  padding: 12px 14px;
+}
+
+.wb-adv .grid-2 > .field + .field,
+.wb-adv .grid-3 > .field + .field,
+.wb-adv .grid-4 > .field + .field,
+.wb-adv .wb-adv-stack > .model-selects > .field + .field,
+.wb-adv .turbo-box > .field + .field {
+  border-top: 1px solid var(--line-soft);
+}
+
+.wb-adv .wb-adv-stack > * {
+  padding: 12px 14px;
+}
+
+.wb-adv .wb-adv-stack > * + * {
+  border-top: 1px solid var(--line-soft);
+}
+
+.wb-adv .wb-adv-stack > .model-selects {
+  display: block;
+  padding: 0;
+}
+
+/* 模型文件路径太长，改为「小标题 + 整行下拉」，不再挤三列 */
+.wb-adv .model-selects > .field {
+  display: block;
+  padding: 12px 14px;
+}
+
+.wb-adv .model-selects > .field > .field-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wb-adv .model-selects > .field > .select {
+  width: 100%;
+  height: 34px;
+  padding: 0 28px 0 10px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-adv .field > .wb-adv-stack > .lora-picker {
+  padding: 0;
+}
+
+.wb-adv .wb-adv-stack > .lora-picker {
+  padding: 12px 14px;
+}
+
+/* 设置行：左标签 + 右控件 */
+.wb-adv .field {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+.wb-adv .field-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.wb-adv .field-label .tag-hint {
+  padding: 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.wb-adv .field > .field-hint {
+  flex: 0 1 auto;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+/* 控件：无边框、浅底、右对齐 */
+.wb-adv .field > .input,
+.wb-adv .field > .select {
+  flex: 0 0 auto;
+  width: 112px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background-color: var(--panel-3);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: right;
+  transition: box-shadow var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+
+.wb-adv .field > .select {
+  width: 138px;
+  padding-right: 26px;
+  text-align: left;
+}
+
+.wb-adv .field > .input:focus,
+.wb-adv .field > .select:focus {
+  border-color: transparent;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 滑杆行 */
+.wb-adv .field:has(> .range) {
+  align-items: flex-start;
+}
+
+.wb-adv .field > .range {
+  flex: 1 1 140px;
+  width: auto;
+  max-width: 180px;
+  margin-top: 7px;
+}
+
+/* 步数预设 / 编辑方案：分段控件 */
+.wb-adv .field:has(> .chips),
+.wb-adv .field:has(> .radio-row),
+.wb-adv .field:has(> .wb-adv-stack) {
+  display: block;
+}
+
+/* 空容器（例如未启用 Turbo）不占位、不留分隔线 */
+.wb-adv .panel-body > *:empty,
+.wb-adv .wb-adv-rows:empty {
+  display: none;
+}
+
+.wb-adv .chips,
+.wb-adv .radio-row {
+  gap: 2px;
+  margin-top: 8px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--panel-3);
+}
+
+.wb-adv .chips {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.wb-adv .radio-row {
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.wb-adv .chip,
+.wb-adv .radio-pill {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.wb-adv .chip {
+  width: 100%;
+  white-space: normal;
+}
+
+.wb-adv .chip small {
+  display: block;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.wb-adv .chip.active,
+.wb-adv .radio-pill.active {
+  border: 0;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-card);
+}
+
+.wb-adv .chip.active small {
+  color: var(--accent);
+}
+
+.wb-adv .radio-pill input {
+  display: none;
+}
+
+/* 开关行：文案在左、开关在右 */
+.wb-adv .switch {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+}
+
+.wb-adv .switch-label {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.wb-adv .switch-label small {
+  margin-top: 2px;
   color: var(--dim);
   font-size: 10.5px;
-  line-height: 1.6;
+  line-height: 1.45;
+}
+
+.wb-adv .switch-track {
+  width: 40px;
+  height: 23px;
+  border: 0;
+  background: var(--panel-3);
+}
+
+.wb-adv .switch-track::after {
+  top: 2px;
+  left: 2px;
+  width: 19px;
+  height: 19px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.wb-adv .switch input:checked + .switch-track {
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.wb-adv .switch input:checked + .switch-track::after {
+  transform: translateX(17px);
+  background: #ffffff;
+}
+
+/* 折叠分组 */
+.wb-adv .panel-body > .fold {
+  padding: 0;
 }
 
 .wb-adv .fold {
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.wb-adv .fold > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.wb-adv .fold > summary::before {
+  display: none;
+}
+
+.wb-adv .fold > summary::after {
+  content: "›";
+  color: var(--dim);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.wb-adv .fold[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.wb-adv .fold > .fold-body {
+  padding: 0 0 4px;
+  gap: 0;
+}
+
+/* 内嵌块 */
+.wb-adv .wb-adv-rows > .turbo-box {
+  padding: 10px 14px 12px;
+}
+
+.wb-adv .turbo-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 11px;
   background: var(--panel-2);
+  gap: 8px;
+}
+
+.wb-adv .turbo-box > .field {
+  padding: 4px 0;
+}
+
+.wb-adv .turbo-box > .field + .field {
+  border-top: 1px solid var(--line-soft);
+}
+
+/* 提示文字改为行内脚注，不再叠一层卡片 */
+.wb-adv .notice {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wb-adv .notice.warn {
+  border: 0;
+  background: transparent;
+  color: var(--warn);
+}
+
+.wb-adv .notice.info {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.wb-adv .size-summary {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.wb-adv .bbox-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.wb-adv .bbox-actions .btn {
+  flex: 1 1 0;
+}
+
+.wb-adv .field-row {
+  justify-content: space-between;
+}
+
+.wb-adv .field-row > .field-hint {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wb-adv .field-row > .mono {
+  color: var(--text-2);
+  text-align: right;
+  word-break: break-all;
+}
+
+.wb-adv-note {
+  padding: 0 4px;
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* 底部重置：独立的破坏性行卡片 */
+.wb-adv-body > .btn.block {
+  width: 100%;
+  height: 44px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--bad);
+  font-size: 12.5px;
+  font-weight: 550;
+  box-shadow: var(--shadow-card);
+}
+
+.wb-adv-body > .btn.block:hover {
+  border-color: color-mix(in srgb, var(--bad) 32%, transparent);
+  background: var(--bad-dim);
+  color: var(--bad);
 }
 
 /* LoRA：按需添加，只列出已加入的条目 */

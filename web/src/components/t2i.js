@@ -73,29 +73,6 @@ export function createT2IPage(host) {
           </div>
           <div class="wb-adv-body">
             <div class="wb-model-bar" data-ref="modelBar"></div>
-            <section class="panel">
-              <div class="panel-head">
-                <div class="panel-title">画面尺寸 <span class="panel-sub" data-ref="sizeSub">长边档位 · 32 倍数</span></div>
-              </div>
-              <div class="panel-body">
-                <div class="ratio-grid" data-ref="ratios"></div>
-                <div class="grid-2">
-                  <label class="field">
-                    <span class="field-label">宽度 <span class="tag-hint" data-ref="sizeHintW">32 倍数</span></span>
-                    <input class="input mono" type="number" min="256" max="4096" step="32" data-ref="width" />
-                  </label>
-                  <label class="field">
-                    <span class="field-label">高度 <span class="tag-hint" data-ref="sizeHintH">32 倍数</span></span>
-                    <input class="input mono" type="number" min="256" max="4096" step="32" data-ref="height" />
-                  </label>
-                </div>
-                <div class="size-summary">
-                  <span>输出</span><span class="mono" data-ref="sizeSummary">—</span>
-                  <span class="spacer"></span>
-                  <span class="field-hint" data-ref="sizeSnapHint">自动向上对齐到 32 的倍数</span>
-                </div>
-              </div>
-            </section>
 
             <section class="panel">
               <div class="panel-head"><div class="panel-title">采样参数</div></div>
@@ -124,7 +101,7 @@ export function createT2IPage(host) {
                     <select class="select" data-ref="scheduler"></select>
                   </label>
                 </div>
-                <div data-ref="turboHost"></div>
+                <div class="wb-adv-rows" data-ref="turboHost"></div>
                 <details class="fold slg-fold" data-ref="slgFold" hidden>
                   <summary>SLG 跳过层引导（实验）</summary>
                   <div class="fold-body">
@@ -192,10 +169,10 @@ export function createT2IPage(host) {
               <summary>高级：模型与 LoRA</summary>
               <div class="fold-body">
                 <div class="field-hint" data-ref="modelFiles" hidden></div>
-                <div data-ref="modelsHost"></div>
+                <div class="wb-adv-stack" data-ref="modelsHost"></div>
                 <div class="field">
                   <span class="field-label">LoRA <span class="tag-hint">按需添加 · 可调强度</span></span>
-                  <div data-ref="loraHost"></div>
+                  <div class="wb-adv-stack" data-ref="loraHost"></div>
                 </div>
               </div>
             </details>
@@ -339,10 +316,6 @@ export function createT2IPage(host) {
     negative: ref('negative'),
     polish: ref('polish'),
     clearPrompt: ref('clearPrompt'),
-    ratios: ref('ratios'),
-    width: ref('width'),
-    height: ref('height'),
-    sizeSummary: ref('sizeSummary'),
     stepsPresets: ref('stepsPresets'),
     steps: ref('steps'),
     cfg: ref('cfg'),
@@ -355,10 +328,6 @@ export function createT2IPage(host) {
     sizeAnchor: ref('sizeAnchor'),
     sizePill: ref('sizePill'),
     sizePillValue: ref('sizePillValue'),
-    sizeSub: ref('sizeSub'),
-    sizeHintW: ref('sizeHintW'),
-    sizeHintH: ref('sizeHintH'),
-    sizeSnapHint: ref('sizeSnapHint'),
     modelAnchor: ref('modelAnchor'),
     modelPill: ref('modelPill'),
     modelPop: ref('modelPop'),
@@ -691,11 +660,7 @@ export function createT2IPage(host) {
 
   function syncSizeSnapUi() {
     const snap = modelSnap();
-    refs.sizeSub.textContent = `长边档位 · ${snap} 倍数`;
-    refs.sizeHintW.textContent = `${snap} 倍数`;
-    refs.sizeHintH.textContent = `${snap} 倍数`;
-    refs.sizeSnapHint.textContent = `自动向上对齐到 ${snap} 的倍数`;
-    for (const input of [refs.width, refs.height, refs.popWidth, refs.popHeight]) {
+    for (const input of [refs.popWidth, refs.popHeight]) {
       input.step = String(snap);
     }
   }
@@ -730,7 +695,6 @@ export function createT2IPage(host) {
     syncDefaultHints();
     syncModelBar();
     syncModelPill();
-    syncSizeFields();
     syncSizeCard();
     updateSummary();
   }
@@ -782,10 +746,7 @@ export function createT2IPage(host) {
   }
 
   function currentCanvasSize() {
-    return [
-      snapSize(refs.width.value || t2i.width),
-      snapSize(refs.height.value || t2i.height),
-    ];
+    return [snapSize(t2i.width), snapSize(t2i.height)];
   }
 
   function bboxCountText() {
@@ -935,6 +896,13 @@ export function createT2IPage(host) {
     setDefaultHint(refs.cfgHint, Number(refs.cfg.value), d.cfg);
     setDefaultHint(refs.samplerHint, refs.sampler.value, d.sampler);
     setDefaultHint(refs.schedulerHint, refs.scheduler.value, d.scheduler);
+    const steps = Number(refs.steps.value);
+    const cfg = Number(refs.cfg.value);
+    refs.stepsPresets.querySelectorAll('[data-steps]').forEach((button) => {
+      const active = Number(button.dataset.steps) === steps
+        && Math.abs(Number(button.dataset.cfg) - cfg) < 0.01;
+      button.classList.toggle('active', active);
+    });
   }
 
   /* ---------------- 姿态参考 ---------------- */
@@ -1094,30 +1062,8 @@ export function createT2IPage(host) {
     patchSettings({
       t2i: { width: t2i.width, height: t2i.height, ratioId, custom: !ratioId },
     });
-    syncSizeFields();
-  }
-
-  function renderRatios() {
-    const ratios = ratioList();
-    const currentW = Number(refs.width.value) || t2i.width;
-    const currentH = Number(refs.height.value) || t2i.height;
-    refs.ratios.innerHTML = ratios
-      .map((ratio) => {
-        const active = ratio.w === currentW && ratio.h === currentH;
-        return `
-          <button class="ratio-btn ${active ? 'active' : ''}" type="button" data-ratio="${escapeHtml(ratio.id)}"
-            data-w="${ratio.w}" data-h="${ratio.h}" title="${escapeHtml(ratio.label || ratio.id)} · ${ratio.w} × ${ratio.h}">
-            <span class="ratio-name">${escapeHtml(ratio.label || ratio.id)}</span>
-            <span class="ratio-dims">${fmtNum(ratio.w)} × ${fmtNum(ratio.h)}</span>
-          </button>`;
-      })
-      .join('');
-    refs.ratios.querySelectorAll('[data-ratio]').forEach((button) => {
-      button.addEventListener('click', () => {
-        sizeTier = inferTier(Number(button.dataset.w), Number(button.dataset.h));
-        applySize(Number(button.dataset.w), Number(button.dataset.h), button.dataset.ratio);
-      });
-    });
+    syncSizeCard();
+    updateSummary();
   }
 
   /** 尺寸弹框：分辨率档位 + 比例网格 + 自定义。 */
@@ -1127,10 +1073,7 @@ export function createT2IPage(host) {
     ).join('');
     refs.sizeTiers.querySelectorAll('[data-tier]').forEach((button) => {
       button.addEventListener('click', () => {
-        const ratioId = detectRatioId(
-          Number(refs.width.value) || t2i.width,
-          Number(refs.height.value) || t2i.height,
-        );
+        const ratioId = detectRatioId(t2i.width, t2i.height);
         sizeTier = Number(button.dataset.tier) || 2048;
         if (ratioId) {
           const size = sizeForRatio(ratioId, sizeTier);
@@ -1161,8 +1104,8 @@ export function createT2IPage(host) {
   }
 
   function syncSizeCard() {
-    const width = Number(refs.width.value) || t2i.width;
-    const height = Number(refs.height.value) || t2i.height;
+    const width = t2i.width;
+    const height = t2i.height;
     const ratioId = detectRatioId(width, height);
     refs.sizePillValue.textContent = `${ratioId || '自定义'} · ${fmtNum(width)}×${fmtNum(height)}`;
     refs.sizePopDims.textContent = `${fmtNum(width)} × ${fmtNum(height)}`;
@@ -1205,35 +1148,6 @@ export function createT2IPage(host) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') setSizePop(false);
   });
-
-  function syncSizeFields() {
-    refs.width.value = String(t2i.width);
-    refs.height.value = String(t2i.height);
-    const width = Number(refs.width.value) || 0;
-    const height = Number(refs.height.value) || 0;
-    const snappedW = snapSize(width);
-    const snappedH = snapSize(height);
-    const snapNote = snappedW !== width || snappedH !== height
-      ? `（将自动对齐为 ${snappedW} × ${snappedH}）`
-      : ` · ${modelSnap()} 的倍数 ✓`;
-    refs.sizeSummary.textContent = `${fmtNum(snappedW)} × ${fmtNum(snappedH)}${snapNote}`;
-    for (const button of refs.ratios.querySelectorAll('[data-ratio]')) {
-      const active = Number(button.dataset.w) === width && Number(button.dataset.h) === height;
-      button.classList.toggle('active', active);
-    }
-    syncSizeCard();
-    updateSummary();
-  }
-
-  function commitSizeInputs() {
-    const width = snapSize(refs.width.value);
-    const height = snapSize(refs.height.value);
-    sizeTier = inferTier(width, height);
-    applySize(width, height, '');
-  }
-
-  refs.width.addEventListener('change', commitSizeInputs);
-  refs.height.addEventListener('change', commitSizeInputs);
 
   function stepsPresetsForModel() {
     const profile = currentProfile();
@@ -1634,8 +1548,8 @@ export function createT2IPage(host) {
     const profile = currentProfile();
     const d = profile.defaults || {};
     const caps = profile.capabilities || {};
-    const width = snapSize(refs.width.value || t2i.width);
-    const height = snapSize(refs.height.value || t2i.height);
+    const width = snapSize(t2i.width);
+    const height = snapSize(t2i.height);
     const turboValue = turboControl?.getValue();
     const turboOn = Boolean(turboValue?.enabled);
     const preset = turboControl?.selectedProfile();
@@ -1687,7 +1601,6 @@ export function createT2IPage(host) {
   function refreshAll() {
     ensureModelState();
     sizeTier = inferTier(Number(t2i.width) || 2048, Number(t2i.height) || 2048);
-    renderRatios();
     renderSizeCard();
     renderStepsPresets();
     renderSelects();
@@ -1702,7 +1615,7 @@ export function createT2IPage(host) {
     syncBboxUi();
     syncModelBar();
     syncModelPill();
-    syncSizeFields();
+    syncSizeCard();
     updateSummary();
     renderHealthHint();
   }
@@ -1756,8 +1669,8 @@ export function createT2IPage(host) {
       button: refs.polish,
       ratios: ratioList(),
       targetSize: {
-        width: snapSize(refs.width.value || t2i.width),
-        height: snapSize(refs.height.value || t2i.height),
+        width: snapSize(t2i.width),
+        height: snapSize(t2i.height),
       },
       pose: poseState
         ? { image: poseState.dataUrl, summary: poseState.summary, label: poseState.label }
@@ -1777,10 +1690,8 @@ export function createT2IPage(host) {
   function collectPayload() {
     const profile = currentProfile();
     const caps = profile.capabilities || {};
-    const width = snapSize(refs.width.value || t2i.width);
-    const height = snapSize(refs.height.value || t2i.height);
-    refs.width.value = String(width);
-    refs.height.value = String(height);
+    const width = snapSize(t2i.width);
+    const height = snapSize(t2i.height);
     t2i.width = width;
     t2i.height = height;
 
@@ -2005,7 +1916,7 @@ export function createT2IPage(host) {
     renderSelects();
     renderTurbo();
     syncDefaultHints();
-    syncSizeFields();
+    syncSizeCard();
     updateSummary();
     toastSuccess('采样参数已重置为模型默认值');
   });

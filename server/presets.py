@@ -20,7 +20,8 @@ import copy
 from typing import Any
 
 #: 预设参数变更时必须 +1（写进 ``job.params.preset_version``，历史回放才不会串图）。
-PRESET_VERSION = 1
+#: 2：新增 ``chain_mask`` / ``chain_native`` 两套连续编辑预设。
+PRESET_VERSION = 2
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -34,7 +35,7 @@ _PREPROCESS = {
     "mode": "downscale_only",
 }
 
-#: 公共兜底：五个预设都要的零偏移 / 预处理 / 采样档位。
+#: 公共兜底：所有预设都要的零偏移 / 预处理 / 采样档位。
 _COMMON = {
     "preprocess": _PREPROCESS,
     "zero_shift": {"enabled": True},
@@ -168,6 +169,75 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
         "summary": "不裁块 · 不做遮罩合成 · 整图校色 · 一致性 0.48",
         "default": False,
         "task": {"mode": "edit"},
+        "local": {
+            "enabled": True,
+            "scheme": "native",
+            "fills": False,
+            "crop_min_side": 0,
+            "crop_max_side": 2048,
+            "blend_pixels": 24,
+            "dither": True,
+            "feather": 32,
+            "mask_expand": 0,
+            "color_match": False,
+            "color_strength": 0.6,
+            "color_restore": True,
+            "color_restore_strength": 1.0,
+            "consistency": True,
+            "hint": "none",
+            "band_mode": "lowfreq",
+        },
+        **_COMMON,
+    },
+    "chain_mask": {
+        "label": "连续编辑·遮罩",
+        "summary": "接力首选 · 每轮只重绘选区 · 遮罩外逐字节保持 · 每 5 轮回锚",
+        "default": False,
+        "task": {"mode": "edit"},
+        # 连续编辑的流程契约：前端按此保持遮罩、记录回锚轮次并提示漂移。
+        "chain": {
+            "mode": "mask",
+            "carry_mask": True,
+            "anchor_every": 5,
+            "drift_warn_delta_e": 10,
+        },
+        "local": {
+            "enabled": True,
+            "scheme": "b",
+            "fills": False,
+            "expand_top": 1.3,
+            "expand_bottom": 1.4,
+            "expand_left": 1.4,
+            "expand_right": 1.4,
+            "crop_min_side": 768,
+            "crop_max_side": 2048,
+            "expand_pct": 4.0,
+            "feather_pct": 5.0,
+            "blend_pixels": 24,
+            "dither": True,
+            "feather": 32,
+            "mask_expand": 0,
+            "color_match": True,
+            "color_strength": 0.6,
+            "color_restore": True,
+            "color_restore_strength": 1.0,
+            "consistency": True,
+            "hint": "none",
+            "band_mode": "lowfreq",
+        },
+        **_COMMON,
+    },
+    "chain_native": {
+        "label": "连续编辑·整图",
+        "summary": "整图重绘 · 每轮全局校色 · 无遮罩会累积漂移，建议 ≤5 轮回锚",
+        "default": False,
+        "task": {"mode": "edit"},
+        "chain": {
+            "mode": "native",
+            "carry_mask": False,
+            "anchor_every": 5,
+            "drift_warn_delta_e": 10,
+        },
         "local": {
             "enabled": True,
             "scheme": "native",

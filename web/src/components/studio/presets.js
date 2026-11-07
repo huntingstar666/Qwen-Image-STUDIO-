@@ -126,11 +126,13 @@ export function presetTaskMode(preset, fallback = 'edit') {
 }
 
 /**
- * 无蒙版时把「需要蒙版」的预设降级为整画布（§13.7 / §15.4）：
+ * 无蒙版时把「需要蒙版」的预设降级为整图档（§13.7 / §15.4）：
  * 不假装做了局部编辑，也不让 `remove` 在没有选区时静默乱改整图。
+ * 连续编辑·遮罩同理，降级到连续编辑·整图（而不是退回 `canvas`）。
  */
 export function resolvePresetForMask(id, hasMask) {
   if (hasMask) return { id, degraded: false, from: '' };
   if (id === 'mask_edit' || id === 'remove') return { id: 'canvas', degraded: true, from: id };
+  if (id === 'chain_mask') return { id: 'chain_native', degraded: true, from: id };
   return { id, degraded: false, from: '' };
 }

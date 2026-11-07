@@ -11,7 +11,7 @@
 | 后端 | `server.main:app` @ `http://127.0.0.1:8722` |
 | 模型档 | Qwen-Image 2.1 Turbo（`qwen_image_2.1_turbo_int8_convrot`，9 步手写 sigma） |
 | 采样 | euler / simple / cfg 1.0（Turbo 档）；显式覆盖用例单独标注 |
-| 预设版本 | `PRESET_VERSION = 1`（`/api/meta.edit_presets` 唯一事实源） |
+| 预设版本 | `PRESET_VERSION = 2`（新增 `chain_mask` / `chain_native` 两套连续编辑档） |
 | LoRA | 一致性 `Qwen2.1 一致性无偏移_GH_V1.0` @0.48；移除 `Qwen2.1_万物移除Remove_GH` @1.0；扩图 `Qwen2.1_扩图_GH_3750` @0.7 |
 | 硬件 | RTX 5090（测试时可用显存约 30 GB） |
 | 素材 | 由 `/api/generate` 现场生成（seed 固定），水印 / 大图 / 红框由 PIL 合成，全部落 `.cache/test-runs/assets/` |
@@ -364,10 +364,11 @@
 
 - 现状：20 轮全图重绘，背景块差 1.50 → 26.03，r19 突变（P1-4）；§4.9.1 已证明加大 BlueBox 校色无法解决（漂移主体是纹理重画，不是色偏）。
 - 方案：
-  1. 连续编辑默认携带"上一轮遮罩"：只重绘用户圈选区域，遮罩外走 byte-exact 合成（几何契约天然抗漂移）。
-  2. 每 N 轮（建议 5）提供"回锚"选项：以原始图 + 当前遮罩做一次局部编辑，或把原图作为第二参考图（`images=[current, original]`）+ 一致性 LoRA。
-  3. UI 展示累计漂移提示：当 `delta_e_vs_original > 10` 或背景块 mean > 8 时提示"建议回锚"。
-  4. 连续编辑默认 `turbo=true`、`seed` 固定为会话 seed，减少随机抖动。
+  1. **已落地两套预设**：`chain_mask`（连续编辑·遮罩，`b` 几何 + 遮罩外 byte-exact）与 `chain_native`（连续编辑·整图，整图校色 + 漂移提示），设计见 `docs/PLAN_PS_EDIT_GH.md §13.6.1`；无遮罩时前端把 `chain_mask` 降级为 `chain_native`。
+  2. 连续编辑默认携带"上一轮遮罩"：只重绘用户圈选区域，遮罩外走 byte-exact 合成（几何契约天然抗漂移）。
+  3. 每 N 轮（建议 5）提供"回锚"选项：以原始图 + 当前遮罩做一次局部编辑，或把原图作为第二参考图（`images=[current, original]`）+ 一致性 LoRA。
+  4. UI 展示累计漂移提示：当 `delta_e_vs_original > 10` 或背景块 mean > 8 时提示"建议回锚"。
+  5. 连续编辑默认 `turbo=true`、`seed` 固定为会话 seed，减少随机抖动。
 - 验收：同一 20 轮脚本改为"每轮带遮罩"后，背景块 mean 增长 ≤ 5，ΔE(原图) ≤ 8；GIF 肉眼无明显色温跳变。
 
 ### 6.3 O3 跨性别/大幅换人（优先级 P1，提示词 + 流程）

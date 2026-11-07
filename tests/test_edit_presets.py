@@ -88,7 +88,8 @@ def test_outpaint_preset_splits_crop_and_seam_defaults():
 def test_public_presets_and_meta_endpoint():
     items = presets.public_presets()
     assert [item["id"] for item in items] == [
-        "mask_edit", "remove", "outpaint", "canvas", "native"]
+        "mask_edit", "remove", "outpaint", "canvas", "native",
+        "chain_mask", "chain_native"]
     assert [item["id"] for item in items if item["default"]] == ["mask_edit"]
     assert all(item["summary"] and item["params"] for item in items)
     assert presets.default_preset_id() == "mask_edit"
@@ -97,6 +98,30 @@ def test_public_presets_and_meta_endpoint():
     assert meta["preset_version"] == presets.PRESET_VERSION
     assert meta["default_preset"] == "mask_edit"
     assert len(meta["edit_presets"]) == len(presets.EDIT_PRESETS)
+
+
+def test_chain_presets_reuse_geometry_and_expose_chain_contract():
+    """连续编辑两档：遮罩档必须走 b 几何，整图档走 native；chain 契约随预设下发。"""
+    base_mask, _ = presets.merge({"preset": "mask_edit"})
+    chain_mask, _ = presets.merge({"preset": "chain_mask"})
+    assert chain_mask["local"] == base_mask["local"]
+    assert chain_mask["chain"] == {"mode": "mask", "carry_mask": True,
+                                   "anchor_every": 5, "drift_warn_delta_e": 10}
+
+    base_native, _ = presets.merge({"preset": "native"})
+    chain_native, _ = presets.merge({"preset": "chain_native"})
+    assert chain_native["local"] == base_native["local"]
+    assert chain_native["chain"]["mode"] == "native"
+    assert chain_native["chain"]["carry_mask"] is False
+
+    # 显式值仍然优先（链参数包不锁死高级开关）
+    override, _ = presets.merge({"preset": "chain_mask", "local": {"scheme": "a"}})
+    assert override["local"]["scheme"] == "a"
+
+    # public_presets 必须把 chain 契约原样下发（前端据此保遮罩 / 提示回锚）
+    published = {item["id"]: item for item in presets.public_presets()}
+    assert published["chain_mask"]["params"]["chain"]["carry_mask"] is True
+    assert published["chain_native"]["params"]["chain"]["carry_mask"] is False
 
 
 def test_validation_rejects_unknown_preset_and_bad_outpaint_max_side():

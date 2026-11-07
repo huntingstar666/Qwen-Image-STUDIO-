@@ -1152,6 +1152,56 @@ export function mountAiPanel(host, ctx) {
     focusPrompt() {
       refs.prompt.focus();
     },
+    /** 本机工程恢复：把保存的 AI 现场写回面板（不改动已提交的任务）。 */
+    restoreState(persist, refsData) {
+      if (!persist) return;
+      if (Array.isArray(refsData) && refsData.length) state.refs = refsData.slice(0, MAX_REFS);
+      refs.prompt.value = typeof persist.prompt === 'string' ? persist.prompt : '';
+      if (persist.presetId) state.presetId = persist.presetId;
+      state.overrides = { ...(persist.overrides || {}) };
+      state.protection = normalizeProtection(persist.protection);
+      guards.sync(state.protection);
+      state.consistencyOn = persist.consistencyOn !== false;
+      refs.consistency.checked = state.consistencyOn;
+      refs.strength.disabled = !state.consistencyOn;
+      setStrength(persist.consistencyStrength ?? state.consistencyStrength);
+      state.customLoras = Array.isArray(persist.customLoras)
+        ? persist.customLoras.slice(0, MAX_LORAS).map((item) => ({ ...item }))
+        : [];
+      if (persist.task) {
+        refs.task.value = persist.task;
+        refs.submitHint.textContent =
+          persist.task === 'auto'
+            ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
+            : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[persist.task] || persist.task}`;
+      }
+      if (persist.sizeMode) refs.sizeMode.value = persist.sizeMode;
+      if (persist.width) refs.width.value = persist.width;
+      if (persist.height) refs.height.value = persist.height;
+      if (persist.ratio) refs.ratio.value = persist.ratio;
+      state.turboId = persist.turboId || '';
+      if (state.turboId) refs.turbo.value = state.turboId;
+      state.resultUrl = persist.resultUrl || '';
+      state.previewOn = false;
+      state.resultInfo = persist.resultInfo || null;
+      refs.previewBtn.textContent = '画布预览';
+      refs.resultActions.hidden = !state.resultUrl;
+      if (state.resultUrl && state.resultInfo?.width) {
+        refs.adoptHint.textContent = `载入后 ${state.resultInfo.width}×${state.resultInfo.height} 成为新底图：蒙版与历史清空，可继续精修或再次扩图。`;
+        refs.adoptHint.hidden = false;
+      } else {
+        refs.adoptHint.hidden = true;
+      }
+      syncPrompt();
+      syncBusy();
+      renderRefs();
+      renderPresets();
+      advanced.refresh();
+      renderMeta();
+      renderCustomLoras();
+      syncGuardNote();
+      syncSamplingInfo();
+    },
     /** 宿主的本机自动保存从这里取 AI 现场（指令、参考图、参数、结果地址）。 */
     getPersistState() {
       return {

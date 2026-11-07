@@ -84,6 +84,36 @@
   white-space: nowrap;
 }
 
+/* ------------------------------------------------------------- 恢复横幅 */
+
+.studio-restore {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.studio-restore[hidden] {
+  display: none;
+}
+
+.studio-restore-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.studio-restore-text {
+  color: var(--dim);
+}
+
 /* ------------------------------------------------------------- 三栏主体 */
 
 .studio-body {

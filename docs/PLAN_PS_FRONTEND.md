@@ -1103,7 +1103,7 @@ DOM 结构：
 | D0.1 | 预检与基线 | 未开始 | — | — |
 | D0.2 | 功能开关 | 未开始 | — | — |
 | D17.1 | IndexedDB 存储 + 自动保存 | 已完成 | 本次提交 | 方案 §16；恢复流程见 D17.2 |
-| D17.2 | 恢复流程与横幅 | 未开始 | — | 方案 §16 |
+| D17.2 | 恢复流程与横幅 | 已完成 | 本次提交 | 横幅内联在 `studio.js`，最近工程列表落地时再抽 `panels/recovery.js` |
 | D17.3 | 配额、清理与多标签 | 未开始 | — | 方案 §16 |
 | D1.1 | 导入选择器 | 未开始 | — | — |
 | D1.2 | 主图导入入口与拖拽 | 未开始 | — | — |
@@ -1488,7 +1488,9 @@ openCompareDialog({
 - 排在 D0.2 之后、D1.1 之前，提交前缀 `feat(studio):`；
 - 每项完成更新 §14.12 台账，并记录一次「刷新恢复 / 关闭重开」验证结果。
 
-**实施进度**：D17.1 已完成 —— 新增 `studio/persistence.js`（数据库 `wb-studio` v1，含 `meta / projects / layers / refs / session / aiHistory / aiResults / drafts` 八个 store，写入统一走单个事务）；主图原文件、叠加层位图、蒙版、参考图、指令、AI 参数、变换、调色、裁剪框、视口与当前工具全部落库；保存触发为提交边界 800ms 防抖 + 空闲 5s 兜底 + `visibilitychange(hidden)` / `pagehide` flush + 页面 `destroy()` flush；未变化的底图与叠加层按签名跳过重写，参考图独立存 Blob 且不重复写进 session；失败指数退避（2s→30s）并提示一次，内存状态不丢；面板底部显示「保存中 / 已保存 / 保存失败，重试中」，IndexedDB 不可用时明确提示不会持久化。已实测：打开图片、改指令、旋转、加参考图后，IndexedDB 中 `projects / layers(base) / session / refs` 记录与实际状态一致。恢复横幅与自动恢复流程在 D17.2 实现。
+**实施进度**：D17.1 已完成 —— 新增 `studio/persistence.js`（数据库 `wb-studio` v1，含 `meta / projects / layers / refs / session / aiHistory / aiResults / drafts` 八个 store，写入统一走单个事务）；主图原文件、叠加层位图、蒙版、参考图、指令、AI 参数、变换、调色、裁剪框、视口与当前工具全部落库；保存触发为提交边界 800ms 防抖 + 空闲 5s 兜底 + `visibilitychange(hidden)` / `pagehide` flush + 页面 `destroy()` flush；未变化的底图与叠加层按签名跳过重写，参考图独立存 Blob 且不重复写进 session；失败指数退避（2s→30s）并提示一次，内存状态不丢；面板底部显示「保存中 / 已保存 / 保存失败，重试中」，IndexedDB 不可用时明确提示不会持久化。已实测：打开图片、改指令、旋转、加参考图后，IndexedDB 中 `projects / layers(base) / session / refs` 记录与实际状态一致。
+
+D17.2 已完成 —— 进入工作室时读取 `meta.lastProjectId`：同标签页刷新直接静默恢复；新标签页打开显示「上次编辑未完成 · X 分钟前」横幅，可恢复或忽略（忽略写 sessionStorage，本次会话不再提示）。恢复覆盖主图、完整蒙版、叠加层（保留原图层 id）、旋转/翻转/裁剪、调色、指令、参考图、AI 参数、视口与当前工具；历史栈重置为单步基线，工程 id 不变，后续自动保存继续增量写入。实测：指令、旋转 90°、矩形蒙版 11.4%、叠加层、曝光 40 在刷新后全部还原；忽略后再次刷新不再提示；打开新图会新建工程且旧工程保留。多标签并发写入与配额清理留待 D17.3。
 
 ---
 

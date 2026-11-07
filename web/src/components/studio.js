@@ -17,10 +17,10 @@ import { downloadUrl, fmtNum, readFileAsDataURL } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
-import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob } from './studio/studioDoc.js';
+import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
-import { newProjectId, saveStudioProject, storageAvailable } from './studio/persistence.js';
+import { loadLastProject, newProjectId, saveStudioProject, storageAvailable } from './studio/persistence.js';
 import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
@@ -149,6 +149,9 @@ export function createStudioPage(host) {
   let saveWarned = false;
   let storageWarned = false;
   let persistDisabled = !storageAvailable();
+  let restoreChecked = false;
+  let restoring = false;
+  let pendingRestore = null;
 
   host.innerHTML = `
     <div class="page page-studio">
@@ -168,6 +171,14 @@ export function createStudioPage(host) {
           <button class="btn ghost sm" type="button" data-ref="pngBtn" disabled>导出 PNG</button>
           <button class="btn primary sm" type="button" data-ref="sendBtn" disabled>送入图像编辑</button>
           <input type="file" accept="image/*" hidden data-ref="fileInput" />
+        </div>
+
+        <div class="studio-restore" data-ref="restoreBar" hidden>
+          <span class="studio-restore-dot"></span>
+          <span class="studio-restore-text" data-ref="restoreText">上次编辑未完成</span>
+          <span class="spacer"></span>
+          <button class="btn ghost sm" type="button" data-ref="restoreIgnore">忽略</button>
+          <button class="btn primary sm" type="button" data-ref="restoreApply">恢复</button>
         </div>
 
         <div class="studio-body">
@@ -362,6 +373,10 @@ export function createStudioPage(host) {
     outpaintLayer: ref('outpaintLayer'),
     outpaintPane: ref('outpaintPane'),
     saveState: ref('saveState'),
+    restoreBar: ref('restoreBar'),
+    restoreText: ref('restoreText'),
+    restoreApply: ref('restoreApply'),
+    restoreIgnore: ref('restoreIgnore'),
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
@@ -1228,7 +1243,8 @@ export function createStudioPage(host) {
     }
     let maskBlob = null;
     try {
-      maskBlob = await current.maskBlob();
+      // 存「旋转后、未裁剪」的完整蒙版，恢复时才能和 transform/crop 对齐。
+      maskBlob = current.hasMask() ? await canvasToBlob(current.mask, 'image/png') : null;
     } catch {
       maskBlob = null;
     }
@@ -1363,6 +1379,183 @@ export function createStudioPage(host) {
   document.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('pagehide', onPageHide);
 
+  /* ---------------------------------------------------------- 恢复（D17.2） */
+
+  function relativeTime(stamp) {
+    if (!stamp) return '';
+    const diff = Date.now() - stamp;
+    if (diff < 60_000) return '刚刚';
+    if (diff < 3_600_000) return `${Math.round(diff / 60_000)} 分钟前`;
+    if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} 小时前`;
+    const date = new Date(stamp);
+    return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+  }
+
+  function hideRestoreBar() {
+    refs.restoreBar.hidden = true;
+    pendingRestore = null;
+  }
+
+  async function applyRestore(saved) {
+    if (restoring) return false;
+    const base = (saved.layers || []).find((layer) => layer.id === 'base');
+    if (!base?.bitmapBlob) {
+      toastWarn('工程缺少主图，无法恢复');
+      hideRestoreBar();
+      return false;
+    }
+    restoring = true;
+    const urls = [];
+    try {
+      const baseUrl = URL.createObjectURL(base.bitmapBlob);
+      urls.push(baseUrl);
+      const image = await loadImage(baseUrl);
+      const next = new StudioDoc(image, saved.project.name || 'untitled.png');
+      const session = saved.session || {};
+      const transform = session.transform || {};
+      next.transform.rotate = Number(transform.rotate) || 0;
+      next.transform.flipH = Boolean(transform.flipH);
+      next.transform.flipV = Boolean(transform.flipV);
+      next.transform.crop = transform.crop ? { ...transform.crop } : null;
+      next.adjust = { ...ADJUST_DEFAULTS, ...(session.adjust || {}) };
+      next.mask = makeCanvas(next.oriented.width, next.oriented.height);
+      if (base.maskBlob) {
+        const maskUrl = URL.createObjectURL(base.maskBlob);
+        urls.push(maskUrl);
+        const maskImage = await loadImage(maskUrl);
+        next.mask.getContext('2d').drawImage(maskImage, 0, 0);
+      }
+
+      const missing = [];
+      for (const record of saved.layers || []) {
+        if (record.id === 'base') continue;
+        if (!record.bitmapBlob) {
+          missing.push(record.props?.name || record.id);
+          continue;
+        }
+        const layerUrl = URL.createObjectURL(record.bitmapBlob);
+        urls.push(layerUrl);
+        try {
+          const layerImage = await loadImage(layerUrl);
+          const props = record.props || {};
+          const layer = next.addOverlay(layerImage, {
+            name: props.name,
+            x: props.x,
+            y: props.y,
+            scale: props.scale,
+            opacity: props.opacity,
+          });
+          layer.rotation = Number(props.rotation) || 0;
+          // 保留原图层 id，后续自动保存仍然增量更新同一批记录。
+          layer.id = record.id;
+          layerBlobs.set(record.id, record.bitmapBlob);
+        } catch {
+          missing.push(record.props?.name || record.id);
+        }
+      }
+
+      next.history.length = 0;
+      next.future.length = 0;
+      next._historyBytes = 0;
+      next.snapshot();
+
+      projectId = saved.project.id;
+      projectCreatedAt = saved.project.createdAt || Date.now();
+      sourceBlob = base.bitmapBlob;
+      cropRect = session.cropRect ? { ...session.cropRect } : null;
+
+      setDoc(next, { restore: true, fit: false, tool: session.activeTool });
+      if (cropRect) {
+        refs.cropbar.hidden = false;
+        refs.cropInfo.textContent = `${Math.round(cropRect.width)} × ${Math.round(cropRect.height)}`;
+      }
+      if (session.activeTab) {
+        activeTab = session.activeTab;
+        syncTabs();
+      }
+      if (session.viewport && session.viewport.scale > 0) {
+        view = { ...session.viewport };
+        updateZoomLabel();
+      } else {
+        requestAnimationFrame(fitView);
+      }
+
+      // 参考图落库时是 Blob，面板内部统一用 dataURL。
+      const restoredRefs = [];
+      for (const item of saved.refs || []) {
+        if (!item.blob) continue;
+        try {
+          const dataUrl = await readFileAsDataURL(item.blob);
+          restoredRefs.push({ id: item.id, name: item.name, dataUrl, width: item.width, height: item.height });
+        } catch {
+          // 单张参考图坏了不影响其他内容恢复
+        }
+      }
+      ai?.restoreState?.(session.aiParams || null, restoredRefs);
+
+      updateSizeInfo();
+      updateHistoryUi();
+      updateMaskStatus();
+      scheduleDraw();
+      scheduleSave(600);
+      hideRestoreBar();
+      if (missing.length) toastWarn(`${missing.length} 个叠加层恢复失败，其余内容已恢复`);
+      else toastSuccess('已恢复上次编辑');
+      return true;
+    } catch (err) {
+      hideRestoreBar();
+      toastError(err, '恢复工程失败');
+      return false;
+    } finally {
+      restoring = false;
+      for (const url of urls) URL.revokeObjectURL(url);
+    }
+  }
+
+  async function maybeRestore() {
+    if (restoreChecked || doc || persistDisabled) return;
+    restoreChecked = true;
+    try {
+      const saved = await loadLastProject();
+      if (!saved?.project || doc) return;
+      const base = (saved.layers || []).find((layer) => layer.id === 'base');
+      if (!base?.bitmapBlob) return;
+      try {
+        if (sessionStorage.getItem(`wb.studio.ignore.${saved.project.id}`)) return;
+      } catch {
+        // 隐私模式下读不到 sessionStorage，按未忽略处理
+      }
+      if (saved.project.tabId && saved.project.tabId === tabId()) {
+        // 同一标签页刷新：直接恢复，不打断。
+        await applyRestore(saved);
+        return;
+      }
+      pendingRestore = saved;
+      refs.restoreText.textContent = `上次编辑未完成 · ${relativeTime(saved.project.updatedAt)}`;
+      refs.restoreBar.hidden = false;
+    } catch {
+      // 本地数据不可用时不打扰用户
+    }
+  }
+
+  refs.restoreApply.addEventListener('click', async () => {
+    if (!pendingRestore) return;
+    refs.restoreApply.disabled = true;
+    await applyRestore(pendingRestore);
+    refs.restoreApply.disabled = false;
+  });
+
+  refs.restoreIgnore.addEventListener('click', () => {
+    if (pendingRestore) {
+      try {
+        sessionStorage.setItem(`wb.studio.ignore.${pendingRestore.project.id}`, '1');
+      } catch {
+        // 记不住也无妨，下次打开最多再问一次
+      }
+    }
+    hideRestoreBar();
+  });
+
   /* ============================================================
    * 打开 / 载入 / 导出
    * ============================================================ */
@@ -1445,9 +1638,9 @@ export function createStudioPage(host) {
     }
   }
 
-  function setDoc(next) {
+  function setDoc(next, options = {}) {
     doc = next;
-    layerBlobs.clear();
+    if (!options.restore) layerBlobs.clear();
     cropRect = null;
     tint = null;
     tintDirty = true;
@@ -1461,17 +1654,19 @@ export function createStudioPage(host) {
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
-    setTool(tool === 'view' ? 'view' : tool);
+    setTool(options.tool || (tool === 'view' ? 'view' : tool));
     setPreview(null);
-    ai?.resetTaskContext?.();
+    if (!options.restore) {
+      ai?.resetTaskContext?.();
+      scheduleSave(600);
+    }
     ai?.refresh?.();
     if (persistDisabled && !storageWarned) {
       storageWarned = true;
       toastWarn('当前浏览器不支持本机工程存储，刷新或关闭页面后编辑会丢失');
     }
-    scheduleSave(600);
     requestAnimationFrame(() => {
-      fitView();
+      if (options.fit !== false) fitView();
       updateSizeInfo();
     });
   }
@@ -2030,11 +2225,14 @@ export function createStudioPage(host) {
   });
   resizeObserver.observe(stageEl);
 
-  async function applyStudioHandoff() {
+  function applyStudioHandoff() {
     const payload = consumeStudioHandoff();
-    if (!payload) return;
-    await openUrl(payload.url, payload.name || 'material.png');
-    toastSuccess(payload.toast);
+    if (!payload) return false;
+    void openUrl(payload.url, payload.name || 'material.png').then((ok) => {
+      if (ok) toastSuccess(payload.toast);
+      else void maybeRestore();
+    });
+    return true;
   }
   // 页面刚创建时画布还没有尺寸，先初始化一次
   requestAnimationFrame(() => {
@@ -2051,10 +2249,12 @@ export function createStudioPage(host) {
   return {
     onShow() {
       sizeCanvas();
-      applyStudioHandoff();
       if (doc) {
         requestAnimationFrame(fitView);
+        return;
       }
+      // 有素材仓库交接时优先打开交接图，否则尝试恢复上次未完成的工程。
+      if (!applyStudioHandoff()) void maybeRestore();
     },
     /** 页面被移除时统一解绑，避免全局监听器与观察器在旧实例上累积。 */
     destroy() {

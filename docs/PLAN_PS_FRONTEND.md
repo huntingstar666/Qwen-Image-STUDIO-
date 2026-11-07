@@ -666,6 +666,8 @@ DOM 结构：
 
 - **D3.1 富文本编辑器内核（已完成）** —— 新增 `web/src/components/studio/promptEditor.js`：`createPromptEditor(host, opts)` 输出 `contenteditable` 编辑区与 `getText / setText / syncRefs / insertMention / setMentionMenu / focus / clear`。参考图以 `span.pe-mention[contenteditable=false][data-ref-id]` 原子节点存在，序列化按当前参考图顺序还原为 `@图二`，`<br>/<div>` 转 `\n` 并折叠连续空行，与既有 `mapMentions()` 契约一致；Backspace / Delete 命中相邻 chip 时整块删除，方向键按浏览器原生原子节点行为跨过；`@` 语境通过 `input` + 光标前文本识别并回调 `onMentionQuery(q|null)`，`insertMention` 会吞掉已输入的 `@` 片段；粘贴只取 `text/plain`，拖放交给调用方，IME 组合期间不触发变更与 @ 查询。浏览器实测（在页内动态 import 内核）：`setText` 还原 2 个 chip 且编号为 `r1:@图二 / main:@图一`、追加插入落在末尾、`syncRefs` 移除失效 chip 并回排编号同时回调 `onMissingRef(1)`、Backspace / Delete 各整块删除 1 个 chip、粘贴 HTML 不进入编辑区、IME 组合期间 0 次 `onChange` 且结束后补 1 次、`@` 唤起查询并选中菜单项后 chip 正确插入、Ctrl+Enter 回调 1 次、`clear` 后内容为空。下一步 D3.2：接入 AI 面板并做 @ 菜单与编号联动。
 
+- **D3.2 @ 菜单与编号联动（已完成）** —— `aiPanel.js` 的指令框从 `textarea` 迁移到 `promptEditor`：`state.prompt` 改为每次 `getText()` 派生，提交、润色、任务识别、自动保存与恢复（先 `syncRefs` 再 `setText`，历史 `@图N` 还原为 chip）全部改走编辑器 API；参考图增删后统一 `syncEditorRefs()`，chip 只存 `refId`，删除参考图时失效 chip 自动移除并重排编号，同时提示「已移除 N 个失效的参考图引用」。输入 `@` 由内核回调 `onMentionQuery`，菜单按 `图N · 名称` 过滤；「@ 引用」按钮先聚焦编辑器再列全部；chip 删除、粘贴净化与 Ctrl+Enter 沿用内核。`studio.css` 用 `.pe-editor` 承接原 `.ai-prompt` 视觉，新增 `.pe-mention` 胶囊与 `:empty` placeholder，拖拽高亮改为 `.ai-prompt-host.is-dropping .pe-editor`。浏览器实测：输入文字计数与提交按钮联动正常、拖入参考图自动插 `@图二/@图三`、输入 `@` 菜单列出 3 项并过滤、选中后 chip 插入且 `@` 被吞、删除首张参考图同步移除 2 个 chip 并把 `@图三` 重排为 `@图二`、Backspace 整块删除 chip、`@ 引用` 按钮菜单正常，无 JS 异常。下一步 D4.1：右栏 3 段 + 扩图上下文。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1125,7 +1127,7 @@ DOM 结构：
 | D2.1 | 参考图三来源 | 已完成 | 本次提交 | 「+ 添加参考图 ▾」接入统一导入选择器，按剩余名额限制 |
 | D2.2 | 参考图拖拽与去重 | 已完成 | 本次提交 | 方案 §12.3；参考图条/指令框接收 `Files` 与 `x-wb-ref`，重复图忽略 |
 | D3.1 | 富文本编辑器内核 | 已完成 | 本次提交 | 方案 §12.4；新增 `studio/promptEditor.js`，chip 原子节点与纯文本序列化 |
-| D3.2 | @ 菜单与编号联动 | 未开始 | — | — |
+| D3.2 | @ 菜单与编号联动 | 已完成 | 本次提交 | 方案 §12.4；指令框迁移富文本，删参考图同步 chip 并重排编号 |
 | D4.1 | 右栏 3 段 + 扩图上下文 | 未开始 | — | — |
 | D4.2 | 蒙版工具浮条 | 未开始 | — | — |
 | D4.3 | AI 更多设置折叠 | 未开始 | — | — |

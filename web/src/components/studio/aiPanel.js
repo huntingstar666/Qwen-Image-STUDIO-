@@ -43,6 +43,7 @@ import {
   urlToDataUrl,
 } from './importPicker.js';
 import { hasRefDrag, readRefDrag } from '../refLibrary.js';
+import { createPromptEditor } from './promptEditor.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -84,8 +85,7 @@ export function mountAiPanel(host, ctx) {
 
       <section class="ai-section">
         <div class="ai-label">指令</div>
-        <textarea class="ai-prompt" data-ref="prompt" rows="4"
-          placeholder="帮我去除苹果；或用 @图二 的梨子替换 @图一 的苹果"></textarea>
+        <div class="ai-prompt-host" data-ref="promptHost"></div>
         <div class="ai-prompt-foot">
           <button class="ai-chip" type="button" data-ref="mention">@ 引用</button>
           <button class="ai-chip" type="button" data-ref="polish">✦ 润色</button>
@@ -203,7 +203,7 @@ export function mountAiPanel(host, ctx) {
     presetHint: ref('presetHint'),
     guards: ref('guards'),
     guardNote: ref('guardNote'),
-    prompt: ref('prompt'),
+    promptHost: ref('promptHost'),
     count: ref('count'),
     mention: ref('mention'),
     mentions: ref('mentions'),
@@ -270,6 +270,21 @@ export function mountAiPanel(host, ctx) {
     consistencyOn: editSettings.consistency !== false,
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
   };
+
+  /** 富文本指令框：chip 存储参考图 id，提交时序列化回 `@图N`。 */
+  const promptEditor = createPromptEditor(refs.promptHost, {
+    placeholder: '帮我去除苹果；或用 @图二 的梨子替换 @图一 的苹果',
+    onChange: () => syncPrompt(),
+    onEnterSubmit: () => void submit(),
+    onMentionQuery(query) {
+      if (query === null) {
+        refs.mentions.hidden = true;
+        return;
+      }
+      renderMentionsMenu(query);
+    },
+    onMissingRef: (count) => toastWarn(`已移除 ${count} 个失效的参考图引用`),
+  });
 
   /** 指令 / 参考图 / AI 参数变化后通知宿主合并自动保存。 */
   function notifyPersist() {
@@ -587,6 +602,11 @@ export function mountAiPanel(host, ctx) {
     refs.addRef.disabled = state.refs.length >= MAX_REFS;
   }
 
+  /** 富文本编号来源：主图固定第 0 位，参考图按当前顺序。 */
+  function syncEditorRefs() {
+    promptEditor.syncRefs([{ id: 'main' }, ...state.refs.map((item) => ({ id: item.id }))]);
+  }
+
   /** 统一的参考图入队：接受 dataURL 条目（导入选择器 / 拖拽矩阵）。 */
   async function addRefItems(items) {
     const before = state.refs.length;
@@ -623,6 +643,7 @@ export function mountAiPanel(host, ctx) {
       });
     }
     renderRefs();
+    syncEditorRefs();
     if (state.refs.length > before) insertMention(before + 2);
     if (state.refs.length !== before) notifyPersist();
   }
@@ -647,38 +668,34 @@ export function mountAiPanel(host, ctx) {
 
   function insertMention(index) {
     if (!index || index > 1 + state.refs.length) return;
-    const label = `@图${['一', '二', '三', '四'][index - 1] || index}`;
-    const textarea = refs.prompt;
-    const start = textarea.selectionStart ?? textarea.value.length;
-    const end = textarea.selectionEnd ?? start;
-    textarea.value = `${textarea.value.slice(0, start)}${label} ${textarea.value.slice(end)}`;
-    textarea.focus();
-    textarea.selectionStart = textarea.selectionEnd = start + label.length + 1;
-    syncPrompt();
+    const refId = index === 1 ? 'main' : state.refs[index - 2]?.id;
+    if (!refId) return;
+    promptEditor.focus();
+    promptEditor.insertMention({ refId });
   }
 
-  /** 删除参考图后同步指令：移除指向它的 @图N，并把后面的引用整体前移一位。 */
-  function dropMention(index) {
-    const chars = ['一', '二', '三', '四'];
-    const label = chars[index - 1];
-    if (!label) return;
-    let text = refs.prompt.value.replace(new RegExp(`@图${label}[ \\t]*`, 'g'), '');
-    for (let n = index + 1; n <= chars.length; n += 1) {
-      text = text.replace(new RegExp(`@图${chars[n - 1]}`, 'g'), `@图${chars[n - 2]}`);
+  function renderMentionsMenu(query = '') {
+    const items = [
+      { index: 1, refId: 'main', label: '图一 · 主图' },
+      ...state.refs.map((item, i) => ({
+        index: i + 2,
+        refId: item.id,
+        label: `图${['二', '三', '四'][i] || i + 2} · ${item.name}`,
+      })),
+    ].filter((item) => !query || item.label.includes(query));
+    if (!items.length) {
+      refs.mentions.hidden = true;
+      return;
     }
-    if (text === refs.prompt.value) return;
-    refs.prompt.value = text;
-    syncPrompt();
-  }
-
-  function renderMentionsMenu() {
-    const items = ['图一 · 主图', ...state.refs.map((item, index) => `图${['二', '三', '四'][index] || index + 2} · ${item.name}`)];
     refs.mentions.innerHTML = items
       .map(
-        (label, index) =>
-          `<button type="button" class="ai-mention" data-mention="${index + 1}">@${escapeHtml(label)}</button>`,
+        (item) =>
+          `<button type="button" class="ai-mention" data-mention="${item.index}">@${escapeHtml(item.label)}</button>`,
       )
       .join('');
+    promptEditor.setMentionMenu(
+      items.map((item) => ({ refId: item.refId, label: item.label.split(' · ')[0] })),
+    );
     refs.mentions.hidden = false;
   }
 
@@ -708,8 +725,8 @@ export function mountAiPanel(host, ctx) {
   /* ------------------------------------------------------------ 指令 */
 
   function syncPrompt() {
-    state.prompt = refs.prompt.value;
-    refs.count.textContent = `${refs.prompt.value.length} / 2000`;
+    state.prompt = promptEditor.getText();
+    refs.count.textContent = `${state.prompt.length} / 2000`;
     refs.submit.disabled = !state.prompt.trim() || state.busy;
     notifyPersist();
   }
@@ -721,7 +738,7 @@ export function mountAiPanel(host, ctx) {
   }
 
   async function polish() {
-    const text = refs.prompt.value.trim();
+    const text = promptEditor.getText().trim();
     if (!text) {
       toastWarn('先写一句指令，再润色');
       return;
@@ -770,8 +787,7 @@ export function mountAiPanel(host, ctx) {
       refs.polishBox.hidden = true;
     });
     refs.polishBox.querySelector('[data-ref="polishAccept"]').addEventListener('click', () => {
-      refs.prompt.value = polished;
-      syncPrompt();
+      promptEditor.setText(polished);
       refs.polishBox.hidden = true;
     });
   }
@@ -782,7 +798,7 @@ export function mountAiPanel(host, ctx) {
     const size = mainSize();
     const source = ctx.getSource?.();
     const taskMode = refs.task.value;
-    const task = taskMode === 'auto' ? detectTask(refs.prompt.value, Boolean(source?.hasMask)) : taskMode;
+    const task = taskMode === 'auto' ? detectTask(promptEditor.getText(), Boolean(source?.hasMask)) : taskMode;
     const loras = state.options?.models?.lora || [];
     return {
       task,
@@ -797,10 +813,10 @@ export function mountAiPanel(host, ctx) {
 
   async function submit() {
     if (state.busy) return;
-    const text = refs.prompt.value.trim();
+    const text = promptEditor.getText().trim();
     if (!text) {
       toastWarn('先写一句修改指令，例如「帮我去除苹果」');
-      refs.prompt.focus();
+      promptEditor.focus();
       return;
     }
     const source = ctx.getSource?.();
@@ -918,18 +934,17 @@ export function mountAiPanel(host, ctx) {
 
   /* ------------------------------------------------------------ 事件 */
 
-  refs.prompt.addEventListener('input', syncPrompt);
-  refs.prompt.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault();
-      submit();
-    }
+  promptEditor.el.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') refs.mentions.hidden = true;
   });
 
   refs.mention.addEventListener('click', () => {
-    if (refs.mentions.hidden) renderMentionsMenu();
-    else refs.mentions.hidden = true;
+    if (refs.mentions.hidden) {
+      promptEditor.focus();
+      renderMentionsMenu();
+    } else {
+      refs.mentions.hidden = true;
+    }
   });
   refs.mentions.addEventListener('click', (event) => {
     const button = event.target.closest('[data-mention]');
@@ -1049,7 +1064,7 @@ export function mountAiPanel(host, ctx) {
     }
   }
 
-  [refs.refs, refs.prompt].forEach((zone) => {
+  [refs.refs, refs.promptHost].forEach((zone) => {
     ['dragenter', 'dragover'].forEach((type) => {
       zone.addEventListener(type, (event) => {
         if (!hasImageDrop(event)) return;
@@ -1073,10 +1088,8 @@ export function mountAiPanel(host, ctx) {
   refs.refs.addEventListener('click', (event) => {
     const button = event.target.closest('[data-ref-del]');
     if (!button) return;
-    const index = state.refs.findIndex((item) => item.id === button.dataset.refDel);
-    if (index < 0) return;
     state.refs = state.refs.filter((item) => item.id !== button.dataset.refDel);
-    dropMention(index + 2);
+    syncEditorRefs();
     renderRefs();
     notifyPersist();
   });
@@ -1297,22 +1310,21 @@ export function mountAiPanel(host, ctx) {
     /** 换主图 / 载入结果：参考图与指令属于上一张图，清空避免串任务 */
     resetTaskContext() {
       state.refs = [];
-      refs.prompt.value = '';
+      promptEditor.clear();
       refs.refInput.value = '';
-      syncPrompt();
       renderRefs();
       controller.resetResult();
       renderMeta();
     },
     /** studio 端画完蒙版后调用：只更新任务识别与提示，不做整图编码 */
     onMaskChanged(coverage) {
-      const task = detectTask(refs.prompt.value, coverage > 0);
+      const task = detectTask(promptEditor.getText(), coverage > 0);
       refs.submitHint.textContent = `已圈选 ${(coverage * 100).toFixed(1)}% · 自动识别：${
         TASK_LABELS[task] || task
       }`;
     },
     focusPrompt() {
-      refs.prompt.focus();
+      promptEditor.focus();
     },
     /** 宿主拖入 / 选择文件后批量加入参考图。 */
     addRefFiles(files) {
@@ -1330,7 +1342,8 @@ export function mountAiPanel(host, ctx) {
     restoreState(persist, refsData) {
       if (!persist) return;
       if (Array.isArray(refsData) && refsData.length) state.refs = refsData.slice(0, MAX_REFS);
-      refs.prompt.value = typeof persist.prompt === 'string' ? persist.prompt : '';
+      syncEditorRefs();
+      promptEditor.setText(typeof persist.prompt === 'string' ? persist.prompt : '');
       if (persist.presetId) state.presetId = persist.presetId;
       state.overrides = { ...(persist.overrides || {}) };
       state.protection = normalizeProtection(persist.protection);
@@ -1379,7 +1392,7 @@ export function mountAiPanel(host, ctx) {
     /** 宿主的本机自动保存从这里取 AI 现场（指令、参考图、参数、结果地址）。 */
     getPersistState() {
       return {
-        prompt: refs.prompt.value,
+        prompt: promptEditor.getText(),
         refs: state.refs.map((item) => ({
           id: item.id,
           name: item.name,
@@ -1405,9 +1418,8 @@ export function mountAiPanel(host, ctx) {
     },
     /** 扩图面板点「生成扩图」：补默认指令、切 outpaint 任务后直接提交。 */
     submitOutpaint() {
-      if (!refs.prompt.value.trim()) {
-        refs.prompt.value = '移除图像中的灰色区域，无缝自然延展为完整图像。';
-        syncPrompt();
+      if (!promptEditor.getText().trim()) {
+        promptEditor.setText('移除图像中的灰色区域，无缝自然延展为完整图像。');
       }
       refs.task.value = 'outpaint';
       syncGuardNote();
@@ -1416,6 +1428,7 @@ export function mountAiPanel(host, ctx) {
     },
   };
 
+  syncEditorRefs();
   syncPrompt();
   syncBusy();
   renderRefs();

@@ -723,7 +723,7 @@ DOM 结构：
   - `studio.js`：图层控制器新增 `cloneLayer(id)`（同步沿用源图层 Blob，便于自动保存）与 `moveLayer(id, delta)`（把 delta 换算成目标下标），操作后统一 `updateHistoryUi / scheduleSave / scheduleDraw`。
   - `aiPanel.js`：图层条每行新增「⧉ 复制 / ↓ 下移 / ↑ 上移」三个小按钮，事件里调用 `ctx.cloneLayer` / `ctx.moveLayer` 后重绘列表。
   - 实测（headless Chromium，1024×768 工程，叠加 `overlay-a.png` + `overlay-b.png`）：初始 `[a, b]` → 复制后 `[a, a 副本, b]`（副本紧跟源层上方）；对已在顶层的 `b` 点「上移」为 no-op；`b` 点「下移」→ `[a, b, a 副本]`；删除首层后剩两层，`撤销` 逐级还原到空；全程控制台无报错。
-  - 范围说明：`history.js`（D7.4）与 `renderer.js`（D7.2）当时未拆分，图层渲染仍由 `studioDoc.renderBase()` 统一合成（已被 §17.7 导出像素一致性覆盖）；`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时再实现，当前工程持久化仍走 Blob + 快照。
+  - 范围说明：`history.js`（D7.4）与 `renderer.js`（D7.2）当时未拆分，图层渲染仍由 `studioDoc.renderBase()` 统一合成（已被 §17.7 导出像素一致性覆盖）；`docToJSON/fromJSON` 在 D7.3 复核后确认不需要——工程持久化已用「Blob + props」保存图层，不再引入第二条 JSON 路径。
 
 - **D7.2 合成渲染器（已完成）** —— 把图层合成从 `studioDoc` 里抽成独立模块：
   - 新增 `studio/renderer.js`：`drawLayers(ctx, layers, { crop })` 按 `layers[0] → 末尾` 顺序逐层 `draw`，`crop` 非空时先 `ctx.translate(-crop.x, -crop.y)`；`composite(ctx, underlay, layers, { crop })` 先画底图再叠图层。全程 `save/restore`，不泄漏变换状态。
@@ -736,6 +736,16 @@ DOM 结构：
   - 快捷键沿用既有绑定（`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做，输入框内不触发），本轮只换内核不改按键映射。
   - 实测（模块级）：`limit=3` 连推 6 帧 → `past=[3,4,5]`；`budget=100`、每帧 40B 连推 10 帧 → `past=[8,9]`、`bytes=80`（保留最新两帧）；三次 `undo` 返回 `1 / 0 / null`，`redo` 返回 `1`，新 `push` 后 `canRedo=false`、`past=[0,1,9]`，`clear()` 后 `past=0 / bytes=0`。页面级（1024×768 工程）：恢复工程后 `undoBtn.disabled=true`（`clearHistory` 生效）；蒙版画笔 4 笔后撤销可用、重做不可用，连点撤销 4 次回到初始（按钮转禁用），重做 2 次恢复；控制台无报错。
   - 遗留：图层维度的历史断言（复制/排序/锁定/不透明度可撤销）并入 D7.3 图层面板实测。
+
+- **D7.3 图层面板（已完成）** —— 把 AI 面板里的图层条拆成独立模块，补齐拖拽排序、重命名、锁定与不透明度：
+  - 新增 `studio/layerPanel.js`：`createLayerPanel(host, ctx)` 返回 `{ render }`，一次绑定 click / input / change / dblclick / drag* 事件。行结构新增拖拽手柄 `.ai-layer-grip`、锁定按钮 `[data-layer-lock]`（🔒/🔓），其余按钮与不透明度滑杆沿用；所有状态变更回调 `ctx`，模块本身不持有文档。
+  - 交互语义：双击图层名就地变输入框（Enter 提交、Esc 取消、失焦提交）；拖拽行到目标行即落到该行下标（调用新增的 `ctx.moveLayerTo(id, index)`）；锁定后 `OverlayLayer.hitTest()` 直接返回 `false`，画布上不可点选/拖动，但仍参与合成；锁定图层若正被选中会清空选中态。
+  - `layers.js`：`OverlayLayer` 增加 `locked` 字段（构造参数 + `clone()` 透传），锁定只影响命中测试，不影响绘制。
+  - `studio.js`：图层控制器新增 `moveLayerTo / renameLayer / toggleLayerLock`，三者都 `commitLayers()` 入撤销栈；工程保存的 `props` 增加 `locked`，恢复时经 `addOverlay({ locked })` 还原（`studioDoc.addOverlay` 同时补上 `rotation`/`locked` 入参）。
+  - `aiPanel.js`：`renderLayers()` 改为 `layerPanel.render()`；删除原来的图层按钮事件与重复的 `input`/`change` 监听，避免「一次拖动写两帧快照、撤销原地不动」。
+  - `studio.css`：追加 `.ai-layer-grip`、`.ai-layer.is-dragging`、`.ai-layer.is-drop`、`.ai-layer.is-locked`、`.ai-layer-rename`。
+  - 实测（headless Chromium，1024×768 主图 + 恢复工程图层 + 两张扣图；截图 `.cache/shots/d7-3-layer-panel-2026-11-07T16-51-38-616Z.png`）：双击重命名 `overlay-a.png → 前景 A`、撤销还原；锁定后行变 `is-locked`、字形 `🔒`、提示「解锁图层」，撤销解除；拖拽首行到末行 `[ov-7, ov-2, ov-3] → [ov-2, ov-3, ov-7]`，撤销还原；不透明度 `35 → 80` 撤销回 `35`、重做回 `80`。模块级：锁定图层 `hitTest(50,50) = false`、未锁定 `true`、`clone()` 保留 `locked`、`clone({fresh:true})` 换新 id。控制台无 exception。
+  - 序列化取舍：计划中的 `docToJSON/fromJSON` **未实现**——工程持久化（D17.1）已经用「主图 Blob + 图层 Blob + props」完整保存/恢复图层，再加一层 JSON 序列化没有调用方，等真正需要导出/导入工程文件时再做。
 
 - **D15.1 高清放大入口（已完成）** —— 顶栏新增「放大」按钮（`data-ref="upscaleBtn"`，无主图禁用；AI 预览态先被 `previewBlocked('放大')` 拦住，避免放大错版本）。点击后打开 `studio/upscaleDialog.js` 弹窗：
   - 引擎来自 `api.upscaleModels()` 的 `ready` 项，文案映射 VOSR2 细节优先 / SeedVR2 质量优先 / FlashVSR 速度优先，默认取响应的 `default_engine`；倍率 2× / 4×，默认取 `defaults.scale`。
@@ -945,6 +955,7 @@ DOM 结构：
 | `studio/aiHistory.js` | AI 编辑历史卡片区 | `sessionHistory` | D16.1 |
 | `compareLauncher.js` | 组装对比数据并调用 `openCompareDialog` | `compare.js` | D16.2 |
 | `studio/upscaleDialog.js` | 高清放大弹窗：引擎/倍率、任务进度、结果回流主图 | `api.upscale` + `pollJob` | D15.1 |
+| `studio/layerPanel.js` | 图层条：列表渲染、拖拽排序、双击重命名、锁定、不透明度 | `utils.escapeHtml` | D7.3 |
 | `io.js` | IndexedDB 自动保存、项目导入导出、图片导出 | `document` | D7 |
 
 `studio.js` 只保留装配：工具切换、画布事件、面板挂载；不再新增业务算法。
@@ -1230,9 +1241,9 @@ DOM 结构：
 | D19.4 | 编码与内存 | 已完成 | 本次提交 | §18 S-14~S-19 |
 | D19.5 | 事件与生命周期 | 已完成 | 本次提交 | §18 S-21~S-24 |
 | D19.6 | 兼容与降级 | 已完成 | 本次提交 | §18 S-25 |
-| D7.1 | 文档模型 + 图层创建 | 已完成 | 本次提交 | `document.js` 提供 `createDocument / addLayer / removeLayer / moveLayer / cloneLayer / findLayer / indexOf / layerCount`（纯函数、零依赖，`layers[0]` 为最底层）；`StudioDoc.layers` 改为图层栈访问器，`addOverlay / removeOverlay` 走内核，新增 `cloneOverlay / moveOverlay`；AI 面板图层条加「⧉ 复制 / ↓ 上移 / ↑ 下移」，操作均入撤销栈。实测 1024×768 工程叠加两张扣图：复制插在源层上方（`overlay-a.png 副本`）、对顶层再上移为 no-op、下移后顺序 `[a, b, a副本]`、删除后两层、撤销逐级还原至空；控制台无报错。`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时实现（当前持久化仍走 Blob + 工程快照） |
+| D7.1 | 文档模型 + 图层创建 | 已完成 | 本次提交 | `document.js` 提供 `createDocument / addLayer / removeLayer / moveLayer / cloneLayer / findLayer / indexOf / layerCount`（纯函数、零依赖，`layers[0]` 为最底层）；`StudioDoc.layers` 改为图层栈访问器，`addOverlay / removeOverlay` 走内核，新增 `cloneOverlay / moveOverlay`；AI 面板图层条加「⧉ 复制 / ↓ 上移 / ↑ 下移」，操作均入撤销栈。实测 1024×768 工程叠加两张扣图：复制插在源层上方（`overlay-a.png 副本`）、对顶层再上移为 no-op、下移后顺序 `[a, b, a副本]`、删除后两层、撤销逐级还原至空；控制台无报错。`docToJSON/fromJSON` 未实现：工程持久化已用「Blob + props」完整保存图层，D7.3 复核后确认无需额外 JSON 路径 |
 | D7.2 | 合成渲染器 | 已完成 | 本次提交 | 新增 `renderer.js`：`drawLayers(ctx, layers, {crop})` 按底→顶逐层绘制并在 `crop` 时整体平移，`composite(ctx, underlay, layers, {crop})` 先底图后图层；`studioDoc.renderBase()` 改为调用 `composite`，底图/图层绘制顺序集中一处。模块级实测顶层覆盖底层、裁剪平移 10px 生效，§17.7 导出像素一致性未回退 |
-| D7.3 | 图层面板 | 未开始 | — | — |
+| D7.3 | 图层面板 | 已完成 | 本次提交 | 新增 `layerPanel.js`：拖拽行落到目标下标、双击就地重命名、锁定按钮（`OverlayLayer.locked` 让 `hitTest` 返回 false，画布不可选/拖但继续合成）、不透明度滑杆；`studio.js` 新增 `moveLayerTo/renameLayer/toggleLayerLock`（均入撤销栈），工程保存 props 增加 `locked`。实测：重命名/锁定/拖拽排序/不透明度四项均修改成功且撤销还原，不透明度重做回滚正确；模块级锁定命中测试 false、clone 保留 locked。移除 aiPanel 重复监听后修复「撤销原地不动」。`docToJSON/fromJSON` 不实现（持久化已用 Blob + props） |
 | D7.4 | 历史记录 + 快捷键 | 已完成 | 本次提交 | 新增 `history.js`：`createHistory({limit, budget})` 双栈 + 字节预算，步数先裁、预算再裁且至少保留初始+最新两帧；`studioDoc` 的 `snapshot/undo/redo/canUndo/canRedo` 委托 `_history`，新增 `historyBytes` / `clearHistory()`，工程恢复改为 `clearHistory + snapshot`。实测 `limit=3` 推 6 帧得 `[3,4,5]`、`budget=100`（40B/帧）推 10 帧得 `[8,9]`（80B）、undo/redo 序列与 `clear` 归零正确；页面 4 笔蒙版可连撤 4 次、重做 2 次，恢复工程后撤销按钮初始禁用。快捷键沿用既有 `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`。图层维度历史断言并入 D7.3 |
 | D8.1 | 选区核心 | 未开始 | — | — |
 | D8.2 | 图层蒙版 | 未开始 | — | — |

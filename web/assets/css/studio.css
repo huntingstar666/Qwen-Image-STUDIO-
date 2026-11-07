@@ -1529,6 +1529,42 @@ html[data-theme='dark'] .page-studio {
   text-align: center;
 }
 
+/* D7.3：图层条拖拽排序 / 重命名 / 锁定 */
+.ai-layer-grip {
+  flex: none;
+  color: var(--text-2);
+  font-size: 9px;
+  letter-spacing: -1.5px;
+  cursor: grab;
+  user-select: none;
+}
+
+.ai-layer.is-dragging {
+  opacity: 0.45;
+}
+
+.ai-layer.is-drop {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.ai-layer.is-locked .ai-layer-name {
+  color: var(--text-2);
+}
+
+.ai-layer-rename {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
 /* =============================================================
  * 边界框布局设计器（MOSS bbox）
  * 沿用姿态工作室的弹窗结构：左侧缩放画布 + 右侧参数列表。

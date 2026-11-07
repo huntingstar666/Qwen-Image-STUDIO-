@@ -608,6 +608,42 @@ export function createStudioPage(host) {
       scheduleDraw();
       return true;
     },
+    /** 拖拽排序：直接落到目标下标。 */
+    moveLayerTo(id, toIndex) {
+      if (!doc) return false;
+      const moved = doc.moveOverlay(id, toIndex);
+      if (moved < 0) return false;
+      selectedLayerId = id;
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
+    /** 重命名图层（空名或同名视为 no-op，不产生撤销步）。 */
+    renameLayer(id, name) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      const next = String(name || '').trim();
+      if (!layer || !next || next === layer.name) return false;
+      layer.name = next;
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      return true;
+    },
+    /** 锁定/解锁：锁定后画布上不可点选、不可拖动，但继续参与合成。 */
+    toggleLayerLock(id) {
+      if (!doc) return false;
+      const layer = doc.findLayer(id);
+      if (!layer) return false;
+      layer.locked = !layer.locked;
+      if (layer.locked && selectedLayerId === id) selectedLayerId = null;
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
     setLayerOpacity(id, value) {
       if (!doc) return;
       doc.setOverlayOpacity(id, value);
@@ -1491,6 +1527,7 @@ export function createStudioPage(host) {
           scale: layer.scale,
           opacity: layer.opacity,
           rotation: layer.rotation,
+          locked: layer.locked,
         },
         blob,
       });
@@ -1685,8 +1722,9 @@ export function createStudioPage(host) {
             y: props.y,
             scale: props.scale,
             opacity: props.opacity,
+            rotation: props.rotation,
+            locked: props.locked,
           });
-          layer.rotation = Number(props.rotation) || 0;
           // 保留原图层 id，后续自动保存仍然增量更新同一批记录。
           layer.id = record.id;
           layerBlobs.set(record.id, record.bitmapBlob);

@@ -10,7 +10,7 @@
 let seq = 0;
 
 export class OverlayLayer {
-  constructor(image, { name = '叠加图', x = 0, y = 0, scale = 1, opacity = 1, rotation = 0, id = '' } = {}) {
+  constructor(image, { name = '叠加图', x = 0, y = 0, scale = 1, opacity = 1, rotation = 0, locked = false, id = '' } = {}) {
     this.id = id || `ov-${(seq += 1)}`;
     this.image = image;
     this.name = name;
@@ -19,6 +19,8 @@ export class OverlayLayer {
     this.scale = Number(scale) || 1;
     this.opacity = opacity === undefined ? 1 : Number(opacity);
     this.rotation = Number(rotation) || 0;
+    /** 锁定后仍参与合成，但画布上不可点选/拖动（D7.3 图层面板）。 */
+    this.locked = Boolean(locked);
   }
 
   get width() {
@@ -34,6 +36,7 @@ export class OverlayLayer {
   }
 
   hitTest(px, py) {
+    if (this.locked) return false;
     const box = this.bounds();
     return px >= box.x && px <= box.x + box.width && py >= box.y && py <= box.y + box.height;
   }
@@ -62,6 +65,7 @@ export class OverlayLayer {
       scale: this.scale,
       opacity: this.opacity,
       rotation: this.rotation,
+      locked: this.locked,
     });
   }
 }

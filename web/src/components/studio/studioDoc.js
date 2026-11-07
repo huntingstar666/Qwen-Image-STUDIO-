@@ -353,7 +353,7 @@ export class StudioDoc {
   /**
    * 叠加一张图片（扣图 / 素材），默认居中并缩放到画布的 60% 以内。
    * @param {HTMLImageElement} image
-   * @param {{name?:string, x?:number, y?:number, scale?:number, opacity?:number}} [options]
+   * @param {{name?:string, x?:number, y?:number, scale?:number, opacity?:number, rotation?:number, locked?:boolean}} [options]
    */
   addOverlay(image, options = {}) {
     const box = this.renderBase();
@@ -367,6 +367,8 @@ export class StudioDoc {
       y: options.y ?? Math.round((box.height - height) / 2),
       scale,
       opacity: options.opacity ?? 1,
+      rotation: options.rotation ?? 0,
+      locked: options.locked ?? false,
     });
     addLayer(this._doc, layer);
     this._base = null;

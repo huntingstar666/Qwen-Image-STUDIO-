@@ -43,6 +43,7 @@ import {
   urlToDataUrl,
 } from './importPicker.js';
 import { hasRefDrag, readRefDrag } from '../refLibrary.js';
+import { createLayerPanel } from './layerPanel.js';
 import { createPromptEditor } from './promptEditor.js';
 import { createSessionHistory } from './sessionHistory.js';
 import { mountAiHistory } from './aiHistory.js';
@@ -270,6 +271,9 @@ export function mountAiPanel(host, ctx) {
     quality: ref('quality'),
     historyHost: ref('historyHost'),
   };
+
+  /* D7.3：图层条独立成模块，负责拖拽排序 / 双击重命名 / 锁定 / 不透明度。 */
+  const layerPanel = createLayerPanel(refs.layers, ctx);
 
   const editSettings = store.state.edit || {};
   const state = {
@@ -862,27 +866,7 @@ export function mountAiPanel(host, ctx) {
   /* ------------------------------------------------------------ 叠加层 */
 
   function renderLayers() {
-    const layers = ctx.getLayers?.() || [];
-    if (!layers.length) {
-      refs.layers.innerHTML = '';
-      return;
-    }
-    refs.layers.innerHTML = layers
-      .map(
-        (layer) => `
-        <div class="ai-layer" data-layer="${layer.id}">
-          <button class="ai-layer-name" type="button" data-layer-pick="${layer.id}">${escapeHtml(layer.name)}</button>
-          <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" title="缩小">−</button>
-          <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" data-dir="1" title="放大">＋</button>
-          <input class="ai-layer-alpha" type="range" min="0" max="100" step="1" value="${Math.round(layer.opacity * 100)}"
-            data-layer-alpha="${layer.id}" title="不透明度" />
-          <button class="ai-layer-btn" type="button" data-layer-copy="${layer.id}" title="复制图层">⧉</button>
-          <button class="ai-layer-btn" type="button" data-layer-move="${layer.id}" data-dir="-1" title="下移一层">↓</button>
-          <button class="ai-layer-btn" type="button" data-layer-move="${layer.id}" data-dir="1" title="上移一层">↑</button>
-          <button class="ai-layer-btn" type="button" data-layer-del="${layer.id}" title="删除">×</button>
-        </div>`,
-      )
-      .join('');
+    layerPanel.render();
   }
 
   /* ------------------------------------------------------------ 指令 */
@@ -1322,46 +1306,6 @@ export function mountAiPanel(host, ctx) {
     } catch (err) {
       toastError(err, '叠加失败');
     }
-  });
-
-  refs.layers.addEventListener('click', (event) => {
-    const pick = event.target.closest('[data-layer-pick]');
-    if (pick) {
-      ctx.selectLayer?.(pick.dataset.layerPick);
-      return;
-    }
-    const del = event.target.closest('[data-layer-del]');
-    if (del) {
-      ctx.removeLayer?.(del.dataset.layerDel);
-      renderLayers();
-      return;
-    }
-    const scale = event.target.closest('[data-layer-scale]');
-    if (scale) {
-      ctx.scaleLayer?.(scale.dataset.layerScale, scale.dataset.dir === '1' ? 1.1 : 1 / 1.1);
-      renderLayers();
-      return;
-    }
-    const copy = event.target.closest('[data-layer-copy]');
-    if (copy) {
-      ctx.cloneLayer?.(copy.dataset.layerCopy);
-      renderLayers();
-      return;
-    }
-    const move = event.target.closest('[data-layer-move]');
-    if (move) {
-      ctx.moveLayer?.(move.dataset.layerMove, Number(move.dataset.dir) || 0);
-      renderLayers();
-    }
-  });
-  refs.layers.addEventListener('input', (event) => {
-    const input = event.target.closest('[data-layer-alpha]');
-    if (!input) return;
-    ctx.setLayerOpacity?.(input.dataset.layerAlpha, Number(input.value) / 100);
-  });
-  refs.layers.addEventListener('change', (event) => {
-    if (!event.target.closest('[data-layer-alpha]')) return;
-    ctx.commitLayers?.();
   });
 
   refs.sizeMode.addEventListener('change', () => {

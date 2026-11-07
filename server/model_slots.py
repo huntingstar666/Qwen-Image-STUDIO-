@@ -42,7 +42,7 @@ SLOTS: dict[str, Slot] = {
 }
 
 #: 旧版顶层配置键 → 槽位（迁移兼容：没有 model_defaults 时用它兜底）。
-_LEGACY_KEYS: dict[str, str] = {
+LEGACY_KEYS: dict[str, str] = {
     "unet": "unet",
     "clip": "clip",
     "vae": "vae",
@@ -125,8 +125,39 @@ def normalize_preset_overrides(raw: Any) -> dict[str, Any]:
     return out
 
 
+def merge_section(cfg: dict[str, Any] | None, raw: Any) -> dict[str, Any]:
+    """把 POST 的 ``model_defaults`` 补丁合并成可写盘的完整段。
+
+    只允许出现 ``slots`` / ``preset_overrides``；槽位传空串表示「清空，回落出厂」。
+    """
+    cfg = cfg or {}
+    if not isinstance(raw, dict):
+        raise ValueError("model_defaults 必须是对象")
+    current = section(cfg)
+    merged: dict[str, Any] = {
+        "version": int(current.get("version") or 2),
+        "slots": dict(current.get("slots") or {}),
+        "preset_overrides": dict(current.get("preset_overrides") or {}),
+    }
+    if "slots" in raw:
+        for key, value in normalize(raw.get("slots")).items():
+            if value:
+                merged["slots"][key] = value
+            else:
+                merged["slots"].pop(key, None)
+    if "preset_overrides" in raw:
+        merged["preset_overrides"] = normalize_preset_overrides(raw.get("preset_overrides"))
+    return merged
+
+
+def legacy_patch(cfg: dict[str, Any]) -> dict[str, str]:
+    """把生效的全局槽位同步回旧顶层键，保持历史脚本与 turbo_plan 兼容。"""
+    plan = resolve_plan(cfg)
+    return {LEGACY_KEYS[key]: plan[key] for key in LEGACY_KEYS}
+
+
 def _legacy_value(cfg: dict[str, Any], key: str) -> str | None:
-    legacy_key = _LEGACY_KEYS.get(key)
+    legacy_key = LEGACY_KEYS.get(key)
     if not legacy_key:
         return None
     value = cfg.get(legacy_key)
@@ -140,11 +171,15 @@ def resolve_plan(cfg: dict[str, Any] | None = None,
     """合并后的生效槽位：出厂 < 旧顶层键 < 全局槽位 < 预设覆盖。"""
     cfg = cfg or config.load_config()
     plan = factory_slots()
+    has_section = isinstance(cfg.get("model_defaults"), dict)
 
-    for key in SLOTS:
-        legacy = _legacy_value(cfg, key)
-        if legacy:
-            plan[key] = legacy
+    # 旧顶层键只在「还没写过 model_defaults」时兜底；一旦启用新结构，
+    # 清空某个槽位就应真正回落出厂值，而不是被旧值复活。
+    if not has_section:
+        for key in SLOTS:
+            legacy = _legacy_value(cfg, key)
+            if legacy:
+                plan[key] = legacy
 
     data = section(cfg)
     for key, value in (data.get("slots") or {}).items():

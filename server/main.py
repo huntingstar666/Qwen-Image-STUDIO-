@@ -22,8 +22,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    __version__, config, imageops, imaging, jobs, materials, ollama as ollama_client,
-    pipeline, presets, prompt_polish, storage, styles,
+    __version__, config, imageops, imaging, jobs, materials, model_slots,
+    ollama as ollama_client, pipeline, presets, prompt_polish, storage, styles,
 )
 from . import models as image_models
 
@@ -322,6 +322,7 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "vram_reserve": float(cfg.get("vram_reserve") or 0),
         },
         "scan": scan,
+        "model_defaults": model_slots.audit(cfg),
         "app": {
             "version": __version__,
             "engine_dir": cfg.get("engine_dir"),
@@ -983,6 +984,15 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
         if not 0 <= reserve < 1:
             raise ApiError("显存预留必须在 0 到 1 之间", code="invalid_field")
         patch["vram_reserve"] = round(reserve, 2)
+
+    if "model_defaults" in payload:
+        try:
+            merged = model_slots.merge_section(cfg, payload.get("model_defaults"))
+        except ValueError as exc:
+            raise ApiError(str(exc), code="invalid_field") from exc
+        patch["model_defaults"] = merged
+        # 生效值同步回旧顶层键，保持 turbo_plan / 历史脚本兼容
+        patch.update(model_slots.legacy_patch({**cfg, "model_defaults": merged}))
 
     if not patch:
         raise ApiError("没有可修改的设置项", code="missing_field")

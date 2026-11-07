@@ -110,6 +110,49 @@ def test_normalize_paths_use_forward_slashes():
     assert model_slots.normalize({"vae": "   "})["vae"] == ""
 
 
+def test_merge_section_patch_and_clear():
+    root = _make_root()
+    try:
+        cfg = make_cfg(root)
+        merged = model_slots.merge_section(cfg, {
+            "slots": {"vae": "vae/a.safetensors"},
+            "preset_overrides": {"remove": {"slots": {"unet": "u.safetensors"}}},
+        })
+        assert merged["version"] == 2
+        assert merged["slots"]["vae"] == "vae/a.safetensors"
+        assert merged["preset_overrides"]["remove"]["slots"]["unet"] == "u.safetensors"
+
+        # 已有段上再次提交：空字符串 = 清空该槽位，回落出厂
+        cfg2 = {**cfg, "model_defaults": merged}
+        merged2 = model_slots.merge_section(cfg2, {"slots": {"vae": ""}})
+        assert "vae" not in merged2["slots"]
+        plan = model_slots.resolve_plan({**cfg2, "model_defaults": merged2})
+        assert plan["vae"] == config.DEFAULTS["vae"]
+
+        with pytest.raises(ValueError):
+            model_slots.merge_section(cfg, {"slots": {"bogus": "x"}})
+        with pytest.raises(ValueError):
+            model_slots.merge_section(cfg, "not-an-object")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_legacy_patch_syncs_top_level():
+    root = _make_root()
+    try:
+        cfg = {**make_cfg(root), "model_defaults": {"slots": {
+            "unet": "diffusion_models/x.safetensors",
+            "vae": "vae/y.safetensors",
+        }}}
+        patch = model_slots.legacy_patch(cfg)
+        assert patch["unet"] == "diffusion_models/x.safetensors"
+        assert patch["vae"] == "vae/y.safetensors"
+        assert patch["clip"] == config.DEFAULTS["clip"]
+        assert set(patch) == set(model_slots.LEGACY_KEYS.values())
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 # --------------------------------------------------------------------- 匹配
 def test_match_slots_exact_suffix_basename():
     root = _make_root()

@@ -163,7 +163,9 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 | S6 | 首次使用三步向导 + i18n | 清空 model_root 后启动 → 向导 → 自动匹配 → 确认 |
 | S7 | 文档回写（本文 + `PLAN_PS_EDIT_GH.md` 交叉引用）与回归 | 全部测试通过，提交 |
 
-> 进度：S1 已完成 —— `server/model_slots.py`（8 槽位注册表、`resolve_plan` 四层合并、`match_slots` 精确/后缀/同名匹配、`audit`）与 `tests/test_model_slots.py`（8 项全绿）。
+> 进度：
+> - S1 已完成 —— `server/model_slots.py`（8 槽位注册表、`resolve_plan` 四层合并、`match_slots` 精确/后缀/同名匹配、`audit`）与 `tests/test_model_slots.py`。
+> - S2 已完成 —— `GET /api/settings` 返回 `model_defaults` 审计视图；`POST /api/settings` 支持 `model_defaults.slots / preset_overrides`（空串=清空回落出厂，未知槽位 400），并把生效值同步回旧顶层键。`tests/test_model_slots.py` 10 项全绿；TestClient 往返验证：matched=true、清空后 `source=factory`、非法槽位 400。
 
 ## 10. 测试计划
 

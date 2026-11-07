@@ -36,7 +36,13 @@ import {
 } from './presets.js';
 import { mountGuards } from './guards.js';
 import { mountAdvanced } from './advanced.js';
-import { openImportPicker } from './importPicker.js';
+import {
+  REF_MIME,
+  filesFromDataTransfer,
+  openImportPicker,
+  urlToDataUrl,
+} from './importPicker.js';
+import { hasRefDrag, readRefDrag } from '../refLibrary.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -586,7 +592,7 @@ export function mountAiPanel(host, ctx) {
     const before = state.refs.length;
     for (const item of [...items]) {
       if (state.refs.length >= MAX_REFS) {
-        toastWarn(`最多再添加 ${MAX_REFS} 张参考图`);
+        toastWarn(`参考图最多 ${MAX_REFS} 张，已忽略多余图片`);
         break;
       }
       const dataUrl = item?.dataUrl || item?.src || '';
@@ -1010,6 +1016,60 @@ export function mountAiPanel(host, ctx) {
     refs.refInput.value = '';
     void addRefFiles(files);
   });
+  /* 参考图条 / 指令框拖拽：本地文件与 x-wb-ref 统一入队，重复 dataURL 自动忽略。 */
+  const hasImageDrop = (event) => {
+    const types = event.dataTransfer ? [...event.dataTransfer.types] : [];
+    return types.includes('Files') || types.includes(REF_MIME);
+  };
+
+  async function acceptRefDrop(event) {
+    const before = state.refs.length;
+    const drag = readRefDrag(event);
+    if (drag?.src) {
+      try {
+        await addRefItems([
+          {
+            name: drag.name || '参考图',
+            src: await urlToDataUrl(drag.src),
+            width: drag.width,
+            height: drag.height,
+          },
+        ]);
+      } catch (err) {
+        toastError(err, '读取参考图失败');
+        return;
+      }
+    } else {
+      const files = filesFromDataTransfer(event.dataTransfer);
+      if (!files.length) return;
+      await addRefFiles(files);
+    }
+    if (state.refs.length === before && state.refs.length < MAX_REFS) {
+      toastWarn('参考图已存在，未重复添加');
+    }
+  }
+
+  [refs.refs, refs.prompt].forEach((zone) => {
+    ['dragenter', 'dragover'].forEach((type) => {
+      zone.addEventListener(type, (event) => {
+        if (!hasImageDrop(event)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        zone.classList.add('is-dropping');
+      });
+    });
+    zone.addEventListener('dragleave', (event) => {
+      if (zone.contains(event.relatedTarget)) return;
+      zone.classList.remove('is-dropping');
+    });
+    zone.addEventListener('drop', (event) => {
+      if (!hasImageDrop(event)) return;
+      event.preventDefault();
+      zone.classList.remove('is-dropping');
+      void acceptRefDrop(event);
+    });
+  });
+
   refs.refs.addEventListener('click', (event) => {
     const button = event.target.closest('[data-ref-del]');
     if (!button) return;

@@ -855,6 +855,12 @@
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
+.ai-prompt.is-dropping {
+  border-color: var(--accent);
+  border-style: dashed;
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
 .ai-prompt-foot {
   display: flex;
   align-items: center;
@@ -979,6 +985,13 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.ai-refs.is-dropping {
+  background: var(--accent-dim);
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 .ai-ref {

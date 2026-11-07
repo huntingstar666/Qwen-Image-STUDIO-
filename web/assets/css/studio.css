@@ -1821,6 +1821,93 @@
   line-height: 1.5;
 }
 
+/* ===== 统一导入选择器（D1.1） ===== */
+
+.ip {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 400px;
+}
+
+.ip-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  align-self: flex-start;
+}
+
+.ip-tab {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.ip-tab.active {
+  background: var(--panel);
+  color: inherit;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.ip-panel {
+  flex: 1;
+  min-height: 320px;
+  max-height: 56vh;
+  overflow: auto;
+}
+
+.ip-local {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 320px;
+  border: 1px dashed color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 12px;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+.ip-local.drop {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.ip-local-icon {
+  font-size: 26px;
+  line-height: 1;
+  color: var(--dim);
+}
+
+.ip-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.ip-count {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.ip-status {
+  padding: 72px 16px;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: center;
+}
+
 /* ===== 扩图 / 外补画布：画布幽灵预览 ===== */
 
 .studio-outpaint {

@@ -652,6 +652,10 @@ DOM 结构：
 - [ ] 1440 / 1280 / 1024 三档无横向滚动，画布不变形。
 - [ ] 控制台无报错；`python -m pytest tests` 保持全绿；文生图 / 图像编辑页面无回归。
 
+### 12.11 实施进度
+
+- **D1.1 导入选择器（已完成）** —— 新增 `web/src/components/studio/importPicker.js`：`openImportPicker({ title, multiple, accept, max, onPick })` 统一三来源，返回 `[{ name, src, width, height, source }]` 且 `src` 已转为 dataURL。本地文件支持多选与拖放（主图模式一次最多 4 张，供调用方拆 1 主图 + 3 参考图），素材仓库走 `api.materials({ limit: 200 })`、最近结果走 `api.history(20)`，两者都按 `src` 去重并经 `api.fileUrl → fetch → FileReader` 转 dataURL；单选模式自动替换选中，多选默认上限 3。弹窗沿用 `.ref-pick-grid` 视觉，只在 `studio.css` 追加 `.ip-*` 样式，未改动 `refLibrary.js`。浏览器实测：本地多图（尺寸读取正确）、仓库多选 2 张、单选替换、最近结果空态、取图转 dataURL 均通过，无 JS 异常。下一步 D1.2：顶栏「导入 ▾」与拖拽矩阵。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1105,7 +1109,7 @@ DOM 结构：
 | D17.1 | IndexedDB 存储 + 自动保存 | 已完成 | 本次提交 | 方案 §16；恢复流程见 D17.2 |
 | D17.2 | 恢复流程与横幅 | 已完成 | 本次提交 | 横幅内联在 `studio.js`，最近工程列表落地时再抽 `panels/recovery.js` |
 | D17.3 | 配额、清理与多标签 | 已完成 | 本次提交 | 方案 §16；设置页「关于」新增本机工程占用与清理入口 |
-| D1.1 | 导入选择器 | 未开始 | — | — |
+| D1.1 | 导入选择器 | 已完成 | 本次提交 | 方案 §12.3；新增 `studio/importPicker.js`，未改 `refLibrary.js` |
 | D1.2 | 主图导入入口与拖拽 | 未开始 | — | — |
 | D1.3 | 空状态素材仓库入口 | 未开始 | — | — |
 | D2.1 | 参考图三来源 | 未开始 | — | — |

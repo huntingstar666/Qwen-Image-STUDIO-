@@ -83,6 +83,10 @@ DEFAULTS: dict[str, Any] = {
         "vae": ["vae"],
         "lora": ["loras"],
     },
+    # 额外的模型根目录：可以是另一份 ComfyUI 的 models/，扫描时按 model_dirs 找子目录。
+    "extra_model_roots": [],
+    # ComfyUI 的 extra_model_paths.yaml；留空 = 自动在 comfy_root 下查找。
+    "extra_model_paths_yaml": "",
     # 默认使用的模型档案（见 server/models.py：qwen / moss）
     "model": "qwen",
     # 默认使用的模型（相对 model_root 的路径，需带子目录前缀；也可写绝对路径）
@@ -402,38 +406,224 @@ def ratio_size(ratio_id: str, megapixels: float | None = None,
 # --------------------------------------------------------------------------- 模型
 
 
-def _iter_model_files(root: str, dirs: list[str]) -> list[str]:
-    """在若干候选子目录下递归找 safetensors（返回相对 model_root 的 posix 路径）。"""
-    found: list[str] = []
-    for sub in dirs:
-        base = os.path.join(root, sub)
-        if not os.path.isdir(base):
+#: ComfyUI extra_model_paths.yaml 的键 → 本项目模型类别（兼容新旧目录名）
+_YAML_KEY_KINDS = {
+    "unet": "unet",
+    "diffusion_models": "unet",
+    "clip": "clip",
+    "text_encoders": "clip",
+    "vae": "vae",
+    "loras": "lora",
+    "lora": "lora",
+}
+
+_MODEL_SUFFIXES = (".safetensors", ".sft", ".ckpt", ".pt")
+
+#: extra_model_paths.yaml 解析缓存：{绝对路径: (mtime, 解析结果)}
+_YAML_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+
+
+def extra_model_paths_file(cfg: dict[str, Any] | None = None) -> str:
+    """返回实际使用的 ComfyUI extra_model_paths.yaml（未配置/不存在时为空串）。"""
+    cfg = cfg or load_config()
+    configured = str(cfg.get("extra_model_paths_yaml") or "").strip()
+    if configured:
+        path = configured if os.path.isabs(configured) else os.path.join(ROOT, configured)
+        return os.path.normpath(path) if os.path.isfile(path) else ""
+    comfy = str(cfg.get("comfy_root") or "").strip()
+    if not comfy:
+        return ""
+    for name in ("extra_model_paths.yaml", "extra_model_paths.yml"):
+        candidate = os.path.join(comfy, name)
+        if os.path.isfile(candidate):
+            return os.path.normpath(candidate)
+    return ""
+
+
+def parse_extra_model_paths_yaml(path: str | None) -> dict[str, list[str]]:
+    """解析 ComfyUI 的 extra_model_paths.yaml（只取目录映射，不依赖 PyYAML）。
+
+    支持的写法::
+
+        comfyui:
+            base_path: .
+            diffusion_models: models/diffusion_models
+            loras: |
+                /data/loras
+                D:/models/loras
+
+    返回 ``{unet|clip|vae|lora: [绝对目录, ...]}``。
+    """
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        stamp = os.path.getmtime(path)
+        cached = _YAML_CACHE.get(path)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return {}
+    sections: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    pending_key: str | None = None
+    pending_indent = 0
+
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        for dirpath, _dirnames, filenames in os.walk(base):
-            for name in sorted(filenames):
-                if not name.lower().endswith((".safetensors", ".sft", ".ckpt", ".pt")):
-                    continue
-                rel = os.path.relpath(os.path.join(dirpath, name), root)
-                found.append(rel.replace("\\", "/"))
-    return sorted(dict.fromkeys(found))
+        indent = len(line) - len(line.lstrip(" \t"))
+        if indent == 0 and stripped.endswith(":") and not stripped.startswith("-"):
+            current = {"base_path": "", "entries": {}}
+            sections.append(current)
+            pending_key = None
+            continue
+        if current is None:
+            continue
+        if stripped.startswith("-") and pending_key:
+            value = stripped[1:].strip().strip("'\"")
+            if value:
+                current["entries"][pending_key].append(value)
+            continue
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            pending_key = None
+            if key == "base_path":
+                current["base_path"] = value
+            elif value in ("|", ">", "|-", ">-"):
+                current["entries"][key] = []
+                pending_key = key
+                pending_indent = indent
+            elif value:
+                current["entries"][key] = [
+                    part for part in value.replace(",", " ").split() if part
+                ]
+            else:
+                current["entries"][key] = []
+                pending_key = key
+                pending_indent = indent
+            continue
+        if pending_key and indent > pending_indent:
+            current["entries"][pending_key].extend(stripped.split())
+
+    base_dir = os.path.dirname(os.path.abspath(path))
+    out: dict[str, list[str]] = {}
+    for section in sections:
+        base = str(section.get("base_path") or "").strip()
+        base_abs = (
+            os.path.normpath(base if os.path.isabs(base) else os.path.join(base_dir, base))
+            if base
+            else base_dir
+        )
+        for key, values in (section.get("entries") or {}).items():
+            kind = _YAML_KEY_KINDS.get(key.lower())
+            if not kind:
+                continue
+            for value in values:
+                full = value if os.path.isabs(value) else os.path.normpath(
+                    os.path.join(base_abs, value))
+                out.setdefault(kind, []).append(full)
+    result = {kind: list(dict.fromkeys(paths)) for kind, paths in out.items()}
+    _YAML_CACHE[path] = (stamp, result)
+    return result
+
+
+def model_search_dirs(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """每类模型实际会扫描的绝对目录（主根目录 + 额外根目录 + extra_model_paths.yaml）。"""
+    cfg = cfg or load_config()
+    primary = str(cfg.get("model_root") or "")
+    extra_roots = [str(r) for r in (cfg.get("extra_model_roots") or []) if str(r).strip()]
+    yaml_dirs = parse_extra_model_paths_yaml(extra_model_paths_file(cfg))
+    out: dict[str, list[str]] = {}
+    for kind, subs in (cfg.get("model_dirs") or {}).items():
+        dirs: list[str] = []
+        for root in [primary, *extra_roots]:
+            if not root:
+                continue
+            for sub in subs or [""]:
+                dirs.append(os.path.normpath(os.path.join(root, sub)))
+        dirs.extend(yaml_dirs.get(kind, []))
+        out[kind] = list(dict.fromkeys(d for d in dirs if d))
+    return out
 
 
 def scan_models(cfg: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
-    """扫描 model_root，返回 {unet|clip|vae|lora: [{value,label,size_gb}]}。"""
+    """扫描所有模型目录，返回 {unet|clip|vae|lora: [{value,label,size_gb}]}。
+
+    * 主 model_root 内的文件仍用相对路径（保持历史值兼容）；
+    * 额外根目录 / extra_model_paths.yaml 内的文件用绝对路径（resolve_model 已支持）。
+    """
     cfg = cfg or load_config()
-    root = cfg["model_root"]
+    primary = str(cfg.get("model_root") or "")
     out: dict[str, list[dict[str, Any]]] = {}
-    for kind, dirs in cfg["model_dirs"].items():
-        items = []
-        for rel in _iter_model_files(root, dirs):
-            ap = os.path.join(root, rel)
-            try:
-                size_gb = round(os.path.getsize(ap) / (1024 ** 3), 2)
-            except OSError:
-                size_gb = None
-            items.append({"value": rel, "label": rel, "size_gb": size_gb})
+    for kind, dirs in model_search_dirs(cfg).items():
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for base in dirs:
+            if not os.path.isdir(base):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(base):
+                for name in sorted(filenames):
+                    if not name.lower().endswith(_MODEL_SUFFIXES):
+                        continue
+                    absolute = os.path.abspath(os.path.join(dirpath, name))
+                    if absolute in seen:
+                        continue
+                    seen.add(absolute)
+                    try:
+                        size_gb = round(os.path.getsize(absolute) / (1024 ** 3), 2)
+                    except OSError:
+                        size_gb = None
+                    if primary:
+                        rel = os.path.relpath(absolute, primary)
+                    else:
+                        rel = absolute
+                    inside = primary and not rel.startswith("..")
+                    value = rel.replace("\\", "/") if inside else absolute.replace("\\", "/")
+                    label = os.path.relpath(absolute, base).replace("\\", "/")
+                    items.append({
+                        "value": value,
+                        "label": label,
+                        "size_gb": size_gb,
+                        "root": os.path.normpath(base),
+                        "external": not inside,
+                    })
+        items.sort(key=lambda item: (item["label"].lower(), item["value"]))
         out[kind] = items
     return out
+
+
+def scan_summary(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """给设置页用的扫描摘要：各类数量、实际目录、yaml 识别情况与缺失项。"""
+    cfg = cfg or load_config()
+    models = scan_models(cfg)
+    search = model_search_dirs(cfg)
+    yaml_file = extra_model_paths_file(cfg)
+    yaml_dirs = parse_extra_model_paths_yaml(yaml_file)
+    paths = default_model_paths(cfg)
+    counts = {kind: len(items) for kind, items in models.items()}
+    return {
+        "counts": counts,
+        "total": sum(counts.values()),
+        "dirs": search,
+        "missing_dirs": {
+            kind: [d for d in dirs if not os.path.isdir(d)]
+            for kind, dirs in search.items()
+        },
+        "yaml": {
+            "path": yaml_file,
+            "configured": bool(str(cfg.get("extra_model_paths_yaml") or "").strip()),
+            "counts": {kind: len(paths) for kind, paths in yaml_dirs.items()},
+        },
+        "primary_root": str(cfg.get("model_root") or ""),
+        "extra_roots": [str(r) for r in (cfg.get("extra_model_roots") or []) if str(r).strip()],
+        "missing_defaults": [k for k in ("unet", "clip", "vae") if not paths.get(k)],
+    }
 
 
 def resolve_model(cfg: dict[str, Any], kind: str, value: str | None) -> str | None:
@@ -442,13 +632,20 @@ def resolve_model(cfg: dict[str, Any], kind: str, value: str | None) -> str | No
         return None
     if os.path.isabs(value):
         return value if os.path.isfile(value) else None
-    root = cfg["model_root"]
     rel = value.replace("/", os.sep)
-    direct = os.path.join(root, rel)
-    if os.path.isfile(direct):
-        return direct
+    candidates: list[str] = []
+    root = cfg["model_root"]
+    candidates.append(os.path.join(root, rel))
     for sub in cfg["model_dirs"].get(kind, []):
-        candidate = os.path.join(root, sub, rel)
+        candidates.append(os.path.join(root, sub, rel))
+    # 额外根目录 / extra_model_paths.yaml 里的目录（目录本身已是 loras / unet 级别）
+    for search_dir in model_search_dirs(cfg).get(kind, []):
+        candidates.append(os.path.join(search_dir, rel))
+        for sub in cfg["model_dirs"].get(kind, []):
+            prefix = sub.replace("/", os.sep) + os.sep
+            if rel.startswith(prefix):
+                candidates.append(os.path.join(search_dir, rel[len(prefix):]))
+    for candidate in candidates:
         if os.path.isfile(candidate):
             return candidate
     return None
@@ -480,26 +677,22 @@ def turbo_lora_candidates(cfg: dict[str, Any] | None = None) -> list[dict[str, A
     排序：兼容的小体积优先（显存/内存压力小），并把 config 里默认的那个标 `default`。
     """
     cfg = cfg or load_config()
-    root = cfg["model_root"]
     default_name = (cfg.get("turbo_lora") or "").replace("\\", "/")
     items: list[dict[str, Any]] = []
-    for rel in _iter_model_files(root, cfg["model_dirs"].get("lora", [])):
+    for entry in scan_models(cfg).get("lora", []):
+        rel = entry["value"]
         low = rel.lower()
         filename = low.rsplit("/", 1)[-1]
         if not any(k in low for k in _TURBO_LORA_DIR_KEYWORDS):
             continue
         if not any(k in filename for k in _TURBO_LORA_NAME_KEYWORDS):
             continue
-        path = os.path.join(root, rel.replace("/", os.sep))
-        try:
-            size_gb = round(os.path.getsize(path) / (1024 ** 3), 2)
-        except OSError:
-            size_gb = None
+        label = entry["label"]
         items.append({
             "value": rel,
-            "label": rel.rsplit("/", 1)[-1],
-            "dir": rel.rsplit("/", 2)[0] if "/" in rel else "",
-            "size_gb": size_gb,
+            "label": label.rsplit("/", 1)[-1],
+            "dir": label.rsplit("/", 1)[0] if "/" in label else "",
+            "size_gb": entry.get("size_gb"),
             "compatible": not any(k in filename for k in _TURBO_LORA_INCOMPATIBLE),
             "default": rel == default_name,
         })

@@ -22,8 +22,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    __version__, config, imageops, imaging, jobs, materials, pipeline, prompt_polish,
-    storage, styles,
+    __version__, config, imageops, imaging, jobs, materials, ollama as ollama_client,
+    pipeline, prompt_polish, storage, styles,
 )
 from . import models as image_models
 
@@ -222,12 +222,14 @@ def _ollama_health(ttl: float = 10.0) -> dict[str, Any]:
         return _OLLAMA_CACHE["data"]
     cfg = config.load_config()
     data: dict[str, Any]
+    base_url = str(cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL)
     try:
-        models = prompt_polish.available_models()
+        models = prompt_polish.available_models(base_url=base_url)
         data = {"connected": bool(models), "models": models}
     except Exception as exc:  # noqa: BLE001
         data = {"connected": False, "models": [], "error": str(exc)}
-    data["url"] = cfg.get("ollama_url")
+    data["url"] = base_url
+    data["model"] = str(cfg.get("ollama_model") or "")
     _OLLAMA_CACHE.update({"at": now, "data": data})
     return data
 
@@ -267,6 +269,66 @@ def _require(payload: dict[str, Any], key: str, *, label: str | None = None) -> 
     if value in (None, "", [], {}):
         raise ApiError(f"缺少必填字段 {label or key}", code="missing_field")
     return value
+
+
+# --------------------------------------------------------------------------- 全局设置
+
+
+MODEL_KINDS = ("unet", "clip", "vae", "lora")
+
+
+def _clean_paths(value: Any, *, field: str) -> list[str]:
+    """把「一行一个路径」的字符串或数组收敛成绝对、去空的路径列表。"""
+    if isinstance(value, str):
+        items = value.splitlines()
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ApiError(f"{field} 必须是路径列表", code="invalid_field")
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            raise ApiError(f"{field} 里的路径必须是字符串", code="invalid_field")
+        text = item.strip().strip('"').strip("'")
+        if not text:
+            continue
+        out.append(os.path.normpath(os.path.expanduser(os.path.expandvars(text))))
+    return out
+
+
+def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """设置页读取的完整（已脱敏）配置视图。"""
+    cfg = cfg or config.load_config()
+    scan = config.scan_summary(cfg)
+    llm = _ollama_health()
+    return {
+        "model": {
+            "comfy_root": str(cfg.get("comfy_root") or ""),
+            "model_root": str(cfg.get("model_root") or ""),
+            "extra_model_roots": [str(r) for r in (cfg.get("extra_model_roots") or [])],
+            "extra_model_paths_yaml": str(cfg.get("extra_model_paths_yaml") or ""),
+            "model_dirs": cfg.get("model_dirs") or {},
+        },
+        "llm": {
+            "ollama_url": str(cfg.get("ollama_url") or ""),
+            "ollama_model": str(cfg.get("ollama_model") or ""),
+            "connected": bool(llm.get("connected")),
+            "models": list(llm.get("models") or []),
+            "error": llm.get("error"),
+        },
+        "runtime": {
+            "keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True)),
+            "idle_unload_minutes": int(cfg.get("idle_unload_minutes") or 0),
+            "vram_reserve": float(cfg.get("vram_reserve") or 0),
+        },
+        "scan": scan,
+        "app": {
+            "version": __version__,
+            "engine_dir": cfg.get("engine_dir"),
+            "storage": config.disk_usage(),
+            "outputs": storage.count_outputs(),
+        },
+    }
 
 
 # --------------------------------------------------------------------------- 基础路由
@@ -390,10 +452,14 @@ def api_polish(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pose = {k: v for k, v in pose.items() if k != "image"}
     try:
+        cfg = config.load_config()
+        client = ollama_client.OllamaClient(
+            base_url=str(cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL))
         result = prompt_polish.polish(
             prompt,
             mode=mode,
-            model=payload.get("model") or None,
+            model=payload.get("model") or cfg.get("ollama_model") or None,
+            client=client,
             fallback=bool(payload.get("fallback", True)),
             image_model=image_model,
             target_size=target_size,
@@ -835,24 +901,113 @@ def api_engine_free(payload: dict[str, Any] = Body(default={})) -> dict[str, Any
     return {"ok": True, "unload": bool(payload.get("unload"))}
 
 
+@app.get("/api/settings")
+def api_settings_get() -> dict[str, Any]:
+    """全局设置：模型目录、LLM、运行与显存策略、扫描摘要。"""
+    return _settings_view()
+
+
 @app.post("/api/settings")
 def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """运行期设置：显存策略（文本编码器是否常驻显存）。"""
-    if "keep_text_encoder_resident" not in payload:
+    """保存全局设置；model_root / comfy_root 等保存后立即对下一次扫描生效。"""
+    cfg = config.load_config()
+    patch: dict[str, Any] = {}
+
+    for key in ("comfy_root", "model_root", "extra_model_paths_yaml", "ollama_url", "ollama_model"):
+        if key in payload:
+            value = payload.get(key)
+            if not isinstance(value, str):
+                raise ApiError(f"{key} 必须是字符串", code="invalid_field")
+            text = value.strip()
+            if key == "ollama_url" and text and not text.startswith(("http://", "https://")):
+                raise ApiError("Ollama 地址必须以 http:// 或 https:// 开头", code="invalid_field")
+            if key in ("comfy_root", "model_root", "extra_model_paths_yaml") and text:
+                text = os.path.normpath(os.path.expanduser(os.path.expandvars(text)))
+            patch[key] = text
+
+    if "extra_model_roots" in payload:
+        patch["extra_model_roots"] = _clean_paths(payload.get("extra_model_roots"), field="额外模型根目录")
+
+    if "model_dirs" in payload:
+        raw = payload.get("model_dirs")
+        if not isinstance(raw, dict):
+            raise ApiError("model_dirs 必须是对象", code="invalid_field")
+        dirs = dict(cfg.get("model_dirs") or {})
+        for kind in MODEL_KINDS:
+            if kind in raw:
+                dirs[kind] = _clean_paths(raw.get(kind), field=f"model_dirs.{kind}")
+        patch["model_dirs"] = dirs
+
+    if "keep_text_encoder_resident" in payload:
+        value = payload.get("keep_text_encoder_resident")
+        if not isinstance(value, bool):
+            raise ApiError("keep_text_encoder_resident 必须是布尔值", code="invalid_field")
+        patch["keep_text_encoder_resident"] = value
+
+    if "idle_unload_minutes" in payload:
+        try:
+            minutes = int(payload.get("idle_unload_minutes"))
+        except (TypeError, ValueError) as exc:
+            raise ApiError("idle_unload_minutes 必须是整数", code="invalid_field") from exc
+        if minutes < 0:
+            raise ApiError("空闲卸载分钟数不能为负数", code="invalid_field")
+        patch["idle_unload_minutes"] = minutes
+
+    if "vram_reserve" in payload:
+        try:
+            reserve = float(payload.get("vram_reserve"))
+        except (TypeError, ValueError) as exc:
+            raise ApiError("vram_reserve 必须是数字", code="invalid_field") from exc
+        if not 0 <= reserve < 1:
+            raise ApiError("显存预留必须在 0 到 1 之间", code="invalid_field")
+        patch["vram_reserve"] = round(reserve, 2)
+
+    if not patch:
         raise ApiError("没有可修改的设置项", code="missing_field")
-    value = payload.get("keep_text_encoder_resident")
-    if not isinstance(value, bool):
-        raise ApiError("keep_text_encoder_resident 必须是布尔值", code="invalid_field")
-    cfg = config.update_config({"keep_text_encoder_resident": value})
+
+    updated = config.update_config(patch)
+    if any(key in patch for key in ("ollama_url", "ollama_model")):
+        _OLLAMA_CACHE["data"] = None
     released = 0
-    if not value:
+    if patch.get("keep_text_encoder_resident") is False:
         # 切到「让位」时立即归还显存，不用等下一次采样
         released = get_pipeline().release_text_encoder()
-    return {
-        "ok": True,
-        "released": released,
-        "config": {"keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True))},
-    }
+    return {"ok": True, "released": released, **_settings_view(updated)}
+
+
+@app.post("/api/models/scan")
+def api_models_scan() -> dict[str, Any]:
+    """按当前配置重新扫描所有模型目录（设置页的「重新扫描」）。"""
+    return config.scan_summary()
+
+
+@app.post("/api/ollama/test")
+def api_ollama_test(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """测试 Ollama 连通性并列出模型；不修改配置，供设置页「测试连接」使用。"""
+    cfg = config.load_config()
+    url = str(payload.get("url") or cfg.get("ollama_url") or ollama_client.DEFAULT_BASE_URL).strip()
+    if not url.startswith(("http://", "https://")):
+        raise ApiError("Ollama 地址必须以 http:// 或 https:// 开头", code="invalid_field")
+    started = time.time()
+    try:
+        client = ollama_client.OllamaClient(base_url=url, timeout=8.0)
+        models = client.model_names()
+        return {
+            "ok": True,
+            "connected": bool(models),
+            "models": models,
+            "url": url,
+            "latency_ms": int((time.time() - started) * 1000),
+        }
+    except Exception as exc:  # noqa: BLE001 - 连接失败要让设置页看到原因
+        return {
+            "ok": False,
+            "connected": False,
+            "models": [],
+            "url": url,
+            "error": str(exc),
+            "latency_ms": int((time.time() - started) * 1000),
+        }
 
 
 @app.post("/api/engine/warmup")

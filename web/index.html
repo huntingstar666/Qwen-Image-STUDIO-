@@ -17,8 +17,9 @@
     <link rel="stylesheet" href="/assets/css/library.css" />
     <link rel="stylesheet" href="/assets/css/studio.css" />
     <link rel="stylesheet" href="/assets/css/composer.css" />
+    <link rel="stylesheet" href="/assets/css/settings.css" />
     <script>
-      // 首屏应用主题，避免亮暗切换闪烁。读取与 store.js 使用同一个 key。
+      // 首屏应用主题 / 字体 / 强调色 / 语言，避免闪烁。读取与 store.js 使用同一个 key。
       (function () {
         try {
           var raw = localStorage.getItem('qi21.workbench.settings.v1');
@@ -30,6 +31,13 @@
           var root = document.documentElement;
           root.dataset.theme = dark ? 'dark' : 'light';
           root.style.colorScheme = dark ? 'dark' : 'light';
+          if (['system', 'sans', 'serif', 'mono'].indexOf(settings.font) >= 0) {
+            root.dataset.font = settings.font;
+          }
+          if (['teal', 'ochre', 'indigo', 'violet'].indexOf(settings.accent) >= 0) {
+            root.dataset.accent = settings.accent;
+          }
+          if (settings.language === 'en') root.lang = 'en';
         } catch (err) {
           /* 忽略：使用 CSS 默认亮色 */
         }

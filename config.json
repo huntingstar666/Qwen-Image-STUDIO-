@@ -71,5 +71,7 @@
   "vae_tile_overlap": 64,
   "tiled_decode_threshold": 600000,
   "png_compress_level": 1,
-  "encode_cache_size": 8
+  "encode_cache_size": 8,
+  "extra_model_paths_yaml": "",
+  "extra_model_roots": []
 }

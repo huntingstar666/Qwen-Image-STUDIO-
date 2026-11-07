@@ -124,6 +124,72 @@ html[data-theme="dark"] {
     radial-gradient(900px 520px at 94% -4%, rgba(216, 151, 101, 0.06), transparent 60%);
 }
 
+/* ------------------------------------------------------------- 界面字体（全局设置） */
+
+html[data-font="sans"] {
+  --font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI",
+    "Noto Sans SC", sans-serif;
+}
+
+html[data-font="serif"] {
+  --font: "Songti SC", "Source Han Serif SC", "Noto Serif SC", STSong, Georgia,
+    "Times New Roman", serif;
+}
+
+html[data-font="mono"] {
+  --font: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+}
+
+/* ------------------------------------------------------------- 强调色（全局设置） */
+
+html[data-accent="ochre"] {
+  --accent: #a5642f;
+  --accent-2: #bd7a42;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(165, 100, 47, 0.1);
+  --accent-ring: rgba(165, 100, 47, 0.32);
+}
+
+html[data-accent="indigo"] {
+  --accent: #3f5fa8;
+  --accent-2: #5476c1;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(63, 95, 168, 0.1);
+  --accent-ring: rgba(63, 95, 168, 0.32);
+}
+
+html[data-accent="violet"] {
+  --accent: #7a5aa8;
+  --accent-2: #906fc0;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(122, 90, 168, 0.1);
+  --accent-ring: rgba(122, 90, 168, 0.32);
+}
+
+html[data-theme="dark"][data-accent="ochre"] {
+  --accent: #d89765;
+  --accent-2: #e6ad80;
+  --accent-ink: #1a1109;
+  --accent-dim: rgba(216, 151, 101, 0.14);
+  --accent-ring: rgba(216, 151, 101, 0.38);
+}
+
+html[data-theme="dark"][data-accent="indigo"] {
+  --accent: #8fa9e8;
+  --accent-2: #a9c0f2;
+  --accent-ink: #0d1424;
+  --accent-dim: rgba(143, 169, 232, 0.14);
+  --accent-ring: rgba(143, 169, 232, 0.38);
+}
+
+html[data-theme="dark"][data-accent="violet"] {
+  --accent: #b9a1e4;
+  --accent-2: #cbb8ef;
+  --accent-ink: #150e20;
+  --accent-dim: rgba(185, 161, 228, 0.14);
+  --accent-ring: rgba(185, 161, 228, 0.38);
+}
+
 /* ------------------------------------------------------------- 基础 */
 
 * {

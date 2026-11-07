@@ -218,6 +218,21 @@ export const api = {
     return request('/api/settings', { method: 'POST', body: patch, timeout: 60000 });
   },
 
+  /** GET /api/settings —— 全局设置（模型目录 / LLM / 运行策略 / 扫描摘要） */
+  getSettings() {
+    return request('/api/settings', { timeout: 30000 });
+  },
+
+  /** POST /api/models/scan —— 按当前配置重新扫描模型目录 */
+  scanModels() {
+    return request('/api/models/scan', { method: 'POST', body: {}, timeout: 60000 });
+  },
+
+  /** POST /api/ollama/test —— 测试 Ollama 连通性并列出模型 */
+  testOllama({ url = '' } = {}) {
+    return request('/api/ollama/test', { method: 'POST', body: { url }, timeout: 20000 });
+  },
+
   /** 结果图/历史图静态地址（后端返回相对路径，这里做兜底拼接） */
   fileUrl(path) {
     if (!path) return '';

@@ -8,9 +8,10 @@
  */
 
 import { api } from './api.js';
-import { applyOptionDefaults, patchRuntime, patchSettings, store } from './store.js';
-import { toastError, toastWarn, toast } from './components/toast.js';
+import { applyOptionDefaults, on, patchRuntime, patchSettings, store } from './store.js';
+import { toastError, toastSuccess, toastWarn, toast } from './components/toast.js';
 import { escapeHtml } from './utils.js';
+import { t } from './i18n.js';
 import { createT2IPage } from './components/t2i.js';
 import { createEditPage } from './components/edit.js';
 import { createImageToolsPage } from './components/imageTools.js';
@@ -18,6 +19,7 @@ import { createHistoryPage } from './components/history.js';
 import { createMaterialsPage } from './components/materials.js';
 import { createGalleryPage } from './components/gallery.js';
 import { createStudioPage } from './components/studio.js';
+import { openSettings } from './components/settings.js';
 
 /* ---------------------------------------------------------------- 图标 */
 
@@ -44,6 +46,8 @@ const NAV_ICONS = {
   chevron:
     '<path d="M14.5 6.5L9 12l5.5 5.5"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  gear:
+    '<circle cx="12" cy="12" r="3.1"/><path d="M12 3.8v1.7M12 18.5v1.7M4.9 4.9l1.2 1.2M17.9 17.9l1.2 1.2M3.8 12h1.7M18.5 12h1.7M4.9 19.1l1.2-1.2M17.9 6.1l1.2-1.2"/>',
 };
 
 function navIcon(name) {
@@ -100,50 +104,70 @@ let healthTimer = 0;
 let healthFailing = false;
 let healthBusy = false;
 
+/* 壳层文案统一走 i18n；页面内部文案仍为中文，后续逐页迁移。 */
+function groupLabel(group) {
+  return t(`nav.group.${group.id}`, {}, group.label);
+}
+
+function tabLabel(tab) {
+  return t(`nav.${tab.id}`, {}, tab.label);
+}
+
+function tabSub(tab) {
+  return t(`nav.${tab.id}.sub`, {}, tab.sub);
+}
+
 /* ============================================================
  * 顶栏
  * ============================================================ */
 function renderTopbar() {
   const host = document.getElementById('topbar');
+  const activeTab = TABS.find((tab) => tab.id === currentTabId()) || TABS[0];
+  const activeGroup = NAV_GROUPS.find((item) => item.id === activeTab.group);
   host.innerHTML = `
     <button class="mobile-menu" type="button" data-action="menu" aria-label="打开导航">${navIcon('menu')}</button>
     <div class="topbar-titles">
       <div class="topbar-kicker">
-        <span data-ref="kickerGroup">创作</span>
+        <span data-ref="kickerGroup">${escapeHtml(groupLabel(activeGroup || { id: 'create', label: '创作' }))}</span>
         <span aria-hidden="true">/</span>
-        <span data-ref="kickerLabel">文生图</span>
+        <span data-ref="kickerLabel">${escapeHtml(tabLabel(activeTab))}</span>
       </div>
-      <h1 class="topbar-title" data-ref="pageTitle">文生图</h1>
-      <p class="topbar-sub" data-ref="pageSub">文字生成图片</p>
+      <h1 class="topbar-title" data-ref="pageTitle">${escapeHtml(tabLabel(activeTab))}</h1>
+      <p class="topbar-sub" data-ref="pageSub">${escapeHtml(tabSub(activeTab))}</p>
     </div>
     <div class="topbar-status">
       <div class="status" data-ref="engine" title="本地推理引擎状态">
         <span class="dot"></span>
-        <span class="status-label">引擎</span>
-        <span class="status-detail" data-role="text">连接中…</span>
+        <span class="status-label">${t('status.engine')}</span>
+        <span class="status-detail" data-role="text">${t('status.connecting')}</span>
       </div>
       <div class="status" data-ref="vram" title="显存占用（已用 / 总量）">
-        <span class="status-label">显存</span>
+        <span class="status-label">${t('status.vram')}</span>
         <span class="status-detail" data-role="text">—</span>
         <select class="mini-select" data-ref="vramPolicy" aria-label="文本编码器显存策略"
           title="文本编码器显存策略：常驻更快，让位约省 9GB（每单多约 1 秒重新上卡）">
-          <option value="resident">编码器常驻</option>
-          <option value="offload">采样让位</option>
+          <option value="resident">${t('status.resident')}</option>
+          <option value="offload">${t('status.offload')}</option>
         </select>
-        <button class="status-action" type="button" data-ref="freeVram" title="POST /api/engine/free（unload=true）：释放显存并卸载模型">释放</button>
+        <button class="status-action" type="button" data-ref="freeVram" title="POST /api/engine/free（unload=true）：释放显存并卸载模型">${t('status.release')}</button>
       </div>
       <div class="status" data-ref="ollama" title="Ollama 本地大模型（用于提示词润色）">
         <span class="dot"></span>
-        <span class="status-label">Ollama</span>
-        <span class="status-detail" data-role="text">连接中…</span>
+        <span class="status-label">${t('status.ollama')}</span>
+        <span class="status-detail" data-role="text">${t('status.connecting')}</span>
         <select class="mini-select" data-ref="polishModel" aria-label="提示词润色模型" title="提示词润色使用的 Ollama 模型"></select>
       </div>
       <div class="status" data-ref="queue" title="生成任务队列">
         <span class="dot"></span>
-        <span class="status-label">队列</span>
+        <span class="status-label">${t('status.queue')}</span>
         <span class="status-detail" data-role="text">—</span>
       </div>
+      <button class="topbar-settings" type="button" data-ref="openSettings"
+        title="${t('nav.settings.title')}" aria-label="${t('nav.settings.title')}">
+        ${navIcon('gear')}
+      </button>
     </div>`;
+  host.querySelector('[data-ref="openSettings"]').addEventListener('click', () => openSettings('appearance'));
   host.querySelector('[data-ref="polishModel"]').addEventListener('change', (event) => {
     patchSettings({ polishModel: event.target.value });
     toast(`润色模型已切换为 ${event.target.value}`, 'info', { timeout: 2200 });
@@ -202,29 +226,29 @@ function renderSidebar() {
     const items = TABS.filter((tab) => tab.group === group.id)
       .map(
         (tab) => `
-          <button class="nav-item" type="button" data-tab="${tab.id}" role="tab" aria-selected="false" title="${escapeHtml(tab.label)} · ${escapeHtml(tab.sub)}">
+          <button class="nav-item" type="button" data-tab="${tab.id}" role="tab" aria-selected="false" title="${escapeHtml(tabLabel(tab))} · ${escapeHtml(tabSub(tab))}">
             <span class="nav-icon">${navIcon(tab.icon)}</span>
-            <span class="nav-label">${escapeHtml(tab.label)}</span>
-            ${tab.badge ? `<span class="nav-badge">${escapeHtml(tab.badge)}</span>` : ''}
+            <span class="nav-label">${escapeHtml(tabLabel(tab))}</span>
+            ${tab.badge ? `<span class="nav-badge">${escapeHtml(t('nav.new', {}, tab.badge))}</span>` : ''}
           </button>`,
       )
       .join('');
     return `
       <div class="nav-group">
-        <div class="nav-group-title">${escapeHtml(group.label)}</div>
+        <div class="nav-group-title">${escapeHtml(groupLabel(group))}</div>
         ${items}
       </div>`;
   }).join('');
 
   const themeOptions = [
-    { mode: 'light', label: '亮色', icon: 'sun' },
-    { mode: 'dark', label: '暗色', icon: 'moon' },
-    { mode: 'system', label: '自动', icon: 'auto' },
+    { mode: 'light', label: t('theme.light'), icon: 'sun' },
+    { mode: 'dark', label: t('theme.dark'), icon: 'moon' },
+    { mode: 'system', label: t('theme.system'), icon: 'auto' },
   ]
     .map(
       (item) => `
-        <button class="theme-option" type="button" data-theme-option="${item.mode}" title="${item.label}主题">
-          ${navIcon(item.icon)}<span>${item.label}</span>
+        <button class="theme-option" type="button" data-theme-option="${item.mode}" title="${escapeHtml(item.label)} · ${t('theme.title')}">
+          ${navIcon(item.icon)}<span>${escapeHtml(item.label)}</span>
         </button>`,
     )
     .join('');
@@ -238,21 +262,30 @@ function renderSidebar() {
           <div class="brand-tag">Studio 2.1</div>
         </div>
       </div>
-      <button class="sidebar-collapse" type="button" data-action="collapse" title="收起 / 展开侧边栏" aria-label="收起侧边栏">
+      <button class="sidebar-collapse" type="button" data-action="collapse" title="${t('nav.collapse')}" aria-label="${t('nav.collapse')}">
         ${navIcon('chevron')}
       </button>
     </div>
     <div class="sidebar-scroll">${groups}</div>
     <div class="sidebar-foot">
       <div class="sidebar-meta" data-ref="idleHint"></div>
-      <div class="theme-switch" role="group" aria-label="主题模式">${themeOptions}</div>
+      <button class="sidebar-settings" type="button" data-action="settings" title="${t('nav.settings.title')}">
+        <span class="nav-icon">${navIcon('gear')}</span>
+        <span class="sidebar-settings-label">${t('nav.settings')}</span>
+      </button>
+      <div class="theme-switch" role="group" aria-label="${t('theme.title')}">${themeOptions}</div>
     </div>`;
 
-  host.addEventListener('click', (event) => {
+  // 用 onclick 覆盖绑定，避免语言切换重渲染时累积重复监听
+  host.onclick = (event) => {
     const themeButton = event.target.closest('[data-theme-option]');
     if (themeButton) {
       store.setTheme(themeButton.dataset.themeOption);
       syncThemeOptions();
+      return;
+    }
+    if (event.target.closest('[data-action="settings"]')) {
+      openSettings('appearance');
       return;
     }
     if (event.target.closest('[data-action="collapse"]')) {
@@ -266,7 +299,7 @@ function renderSidebar() {
     if (location.hash === `#${id}`) route();
     else location.hash = id;
     if (window.innerWidth <= 820) setMobileNav(false);
-  });
+  };
 
   syncThemeOptions();
   applyShellState();
@@ -333,7 +366,7 @@ function renderHealth(health) {
     : [];
   setStatus('engine', {
     dot: ready ? 'ok' : 'warn',
-    text: ready ? '就绪' : '未就绪',
+    text: ready ? t('status.ready') : t('status.notReady'),
     title: [
       engine.reason || (ready ? '推理引擎可用' : '引擎不可用'),
       engine.device ? `设备 ${engine.device}` : '',
@@ -372,7 +405,9 @@ function renderHealth(health) {
   const models = Array.isArray(ollama.models) ? ollama.models : [];
   setStatus('ollama', {
     dot: ollama.connected ? 'ok' : 'bad',
-    text: ollama.connected ? `${models.length} 个模型` : '未连接',
+    text: ollama.connected
+      ? t('status.models', { n: models.length })
+      : t('status.offline'),
     title: ollama.connected ? `Ollama 已连接：${models.join('、') || '无模型'}` : 'Ollama 未连接，提示词润色将不可用',
   });
   fillModelOptions(models);
@@ -382,7 +417,7 @@ function renderHealth(health) {
   const running = Boolean(queue.running);
   setStatus('queue', {
     dot: running || pending > 0 ? 'busy' : 'ok',
-    text: `${pending} 待处理${running ? ' · 运行中' : ''}`,
+    text: `${t('status.queued', { n: pending })}${running ? ` · ${t('status.running')}` : ''}`,
     title: `排队 ${pending} 个任务${running ? '，当前有任务运行中' : ''}${health.outputs != null ? `；已产出 ${health.outputs} 张图` : ''}`,
   });
   updateIdleHint(health);
@@ -401,16 +436,16 @@ function updateIdleHint(health) {
     return;
   }
   const idleSeconds = Number(engine.idle_seconds ?? health?.idle_seconds ?? NaN);
-  hint.textContent = `空闲 ${minutes} 分钟后自动释放显存`;
+  hint.textContent = t('status.idleUnload', { n: minutes });
   hint.title = Number.isFinite(idleSeconds)
     ? `已空闲约 ${Math.max(0, Math.floor(idleSeconds / 60))} 分钟；也可点击「释放显存」立即卸载`
     : '长时间空闲后服务端会自动卸载模型释放显存';
 }
 
 function renderHealthError() {
-  setStatus('engine', { dot: 'bad', text: '服务未连接', title: '无法连接 127.0.0.1:8700，请确认后端已启动' });
+  setStatus('engine', { dot: 'bad', text: t('status.serviceDown'), title: '无法连接 127.0.0.1:8700，请确认后端已启动' });
   setStatus('vram', { text: '—' });
-  setStatus('ollama', { dot: 'bad', text: '未知' });
+  setStatus('ollama', { dot: 'bad', text: t('status.unknown') });
   setStatus('queue', { dot: 'bad', text: '—' });
   updateIdleHint(null);
 }
@@ -464,11 +499,11 @@ function updateTopbarTitles(tab) {
     const el = document.querySelector(`[data-ref="${name}"]`);
     if (el) el.textContent = value;
   };
-  set('kickerGroup', group?.label || '工作台');
-  set('kickerLabel', tab.label);
-  set('pageTitle', tab.label);
-  set('pageSub', tab.sub);
-  document.title = `${tab.label} · Qwen-Image 2.1 工作台`;
+  set('kickerGroup', group ? groupLabel(group) : '工作台');
+  set('kickerLabel', tabLabel(tab));
+  set('pageTitle', tabLabel(tab));
+  set('pageSub', tabSub(tab));
+  document.title = `${tabLabel(tab)} · ${t('topbar.studio')}`;
 }
 
 function route() {
@@ -552,6 +587,36 @@ export async function boot() {
   });
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') setMobileNav(false);
+  });
+
+  // 语言 / 字体 / 强调色变化：重建壳层文案，保留当前页面
+  on('appearance:change', () => {
+    const id = currentTabId();
+    renderSidebar();
+    renderTopbar();
+    for (const button of document.querySelectorAll('[data-tab]')) {
+      const active = button.dataset.tab === id;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    updateTopbarTitles(TABS.find((tab) => tab.id === id));
+    pollHealth();
+  });
+
+  // 设置页保存后：模型目录可能变化，刷新参数并按需重建当前页面
+  window.addEventListener('settings:saved', async (event) => {
+    await loadOptions();
+    if (event.detail?.modelChanged) {
+      const id = currentTabId();
+      const entry = pages.get(id);
+      if (entry) {
+        entry.host.remove();
+        pages.delete(id);
+        route();
+      }
+      toastSuccess('模型目录已更新，页面已按新目录重建');
+    }
+    pollHealth();
   });
 
   // 先拿参数表再挂页面，避免首屏控件空白

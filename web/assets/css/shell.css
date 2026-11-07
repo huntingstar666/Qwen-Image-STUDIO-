@@ -378,6 +378,76 @@
   font-size: 10px;
 }
 
+/* 顶栏齿轮：打开全局设置 */
+.topbar-settings {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.topbar-settings:hover {
+  background: var(--panel-3);
+  color: var(--text);
+  transform: rotate(18deg);
+}
+
+.topbar-settings:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 侧边栏底部「设置」入口 */
+.sidebar-settings {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.sidebar-settings:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.sidebar-settings .nav-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sidebar-settings-label {
+  flex: 1;
+  text-align: left;
+}
+
+.is-collapsed .sidebar-settings {
+  justify-content: center;
+  padding: 0;
+}
+
+.is-collapsed .sidebar-settings-label {
+  display: none;
+}
+
 .topbar-note {
   color: var(--dim);
   font-size: 10px;

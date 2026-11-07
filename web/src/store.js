@@ -6,6 +6,8 @@
  * 3. 提供极简订阅（subscribe）与事件（on/emit），组件按需监听，不引入框架。
  */
 
+import { setLocale } from './i18n.js';
+
 const STORAGE_KEY = 'qi21.workbench.settings.v1';
 
 const DEFAULT_T2I = {
@@ -75,12 +77,18 @@ const DEFAULT_SETTINGS = {
   prompt: '',
   polishModel: '',
   theme: 'system',
+  language: 'zh',
+  font: 'system',
+  accent: 'teal',
   sidebarCollapsed: false,
   creativePresets: {},
   imageAngle: { azimuth: 0, elevation: 0, zoom: 5, enabled: false },
   t2i: DEFAULT_T2I,
   edit: DEFAULT_EDIT,
 };
+
+const FONT_MODES = new Set(['system', 'sans', 'serif', 'mono']);
+const ACCENT_MODES = new Set(['teal', 'ochre', 'indigo', 'violet']);
 
 function loadSettings() {
   try {
@@ -91,6 +99,9 @@ function loadSettings() {
       ...structuredClone(DEFAULT_SETTINGS),
       ...parsed,
       theme: ['light', 'dark', 'system'].includes(parsed?.theme) ? parsed.theme : 'system',
+      language: parsed?.language === 'en' ? 'en' : 'zh',
+      font: FONT_MODES.has(parsed?.font) ? parsed.font : 'system',
+      accent: ACCENT_MODES.has(parsed?.accent) ? parsed.accent : 'teal',
       sidebarCollapsed: Boolean(parsed?.sidebarCollapsed),
       t2i: { ...structuredClone(DEFAULT_T2I), ...(parsed?.t2i || {}) },
       edit: { ...DEFAULT_EDIT, ...(parsed?.edit || {}) },
@@ -154,6 +165,15 @@ const state = {
   },
   get theme() {
     return settings.theme;
+  },
+  get language() {
+    return settings.language;
+  },
+  get font() {
+    return settings.font;
+  },
+  get accent() {
+    return settings.accent;
   },
   get sidebarCollapsed() {
     return settings.sidebarCollapsed;
@@ -277,6 +297,40 @@ export function setSidebarCollapsed(collapsed) {
   patchSettings({ sidebarCollapsed: Boolean(collapsed) });
 }
 
+/** ---------------------------------------------------------------- 外观（语言 / 字体 / 强调色） */
+
+/** 把语言、字体、强调色应用到 <html>，并广播 appearance:change。 */
+export function applyAppearance(prefs = {}) {
+  const language =
+    prefs.language === 'en' ? 'en' : prefs.language === 'zh' ? 'zh' : settings.language;
+  const font = FONT_MODES.has(prefs.font ?? settings.font) ? prefs.font ?? settings.font : 'system';
+  const accent = ACCENT_MODES.has(prefs.accent ?? settings.accent) ? prefs.accent ?? settings.accent : 'teal';
+  setLocale(language);
+  const root = document.documentElement;
+  root.dataset.font = font;
+  root.dataset.accent = accent;
+  emit('appearance:change', { language, font, accent });
+  return { language, font, accent };
+}
+
+export function setLanguage(language) {
+  const next = language === 'en' ? 'en' : 'zh';
+  patchSettings({ language: next });
+  applyAppearance({ language: next });
+}
+
+export function setFont(font) {
+  if (!FONT_MODES.has(font)) return;
+  patchSettings({ font });
+  applyAppearance({ font });
+}
+
+export function setAccent(accent) {
+  if (!ACCENT_MODES.has(accent)) return;
+  patchSettings({ accent });
+  applyAppearance({ accent });
+}
+
 /** 已选创意预设快照操作：kind → preset（同 kind 覆盖）。 */
 export function setCreativePreset(kind, preset) {
   const next = { ...settings.creativePresets };
@@ -373,6 +427,10 @@ export const store = {
   getPrompt,
   applyTheme,
   setTheme,
+  applyAppearance,
+  setLanguage,
+  setFont,
+  setAccent,
   setSidebarCollapsed,
   setCreativePreset,
   applyOptionDefaults,
@@ -385,5 +443,6 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
   if (settings.theme === 'system') applyTheme('system');
 });
 
-// 模块加载即同步主题（index.html 的首屏脚本已先行设置，避免闪烁）。
+// 模块加载即同步主题与外观（index.html 的首屏脚本已先行设置，避免闪烁）。
 applyTheme(settings.theme);
+applyAppearance();

@@ -2121,5 +2121,141 @@ settings.edit = {
 49. **切换预设不丢覆盖项**：`overrides` 常驻，只显示"当前不生效"；不要因为切预设就清掉用户填的扩图比例。
 50. **参数与预设都要可回放**：`job.params` 记录 `preset + preset_version + outpaint 四边 + 所有覆盖项`。
 
+---
+
+## 15. 图生图模块（图像编辑）同步方案（2026-11-07 钉死）
+
+> 背景：本轮新增的能力（预设、孤海几何、零偏移默认开、色彩校准、扩图、高级设置、LoRA 开关修复）
+> 都只在「图片精修」里；「图生图 / 图像编辑」（`edit.js`）还是旧参数集，两边已经不一致。
+> 本节先把**现状联动**摸清，再定同步方案；不在两页各写一套。
+
+### 15.0 结论（先看这段）
+
+| 问题 | 结论 |
+| --- | --- |
+| 两页是什么关系 | 同一个后端 `/api/edit`、同一个 `pipeline.generate_edit`，只是一页有 PS 工具（蒙版/图层/扩图面板），一页是"上传→指令→出图"。**应该共用预设与高级设置，而不是各维护一套**（§15.4） |
+| 图生图现在缺什么 | 缺 `preset / task.mode / preprocess / zero_shift / color_restore / fill / 新裁切几何 / 接缝百分比 / auto·native 方案 / 高级设置`，且一致性 LoRA 关不掉（§15.3） |
+| 扩图为什么有两套 | 图生图/图像处理是**前端扩画布 + 手动遮罩**（`/api/image/outpaint-plan`）；图片精修是**后端灰边 + outpaint LoRA**。两者语义不同，必须收敛（§15.5） |
+| 会不会破坏老配置 | 不会。旧 `settings.edit` 字段继续接受，映射进 `overrides`；旧扩图入口保留为 legacy，默认隐藏（§15.6） |
+| 工作量归属 | P14（高级设置 + 扩图面板）与 P15（图生图同步）都由我实现；后端只保留 `outpaint.max_side` 透传这类小改动 |
+
+### 15.1 现状：图生图是怎么联动的
+
+```
+编辑页 edit.js
+├─ store.state.edit（localStorage 持久化）        # 尺寸/步数/方案/遮罩羽化/一致性等
+├─ images[]                                        # 第 1 张 = 编辑目标（含 mask）
+├─ 工具栏/侧栏：尺寸模式、采样、LoRA、一致性、参考图、姿态、风格
+├─ collectPayload()                                # L1849 起
+│   ├─ prompt / negative_prompt / images / mask
+│   ├─ size_mode(follow|custom|ratio) / width / height / ratio / megapixels / fit / pad_mode
+│   ├─ local{enabled, scheme(a|b), feather, color_match, color_strength,
+│   │        mask_expand, context_factor, context_pixels, blend_pixels}
+│   ├─ resolution:0 / steps / cfg / seed / denoise / sampler / scheduler
+│   ├─ turbo{enabled, profile} / models{unet, clip, vae} / loras[]
+│   ├─ consistency_lora: 开 ? {name, strength} : null      ← 关不掉（同 §13.8 B1）
+│   ├─ pose / meta{referenceMap, creativePresets, imageAngle}
+│   └─ __maskOverlay（仅前端展示，不发送）
+├─ POST /api/edit  →  job
+└─ 轮询 /api/jobs/{id} → result / quality / align / 尺寸
+```
+
+后端：`main.api_edit` → `_validate_edit_params` → `pipeline.generate_edit` → `quality{scheme, zero_shift, preprocess, color, outside_max_abs}` 原样返回。
+
+**关键事实：** 前端只用了后端能力的一小部分；后端早就支持 `preset`（待实现）、`task.mode`、`auto/native`、`preprocess`、`zero_shift`、`color_restore`、`expand_*`、`expand_pct/feather_pct`、`dither`，是图生图页没有传。
+
+### 15.2 逐项对照（图片精修 vs 图生图）
+
+| 能力 | 图片精修（新） | 图生图（现状） | 处理 |
+| --- | --- | --- | --- |
+| 预设 `preset` | 有计划（§13.5） | 无 | 两页共用 |
+| 方案 | `a / b / auto / native` | 只有 `a / b` 单选 | 两页共用同一枚举 |
+| 裁切几何 | `expand_*` + `crop_min/max` + `fills` | `context_factor / context_pixels`（旧几何） | 旧字段继续接受，默认切新几何 |
+| 接缝 | `expand_pct 4 / feather_pct 5 / dither` | `blend_pixels`（旧向内羽化） | 两页共用；旧字段仅在 `expand_pct=feather_pct=0` 时生效 |
+| 合成 | `feather / mask_expand / color_match / color_strength / band_mode` | 有前四项，无 `band_mode` | 补齐 `band_mode` |
+| 色彩校准 | `color_restore + strength`（默认开） | 只有 `color_match` | 补 `color_restore`（默认开） |
+| 零偏移保护 | `zero_shift`（默认开） | 无 | 补，默认开 |
+| 大图预处理 | `preprocess`（默认开 2048） | 无 | 补，默认开 |
+| 任务 | `task.mode`（remove/outpaint） | 无（永远是 edit） | 补，默认由预设推断 |
+| 一致性 LoRA | 可开关 + 强度 | 开关传 `null` → 关不掉；强度滑块范围受限 | 两页一起修（§13.8） |
+| 扩图 | 后端灰边 + outpaint LoRA（新面板） | 前端扩画布 + 白遮罩 + 通用提示词 | 收敛（§15.5） |
+| 高级设置 | §14（8 组、提示、恢复默认） | 无，参数散落在侧栏且没有提示 | 复用同一组件 |
+| 结果回显 | scheme / zero_shift / mask_band / outside_max_abs | 只看尺寸与 outside_max_abs | 共用结果卡片 |
+
+### 15.3 差距清单（按影响排序）
+
+| # | 差距 | 影响 |
+| --- | --- | --- |
+| G1 | 一致性 LoRA 关不掉（`null` 被当成"未传"） | 想关的用户关不掉，出图更贴原图、改动幅度小 |
+| G2 | 没有 `zero_shift` / `preprocess` | 大图更慢、可能亚像素偏移，用户不知道保护没开 |
+| G3 | 没有 `color_restore` | 模型整体偏色时只能靠 `color_match`，整图色偏拉不回 |
+| G4 | 没有 `task.mode` | 图生图做不了"元素移除"（不会挂 Remove LoRA、不填洞、不发绿提示） |
+| G5 | 扩图两套路径语义冲突 | 同一需求出两种结果，用户不知道该用哪个 |
+| G6 | 只有 a/b，没有 `auto/native` | 小遮罩也走整画布；想复刻"原生"效果只能去图片精修 |
+| G7 | 参数散落、无提示、无恢复默认 | 用户不知道 `context_factor` 和 `expand_pct` 是两代参数 |
+| G8 | 结果信息不全 | 看不出实际用了哪个方案、过渡带多宽 |
+
+### 15.4 同步方案：图生图 = 同一套预设的"轻量壳"
+
+**原则：** 页面只是入口不同，参数、预设、保护开关、结果回显全部共用。
+
+```
+web/src/components/studio/presets.js      （新，纯数据 + 合并/覆盖工具）
+web/src/components/studio/advanced.js     （新，§14 高级设置组件）
+web/src/components/studio/guards.js       （新，两个保护开关 + 文案）
+        ↑ import            ↑ import
+  studio/aiPanel.js       components/edit.js
+```
+
+- **图生图页新增**：顶部「预设」横条（同 §13.6 五个）、下方两个保护开关、侧栏折叠「高级」（复用 `advanced.js`，参数 binding 前缀不同而已）。
+- **提交**：与图片精修同一套 `preset + overrides` 规则（§14.4），不再手写 `local` 字段。
+- **默认预设**：有遮罩 → `mask_edit`；无遮罩 → `canvas`（不假装局部编辑）。`remove`/`outpaint` 由用户显式选。
+- **不引入 PS 工具**：图生图不加画笔/图层/变换，只保留现有上传、参考图、姿态、风格；蒙版仍是原图的 ✂。
+
+### 15.5 扩图收敛（两套变一套）
+
+| 路径 | 现状 | 结论 |
+| --- | --- | --- |
+| 后端灰边扩图 | `task.mode=outpaint` + `outpaint{left,right,top,bottom}` + 灰提示 + 扩图 LoRA 0.7 | **主路径**，图片精修与图生图都用它 |
+| 前端扩画布 | `POST /api/image/outpaint-plan` 算画布 → canvas 贴原图 → 生成白遮罩 → 当普通 inpaint | **降级为 legacy**，改名「手动扩画布（旧）」收进下拉，默认隐藏 |
+
+- 图生图的 `⤢ 扩图` 按钮改为打开 §14.5 的四边面板（同一个 `outpaintPanel`），提交时写 `task.mode=outpaint` + `preset=outpaint`。
+- 旧的"先扩画布再涂抹"保留给需要手动控制新增区域内容的高级用户；选择时明确提示「旧流程不会使用扩图 LoRA，效果与新扩图不同」。
+- `/api/image/outpaint-plan` 不删（图像处理页还在用），只作为 legacy 的几何计算。
+
+### 15.6 兼容与迁移
+
+| 旧配置 | 迁移规则 |
+| --- | --- |
+| `settings.edit.scheme = 'a'/'b'` | 映射为 `overrides['local.scheme']`；没有则跟随预设 |
+| `feather / colorStrength / maskExpand` | 原样映射到 `local.feather / color_strength / mask_expand` |
+| `contextFactor / contextPixels` | 保留；仅当 `legacy_crop=true` 时生效 |
+| `blendPixels` | 保留；仅当 `expand_pct=feather_pct=0` 时生效 |
+| `consistencyEnabled=false` | 迁移为 `local.consistency=false` **并** `consistency_lora=false`（修 G1） |
+| 历史任务回放 | `job.params` 里没有 `preset` 的按 `custom` 处理，只用记录里的显式参数 |
+
+### 15.7 实施步骤与验收
+
+| 步骤 | 内容 | 涉及文件 | 验收 |
+| --- | --- | --- | --- |
+| P15-1 | 抽出 `presets.js / advanced.js / guards.js` 公共模块，图片精修先接入（P14 复用） | `web/src/components/studio/` | 两页 import 同一份，无重复常量 |
+| P15-2 | 图生图 payload 升级：`preset + overrides + task.mode + preprocess + zero_shift + color_restore + band_mode` | `components/edit.js` | 只改一项时只多一个字段；旧配置仍能提交 |
+| P15-3 | 图生图 UI：预设横条 + 两个保护开关 + 高级折叠 | `components/edit.js`、`app.css` | 默认 `mask_edit`（有遮罩）/`canvas`（无遮罩）；开关可关且有后果提示 |
+| P15-4 | 扩图收敛：新面板接入 `⤢ 扩图`，旧流程降级并加对比提示 | `components/edit.js`、`components/outpaint.js` | 新路径出图带灰边延展；旧路径仍可用且标注 legacy |
+| P15-5 | 移除任务：图生图可选 `task.mode=remove`，强制 `fills=true` + 绿提示只读说明 | `components/edit.js` | 选移除后出图无残影；提示词自动补「移除图像中的绿色区域」 |
+| P15-6 | 结果回显统一（scheme / zero_shift / mask_band / outside_max_abs / preset） | `components/edit.js`、`studio/aiPanel.js` | 两页结果卡片字段一致 |
+| P15-7 | 真机回归：同图同 seed 两页各预设出图参数一致 | `.cache/smoke_real_edit.py` | 两页 `job.params` 归一化后仅差工具态字段（画笔/图层） |
+
+### 15.8 决策（钉死）
+
+51. **图生图不是第二套实现**：它和图片精修共用预设、高级设置、保护开关、结果回显；页面只决定"有没有 PS 工具"。
+52. **公共模块单身源**：预设/默认值/tooltip 只允许写一份（`presets.js` / `advanced.js`），两页 import；禁止复制常量。
+53. **图生图默认预设按有无遮罩选择**：有遮罩 `mask_edit`，无遮罩 `canvas`；不默认 `native`（会关掉局部保护）。
+54. **扩图只保留一条生成主路径**（后端灰边 + outpaint LoRA）；前端扩画布标记 legacy、默认隐藏，且必须提示"效果不同"。
+55. **`task.mode` 两页都要显式传**；`remove` 必须 `fills=true`，`outpaint` 必须带四边百分比，后端继续兜底校验。
+56. **保护开关跨页共享**：同一个 `settings` 键，切页不重置；关掉后结果卡片要显示"本次未启用"。
+57. **旧字段永久兼容**（`feather/color_strength/mask_expand/context_*/blend_pixels`），只做映射不删除，避免老 localStorage 失效。
+58. **图生图不引入 PS 工具栏**：只加预设/高级/扩图入口，保持"上传 → 指令 → 出图"的轻量定位。
+
 
 

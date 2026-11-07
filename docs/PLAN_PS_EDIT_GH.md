@@ -4,6 +4,7 @@
 > 参考输入：`qwen2.1九步局部编辑API.json`、`qwen2.1元素移除API.json`、`qwen2.1扩图API.json`
 > 节点源码：`<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI\custom_nodes\Goohaitools-comfyui\nodes\`
 > 现有实现：`server/align.py`、`server/imaging.py`、`server/pipeline.py`、`web/src/components/studio.js`、`web/src/components/studio/studioDoc.js`
+> 模型选择：默认模型槽位、自动匹配与首启向导见 [`docs/PLAN_DEFAULT_MODELS.md`](PLAN_DEFAULT_MODELS.md)；本文的 LoRA 预设（移除 / 扩图 / 一致性）仍是任务级默认，可被系统设置里的同名槽位覆盖。
 
 ---
 

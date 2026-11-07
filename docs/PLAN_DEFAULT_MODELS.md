@@ -170,6 +170,7 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 > - S4 已完成 —— 设置页新增「默认模型」分区（`SECTIONS.defaults` + `renderDefaults`）：8 个槽位下拉（候选来自 `/api/options.models`，含「跟随出厂默认」与已扫描文件）、状态徽章（已找到 / 缺失 / 待保存）、顶部 `notice info|warn`（「已找到默认方案」/「未找到默认方案，请手动选择默认模型」）、维护组（全部恢复出厂 / 重新检测）；`buildPayload` 只提交改动过的槽位，空串 = 清空自定义回落出厂。浏览器实测：8 个下拉、横幅、徽章、未保存态均正常；REST 往返：改 `remove_lora` → `source=custom`，清空 → `source=factory`，`matched=true`，测试后 `config.json` 已还原。
 > - S5 已完成 —— `ModelsField` 改为只读的 `ModelsSummary`（文生图 / 图像编辑 / 棚拍高级面板统一显示 `defaults.slots` 路径 + 「跟随系统默认 · 在「设置 → 默认模型」中修改」）；`store.DEFAULT_T2I / DEFAULT_EDIT` 去掉 `unet/clip/vae`，`loadSettings` 读取旧 localStorage 时丢弃这三个键；`collectPayload` 与 `studio/payload.js` 不再发送 `models`；Turbo「自动切底模」改由后端 `turbo_plan → turbo_unet` 槽位接管，前端删除 `applyTurboModel`。`node --check` 全绿；浏览器实测两页均为 3 行只读路径、0 个下拉。
 > - S6 已完成 —— 新增首次使用三步向导（`settings.js` 的 `maybeOpenModelWizard / openModelWizard`，`app.js` 启动后调用）：仅当 `model_defaults.matched === false` 且未提醒过（`localStorage: qwen:model-wizard`）时弹出；第 1 步填模型根目录 / 额外根目录并保存匹配，第 2 步展示 8 个槽位的自动匹配结果，第 3 步手动选择后保存；「稍后设置」不再打扰。浏览器实测（用 fetch 桩模拟未匹配，不改真实配置）：三步文案、缺口徽章、8 个下拉与候选列表均正常，`config.json` 未被改动。
+> - S7 已完成 —— `PLAN_PS_EDIT_GH.md` 头部增加交叉引用（默认模型槽位可覆盖其 LoRA 预设）；全量回归 `python -m pytest tests`：**408 passed**。上线提醒：**8722 端口的后端需要重启**才会加载 `model_slots` / `model_defaults` 相关代码（当前跑的是旧进程）。
 
 ## 10. 测试计划
 

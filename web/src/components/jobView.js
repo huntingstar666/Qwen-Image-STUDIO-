@@ -25,6 +25,86 @@ const STATUS_TEXT = {
 
 const MAX_BATCHES = 24;
 
+const SCHEME_LABEL = { a: '全画布', b: '裁切', native: '原生', none: '无' };
+
+function fmtRatio(value) {
+  const ratio = Number(value);
+  if (!Number.isFinite(ratio) || ratio <= 0) return '0%';
+  const pct = ratio * 100;
+  return pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`;
+}
+
+/**
+ * 结果质量徽标（图片精修 / 图生图 / 文生图共用一份字段口径）。
+ * 字段来源见 docs/PLAN_PS_EDIT_GH.md §12.11。
+ * @param {object} job /api/jobs/{id} 返回的任务对象
+ * @returns {Array<{text:string, kind?:'ok'|'warn'|'info', title?:string}>}
+ */
+export function qualityItems(job) {
+  const quality = job?.quality || {};
+  const align = job?.align || {};
+  const image = job?.images?.[0] || {};
+  const items = [];
+  if (job?.elapsed_ms != null) items.push({ text: `耗时 ${fmtElapsed(job.elapsed_ms)}`, kind: 'info' });
+  if (image.width && image.height) items.push({ text: `${fmtNum(image.width)} × ${fmtNum(image.height)}` });
+  if (quality.preset) {
+    const version = quality.preset_version != null ? ` · v${quality.preset_version}` : '';
+    items.push({ text: `预设 ${quality.preset}${version}`, title: '本次生效的编辑预设' });
+  }
+  const scheme = String(quality.scheme || '').toLowerCase();
+  if (scheme) {
+    items.push({ text: `方案 ${SCHEME_LABEL[scheme] || scheme}`, title: '实际执行的局部编辑方案' });
+  }
+  const zeroShift = quality.zero_shift;
+  if (zeroShift && zeroShift.enabled != null) {
+    items.push(
+      zeroShift.verified
+        ? { text: '零偏移 ✓', kind: 'ok', title: '零偏移几何硬验收通过' }
+        : { text: '零偏移 未校验', title: '零偏移未启用或未校验' },
+    );
+  }
+  const canvas = quality.canvas || align.canvas;
+  if (canvas) {
+    const multiple = canvas.w % 32 === 0 && canvas.h % 32 === 0;
+    items.push({
+      text: `画布 ${fmtNum(canvas.w)} × ${fmtNum(canvas.h)}${multiple ? ' · 32 倍数' : ' · 非 32 倍数'}`,
+      kind: multiple ? 'ok' : 'warn',
+      title: '采样画布（32 的倍数表示零偏移对齐正常）',
+    });
+  }
+  const band = quality.color?.mask_band;
+  if (band && (band.expand_px != null || band.feather_px != null)) {
+    items.push({
+      text: `过渡带 外扩 ${fmtNum(band.expand_px)}px · 羽化 ${fmtNum(band.feather_px)}px`,
+      title: `方案 B 实际过渡带（外扩 ${band.expand_pct ?? '—'}% / 羽化 ${band.feather_pct ?? '—'}%）`,
+    });
+  }
+  if (quality.outside_max_abs != null) {
+    const zero = Number(quality.outside_max_abs) === 0;
+    items.push({
+      text: zero ? '零色差校验通过 · 遮罩外差异 0' : `遮罩外差异 ${fmtNum(quality.outside_max_abs)}`,
+      kind: zero ? 'ok' : 'warn',
+      title: '遮罩外最大像素差异（0 表示逐像素一致）',
+    });
+  }
+  if (quality.size_match != null) {
+    items.push({
+      text: `尺寸${quality.size_match ? '一致' : '不一致'}`,
+      kind: quality.size_match ? 'ok' : 'warn',
+    });
+  }
+  if (quality.changed_ratio != null) items.push({ text: `改动 ${fmtRatio(quality.changed_ratio)}` });
+  if (quality.leak_ratio != null) {
+    items.push({
+      text: `遮罩外改动 ${fmtRatio(quality.leak_ratio)}`,
+      kind: Number(quality.leak_ratio) > 0 ? 'warn' : 'ok',
+    });
+  }
+  if (quality.color?.skipped) items.push({ text: '校色已跳过' });
+  if (align.applied) items.push({ text: '已应用对齐裁回' });
+  return items;
+}
+
 export class JobRunner {
   /**
    * @param {HTMLElement} host 结果面板容器（feed 模式下是批次流容器）
@@ -334,35 +414,13 @@ export class JobRunner {
   }
 
   buildBadges(job) {
-    const images = Array.isArray(job.images) ? job.images : [];
-    const align = job.align || null;
-    const quality = job.quality || null;
-    const badges = [];
-    if (job.elapsed_ms != null) badges.push(`<span class="badge info">耗时 ${fmtElapsed(job.elapsed_ms)}</span>`);
-    if (images[0]?.width && images[0]?.height) {
-      badges.push(`<span class="badge">${fmtNum(images[0].width)} × ${fmtNum(images[0].height)}</span>`);
-    }
-    if (align?.canvas) {
-      const multiple = align.canvas.w % 32 === 0 && align.canvas.h % 32 === 0;
-      badges.push(
-        `<span class="badge ${multiple ? 'ok' : 'warn'}" title="采样画布（32 的倍数表示零偏移对齐正常）">画布 ${fmtNum(align.canvas.w)} × ${fmtNum(align.canvas.h)}${multiple ? ' · 32 倍数' : ' · 非 32 倍数'}</span>`,
-      );
-    }
-    if (quality && quality.outside_max_abs != null) {
-      const zero = Number(quality.outside_max_abs) === 0;
-      badges.push(
-        zero
-          ? '<span class="badge ok" title="遮罩外像素与原图逐像素差异为 0，零色差校验通过">零色差校验通过 · 遮罩外差异 0</span>'
-          : `<span class="badge warn" title="遮罩外最大像素差异（0 表示完全一致）">遮罩外差异 ${fmtNum(quality.outside_max_abs)}</span>`,
-      );
-    }
-    if (quality?.size_match != null) {
-      badges.push(
-        `<span class="badge ${quality.size_match ? 'ok' : 'warn'}">尺寸${quality.size_match ? '一致' : '不一致'}</span>`,
-      );
-    }
-    if (align?.applied) badges.push('<span class="badge">已应用对齐裁回</span>');
-    return badges.join('');
+    return qualityItems(job)
+      .map(({ text, kind = '', title = '' }) => {
+        const cls = `badge${kind ? ` ${kind}` : ''}`;
+        const attr = title ? ` title="${escapeHtml(title)}"` : '';
+        return `<span class="${cls}"${attr}>${escapeHtml(text)}</span>`;
+      })
+      .join('');
   }
 
   renderBatch(job) {

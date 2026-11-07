@@ -12,7 +12,7 @@
  */
 
 import { api } from '../../api.js';
-import { JobRunner } from '../jobView.js';
+import { JobRunner, qualityItems } from '../jobView.js';
 import { toastError, toastSuccess, toastWarn } from '../toast.js';
 import { confirmDialog } from '../modal.js';
 import { escapeHtml, loadImage } from '../../utils.js';
@@ -826,46 +826,16 @@ export function mountAiPanel(host, ctx) {
       });
   }
 
-  function fmtRatio(value) {
-    const ratio = Number(value);
-    if (!Number.isFinite(ratio) || ratio <= 0) return '0%';
-    const pct = ratio * 100;
-    return pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`;
-  }
-
   function renderQuality(job) {
-    const quality = job?.quality || {};
-    const align = job?.align || {};
-    const image = job?.images?.[0] || {};
-    const parts = [];
-    if (quality.outside_max_abs != null) {
-      const zero = Number(quality.outside_max_abs) === 0;
-      parts.push(
-        `<span class="ai-tag ${zero ? 'ok' : 'warn'}">遮罩外差异 ${zero ? '0' : escapeHtml(String(quality.outside_max_abs))}</span>`,
-      );
-    }
-    if (quality.size_match != null) {
-      parts.push(`<span class="ai-tag ${quality.size_match ? 'ok' : 'warn'}">尺寸${quality.size_match ? '一致' : '不一致'}</span>`);
-    }
-    if (quality.changed_ratio != null) {
-      parts.push(`<span class="ai-tag">改动 ${fmtRatio(quality.changed_ratio)}</span>`);
-    }
-    if (quality.leak_ratio != null) {
-      const leak = Number(quality.leak_ratio) > 0;
-      parts.push(`<span class="ai-tag ${leak ? 'warn' : 'ok'}">遮罩外改动 ${fmtRatio(quality.leak_ratio)}</span>`);
-    }
-    if (quality.color?.skipped) {
-      parts.push('<span class="ai-tag">校色已跳过</span>');
-    }
-    if (align.canvas) {
-      const multiple = align.canvas.w % 32 === 0 && align.canvas.h % 32 === 0;
-      parts.push(`<span class="ai-tag ${multiple ? 'ok' : 'warn'}">画布 ${align.canvas.w}×${align.canvas.h}</span>`);
-    }
-    if (image.width && image.height) parts.push(`<span class="ai-tag">${image.width}×${image.height}</span>`);
-    const elapsed = job?.elapsed_ms ? `${(job.elapsed_ms / 1000).toFixed(1)}s` : '';
-    if (elapsed) parts.push(`<span class="ai-tag">${elapsed}</span>`);
-    refs.quality.innerHTML = parts.join('');
-    refs.quality.hidden = !parts.length;
+    const items = qualityItems(job);
+    refs.quality.innerHTML = items
+      .map(({ text, kind = '', title = '' }) => {
+        const cls = `ai-tag${kind === 'ok' || kind === 'warn' ? ` ${kind}` : ''}`;
+        const attr = title ? ` title="${escapeHtml(title)}"` : '';
+        return `<span class="${cls}"${attr}>${escapeHtml(text)}</span>`;
+      })
+      .join('');
+    refs.quality.hidden = !items.length;
   }
 
   /* ------------------------------------------------------------ 事件 */

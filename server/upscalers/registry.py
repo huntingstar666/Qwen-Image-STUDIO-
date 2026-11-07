@@ -19,6 +19,8 @@ FLASHVSR_REQUIRED = (
     "posi_prompt.pth",
     "TCDecoder.ckpt",
 )
+#: VOSR2 由 ComfyUI 进程加载；这里只检查模型包目录是否齐全。
+VOSR2_CHECKPOINT = os.path.join("checkpoints", "ema_model.safetensors")
 
 
 def section(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -27,7 +29,7 @@ def section(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def resolve_dirs(cfg: dict[str, Any] | None = None) -> dict[str, str]:
-    """解析两个引擎的模型目录；未配置时按 model_root 推断。"""
+    """解析三个引擎的模型目录；未配置时按 model_root 推断。"""
     cfg = cfg or app_config.load_config()
     up = section(cfg)
     root = str(cfg.get("model_root") or "")
@@ -36,6 +38,7 @@ def resolve_dirs(cfg: dict[str, Any] | None = None) -> dict[str, str]:
     for name, default in (
         ("seedvr2", os.path.join(root, "SEEDVR2")),
         ("flashvsr", os.path.join(root, "FlashVSR-v1.1")),
+        ("vosr2", os.path.join(root, "vosr2")),
     ):
         value = str(dirs.get(name) or "").strip() or default
         out[name] = os.path.normpath(os.path.expandvars(os.path.expanduser(value))) if value else ""
@@ -106,6 +109,43 @@ def scan_flashvsr(directory: str, cfg: dict[str, Any] | None = None) -> dict[str
     }
 
 
+def scan_vosr2(directory: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """扫描 VOSR2 模型包（每个子目录是一套 bundle，如 ``VOSR2/``）。"""
+    up = section(cfg)
+    pref = up.get("vosr2") or {}
+    bundle = str(pref.get("model_bundle") or "VOSR2")
+    exists = bool(directory) and os.path.isdir(directory)
+    bundles: list[str] = []
+    if exists:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            names = []
+        for name in names:
+            sub = os.path.join(directory, name)
+            if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, VOSR2_CHECKPOINT)):
+                bundles.append(name)
+    ready = exists and bundle in bundles
+    missing: list[str] = []
+    if not exists:
+        missing.append("模型目录")
+    elif not bundles:
+        missing.append("VOSR2 模型包")
+    elif bundle not in bundles:
+        missing.append(f"{bundle} 模型包")
+    return {
+        "id": "vosr2",
+        "label": "VOSR2（ComfyUI API）",
+        "dir": directory,
+        "exists": exists,
+        "bundles": bundles,
+        "model_bundle": bundle,
+        "url": str(pref.get("url") or ""),
+        "ready": ready,
+        "missing": missing,
+    }
+
+
 def scan_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = cfg or app_config.load_config()
     dirs = resolve_dirs(cfg)
@@ -113,6 +153,7 @@ def scan_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     engines = {
         "seedvr2": scan_seedvr2(dirs["seedvr2"], cfg),
         "flashvsr": scan_flashvsr(dirs["flashvsr"], cfg),
+        "vosr2": scan_vosr2(dirs["vosr2"], cfg),
     }
     default = str(up.get("default_engine") or "seedvr2")
     if not engines.get(default, {}).get("ready"):

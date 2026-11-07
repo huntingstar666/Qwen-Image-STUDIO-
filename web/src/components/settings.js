@@ -86,9 +86,17 @@ function emptyForm() {
       vram_reserve: 0,
     },
     upscale: {
-      dirs: { seedvr2: '', flashvsr: '' },
+      dirs: { seedvr2: '', flashvsr: '', vosr2: '' },
       seedvr2: { dit: '', vae: '', vae_tiled: true },
       flashvsr: { precision: 'bf16' },
+      vosr2: {
+        url: 'http://127.0.0.1:8188',
+        model_bundle: 'VOSR2',
+        precision: 'auto',
+        quality_profile: 'speed',
+        tile_size: 512,
+        timeout_seconds: 1800,
+      },
       default_engine: 'seedvr2',
       idle_unload_minutes: 10,
       defaults: { scale: 2 },
@@ -137,14 +145,27 @@ function upscaleFormFromData(up = {}) {
   const dirs = up.dirs || {};
   const seedvr2 = up.seedvr2 || {};
   const flashvsr = up.flashvsr || {};
+  const vosr2 = up.vosr2 || {};
   return {
-    dirs: { seedvr2: dirs.seedvr2 || '', flashvsr: dirs.flashvsr || '' },
+    dirs: {
+      seedvr2: dirs.seedvr2 || '',
+      flashvsr: dirs.flashvsr || '',
+      vosr2: dirs.vosr2 || '',
+    },
     seedvr2: {
       dit: seedvr2.dit || '',
       vae: seedvr2.vae || '',
       vae_tiled: seedvr2.vae_tiled !== false,
     },
     flashvsr: { precision: flashvsr.precision || 'bf16' },
+    vosr2: {
+      url: vosr2.url || 'http://127.0.0.1:8188',
+      model_bundle: vosr2.model_bundle || 'VOSR2',
+      precision: vosr2.precision || 'auto',
+      quality_profile: vosr2.quality_profile || 'speed',
+      tile_size: Number(vosr2.tile_size) || 512,
+      timeout_seconds: Number(vosr2.timeout_seconds) || 1800,
+    },
     default_engine: up.default_engine || 'seedvr2',
     idle_unload_minutes: Number(up.idle_unload_minutes ?? 10),
     defaults: { scale: Number(up.defaults?.scale) || 2 },
@@ -1162,7 +1183,9 @@ function renderUpscale() {
     row(t('upscale.seedvr2Dir'), t('upscale.dirDesc'),
       textInput('upscale.dirs.seedvr2', form.dirs.seedvr2, { placeholder: 'D:\\ComfyUI\\models\\SEEDVR2' })) +
     row(t('upscale.flashvsrDir'), t('upscale.dirDesc'),
-      textInput('upscale.dirs.flashvsr', form.dirs.flashvsr, { placeholder: 'D:\\ComfyUI\\models\\FlashVSR-v1.1' }));
+      textInput('upscale.dirs.flashvsr', form.dirs.flashvsr, { placeholder: 'D:\\ComfyUI\\models\\FlashVSR-v1.1' })) +
+    row(t('upscale.vosr2Dir'), t('upscale.dirDesc'),
+      textInput('upscale.dirs.vosr2', form.dirs.vosr2, { placeholder: 'D:\\ComfyUI\\models\\vosr2' }));
 
   const seedCard =
     row(t('upscale.dit'), t('upscale.ditDesc'),
@@ -1196,9 +1219,37 @@ function renderUpscale() {
          <span class="set-unit">${t('runtime.minutes')}</span>
        </div>`);
 
+  const vosr2Engines = engines.vosr2 || {};
+  const bundleOptions = (vosr2Engines.bundles || []).map((name) => ({ value: name, label: name }));
+  const vosr2Card =
+    row(t('upscale.vosr2Url'), t('upscale.vosr2UrlDesc'),
+      textInput('upscale.vosr2.url', form.vosr2.url, { placeholder: 'http://127.0.0.1:8188' })) +
+    row(t('upscale.vosr2Bundle'), t('upscale.vosr2BundleDesc'),
+      selectInput('upscale.vosr2.model_bundle', form.vosr2.model_bundle, bundleOptions, 'VOSR2')) +
+    row(t('upscale.quality'), t('upscale.qualityDesc'),
+      selectInput('upscale.vosr2.quality_profile', form.vosr2.quality_profile, [
+        { value: 'speed', label: t('upscale.qualitySpeed') },
+        { value: 'balanced', label: t('upscale.qualityBalanced') },
+        { value: 'quality', label: t('upscale.qualityQuality') },
+      ])) +
+    row(t('upscale.precision'), t('upscale.precisionDesc'),
+      selectInput('upscale.vosr2.precision', form.vosr2.precision, [
+        { value: 'auto', label: 'auto' },
+        { value: 'bf16', label: 'bfloat16' },
+        { value: 'fp16', label: 'float16' },
+      ])) +
+    row(t('upscale.tileSize'), t('upscale.tileSizeDesc'),
+      textInput('upscale.vosr2.tile_size', form.vosr2.tile_size, { type: 'number' })) +
+    row(t('upscale.timeout'), t('upscale.timeoutDesc'),
+      `<div class="set-inline">
+         ${textInput('upscale.vosr2.timeout_seconds', form.vosr2.timeout_seconds, { type: 'number' })}
+         <span class="set-unit">${t('upscale.seconds')}</span>
+       </div>`);
+
   return `
     ${group(t('upscale.dirs'), dirsCard, t('upscale.dirsDesc'))}
     ${group(t('upscale.models'), seedCard)}
+    ${group(t('upscale.vosr2'), vosr2Card, t('upscale.vosr2Desc'))}
     ${group(t('upscale.defaults'), defaultsCard)}
     ${group(t('upscale.scan'), renderUpscaleScan(), t('upscale.scanDesc'))}
   `;
@@ -1345,6 +1396,7 @@ function buildPayload() {
       dirs: {
         seedvr2: state.form.upscale.dirs.seedvr2.trim(),
         flashvsr: state.form.upscale.dirs.flashvsr.trim(),
+        vosr2: state.form.upscale.dirs.vosr2.trim(),
       },
       seedvr2: {
         dit: state.form.upscale.seedvr2.dit,
@@ -1352,6 +1404,14 @@ function buildPayload() {
         vae_tiled: Boolean(state.form.upscale.seedvr2.vae_tiled),
       },
       flashvsr: { precision: state.form.upscale.flashvsr.precision },
+      vosr2: {
+        url: state.form.upscale.vosr2.url.trim(),
+        model_bundle: state.form.upscale.vosr2.model_bundle,
+        precision: state.form.upscale.vosr2.precision,
+        quality_profile: state.form.upscale.vosr2.quality_profile,
+        tile_size: Number(state.form.upscale.vosr2.tile_size) || 512,
+        timeout_seconds: Number(state.form.upscale.vosr2.timeout_seconds) || 1800,
+      },
       default_engine: state.form.upscale.default_engine,
       idle_unload_minutes: Number(state.form.upscale.idle_unload_minutes) || 0,
       defaults: { scale: Number(state.form.upscale.defaults.scale) || 2 },

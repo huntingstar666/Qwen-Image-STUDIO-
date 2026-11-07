@@ -15,6 +15,7 @@ from . import registry
 from .base import UpscaleCancelled, UpscaleError
 from .flashvsr_runner import FlashVSREngine
 from .seedvr2_runner import SeedVR2Engine
+from .vosr2_api import VOSR2ComfyEngine
 
 __all__ = [
     "UpscalerManager",
@@ -50,6 +51,16 @@ class UpscalerManager:
                 dirs["flashvsr"],
                 precision=str(pref.get("precision") or "bf16"),
             )
+        if name == "vosr2":
+            pref = up.get("vosr2") or {}
+            return VOSR2ComfyEngine(
+                url=str(pref.get("url") or "http://127.0.0.1:8188"),
+                settings=pref,
+                bundle=str(pref.get("model_bundle") or "VOSR2"),
+                precision=str(pref.get("precision") or "auto"),
+                memory_policy=str(pref.get("memory_policy") or "auto"),
+                timeout_seconds=float(pref.get("timeout_seconds") or 1800),
+            )
         raise UpscaleError(f"未知的放大引擎：{name}")
 
     def get(self, name: str | None = None, cfg: dict[str, Any] | None = None):
@@ -60,6 +71,11 @@ class UpscalerManager:
                 if other != name and engine.loaded:
                     engine.unload()
                     self._engines.pop(other, None)
+            if name == "vosr2":
+                # 远程引擎本身不持有状态，每次按最新配置重建，设置页改 URL 后立即生效
+                engine = self._build(name, cfg)
+                self._engines[name] = engine
+                return engine
             engine = self._engines.get(name)
             if engine is None:
                 engine = self._build(name, cfg)
@@ -102,7 +118,7 @@ class UpscalerManager:
                 cfg2.setdefault("upscale", {}).setdefault("seedvr2", {}).update(prefs)
                 target = self._build("seedvr2", cfg2)
                 self._engines["seedvr2"] = target
-        else:
+        elif name == "flashvsr":
             defaults = up.get("flashvsr") or {}
             merged = {**defaults, **{k: v for k, v in params.items() if v is not None}}
             kwargs = {
@@ -114,6 +130,12 @@ class UpscalerManager:
                 "topk_ratio": float(merged.get("topk_ratio") or 2.0),
                 "kv_ratio": float(merged.get("kv_ratio") or 3.0),
                 "local_range": int(merged.get("local_range") or 11),
+            }
+        else:  # vosr2：参数在构造引擎时已读取，这里只传本次推理参数
+            kwargs = {
+                "scale": int(params.get("scale") or up.get("defaults", {}).get("scale") or 2),
+                "seed": int(params.get("seed") if params.get("seed") is not None
+                            else up.get("defaults", {}).get("seed", 42)),
             }
 
         kwargs.update(options)

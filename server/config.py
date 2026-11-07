@@ -144,10 +144,10 @@ DEFAULTS: dict[str, Any] = {
     # 文本编码结果缓存条数：同提示词连抽多张时省掉一次 CLIP 前向（热态约 0.15s/张，
     # 带参考图的编辑再抽时还能省掉整段参考图 VAE 编码）。0 = 关闭。
     "encode_cache_size": 8,
-    # 图像高清放大（SeedVR2 / FlashVSR）。模型目录留空时按 model_root 下的
+    # 图像高清放大（SeedVR2 / FlashVSR / VOSR2）。模型目录留空时按 model_root 下的
     # 约定目录自动推断；模型文件从设置页扫描结果里选。
     "upscale": {
-        "dirs": {"seedvr2": "", "flashvsr": ""},
+        "dirs": {"seedvr2": "", "flashvsr": "", "vosr2": ""},
         "default_engine": "seedvr2",
         "seedvr2": {
             "dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
@@ -165,6 +165,27 @@ DEFAULTS: dict[str, Any] = {
             "topk_ratio": 2.0,
             "kv_ratio": 3.0,
             "local_range": 11,
+        },
+        # VOSR2 走本机 ComfyUI HTTP API（闭源节点包无法移植）
+        "vosr2": {
+            "url": "http://127.0.0.1:8188",
+            "model_bundle": "VOSR2",
+            "precision": "auto",
+            "memory_policy": "auto",
+            "quality_profile": "speed",
+            "tile_strategy": "auto",
+            "tile_size": 512,
+            "tile_overlap": 32,
+            "vae_tile_size": 1024,
+            "vae_tile_overlap": 32,
+            "image_batch": 1,
+            "frame_batch": 2,
+            "dino_batch": 2,
+            "temporal_cache": False,
+            "cache_threshold": 0.003,
+            "cache_refresh": 4,
+            "color_alignment": "wavelet",
+            "timeout_seconds": 1800,
         },
         "defaults": {"scale": 2, "seed": 42},
         # 放大模型空闲多少分钟后自动卸载（0 = 不自动卸载）

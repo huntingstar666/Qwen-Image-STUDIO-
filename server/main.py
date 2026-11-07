@@ -1152,6 +1152,16 @@ def _upscale_room_mb() -> int:
 
 def _ensure_upscale_room(engine: str) -> None:
     """放大前腾显存：先尝试释放生成引擎，不够再报错。"""
+    if engine == "vosr2":
+        # VOSR2 由 ComfyUI 进程管理显存，本进程只需要把生成引擎让出来
+        pipe = get_pipeline()
+        gen = getattr(pipe, "_engine", None)
+        if gen is not None:
+            try:
+                gen.free(unload=True)
+            except Exception:  # noqa: BLE001
+                pass
+        return
     need = 12000 if engine == "seedvr2" else 7000
     if _upscale_room_mb() >= need:
         return
@@ -1636,7 +1646,7 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
             if not isinstance(raw.get("dirs"), dict):
                 raise ApiError("upscale.dirs 必须是对象", code="invalid_field")
             dirs = dict(current.get("dirs") or {})
-            for name in ("seedvr2", "flashvsr"):
+            for name in ("seedvr2", "flashvsr", "vosr2"):
                 if name in raw["dirs"]:
                     text = str(raw["dirs"].get(name) or "").strip()
                     dirs[name] = (
@@ -1644,7 +1654,7 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
                         if text else ""
                     )
             current["dirs"] = dirs
-        for section in ("seedvr2", "flashvsr", "defaults"):
+        for section in ("seedvr2", "flashvsr", "vosr2", "defaults"):
             if section in raw:
                 if not isinstance(raw.get(section), dict):
                     raise ApiError(f"upscale.{section} 必须是对象", code="invalid_field")

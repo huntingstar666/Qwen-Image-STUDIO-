@@ -558,12 +558,30 @@
 }
 
 .studio-panel-foot {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 9px 14px;
   border-top: 1px solid var(--line-soft);
   color: var(--dim);
   font-size: 10px;
   text-align: center;
+}
+
+.studio-save {
+  color: var(--dim);
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.studio-save[data-state='saved'] {
+  color: var(--accent);
+}
+
+.studio-save[data-state='error'] {
+  color: #d97757;
 }
 
 /* ------------------------------------------------------------- 响应式 */

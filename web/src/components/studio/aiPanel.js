@@ -255,6 +255,11 @@ export function mountAiPanel(host, ctx) {
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
   };
 
+  /** 指令 / 参考图 / AI 参数变化后通知宿主合并自动保存。 */
+  function notifyPersist() {
+    ctx.onPersistChange?.();
+  }
+
   /** 预设 / 覆盖项 / 保护开关 / 一致性强度跨页共享，写回同一份 settings.edit。 */
   function persistEdit() {
     patchSettings({
@@ -266,6 +271,7 @@ export function mountAiPanel(host, ctx) {
         consistencyStrength: state.consistencyStrength,
       },
     });
+    notifyPersist();
   }
 
   function currentPreset() {
@@ -600,6 +606,7 @@ export function mountAiPanel(host, ctx) {
     renderRefs();
     refs.refInput.value = '';
     if (state.refs.length > before) insertMention(before + 2);
+    if (state.refs.length !== before) notifyPersist();
   }
 
   function insertMention(index) {
@@ -668,6 +675,7 @@ export function mountAiPanel(host, ctx) {
     state.prompt = refs.prompt.value;
     refs.count.textContent = `${refs.prompt.value.length} / 2000`;
     refs.submit.disabled = !state.prompt.trim() || state.busy;
+    notifyPersist();
   }
 
   function syncBusy() {
@@ -851,6 +859,7 @@ export function mountAiPanel(host, ctx) {
           refs.previewBtn.textContent = '回到主图';
           ctx.showResult?.(state.resultUrl);
           toastSuccess('修改完成，已叠加到画布预览');
+          notifyPersist();
         },
       })
       .finally(() => {
@@ -907,6 +916,7 @@ export function mountAiPanel(host, ctx) {
     state.refs = state.refs.filter((item) => item.id !== button.dataset.refDel);
     dropMention(index + 2);
     renderRefs();
+    notifyPersist();
   });
 
   refs.addOverlayBtn.addEventListener('click', () => refs.overlayInput.click());
@@ -951,10 +961,22 @@ export function mountAiPanel(host, ctx) {
     ctx.commitLayers?.();
   });
 
-  refs.sizeMode.addEventListener('change', renderMeta);
-  refs.width.addEventListener('input', renderMeta);
-  refs.height.addEventListener('input', renderMeta);
-  refs.ratio.addEventListener('change', renderMeta);
+  refs.sizeMode.addEventListener('change', () => {
+    renderMeta();
+    notifyPersist();
+  });
+  refs.width.addEventListener('input', () => {
+    renderMeta();
+    notifyPersist();
+  });
+  refs.height.addEventListener('input', () => {
+    renderMeta();
+    notifyPersist();
+  });
+  refs.ratio.addEventListener('change', () => {
+    renderMeta();
+    notifyPersist();
+  });
 
   refs.presets.addEventListener('click', (event) => {
     const button = event.target.closest('[data-preset]');
@@ -964,6 +986,7 @@ export function mountAiPanel(host, ctx) {
   refs.turbo.addEventListener('change', () => {
     state.turboId = refs.turbo.value;
     syncSamplingInfo();
+    notifyPersist();
   });
 
   refs.task.addEventListener('change', () => {
@@ -973,6 +996,7 @@ export function mountAiPanel(host, ctx) {
         ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
         : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[mode] || mode}`;
     syncGuardNote();
+    notifyPersist();
   });
 
   /** 一致性强度唯一写入口：滑块、标签、共享设置一起更新（B2/B6）。 */
@@ -1016,6 +1040,7 @@ export function mountAiPanel(host, ctx) {
     state.customLoras.push({ name, strength: 1 });
     refs.loraWarn.hidden = true;
     renderCustomLoras();
+    notifyPersist();
   });
 
   function renderCustomLoras() {
@@ -1037,12 +1062,14 @@ export function mountAiPanel(host, ctx) {
     if (!input) return;
     const item = state.customLoras.find((entry) => entry.name === input.dataset.loraStrength);
     if (item) item.strength = Math.min(2, Math.max(0, Number(input.value) || 0));
+    notifyPersist();
   });
   refs.loraList.addEventListener('click', (event) => {
     const button = event.target.closest('[data-lora-del]');
     if (!button) return;
     state.customLoras = state.customLoras.filter((item) => item.name !== button.dataset.loraDel);
     renderCustomLoras();
+    notifyPersist();
   });
 
   refs.previewBtn.addEventListener('click', () => {
@@ -1124,6 +1151,33 @@ export function mountAiPanel(host, ctx) {
     },
     focusPrompt() {
       refs.prompt.focus();
+    },
+    /** 宿主的本机自动保存从这里取 AI 现场（指令、参考图、参数、结果地址）。 */
+    getPersistState() {
+      return {
+        prompt: refs.prompt.value,
+        refs: state.refs.map((item) => ({
+          id: item.id,
+          name: item.name,
+          dataUrl: item.dataUrl,
+          width: item.width,
+          height: item.height,
+        })),
+        presetId: state.presetId,
+        overrides: { ...state.overrides },
+        protection: { ...state.protection },
+        customLoras: state.customLoras.map((item) => ({ ...item })),
+        task: refs.task.value,
+        sizeMode: refs.sizeMode.value,
+        width: refs.width.value,
+        height: refs.height.value,
+        ratio: refs.ratio.value,
+        turboId: state.turboId,
+        consistencyOn: state.consistencyOn,
+        consistencyStrength: state.consistencyStrength,
+        resultUrl: state.resultUrl,
+        resultInfo: state.resultInfo ? { ...state.resultInfo } : null,
+      };
     },
     /** 扩图面板点「生成扩图」：补默认指令、切 outpaint 任务后直接提交。 */
     submitOutpaint() {

@@ -17,9 +17,10 @@ import { downloadUrl, fmtNum, readFileAsDataURL } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
-import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter } from './studio/studioDoc.js';
+import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
+import { newProjectId, saveStudioProject, storageAvailable } from './studio/persistence.js';
 import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
@@ -131,6 +132,23 @@ export function createStudioPage(host) {
   let selectedLayerId = null;
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
+
+  /* 本机工程持久化（D17.1）：工程 id、主图源 Blob、叠加层 Blob 与自动保存节流。 */
+  let projectId = '';
+  let projectCreatedAt = 0;
+  let sourceBlob = null;
+  const layerBlobs = new Map();
+  let saveTimer = 0;
+  let idleTimer = 0;
+  let saveRetryTimer = 0;
+  let saveRetryDelay = 0;
+  let saveStateTimer = 0;
+  let saving = false;
+  let savePending = false;
+  let saveDirty = false;
+  let saveWarned = false;
+  let storageWarned = false;
+  let persistDisabled = !storageAvailable();
 
   host.innerHTML = `
     <div class="page page-studio">
@@ -294,6 +312,7 @@ export function createStudioPage(host) {
 
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
+              <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
             </div>
           </aside>
         </div>
@@ -342,6 +361,7 @@ export function createStudioPage(host) {
     aiPane: ref('aiPane'),
     outpaintLayer: ref('outpaintLayer'),
     outpaintPane: ref('outpaintPane'),
+    saveState: ref('saveState'),
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
@@ -351,6 +371,10 @@ export function createStudioPage(host) {
    * ============================================================ */
 
   const ai = mountAiPanel(refs.aiPane, {
+    /** AI 面板里的指令 / 参考图 / 参数变化后，合并到同一条自动保存。 */
+    onPersistChange() {
+      scheduleSave();
+    },
     getSize() {
       return doc ? doc.size : { width: 0, height: 0 };
     },
@@ -398,6 +422,15 @@ export function createStudioPage(host) {
         const stem = (doc?.name || 'result').replace(/\.[^.]+$/, '') || 'result';
         const suffix = meta.task === 'outpaint' ? '-扩图' : '-精修';
         const next = new StudioDoc(image, `${stem}${suffix}.png`);
+        sourceBlob = await fetchBlob(url);
+        if (token !== openSeq) return null;
+        if (!sourceBlob) {
+          try {
+            sourceBlob = next.bakeBlob('image/png');
+          } catch {
+            sourceBlob = null;
+          }
+        }
         setDoc(next);
         return { width: next.size.width, height: next.size.height, name: next.name };
       } catch (err) {
@@ -424,10 +457,12 @@ export function createStudioPage(host) {
       const image = await loadImage(dataUrl);
       if (imageTooLarge(image, '叠加图')) return null;
       const layer = doc.addOverlay(image, { name: file.name || '叠加图' });
+      layerBlobs.set(layer.id, file);
       selectedLayerId = layer.id;
       setTool('move');
       updateHistoryUi();
       scheduleDraw();
+      scheduleSave();
       ai?.refresh();
       return layer;
     },
@@ -443,7 +478,9 @@ export function createStudioPage(host) {
       if (!doc) return;
       if (doc.removeOverlay(id)) {
         if (selectedLayerId === id) selectedLayerId = null;
+        layerBlobs.delete(id);
         updateHistoryUi();
+        scheduleSave();
         scheduleDraw();
       }
     },
@@ -457,6 +494,7 @@ export function createStudioPage(host) {
       if (!doc) return;
       doc.commitLayers();
       updateHistoryUi();
+      scheduleSave();
     },
     scaleLayer(id, factor) {
       if (!doc) return;
@@ -464,6 +502,7 @@ export function createStudioPage(host) {
       doc.commitLayers();
       updateHistoryUi();
       scheduleDraw();
+      scheduleSave();
     },
     openOutpaint() {
       if (!doc) {
@@ -549,6 +588,7 @@ export function createStudioPage(host) {
     refs.statusTool.textContent = meta ? `${meta.label} · ${meta.hint}` : '';
     refs.canvas.dataset.tool = tool;
     scheduleDraw();
+    scheduleSave(1200);
   }
 
   function syncTabs() {
@@ -590,6 +630,7 @@ export function createStudioPage(host) {
     };
     updateZoomLabel();
     scheduleDraw();
+    scheduleSave(1500);
   }
 
   function actualSize() {
@@ -601,6 +642,7 @@ export function createStudioPage(host) {
     view.y = (rect.height - image.height) / 2;
     updateZoomLabel();
     scheduleDraw();
+    scheduleSave(1500);
   }
 
   function zoomAt(factor, clientX, clientY) {
@@ -616,6 +658,7 @@ export function createStudioPage(host) {
     view.y = py - iy * next;
     updateZoomLabel();
     scheduleDraw();
+    scheduleSave(1500);
   }
 
   function updateZoomLabel() {
@@ -1045,6 +1088,7 @@ export function createStudioPage(host) {
       refs.cropbar.hidden = true;
     }
     scheduleDraw();
+    scheduleSave();
   }
 
   refs.canvas.addEventListener('pointerup', endDrag);
@@ -1060,6 +1104,264 @@ export function createStudioPage(host) {
     const factor = Math.exp(-event.deltaY * 0.0016);
     zoomAt(factor, event.clientX, event.clientY);
   }, { passive: false });
+
+  /* ============================================================
+   * 本机自动保存（D17.1）
+   * ============================================================ */
+
+  const SAVE_LABELS = {
+    idle: '自动保存 · 本机',
+    saving: '保存中…',
+    saved: '已保存',
+    error: '保存失败，重试中',
+    off: '当前浏览器不支持本机保存',
+  };
+  let tabToken = '';
+
+  function tabId() {
+    if (tabToken) return tabToken;
+    try {
+      tabToken = sessionStorage.getItem('wb.studio.tab') || '';
+      if (!tabToken) {
+        tabToken = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        sessionStorage.setItem('wb.studio.tab', tabToken);
+      }
+    } catch {
+      tabToken = '';
+    }
+    return tabToken;
+  }
+
+  /** 打开新主图 = 开启新工程；旧工程留在本机，供后续「最近工程」入口使用。 */
+  function beginProject() {
+    projectId = newProjectId();
+    projectCreatedAt = Date.now();
+    sourceBlob = null;
+    layerBlobs.clear();
+    saveDirty = true;
+  }
+
+  async function fetchBlob(url) {
+    try {
+      const response = await fetch(url, { credentials: 'same-origin' });
+      if (!response.ok) return null;
+      const blob = await response.blob();
+      return blob.size ? blob : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 叠加层优先复用打开时的原始文件；缺失时（撤销/恢复后）再编码一次并缓存。 */
+  async function layerBlobFor(layer) {
+    const cached = layerBlobs.get(layer.id);
+    if (cached) return cached;
+    const image = layer.image;
+    const width = image?.naturalWidth || image?.width || 0;
+    const height = image?.naturalHeight || image?.height || 0;
+    if (!width || !height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    const blob = await canvasToBlob(canvas, 'image/png');
+    layerBlobs.set(layer.id, blob);
+    return blob;
+  }
+
+  function thumbnailOf(current) {
+    try {
+      const base = current.renderBase();
+      const scale = Math.min(1, 280 / Math.max(base.width, base.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(base.width * scale));
+      canvas.height = Math.max(1, Math.round(base.height * scale));
+      canvas.getContext('2d').drawImage(base, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.72);
+    } catch {
+      return '';
+    }
+  }
+
+  function setSaveState(next) {
+    if (!refs.saveState) return;
+    refs.saveState.dataset.state = next;
+    refs.saveState.textContent = SAVE_LABELS[next] || SAVE_LABELS.idle;
+    clearTimeout(saveStateTimer);
+    if (next === 'saved') {
+      saveStateTimer = setTimeout(() => {
+        if (refs.saveState?.dataset.state === 'saved') setSaveState('idle');
+      }, 2500);
+    }
+  }
+
+  async function collectProject() {
+    const current = doc;
+    if (!current) return null;
+    if (!projectId) beginProject();
+    const id = projectId;
+    const createdAt = projectCreatedAt;
+    // 先同步取快照，后续 await 期间用户继续操作也不会写脏。
+    const transform = {
+      ...current.transform,
+      crop: current.transform.crop ? { ...current.transform.crop } : null,
+    };
+    const adjust = { ...current.adjust };
+    const layerList = current.layers.slice();
+    const name = current.name;
+    const size = current.size;
+    const sourceSize = current.sourceSize;
+    const aiState = ai?.getPersistState?.() || null;
+    // 参考图有独立 store（存 Blob），session 里只留轻量参数，避免重复存大图。
+    const aiParams = aiState ? { ...aiState } : null;
+    if (aiParams) delete aiParams.refs;
+    const viewport = { scale: view.scale, x: view.x, y: view.y };
+
+    let base = sourceBlob;
+    if (!base) {
+      try {
+        base = await current.bakeBlob('image/png');
+        sourceBlob = base;
+      } catch {
+        base = null;
+      }
+    }
+    let maskBlob = null;
+    try {
+      maskBlob = await current.maskBlob();
+    } catch {
+      maskBlob = null;
+    }
+
+    const layers = [];
+    const keepIds = new Set(layerList.map((layer) => layer.id));
+    for (const layer of layerList) {
+      let blob = null;
+      try {
+        blob = await layerBlobFor(layer);
+      } catch {
+        blob = null;
+      }
+      layers.push({
+        id: layer.id,
+        props: {
+          name: layer.name,
+          x: layer.x,
+          y: layer.y,
+          scale: layer.scale,
+          opacity: layer.opacity,
+          rotation: layer.rotation,
+        },
+        blob,
+      });
+    }
+    // 旋转/重置会清空叠加层，顺带释放不再需要的 Blob 引用。
+    for (const id of [...layerBlobs.keys()]) {
+      if (!keepIds.has(id)) layerBlobs.delete(id);
+    }
+
+    return {
+      id,
+      name,
+      width: size.width,
+      height: size.height,
+      createdAt,
+      updatedAt: Date.now(),
+      thumbnail: thumbnailOf(current),
+      activeTool: tool,
+      viewport,
+      tabId: tabId(),
+      base: { blob: base, name, width: sourceSize.width, height: sourceSize.height },
+      maskBlob,
+      refs: aiState?.refs || [],
+      layers,
+      session: {
+        prompt: aiState?.prompt || '',
+        activeTab,
+        cropRect: cropRect ? { ...cropRect } : null,
+        transform,
+        adjust,
+        aiParams,
+        viewport,
+        activeTool: tool,
+      },
+    };
+  }
+
+  function scheduleSave(delay = 800) {
+    if (!doc || persistDisabled) return;
+    saveDirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = 0;
+      void runSave();
+    }, delay);
+    // 空闲兜底：连续操作间隙也保证 5s 内至少落一次。
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = 0;
+      if (saveDirty) void runSave();
+    }, 5000);
+  }
+
+  async function runSave() {
+    if (!doc || persistDisabled) return;
+    if (saving) {
+      savePending = true;
+      return;
+    }
+    clearTimeout(saveRetryTimer);
+    saveRetryTimer = 0;
+    saving = true;
+    saveDirty = false;
+    setSaveState('saving');
+    try {
+      const payload = await collectProject();
+      if (!payload) return;
+      await saveStudioProject(payload);
+      saveRetryDelay = 0;
+      saveWarned = false;
+      setSaveState('saved');
+    } catch {
+      saveDirty = true;
+      setSaveState('error');
+      if (!saveWarned) {
+        saveWarned = true;
+        toastWarn('本地自动保存失败，编辑内容仍在内存中，可继续导出');
+      }
+      saveRetryDelay = Math.min(30000, saveRetryDelay ? saveRetryDelay * 2 : 2000);
+      saveRetryTimer = setTimeout(() => {
+        saveRetryTimer = 0;
+        if (doc) void runSave();
+      }, saveRetryDelay);
+    } finally {
+      saving = false;
+      if (savePending) {
+        savePending = false;
+        void runSave();
+      }
+    }
+  }
+
+  function flushSave() {
+    if (!doc || persistDisabled) return;
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    clearTimeout(idleTimer);
+    idleTimer = 0;
+    if (saveDirty || saving) void runSave();
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState === 'hidden') flushSave();
+  }
+
+  function onPageHide() {
+    flushSave();
+  }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('pagehide', onPageHide);
 
   /* ============================================================
    * 打开 / 载入 / 导出
@@ -1110,6 +1412,9 @@ export function createStudioPage(host) {
       const image = await loadImage(url);
       if (token !== openSeq) return;
       if (imageTooLarge(image)) return;
+      flushSave();
+      beginProject();
+      sourceBlob = file;
       setDoc(new StudioDoc(image, file.name || 'untitled.png'));
     } catch (err) {
       toastError(err, '打开图片失败');
@@ -1125,7 +1430,14 @@ export function createStudioPage(host) {
       const image = await loadImage(url);
       if (token !== openSeq) return false;
       if (imageTooLarge(image)) return false;
-      setDoc(new StudioDoc(image, name || 'material.png'));
+      const next = new StudioDoc(image, name || 'material.png');
+      const fetched = await fetchBlob(url);
+      if (token !== openSeq) return false;
+      flushSave();
+      beginProject();
+      // 外链/历史图取不到原文件时，用空白文档先编码一份原图，避免把叠加层烘进底图。
+      sourceBlob = fetched || (await next.bakeBlob('image/png').catch(() => null));
+      setDoc(next);
       return true;
     } catch (err) {
       if (token === openSeq) toastError(err, '打开图片失败');
@@ -1135,6 +1447,7 @@ export function createStudioPage(host) {
 
   function setDoc(next) {
     doc = next;
+    layerBlobs.clear();
     cropRect = null;
     tint = null;
     tintDirty = true;
@@ -1152,6 +1465,11 @@ export function createStudioPage(host) {
     setPreview(null);
     ai?.resetTaskContext?.();
     ai?.refresh?.();
+    if (persistDisabled && !storageWarned) {
+      storageWarned = true;
+      toastWarn('当前浏览器不支持本机工程存储，刷新或关闭页面后编辑会丢失');
+    }
+    scheduleSave(600);
     requestAnimationFrame(() => {
       fitView();
       updateSizeInfo();
@@ -1228,6 +1546,7 @@ export function createStudioPage(host) {
     fitView();
     selectedLayerId = null;
     ai?.refresh?.();
+    scheduleSave();
   }
 
   function downloadDataUrl(dataUrl, filename) {
@@ -1388,6 +1707,7 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       ai?.refresh?.();
       scheduleDraw();
+      scheduleSave();
     }
   });
   refs.redoBtn.addEventListener('click', () => {
@@ -1400,6 +1720,7 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       ai?.refresh?.();
       scheduleDraw();
+      scheduleSave();
     }
   });
 
@@ -1422,6 +1743,7 @@ export function createStudioPage(host) {
       if (!doc) return;
       doc.snapshot();
       updateHistoryUi();
+      scheduleSave();
     });
   }
 
@@ -1433,6 +1755,7 @@ export function createStudioPage(host) {
     syncAdjustInputs();
     updateHistoryUi();
     scheduleDraw();
+    scheduleSave();
   });
 
   for (const input of host.querySelectorAll('[data-brush]')) {
@@ -1462,6 +1785,7 @@ export function createStudioPage(host) {
     updateHistoryUi();
     updateMaskStatus();
     scheduleDraw();
+    scheduleSave();
   });
 
   refs.maskExport.addEventListener('click', () => {
@@ -1500,6 +1824,7 @@ export function createStudioPage(host) {
     fitView();
     setTool('view');
     ai?.refresh?.();
+    scheduleSave();
   });
 
   refs.cropCancel.addEventListener('click', () => {
@@ -1514,6 +1839,7 @@ export function createStudioPage(host) {
     updateSizeInfo();
     updateHistoryUi();
     fitView();
+    scheduleSave();
   });
 
   refs.resetAll.addEventListener('click', async () => {
@@ -1535,6 +1861,7 @@ export function createStudioPage(host) {
     fitView();
     selectedLayerId = null;
     ai?.refresh?.();
+    scheduleSave();
   });
 
   for (const button of host.querySelectorAll('[data-zoom]')) {
@@ -1717,6 +2044,7 @@ export function createStudioPage(host) {
     setTool(tool);
     syncTabs();
     applyCanvasFilterCapability();
+    if (persistDisabled) setSaveState('off');
     if (!doc) refs.statusTool.textContent = '未打开图片 · 支持拖拽 / 粘贴';
   });
 
@@ -1730,9 +2058,16 @@ export function createStudioPage(host) {
     },
     /** 页面被移除时统一解绑，避免全局监听器与观察器在旧实例上累积。 */
     destroy() {
+      flushSave();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('paste', onPaste);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      clearTimeout(saveTimer);
+      clearTimeout(idleTimer);
+      clearTimeout(saveRetryTimer);
+      clearTimeout(saveStateTimer);
       resizeObserver.disconnect();
       if (raf) {
         cancelAnimationFrame(raf);

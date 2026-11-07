@@ -1698,6 +1698,7 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 | S-23 | 在指令框 / 弹窗内粘贴图片会替换主图 | P1 | `studio.js:1458-1464` |
 | S-24 | 收藏失败后按钮永久禁用 | P1 | `studio.js:1180-1196` |
 | S-25 | `ctx.filter` 不可用时曝光 / 对比 / 饱和度静默失效 | P2 | `studioDoc.js:382-390` |
+| S-26 | 编辑页润色不把参考图交给视觉模型，指代式指令无法展开 | P1（已修） | `edit.js:690-712`、`polish.js:62-80` |
 
 ### 18.3 数据与输出一致性
 
@@ -1750,6 +1751,18 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 - 证据：`api.fileUrl('')` 返回 `''`；`onDone` 仍 `previewOn = true`、`showResult('')` 并 toast「修改完成」。
 - 后果：后端返回缺字段时，用户以为成功，实际画布无变化，载入按钮点击后静默失败。
 - 修复：`if (!image?.url && !image?.path) throw` / toast 失败并保持结果区隐藏。
+
+**S-26 润色看不到参考图，指代式指令写不成可执行描述（P1，实测，已修复 `8edd0f7`）**
+
+- 现象：编辑页输入 `让 <image1> 做出 <image2> 的动作`，提交后出图与第 1 张几乎一样，`quality.changed_ratio` 仅 **2.4%**，`<image2>` 形同废纸。
+- 根因链：
+  1. `edit.js` 调 `polishWithDialog` 时只传 `prompt / mode / styleHint / targetSize / pose`，不传 `images` 与 `references`；`polish.js` 参数表里也没有 `images`。
+  2. 后端 `/api/polish` 本身支持 `payload.images`（解码成 PIL 交给视觉模型），收不到就降级为纯文本改写。
+  3. `data/pe_system_prompt_edit.txt` 的 Image Reference Rules 强制 `<imageN>` 指代，于是润色结果仍是指代式。
+- 实测对照（同图同 seed，Turbo 8 步）：指代式 **2.4%** → 去掉 Remove LoRA **29%** → 详细动作描述 **51.6%**（两张）/ **52.1%**（只给图 1）。
+- 结论：多图条件确实进了 DiT（`keep_vision = len(ref_latents) == 0`，视觉 token 被 reference latent 替换是设计如此），但模型对「第 2 张提供姿态」这类指代不敏感；真正起作用的是**可执行的动作描述**。
+- 修复：`polish.js` 透传 `images`（上限 6 张）与 `references`，`edit.js` 传入参考图本体与角色清单；复测润色 13.4s 产出具体描述，提交后 `changed_ratio 39.1%`，姿态迁移成功。
+- 遗留：多图仍是弱条件，不做润色时不要承诺「精确动作迁移」；动作迁移优先走「姿态」面板（VNCCS）。
 
 ### 18.5 输入健壮性
 

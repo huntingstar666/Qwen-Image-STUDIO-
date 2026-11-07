@@ -362,7 +362,7 @@ export function applyOptionDefaults(options) {
   // 模型选择：没有保存过就用后端默认模型
   const profiles = options?.model_profiles || [];
   const modelIds = profiles.map((profile) => profile.id);
-  const defaultModel = options?.default_model || modelIds[0] || 'qwen';
+  const defaultModel = options?.defaults?.t2i_model || options?.default_model || modelIds[0] || 'qwen';
   if (!modelIds.includes(t2i.model)) t2i.model = defaultModel;
   if (!t2i.byModel || typeof t2i.byModel !== 'object') t2i.byModel = {};
   if (!t2i.slg || typeof t2i.slg !== 'object') t2i.slg = { ...DEFAULT_T2I.slg };

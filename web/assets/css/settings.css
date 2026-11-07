@@ -858,3 +858,28 @@ html[data-theme="dark"] .set-seg-item.active {
     transition: none;
   }
 }
+
+.set-tasktabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  margin: 0 0 12px;
+  border-radius: 10px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+}
+
+.set-tasktab {
+  border: 0;
+  background: transparent;
+  color: var(--text-2, inherit);
+  font: inherit;
+  padding: 5px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.set-tasktab.active {
+  background: var(--surface-1, #fff);
+  color: var(--text-1, inherit);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}

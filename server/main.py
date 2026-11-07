@@ -365,11 +365,16 @@ def api_options() -> dict[str, Any]:
     models = config.scan_models(cfg)
     # 加速 LoRA 单独一份候选（已按兼容性/体积排好序），供 Turbo 面板下拉选择
     models["turbo_lora"] = config.turbo_lora_candidates(cfg)
+    t2i_model = model_slots.task_model(cfg)
+    t2i_plan = model_slots.resolve_plan(cfg, task="t2i", model=t2i_model)
+    t2i_qwen = model_slots.resolve_plan(cfg, task="t2i", model="qwen")
+    t2i_moss = model_slots.resolve_plan(cfg, task="t2i", model="moss")
+    edit_plan = model_slots.resolve_plan(cfg, task="edit")
     return {
         "models": models,
         # 图像模型档案（协议 + 每模型 profile）：前端据此切换模型 / 步数 / 加速 / 边界框
         "model_profiles": image_models.public_list(cfg),
-        "default_model": image_models.normalize_model(cfg.get("model")),
+        "default_model": t2i_model,
         "samplers": config.SAMPLERS,
         "schedulers": config.SCHEDULERS,
         "ratios": config.RATIOS,
@@ -381,6 +386,11 @@ def api_options() -> dict[str, Any]:
             # 模型类默认值统一由槽位解析（系统设置 > 出厂），参数类仍来自 config
             **model_slots.resolve_plan(cfg),
             "slots": model_slots.resolve_plan(cfg),
+            "t2i": t2i_plan,
+            "t2i_qwen": t2i_qwen,
+            "t2i_moss": t2i_moss,
+            "edit": edit_plan,
+            "t2i_model": t2i_model,
             "preset_overrides": model_slots.section(cfg).get("preset_overrides") or {},
             "steps": cfg["steps"],
             "cfg": cfg["cfg"],

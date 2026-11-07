@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -41,6 +42,40 @@ SLOTS: dict[str, Slot] = {
     "outpaint_lora": Slot("outpaint_lora", "扩图 LoRA", "lora", False),
 }
 
+#: 文生图（MOSS 档案）专用槽位；只有 ``tasks.t2i.model = moss`` 时生效。
+MOSS_SLOTS: dict[str, Slot] = {
+    "moss_unet": Slot("moss_unet", "MOSS 扩散模型", "unet", True),
+    "moss_clip": Slot("moss_clip", "MOSS 文本编码器", "clip", True),
+    "moss_vae": Slot("moss_vae", "MOSS VAE", "vae", True),
+    "moss_turbo_lora": Slot("moss_turbo_lora", "MOSS 8 步加速 LoRA", "lora", False),
+}
+
+#: 全部可用槽位（设置接口校验用）。
+ALL_SLOTS: dict[str, Slot] = {**SLOTS, **MOSS_SLOTS}
+
+#: 任务 id：文生图 / 图生图。
+TASK_IDS: tuple[str, ...] = ("t2i", "edit")
+
+#: 各任务实际展示 / 校验的槽位。t2i 随模型档案切换，edit 固定 Qwen。
+_T2I_QWEN_KEYS: tuple[str, ...] = ("unet", "clip", "vae", "turbo_lora", "turbo_unet")
+_T2I_MOSS_KEYS: tuple[str, ...] = tuple(MOSS_SLOTS)
+_TASK_KEYS: dict[str, tuple[str, ...]] = {
+    "t2i": _T2I_QWEN_KEYS + _T2I_MOSS_KEYS,
+    "edit": tuple(SLOTS),
+}
+_TASK_ACTIVE_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
+    "t2i": {"qwen": _T2I_QWEN_KEYS, "moss": _T2I_MOSS_KEYS},
+    "edit": {"qwen": tuple(SLOTS)},
+}
+
+#: MOSS 槽位 → 档案实际使用的键。
+_MOSS_TO_PROFILE: dict[str, str] = {
+    "moss_unet": "unet",
+    "moss_clip": "clip",
+    "moss_vae": "vae",
+    "moss_turbo_lora": "turbo_lora",
+}
+
 #: 旧版顶层配置键 → 槽位（迁移兼容：没有 model_defaults 时用它兜底）。
 LEGACY_KEYS: dict[str, str] = {
     "unet": "unet",
@@ -62,6 +97,8 @@ def _basename(value: str) -> str:
 
 def factory_slots() -> dict[str, str]:
     """出厂默认（= 当前这套配置），与 config.DEFAULTS / LORA_TASKS 保持一致。"""
+    from . import models  # 局部导入，避免模块级循环依赖
+
     defaults = config.DEFAULTS
     remove = (config.LORA_TASKS.get("remove") or {}).get("name") or ""
     outpaint = (config.LORA_TASKS.get("outpaint") or {}).get("name") or ""
@@ -74,6 +111,10 @@ def factory_slots() -> dict[str, str]:
         "consistency_lora": str(defaults.get("consistency_lora") or ""),
         "remove_lora": str(remove),
         "outpaint_lora": str(outpaint),
+        "moss_unet": models.MOSS_UNET,
+        "moss_clip": models.MOSS_CLIP,
+        "moss_vae": models.MOSS_VAE,
+        "moss_turbo_lora": models.MOSS_8STEP_LORA,
     }
 
 
@@ -101,8 +142,23 @@ def normalize(raw: Any) -> dict[str, str]:
         raise ValueError("model_defaults.slots 必须是对象")
     out: dict[str, str] = {}
     for key, value in raw.items():
-        if key not in SLOTS:
-            raise ValueError(f"未知模型槽位：{key!r}（可选 {', '.join(SLOTS)}）")
+        if key not in ALL_SLOTS:
+            raise ValueError(f"未知模型槽位：{key!r}（可选 {', '.join(ALL_SLOTS)}）")
+        out[key] = normalize_value(value)
+    return out
+
+
+def normalize_task_slots(task: str, raw: Any) -> dict[str, str]:
+    """校验任务级槽位补丁：只允许该任务实际使用的槽位。"""
+    if task not in TASK_IDS:
+        raise ValueError(f"未知任务：{task!r}（可选 {', '.join(TASK_IDS)}）")
+    if not isinstance(raw, dict):
+        raise ValueError(f"model_defaults.tasks.{task}.slots 必须是对象")
+    allowed = set(_TASK_KEYS[task])
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if key not in allowed:
+            raise ValueError(f"任务 {task} 不支持槽位：{key!r}")
         out[key] = normalize_value(value)
     return out
 
@@ -128,7 +184,8 @@ def normalize_preset_overrides(raw: Any) -> dict[str, Any]:
 def merge_section(cfg: dict[str, Any] | None, raw: Any) -> dict[str, Any]:
     """把 POST 的 ``model_defaults`` 补丁合并成可写盘的完整段。
 
-    只允许出现 ``slots`` / ``preset_overrides``；槽位传空串表示「清空，回落出厂」。
+    只允许出现 ``slots`` / ``tasks`` / ``preset_overrides``；
+    槽位传空串表示「清空，回落出厂/公共值」。
     """
     cfg = cfg or {}
     if not isinstance(raw, dict):
@@ -137,6 +194,7 @@ def merge_section(cfg: dict[str, Any] | None, raw: Any) -> dict[str, Any]:
     merged: dict[str, Any] = {
         "version": int(current.get("version") or 2),
         "slots": dict(current.get("slots") or {}),
+        "tasks": copy.deepcopy(current.get("tasks") or {}),
         "preset_overrides": dict(current.get("preset_overrides") or {}),
     }
     if "slots" in raw:
@@ -145,8 +203,46 @@ def merge_section(cfg: dict[str, Any] | None, raw: Any) -> dict[str, Any]:
                 merged["slots"][key] = value
             else:
                 merged["slots"].pop(key, None)
+    if "tasks" in raw:
+        tasks_raw = raw.get("tasks")
+        if not isinstance(tasks_raw, dict):
+            raise ValueError("model_defaults.tasks 必须是对象")
+        for task, patch in tasks_raw.items():
+            if task not in TASK_IDS:
+                raise ValueError(f"未知任务：{task!r}（可选 {', '.join(TASK_IDS)}）")
+            if patch is None:
+                merged["tasks"].pop(task, None)
+                continue
+            if not isinstance(patch, dict):
+                raise ValueError(f"model_defaults.tasks.{task} 必须是对象或 null")
+            item = dict(merged["tasks"].get(task) or {})
+            if "model" in patch:
+                value = patch.get("model")
+                if value is None or not str(value).strip():
+                    item.pop("model", None)
+                else:
+                    from . import models
+
+                    item["model"] = models.normalize_model(value)
+            if "slots" in patch:
+                slots = dict(item.get("slots") or {})
+                for key, value in normalize_task_slots(task, patch.get("slots")).items():
+                    if value:
+                        slots[key] = value
+                    else:
+                        slots.pop(key, None)
+                if slots:
+                    item["slots"] = slots
+                else:
+                    item.pop("slots", None)
+            if item:
+                merged["tasks"][task] = item
+            else:
+                merged["tasks"].pop(task, None)
     if "preset_overrides" in raw:
         merged["preset_overrides"] = normalize_preset_overrides(raw.get("preset_overrides"))
+    if merged["tasks"]:
+        merged["version"] = 3
     return merged
 
 
@@ -166,12 +262,36 @@ def _legacy_value(cfg: dict[str, Any], key: str) -> str | None:
     return None
 
 
-def resolve_plan(cfg: dict[str, Any] | None = None,
-                 preset_id: str | None = None) -> dict[str, str]:
-    """合并后的生效槽位：出厂 < 旧顶层键 < 全局槽位 < 预设覆盖。"""
+def task_model(cfg: dict[str, Any] | None = None) -> str:
+    """文生图默认模型档案：``tasks.t2i.model`` → 旧 ``cfg.model`` → ``qwen``。"""
     cfg = cfg or config.load_config()
+    tasks = section(cfg).get("tasks") or {}
+    item = tasks.get("t2i") if isinstance(tasks, dict) else {}
+    raw = item.get("model") if isinstance(item, dict) else None
+    from . import models
+
+    try:
+        return models.normalize_model(raw or cfg.get("model") or "qwen")
+    except ValueError:
+        return models.DEFAULT_MODEL
+
+
+def resolve_plan(cfg: dict[str, Any] | None = None,
+                 preset_id: str | None = None,
+                 task: str | None = None,
+                 model: str | None = None) -> dict[str, str]:
+    """合并后的生效槽位。
+
+    优先级：出厂 < 旧顶层键（仅无 model_defaults 时）< MOSS 旧配置段
+    < 公共槽位 < 任务槽位 < 预设覆盖；``task=t2i`` 且档案为 MOSS 时，
+    把 ``moss_*`` 槽位映射为档案实际使用的 unet / clip / vae / turbo_lora。
+    """
+    cfg = cfg or config.load_config()
+    if task is not None and task not in TASK_IDS:
+        raise ValueError(f"未知任务：{task!r}（可选 {', '.join(TASK_IDS)}）")
     plan = factory_slots()
     has_section = isinstance(cfg.get("model_defaults"), dict)
+    data = section(cfg)
 
     # 旧顶层键只在「还没写过 model_defaults」时兜底；一旦启用新结构，
     # 清空某个槽位就应真正回落出厂值，而不是被旧值复活。
@@ -181,18 +301,43 @@ def resolve_plan(cfg: dict[str, Any] | None = None,
             if legacy:
                 plan[key] = legacy
 
-    data = section(cfg)
+    # MOSS 旧配置段（config.json 的 moss.unet/clip/vae/turbo_lora）：始终作为兜底，
+    # 低于 model_defaults 的公共 / 任务槽位，保证老用户配置继续生效。
+    raw_moss = cfg.get("moss") or {}
+    for slot_key, moss_key in _MOSS_TO_PROFILE.items():
+        value = raw_moss.get(moss_key)
+        if isinstance(value, str) and value.strip():
+            plan[slot_key] = normalize_value(value)
+
     for key, value in (data.get("slots") or {}).items():
-        if key in SLOTS and isinstance(value, str) and value.strip():
+        if key in ALL_SLOTS and isinstance(value, str) and value.strip():
             plan[key] = normalize_value(value)
+
+    if task:
+        item = (data.get("tasks") or {}).get(task)
+        if isinstance(item, dict):
+            for key, value in (item.get("slots") or {}).items():
+                if key in _TASK_KEYS[task] and isinstance(value, str) and value.strip():
+                    plan[key] = normalize_value(value)
 
     if preset_id:
         overrides = data.get("preset_overrides") or {}
         override = overrides.get(str(preset_id))
         if isinstance(override, dict):
             for key, value in (override.get("slots") or {}).items():
-                if key in SLOTS and isinstance(value, str) and value.strip():
+                if key in ALL_SLOTS and isinstance(value, str) and value.strip():
                     plan[key] = normalize_value(value)
+
+    if task == "t2i":
+        from . import models
+
+        try:
+            effective = models.normalize_model(model or task_model(cfg))
+        except ValueError:
+            effective = models.DEFAULT_MODEL
+        if effective == "moss":
+            for slot_key, profile_key in _MOSS_TO_PROFILE.items():
+                plan[profile_key] = plan.get(slot_key) or plan[profile_key]
     return plan
 
 
@@ -217,7 +362,7 @@ def match_slots(cfg: dict[str, Any] | None = None,
     models = config.scan_models(cfg)
     out: dict[str, dict[str, Any]] = {}
 
-    for key, slot in SLOTS.items():
+    for key, slot in ALL_SLOTS.items():
         expected = plan.get(key) or ""
         value = ""
         via: str | None = None
@@ -258,16 +403,12 @@ def match_factory(cfg: dict[str, Any] | None = None) -> dict[str, dict[str, Any]
     return match_slots(cfg, factory_slots())
 
 
-def audit(cfg: dict[str, Any] | None = None,
-          preset_id: str | None = None) -> dict[str, Any]:
-    """设置页用的完整视图：每个槽位的期望值 / 当前值 / 是否找到 / 是否必需。"""
-    cfg = cfg or config.load_config()
-    plan = resolve_plan(cfg, preset_id)
-    matched = match_slots(cfg, plan)
-    factory = factory_slots()
+def _audit_slots(plan: dict[str, str], matched: dict[str, dict[str, Any]],
+                 keys: tuple[str, ...], factory: dict[str, str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     slots: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
-    for key, slot in SLOTS.items():
+    for key in keys:
+        slot = ALL_SLOTS[key]
         item = matched[key]
         found = bool(item["found"])
         if slot.required and not found:
@@ -283,6 +424,34 @@ def audit(cfg: dict[str, Any] | None = None,
             "via": item["via"],
             "source": "factory" if plan.get(key) == factory.get(key) else "custom",
         }
+    return slots, missing
+
+
+def audit(cfg: dict[str, Any] | None = None,
+          preset_id: str | None = None) -> dict[str, Any]:
+    """设置页用的完整视图：每个槽位的期望值 / 当前值 / 是否找到 / 是否必需。"""
+    cfg = cfg or config.load_config()
+    plan = resolve_plan(cfg, preset_id)
+    matched = match_slots(cfg, plan)
+    factory = factory_slots()
+    slots, missing = _audit_slots(plan, matched, tuple(SLOTS), factory)
+
+    t2i_model = task_model(cfg)
+    tasks: dict[str, dict[str, Any]] = {}
+    for task in TASK_IDS:
+        task_plan = resolve_plan(cfg, preset_id, task=task, model=t2i_model if task == "t2i" else None)
+        task_matched = match_slots(cfg, task_plan)
+        active_keys = set(_TASK_ACTIVE_KEYS[task].get(t2i_model if task == "t2i" else "qwen", ()))
+        task_slots, task_missing = _audit_slots(task_plan, task_matched, _TASK_KEYS[task], factory)
+        for key, item in task_slots.items():
+            item["active"] = key in active_keys
+        tasks[task] = {
+            "model": t2i_model if task == "t2i" else "qwen",
+            "matched": not task_missing,
+            "slots": task_slots,
+            "missing": task_missing,
+        }
+
     data = section(cfg)
     return {
         "version": int(data.get("version") or 2),
@@ -290,4 +459,6 @@ def audit(cfg: dict[str, Any] | None = None,
         "slots": slots,
         "missing": missing,
         "preset_overrides": data.get("preset_overrides") or {},
+        "t2i_model": t2i_model,
+        "tasks": tasks,
     }

@@ -114,12 +114,21 @@ function formFromData(data) {
   };
 }
 
-/** 默认模型槽位的草稿值（空串 = 跟随出厂）。 */
+/** 默认模型槽位的草稿值（空串 = 跟随出厂）；任务槽位用 `<task>.<slot>` 键。 */
 function defaultsFromData(data) {
-  const slots = data?.model_defaults?.slots || {};
+  const defaults = data?.model_defaults || {};
   const out = {};
-  for (const [key, item] of Object.entries(slots)) out[key] = item?.expected || '';
+  for (const [key, item] of Object.entries(defaults.slots || {})) out[key] = item?.expected || '';
+  for (const [task, view] of Object.entries(defaults.tasks || {})) {
+    for (const [key, item] of Object.entries(view?.slots || {})) {
+      out[`${task}.${key}`] = item?.expected || '';
+    }
+  }
   return out;
+}
+
+function defaultsT2iModel(data) {
+  return String(data?.model_defaults?.t2i_model || 'qwen');
 }
 
 function ensureState() {
@@ -130,6 +139,9 @@ function ensureState() {
       form: emptyForm(),
       slotDraft: null,
       slotSaved: null,
+      defaultsTask: 't2i',
+      t2iModelDraft: 'qwen',
+      t2iModelSaved: 'qwen',
       options: null,
       optionsLoading: false,
       dirty: false,
@@ -206,7 +218,7 @@ function bindEvents() {
       return;
     }
     const action = event.target.closest('[data-action]');
-    if (action) handleAction(action.dataset.action);
+    if (action) handleAction(action.dataset.action, action);
   });
 
   overlay.addEventListener('input', (event) => {
@@ -220,6 +232,13 @@ function bindEvents() {
     const slot = event.target.closest('[data-slot]');
     if (slot) {
       state.slotDraft = { ...state.slotDraft, [slot.dataset.slot]: slot.value };
+      markDirty();
+      render();
+      return;
+    }
+    const defaultsModel = event.target.closest('[data-defaults-model]');
+    if (defaultsModel) {
+      state.t2iModelDraft = defaultsModel.value;
       markDirty();
       render();
       return;
@@ -499,7 +518,7 @@ function renderModels() {
 }
 
 function slotSelect(slotKey, slot, current) {
-  const list = (state.options?.[slot.kind] || []).map((item) => ({
+  const list = (state.options?.models?.[slot.kind] || []).map((item) => ({
     value: item.value,
     label: item.label || item.value,
   }));
@@ -529,9 +548,14 @@ function slotChip(slot, pending) {
 function renderDefaults() {
   const audit = state.data?.model_defaults;
   if (!audit) return `<p class="set-note">${t('defaults.loading')}</p>`;
-  const slots = audit.slots || {};
-  const missing = (audit.missing || []).map((key) => slots[key]?.label || key);
-  const banner = audit.matched
+  const task = state.defaultsTask === 'edit' ? 'edit' : 't2i';
+  const view = audit.tasks?.[task] || { slots: {}, matched: audit.matched, missing: audit.missing || [] };
+  const slots = view.slots || audit.slots || {};
+  const model = task === 't2i' ? (state.t2iModelDraft || 'qwen') : 'qwen';
+  const rowsForTask = Object.entries(slots).filter(([key]) =>
+    task !== 't2i' || key.startsWith('moss_') === (model === 'moss'));
+  const missing = (view.missing || []).map((key) => slots[key]?.label || key);
+  const banner = view.matched
     ? `<div class="notice info">${t('defaults.ok')} ${t('defaults.okHint')}</div>`
     : `<div class="notice warn">${t('defaults.missing')} ${t('defaults.missingHint', { slots: missing.join('、') })}</div>`;
 
@@ -539,10 +563,26 @@ function renderDefaults() {
     return `${banner}${group(t('defaults.title'), `<div class="set-row"><span class="set-desc">${t('defaults.loading')}</span></div>`)}`;
   }
 
-  const rows = Object.entries(slots)
+  const tabs = `
+    <div class="set-tasktabs">
+      ${['t2i', 'edit'].map((id) => `<button type="button" class="set-tasktab ${id === task ? 'active' : ''}" data-action="defaults-task" data-task="${id}">${t(`defaults.task.${id}`)}</button>`).join('')}
+    </div>`;
+  const modelRow = task === 't2i'
+    ? row(
+        t('defaults.t2iModel'),
+        t('defaults.t2iModelDesc'),
+        `<select class="set-input set-select" data-defaults-model>
+          ${(state.options.model_profiles || []).map((profile) =>
+            `<option value="${escapeHtml(profile.id)}" ${profile.id === model ? 'selected' : ''}>${escapeHtml(profile.label || profile.id)}</option>`).join('')}
+        </select>${state.t2iModelDraft !== state.t2iModelSaved ? `<span class="set-chip">${t('defaults.pending')}</span>` : ''}`,
+      )
+    : '';
+
+  const rows = rowsForTask
     .map(([key, slot]) => {
-      const draft = state.slotDraft?.[key] ?? '';
-      const saved = state.slotSaved?.[key] ?? '';
+      const compound = `${task}.${key}`;
+      const draft = state.slotDraft?.[compound] ?? '';
+      const saved = state.slotSaved?.[compound] ?? '';
       const pending = draft !== saved;
       const hint = [
         escapeHtml(slot.value || slot.expected || '—'),
@@ -555,7 +595,7 @@ function renderDefaults() {
       return row(
         `${escapeHtml(slot.label)}${slot.required ? ' *' : ''}`,
         hint,
-        `${slotSelect(key, slot, draft)}${slotChip(slot, pending)}`,
+        `${slotSelect(compound, slot, draft)}${slotChip(slot, pending)}`,
       );
     })
     .join('');
@@ -573,8 +613,9 @@ function renderDefaults() {
     );
 
   return `
+    ${tabs}
     ${banner}
-    ${group(t('defaults.title'), rows, t('defaults.desc'))}
+    ${group(`${t('defaults.title')} · ${t(`defaults.task.${task}`)}`, `${modelRow}${rows}`, t('defaults.desc'))}
     ${group(t('defaults.actions'), actions, t('defaults.saveHint'))}
   `;
 }
@@ -725,7 +766,7 @@ async function loadModelOptions() {
   state.optionsLoading = true;
   try {
     const data = await api.options();
-    state.options = data?.models || {};
+    state.options = data || {};
   } catch (err) {
     state.options = {};
     toastError(err, '扫描候选模型失败');
@@ -745,6 +786,8 @@ async function load() {
     state.form = formFromData(data);
     state.slotDraft = defaultsFromData(data);
     state.slotSaved = { ...state.slotDraft };
+    state.t2iModelDraft = defaultsT2iModel(data);
+    state.t2iModelSaved = state.t2iModelDraft;
     state.dirty = false;
     state.testResult = null;
   } catch (err) {
@@ -755,12 +798,27 @@ async function load() {
   }
 }
 
-/** 只提交用户改过的槽位；空串 = 清空自定义，回落出厂。 */
+/** 只提交用户改过的槽位；空串 = 清空自定义，回落出厂 / 公共值。 */
 function collectSlotPatch() {
-  const patch = {};
+  const globalPatch = {};
+  const tasks = {};
   for (const [key, value] of Object.entries(state.slotDraft || {})) {
-    if ((state.slotSaved?.[key] ?? '') !== value) patch[key] = value;
+    if ((state.slotSaved?.[key] ?? '') === value) continue;
+    if (key.includes('.')) {
+      const [task, slot] = key.split('.', 2);
+      tasks[task] = tasks[task] || { slots: {} };
+      tasks[task].slots[slot] = value;
+    } else {
+      globalPatch[key] = value;
+    }
   }
+  if (state.t2iModelDraft !== state.t2iModelSaved) {
+    tasks.t2i = tasks.t2i || {};
+    tasks.t2i.model = state.t2iModelDraft;
+  }
+  const patch = {};
+  if (Object.keys(globalPatch).length) patch.slots = globalPatch;
+  if (Object.keys(tasks).length) patch.tasks = tasks;
   return Object.keys(patch).length ? patch : null;
 }
 
@@ -783,7 +841,7 @@ function buildPayload() {
     vram_reserve: Number(state.form.runtime.vram_reserve) || 0,
   };
   const slots = collectSlotPatch();
-  if (slots) payload.model_defaults = { slots };
+  if (slots) payload.model_defaults = slots;
   return payload;
 }
 
@@ -821,6 +879,8 @@ async function save() {
     state.form = formFromData(result);
     state.slotDraft = defaultsFromData(result);
     state.slotSaved = { ...state.slotDraft };
+    state.t2iModelDraft = defaultsT2iModel(result);
+    state.t2iModelSaved = state.t2iModelDraft;
     state.dirty = false;
     state.testResult = null;
     toastSuccess(t('settings.savedToast'));
@@ -848,6 +908,10 @@ function resetDefaults() {
       state.slotDraft[key] = '';
       changed = true;
     }
+  }
+  if (state.t2iModelDraft !== 'qwen') {
+    state.t2iModelDraft = 'qwen';
+    changed = true;
   }
   if (!changed) return;
   markDirty();
@@ -902,13 +966,17 @@ async function freeVram() {
   }
 }
 
-function handleAction(action) {
+function handleAction(action, element = null) {
   switch (action) {
     case 'close':
       attemptClose();
       break;
     case 'save':
       save();
+      break;
+    case 'defaults-task':
+      state.defaultsTask = element?.dataset?.task === 'edit' ? 'edit' : 't2i';
+      render();
       break;
     case 'reload':
       if (state.dirty && !window.confirm('有未保存的修改，重新加载将丢弃它们。继续？')) return;

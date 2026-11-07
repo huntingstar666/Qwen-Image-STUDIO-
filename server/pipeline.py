@@ -339,15 +339,20 @@ def _sampling_plan(params: dict[str, Any], cfg: dict[str, Any],
 
 
 def _resolve_models(cfg: dict[str, Any], params: dict[str, Any],
-                    profile: dict[str, Any], turbo_unet: str | None = None) -> dict[str, str]:
+                    profile: dict[str, Any], turbo_unet: str | None = None,
+                    task: str | None = None) -> dict[str, str]:
     """按模型档案取权重；请求里的 models.{unet,clip,vae} 可覆盖。
 
-    ``turbo_unet`` 来自 Turbo 预设（例如「自动切 Turbo 底模」），优先级最高。
+    ``task`` 区分文生图 / 图生图（默认槽位可能不同）；``turbo_unet`` 来自
+    Turbo 预设（例如「自动切 Turbo 底模」），优先级最高。
     """
     requested = dict(params.get("models") or {})
     if turbo_unet:
         requested["unet"] = turbo_unet
-    plan = model_slots.resolve_plan(cfg, params.get("preset") or None)
+    if task is None and profile.get("id") == "moss":
+        task = "t2i"
+    plan = model_slots.resolve_plan(cfg, params.get("preset") or None,
+                                    task=task, model=profile.get("id"))
     out: dict[str, str] = {}
     missing: list[dict[str, Any]] = []
     for key in ("unet", "clip", "vae"):
@@ -618,9 +623,10 @@ class Pipeline:
         return engine
 
     @staticmethod
-    def _profile(cfg: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def _profile(cfg: dict[str, Any], params: dict[str, Any],
+                 task: str | None = None) -> dict[str, Any]:
         try:
-            return models.get(cfg, params.get("model"))
+            return models.get(cfg, params.get("model"), task=task)
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
 
@@ -665,7 +671,7 @@ class Pipeline:
     def generate_t2i(self, job) -> None:
         cfg = config.load_config()
         params = job.params
-        profile = self._profile(cfg, params)
+        profile = self._profile(cfg, params, task="t2i")
         width, height = _t2i_size(cfg, params, profile)
         batch = max(1, min(int(params.get("batch") or 1), int(cfg["max_batch"])))
         for side in (width, height):
@@ -674,7 +680,7 @@ class Pipeline:
 
         sampling = _sampling_plan(params, cfg, profile)
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
-        model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
+        model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet, task="t2i")
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         _apply_pose_lora(cfg, profile, params, loras, job)
         if sampling.get("turbo_lora_note"):
@@ -800,7 +806,7 @@ class Pipeline:
             if isinstance(chain, dict):
                 job.params["chain"] = dict(chain)
             job.meta["preset"] = preset_info
-        profile = self._profile(cfg, params)
+        profile = self._profile(cfg, params, task="edit")
         if not profile["capabilities"].get("edit"):
             raise PipelineError(f"{profile['label']} 暂不支持参考图编辑（当前只支持文生图）")
         entries = params.get("images") or []
@@ -971,7 +977,7 @@ class Pipeline:
         if sampling.get("slg"):
             job.params["slg"] = sampling["slg"]
         turbo_unet = ((sampling.get("turbo_plan") or {}).get("unet") or {}).get("path")
-        model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet)
+        model_paths = _resolve_models(cfg, params, profile, turbo_unet=turbo_unet, task="edit")
         # 显式任务模式但没带 LoRA 时，按任务自动挂预设：
         # 第三方 API 只传 task.mode 也能得到 Remove / 扩图 LoRA 的正确效果。
         # 普通编辑默认挂「一致性无偏移」LoRA（与孤海工作流一致），

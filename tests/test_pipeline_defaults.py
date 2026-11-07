@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from server import config, model_slots, pipeline
+from server import config, model_slots, models, pipeline
 
 
 def _make_root() -> Path:
@@ -27,6 +27,12 @@ def make_cfg(root: Path) -> dict:
             "vae": ["vae"],
             "lora": ["loras"],
         },
+        "steps": 25,
+        "cfg": 2.5,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "width": 1024,
+        "height": 1024,
     }
 
 
@@ -86,6 +92,32 @@ def test_resolve_models_reports_missing_with_code():
         slots = {item["slot"] for item in exc.meta["missing"]}
         assert {"unet", "clip", "vae"} <= slots
         assert exc.meta["missing"][0]["searched_dirs"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_resolve_models_moss_uses_moss_weights():
+    root = _make_root()
+    try:
+        cfg = make_cfg(root)
+        factory = model_slots.factory_slots()
+        for key in ("unet", "clip", "vae", "moss_unet", "moss_clip", "moss_vae"):
+            touch(root, factory[key])
+        cfg["model_defaults"] = {
+            "version": 3,
+            "slots": {},
+            "tasks": {"t2i": {"model": "moss"}},
+        }
+
+        moss = models.get(cfg, "moss", task="t2i")
+        out = pipeline._resolve_models(cfg, {"model": "moss"}, moss, task="t2i")
+        for key, slot in (("unet", "moss_unet"), ("clip", "moss_clip"), ("vae", "moss_vae")):
+            assert out[key].replace("\\", "/").endswith(factory[slot])
+
+        qwen = models.get(cfg, "qwen", task="edit")
+        edit = pipeline._resolve_models(cfg, {}, qwen, task="edit")
+        for key in ("unet", "clip", "vae"):
+            assert edit[key].replace("\\", "/").endswith(factory[key])
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

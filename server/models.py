@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from . import config
+from . import config, model_slots
 
 #: 未指定模型时使用的档案
 DEFAULT_MODEL = "qwen"
@@ -60,15 +60,17 @@ def _stem(path: str | None) -> str | None:
     return name.rsplit(".", 1)[0] if name else None
 
 
-def _resolve(cfg: dict[str, Any], name: str) -> dict[str, Any]:
+def _resolve(cfg: dict[str, Any], name: str, task: str | None = None) -> dict[str, Any]:
     if name == "moss":
         raw = cfg.get("moss") or {}
+        # 权重走文生图（MOSS 档案）槽位，系统设置里可覆盖；旧 moss 段继续兜底。
+        plan = model_slots.resolve_plan(cfg, task="t2i", model="moss")
         paths = {
-            "unet": config.resolve_model(cfg, "unet", raw.get("unet") or MOSS_UNET),
-            "clip": config.resolve_model(cfg, "clip", raw.get("clip") or MOSS_CLIP),
-            "vae": config.resolve_model(cfg, "vae", raw.get("vae") or MOSS_VAE),
+            "unet": config.resolve_model(cfg, "unet", plan["moss_unet"]),
+            "clip": config.resolve_model(cfg, "clip", plan["moss_clip"]),
+            "vae": config.resolve_model(cfg, "vae", plan["moss_vae"]),
         }
-        lora = config.resolve_model(cfg, "lora", raw.get("turbo_lora") or MOSS_8STEP_LORA)
+        lora = config.resolve_model(cfg, "lora", plan["moss_turbo_lora"])
         slg_defaults = {
             "single_layers": "22",
             "double_layers": "",
@@ -108,7 +110,9 @@ def _resolve(cfg: dict[str, Any], name: str) -> dict[str, Any]:
             "megapixels": float(raw.get("megapixels") or 2.0),
         }
 
-    paths = config.default_model_paths(cfg)
+    raw_plan = model_slots.resolve_plan(cfg, task=task)
+    paths = {key: config.resolve_model(cfg, key, raw_plan.get(key))
+             for key in ("unet", "clip", "vae", "turbo_lora")}
     return {
         "id": "qwen",
         "label": "Qwen-Image 2.1",
@@ -140,16 +144,18 @@ def _resolve(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     }
 
 
-def get(cfg: dict[str, Any] | None = None, name: Any = None) -> dict[str, Any]:
+def get(cfg: dict[str, Any] | None = None, name: Any = None,
+        task: str | None = None) -> dict[str, Any]:
     """取模型档案（权重已解析成绝对路径，可能为 None）。"""
     cfg = cfg or config.load_config()
     key = normalize_model(name if name is not None else cfg.get("model"))
-    return _resolve(cfg, key)
+    return _resolve(cfg, key, task=task)
 
 
-def default_profile(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+def default_profile(cfg: dict[str, Any] | None = None,
+                    task: str | None = None) -> dict[str, Any]:
     cfg = cfg or config.load_config()
-    return get(cfg, cfg.get("model"))
+    return get(cfg, cfg.get("model"), task=task)
 
 
 def _moss_turbo(cfg: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -192,13 +198,14 @@ def _moss_turbo(cfg: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, 
     return presets
 
 
-def public_list(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def public_list(cfg: dict[str, Any] | None = None,
+                task: str = "t2i") -> list[dict[str, Any]]:
     """供 /api/options 的精简档案（不暴露绝对路径，只给文件名与缺失项）。"""
     cfg = cfg or config.load_config()
     qwen_turbo: list[dict[str, Any]] | None = None
     out: list[dict[str, Any]] = []
     for model_id in MODEL_IDS:
-        p = get(cfg, model_id)
+        p = get(cfg, model_id, task=task)
         missing = [k for k in ("unet", "clip", "vae") if not p.get(k)]
         if p["id"] == "qwen":
             if qwen_turbo is None:

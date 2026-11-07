@@ -196,3 +196,112 @@ def audit(cfg, preset_id=None) -> dict  # {slots:{slot:{value,expected,found,kin
 - 不做多套命名方案（标准/高清/省显存）——结构已预留，后续再加。
 - 不改 Turbo 档位内部固定的 LoRA/底模策略（槽位只做兜底与 `turbo_unet` 覆盖）。
 - 不改 `model_root` 扫描算法与 `extra_model_paths.yaml` 解析。
+
+## 13. 文生图 / 图生图分组默认模型（v3）
+
+> 背景：v2 的 8 个槽位实际只服务编辑链路（Qwen 底模 + 一致性 / 移除 / 扩图 LoRA）。
+> 文生图还有独立的模型档案切换（Qwen / MOSS）和另一套权重，必须分开配置。
+
+### 13.1 架构调研结论（2026-11-07）
+
+| 链路 | 入口 | 模型选择 | 实际权重来源 |
+| --- | --- | --- | --- |
+| 文生图 | `/api/generate` → `Pipeline.generate_t2i` | `params.model`（`qwen` / `moss`，默认 `cfg.model`） | Qwen：`model_defaults.slots`；MOSS：`config.json` 的 `moss` 段（unet/clip/vae/8 步 LoRA） |
+| 图生图 | `/api/edit` → `Pipeline.generate_edit` | 固定 `qwen` | `model_defaults.slots` + 预设 / 任务级 LoRA |
+
+已确认的链路缺陷（P0，需随本方案一起修）：
+
+- `pipeline._resolve_models` 用 `model_slots.resolve_plan()` 的结果覆盖了模型档案的默认路径。
+  `resolve_plan()` 永远返回 Qwen 出厂值，因此**选 MOSS 文生图时实际加载的是 Qwen 的 unet / clip / vae**，
+  与 MOSS 档案的 latent 通道数、文本编码器不匹配，属于必现错误。
+- t2i 页面默认模型取自 `options.default_model`（= 全局 `cfg.model`），无法与编辑页分开设置。
+- `models.public_list()` 里 Qwen 档案读顶层旧键，不感知任务级槽位，设置页与页面显示的权重可能不一致。
+
+### 13.2 数据结构（config.json，version = 3）
+
+```json
+"model_defaults": {
+  "version": 3,
+  "slots": { "unet": "...", "clip": "...", "vae": "...", "turbo_lora": "...", "turbo_unet": "...",
+             "consistency_lora": "...", "remove_lora": "...", "outpaint_lora": "...",
+             "moss_unet": "...", "moss_clip": "...", "moss_vae": "...", "moss_turbo_lora": "..." },
+  "tasks": {
+    "t2i": {
+      "model": "moss",
+      "slots": { "unet": "...", "moss_unet": "..." }
+    },
+    "edit": {
+      "slots": { "unet": "..." }
+    }
+  },
+  "preset_overrides": { "mask_edit": null }
+}
+```
+
+- `slots`：公共默认（v2 已有，保留兼容；新增 4 个 `moss_*` 槽位）。
+- `tasks.t2i.model`：文生图默认模型档案，`qwen` / `moss`，缺省回退 `cfg.model` → `qwen`。
+- `tasks.t2i.slots` / `tasks.edit.slots`：任务级覆盖，只写与公共值不同的键；空串 = 清空回落。
+- MOSS 槽位只在 `tasks.t2i.model = moss` 时参与解析；Qwen 槽位只在 qwen 档案 / 编辑链路参与解析。
+
+### 13.3 解析顺序
+
+```
+出厂值 < 旧顶层键（仅无 model_defaults 时） < 公共 slots
+       < tasks.<task>.slots < 预设覆盖 < 任务级显式请求
+```
+
+- `task` 由入口决定：`generate_t2i` 传 `t2i`，`generate_edit` 传 `edit`。
+- `model = moss` 时，在任务覆盖之后把 `moss_unet/moss_clip/moss_vae/moss_turbo_lora`
+  映射为生效的 `unet/clip/vae/turbo_lora`，保证 MOSS 档案拿到的永远是 MOSS 权重。
+- `turbo_unet` 仍由 Turbo 预设的 `turbo_plan` 在请求级覆盖，优先级最高。
+
+### 13.4 接口与模块
+
+| 位置 | 改动 |
+| --- | --- |
+| `server/model_slots.py` | 新增 `MOSS_SLOTS` 注册表；`resolve_plan(cfg, preset_id, task, model)`；`task_model(cfg)`；`audit()` 增加 `tasks.t2i / tasks.edit` 视图；`merge_section` 接受 `tasks`（未知任务 / 模型 400） |
+| `server/pipeline.py` | `_resolve_models(..., task)` 按任务 + 档案解析；MOSS 不再被 Qwen 槽位覆盖；`_profile` 传入任务 |
+| `server/models.py` | 档案路径改读任务解析结果；`public_list(task="t2i")` 返回文生图实际权重 |
+| `server/main.py` | `/api/options.defaults` 增加 `t2i` / `edit` 两份解析结果与 `t2i_model`；`/api/settings` 审计透传 `tasks` |
+| `web/src/store.js` | 文生图默认档案改读 `defaults.t2i_model`；只读摘要按任务取槽位 |
+| `web/src/components/settings.js` | 「默认模型」分区增加「文生图 / 图生图」切换；文生图含模型档案下拉（Qwen / MOSS）与对应槽位，图生图只显示编辑槽位；保存写 `tasks` |
+| `web/src/components/t2i.js` / `edit.js` | 只读摘要分别展示 `defaults.t2i` / `defaults.edit` |
+
+### 13.5 迁移与兼容
+
+- 没有 `tasks` 段：两个任务都等于公共 `slots`，行为与 v2 完全一致。
+- 旧顶层键同步规则不变（只同步公共槽位，不写任务覆盖）。
+- 首次保存 v3 时写 `version: 3`；`tasks` 可只保存改动过的任务 / 槽位。
+- 向导（首次使用）仍编辑公共 `slots`；已存在任务覆盖时以任务覆盖为准，向导结果作为公共兜底。
+
+### 13.6 实施步骤（每步独立可提交）
+
+| 步骤 | 内容 | 验收 |
+| --- | --- | --- |
+| T1 | `model_slots`：MOSS 槽位、任务解析、审计视图、`merge_section(tasks)` | 单测：任务覆盖优先级、MOSS 映射、未知任务 / 模型 400 |
+| T2 | `pipeline` / `models` 按任务解析，修复 MOSS 被 Qwen 权重覆盖 | 单测：`models.get(moss)` 与 `_resolve_models(t2i, moss)` 全部为 MOSS 路径；Qwen 编辑回归不变 |
+| T3 | `/api/options` / `/api/settings` 下发任务视图 | REST：`defaults.t2i.edit` 分离；保存 `tasks.t2i.model` 往返一致 |
+| T4 | 设置页分组 UI + 前端摘要 + 文生图默认档案 | 浏览器：两任务切换、保存生效、刷新后摘要正确 |
+| T5 | 文档回写 + 全量回归 | `python -m pytest tests` 全绿；文生图 / 编辑各跑 1 次真机 |
+
+### 13.7 验收口径
+
+- 文生图选 MOSS：`/api/health.engine.loaded` 与 `job.params.models` 均为 `moss_*` 路径，不再出现 Qwen unet。
+- 文生图选 Qwen、编辑选 Qwen：两个任务可各自配置不同 unet，互不影响。
+- 未配置 `tasks` 的旧配置：解析结果与 v2 完全一致。
+
+### 13.8 实施进度（2026-11-07）
+
+| 步骤 | 状态 | 说明 |
+| --- | --- | --- |
+| T1 | 已完成 | `model_slots.py` 新增 `MOSS_SLOTS` / `ALL_SLOTS` / `TASK_IDS`，`resolve_plan(cfg, preset_id, task, model)`、`task_model(cfg)`、`normalize_task_slots`、`merge_section(tasks)`、`audit()` 任务视图；`match_slots` 改为遍历全部槽位。 |
+| T2 | 已完成 | `pipeline._resolve_models(..., task)` 与 `_profile(..., task)` 按任务解析；`models._resolve(cfg, name, task)` 改读任务级解析结果，MOSS 档案固定使用 `moss_*` 权重，修复「选 MOSS 实际加载 Qwen」的 P0。 |
+| T3 | 已完成 | `/api/options` 新增 `t2i_plan` / `t2i_qwen` / `t2i_moss` / `edit_plan` 与 `defaults.t2i_model`；`/api/settings.model_defaults` 透传 `tasks` 审计视图；保存 `tasks.t2i.model` 往返一致。 |
+| T4 | 已完成 | 设置页「默认模型」拆为「文生图 / 图生图」两个 tab；文生图含模型档案下拉（Qwen / MOSS）与对应槽位行，图生图只显示编辑槽位；`t2i.js` / `edit.js` 摘要分别读 `defaults.t2i` / `defaults.edit`；保存写 `tasks`。 |
+| T5 | 已完成 | `python -m pytest tests` → 419 passed；TestClient 校验 `/api/settings` 与 `/api/options` 任务视图；浏览器验证设置页 tab 切换、MOSS 槽位显示与保存态。 |
+
+注意事项：
+
+- 真实 `config.json` 本次未写入 `model_defaults.tasks`（避免测试污染用户配置）；首次在设置页保存后自动升级为 `version: 3`。
+- 生产后端若已在运行，需要重启（例如 8722 端口的旧进程）才能加载 v3 解析逻辑；未重启时 `/api/options` 仍是旧结构。
+

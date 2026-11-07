@@ -125,6 +125,10 @@ const DICTS = {
     'models.primary': '主目录',
 
     'defaults.title': '默认模型',
+    'defaults.task.t2i': '文生图',
+    'defaults.task.edit': '图生图',
+    'defaults.t2iModel': '文生图默认模型',
+    'defaults.t2iModelDesc': '文生图可选 Qwen / MOSS；MOSS 使用独立的权重与 8 步加速 LoRA',
     'defaults.desc': '生成时优先使用这里的模型；编辑页与高级设置只显示摘要，不再单独选择。',
     'defaults.ok': '已找到默认方案。',
     'defaults.okHint': '下面列出的就是当前实际使用的模型，可直接生成。',
@@ -333,6 +337,10 @@ const DICTS = {
     'models.primary': 'Primary',
 
     'defaults.title': 'Default models',
+    'defaults.task.t2i': 'Text to image',
+    'defaults.task.edit': 'Image to image',
+    'defaults.t2iModel': 'Default text-to-image model',
+    'defaults.t2iModelDesc': 'Choose Qwen or MOSS; MOSS uses its own weights and 8-step LoRA',
     'defaults.desc': 'Models used for generation. Pages only show a read-only summary; change them here.',
     'defaults.ok': 'Default setup matched.',
     'defaults.okHint': 'The models below are the ones actually used for generation.',

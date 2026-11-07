@@ -461,7 +461,8 @@ export function createT2IPage(host) {
 
   function currentProfile() {
     ensureModelState();
-    const fallbackId = store.state.options?.default_model || 'qwen';
+    const fallbackId = store.state.options?.defaults?.t2i_model
+      || store.state.options?.default_model || 'qwen';
     return profileById(t2i.model) || profileById(fallbackId) || fallbackProfile();
   }
 
@@ -1487,7 +1488,10 @@ export function createT2IPage(host) {
       : '';
     if (readOnly) return;
     const defaults = store.state.options?.defaults || {};
-    new ModelsSummary(refs.modelsHost, { slots: defaults.slots || defaults });
+    const slots = currentModelId() === 'moss'
+      ? (defaults.t2i_moss || defaults.t2i)
+      : (defaults.t2i_qwen || defaults.t2i);
+    new ModelsSummary(refs.modelsHost, { slots: slots || defaults.slots || defaults });
   }
 
   /* ---------------- 参数摘要 ---------------- */

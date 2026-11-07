@@ -2027,7 +2027,7 @@ export function createEditPage(host) {
 
   function renderModels() {
     const defaults = store.state.options?.defaults || {};
-    new ModelsSummary(refs.modelsHost, { slots: defaults.slots || defaults });
+    new ModelsSummary(refs.modelsHost, { slots: defaults.edit || defaults.slots || defaults });
   }
 
   function renderConsistency() {

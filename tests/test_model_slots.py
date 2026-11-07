@@ -51,7 +51,8 @@ def test_factory_equals_current_config():
     assert factory["turbo_unet"] == config.DEFAULTS["turbo_unet"]
     assert factory["remove_lora"] == config.LORA_TASKS["remove"]["name"]
     assert factory["outpaint_lora"] == config.LORA_TASKS["outpaint"]["name"]
-    assert set(factory) == set(model_slots.SLOTS)
+    assert factory["moss_unet"] == "diffusion_models/moss/moss_image_sft_bf16.safetensors"
+    assert set(factory) == set(model_slots.ALL_SLOTS)
 
 
 # --------------------------------------------------------------------- 合并
@@ -223,5 +224,102 @@ def test_audit_marks_missing_required():
         assert ready["slots"]["vae"]["found"] is True
         assert ready["slots"]["remove_lora"]["found"] is False
         assert ready["slots"]["remove_lora"]["required"] is False
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+# ------------------------------------------------------------- 文生图 / 图生图
+def test_resolve_plan_separates_tasks():
+    root = _make_root()
+    try:
+        cfg = {**make_cfg(root), "model_defaults": {
+            "version": 3,
+            "slots": {"unet": "diffusion_models/common.safetensors"},
+            "tasks": {
+                "t2i": {"model": "qwen", "slots": {"unet": "diffusion_models/t2i.safetensors"}},
+                "edit": {"slots": {"unet": "diffusion_models/edit.safetensors"}},
+            },
+        }}
+        assert model_slots.resolve_plan(cfg)["unet"] == "diffusion_models/common.safetensors"
+        assert model_slots.resolve_plan(cfg, task="t2i")["unet"] == "diffusion_models/t2i.safetensors"
+        assert model_slots.resolve_plan(cfg, task="edit")["unet"] == "diffusion_models/edit.safetensors"
+        assert model_slots.task_model(cfg) == "qwen"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_resolve_plan_moss_uses_moss_weights():
+    root = _make_root()
+    try:
+        cfg = {**make_cfg(root), "model_defaults": {
+            "version": 3,
+            "slots": {"unet": "diffusion_models/qwen.safetensors"},
+            "tasks": {"t2i": {"model": "moss", "slots": {"moss_unet": "diffusion_models/moss/custom.safetensors"}}},
+        }}
+        factory = model_slots.factory_slots()
+        t2i = model_slots.resolve_plan(cfg, task="t2i")
+        assert t2i["unet"] == "diffusion_models/moss/custom.safetensors"
+        assert t2i["clip"] == factory["moss_clip"]
+        assert t2i["vae"] == factory["moss_vae"]
+        # 编辑链路仍然是 Qwen 公共槽位，不受 MOSS 影响
+        assert model_slots.resolve_plan(cfg, task="edit")["unet"] == "diffusion_models/qwen.safetensors"
+        assert model_slots.task_model(cfg) == "moss"
+        # 显式传入档案时以参数为准
+        assert model_slots.resolve_plan(cfg, task="t2i", model="qwen")["unet"] == "diffusion_models/qwen.safetensors"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_merge_section_tasks():
+    root = _make_root()
+    try:
+        cfg = make_cfg(root)
+        merged = model_slots.merge_section(cfg, {"tasks": {
+            "t2i": {"model": "moss", "slots": {"moss_unet": "m.safetensors"}},
+            "edit": {"slots": {"vae": "v.safetensors"}},
+        }})
+        assert merged["version"] == 3
+        assert merged["tasks"]["t2i"]["model"] == "moss"
+        assert merged["tasks"]["t2i"]["slots"]["moss_unet"] == "m.safetensors"
+        assert merged["tasks"]["edit"]["slots"]["vae"] == "v.safetensors"
+
+        # 空串清空任务覆盖；任务项清空后整条移除
+        cfg2 = {**cfg, "model_defaults": merged}
+        cleared = model_slots.merge_section(cfg2, {"tasks": {
+            "edit": {"slots": {"vae": ""}},
+            "t2i": {"model": ""},
+        }})
+        assert "edit" not in cleared["tasks"]
+        assert "model" not in cleared["tasks"]["t2i"]
+        assert cleared["tasks"]["t2i"]["slots"]["moss_unet"] == "m.safetensors"
+        assert model_slots.resolve_plan({**cfg2, "model_defaults": cleared}, task="edit")["vae"] == config.DEFAULTS["vae"]
+
+        with pytest.raises(ValueError):
+            model_slots.merge_section(cfg, {"tasks": {"bogus": {}}})
+        with pytest.raises(ValueError):
+            model_slots.merge_section(cfg, {"tasks": {"t2i": {"model": "nope"}}})
+        with pytest.raises(ValueError):
+            model_slots.merge_section(cfg, {"tasks": {"edit": {"slots": {"moss_unet": "x"}}}})
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_audit_includes_task_views():
+    root = _make_root()
+    try:
+        cfg = {**make_cfg(root), "model_defaults": {
+            "version": 3,
+            "tasks": {"t2i": {"model": "moss"}},
+        }}
+        factory = model_slots.factory_slots()
+        for key in ("moss_unet", "moss_clip", "moss_vae"):
+            touch(root, factory[key])
+        view = model_slots.audit(cfg)
+        assert view["t2i_model"] == "moss"
+        assert set(view["tasks"]["t2i"]["slots"]) == set(model_slots._TASK_KEYS["t2i"])
+        active = {k for k, item in view["tasks"]["t2i"]["slots"].items() if item["active"]}
+        assert active == set(model_slots.MOSS_SLOTS)
+        assert view["tasks"]["t2i"]["matched"] is True
+        assert set(view["tasks"]["edit"]["slots"]) == set(model_slots.SLOTS)
     finally:
         shutil.rmtree(root, ignore_errors=True)

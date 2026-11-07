@@ -80,16 +80,63 @@ def search_dirs(cfg: dict[str, Any] | None = None) -> list[Path]:
     return unique
 
 
-def download_dir(cfg: dict[str, Any] | None = None) -> Path:
-    """下载目录：优先显式目录，其次 model_root/onnx，最后项目 storage。"""
+def download_candidates(cfg: dict[str, Any] | None = None) -> list[Path]:
+    """下载候选目录：显式目录 → model_root/onnx → 项目 storage。"""
     cfg = cfg or config.load_config()
     tag = _tagger_cfg(cfg)
+    out: list[Path] = []
     if tag.get("dir"):
-        return Path(str(tag["dir"])).expanduser()
+        out.append(Path(str(tag["dir"])).expanduser())
     root = str(cfg.get("model_root") or "").strip()
     if root:
-        return Path(root) / "onnx"
-    return Path(config.STORAGE_DIR) / "models" / "wd14"
+        out.append(Path(root) / "onnx")
+    out.append(Path(config.STORAGE_DIR) / "models" / "wd14")
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in out:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+#: 目录可写性缓存：避免每次打开页面都写探针文件。
+_WRITABLE: dict[str, bool] = {}
+
+
+def _writable(folder: Path) -> bool:
+    """目录不存在时尝试创建，并写一个探针文件确认真实可写。
+
+    ComfyUI 的模型目录在部分机器上只读（或当前进程没有写权限），
+    这时要能自动回退到项目 storage，而不是抛 WinError 5。
+    """
+    key = str(folder).lower()
+    cached = _WRITABLE.get(key)
+    if cached is not None:
+        return cached
+    ok = False
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".q2i-write-test"
+        probe.write_bytes(b"")
+        probe.unlink(missing_ok=True)
+        ok = True
+    except OSError:
+        ok = False
+    _WRITABLE[key] = ok
+    return ok
+
+
+def download_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """实际下载目录：第一个可写的候选目录；都不可写时回退到最后一个候选。"""
+    candidates = download_candidates(cfg)
+    for folder in candidates:
+        if _writable(folder):
+            return folder
+    return candidates[-1]
 
 
 def _model_paths(name: str, cfg: dict[str, Any] | None = None) -> tuple[Path | None, Path | None]:
@@ -163,11 +210,22 @@ def list_models() -> dict[str, Any]:
 # --------------------------------------------------------------------------- 下载
 
 
-def _hf_endpoint() -> str:
-    endpoint = os.getenv("HF_ENDPOINT", "https://huggingface.co").strip().rstrip("/")
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = f"https://{endpoint}"
-    return endpoint
+def _hf_endpoints() -> list[str]:
+    """下载源：显式 HF_ENDPOINT 只用一个；否则官方源失败后自动换 hf-mirror。"""
+    explicit = os.getenv("HF_ENDPOINT", "").strip().rstrip("/")
+    if explicit:
+        if not explicit.startswith(("http://", "https://")):
+            explicit = f"https://{explicit}"
+        return [explicit]
+    return ["https://huggingface.co", "https://hf-mirror.com"]
+
+
+def _cleanup(path: Path) -> None:
+    """删除下载残留；目录无写权限时删除也会失败，这里静默忽略。"""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _fetch(url: str, target: Path) -> None:
@@ -192,10 +250,17 @@ def _fetch(url: str, target: Path) -> None:
             raise TaggerError("下载失败：文件为空", code="download_failed")
         os.replace(part, target)
     except TaggerError:
-        part.unlink(missing_ok=True)
+        _cleanup(part)
         raise
+    except PermissionError as exc:
+        _cleanup(part)
+        raise TaggerError(
+            f"写入模型文件失败（目录无写权限）：{target.parent}。"
+            "请在设置里修改反推模型目录，或让服务对 ComfyUI 模型目录有写权限。",
+            code="download_dir_unwritable",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
-        part.unlink(missing_ok=True)
+        _cleanup(part)
         raise TaggerError(
             "无法下载模型。请检查网络，或设置环境变量 HF_ENDPOINT 为镜像"
             f"（如 https://hf-mirror.com）后重试。原始错误：{type(exc).__name__}: {exc}",
@@ -208,15 +273,32 @@ def download_model(name: str, cfg: dict[str, Any] | None = None) -> tuple[Path, 
     if not meta:
         raise TaggerError(f"未知模型：{name}", code="unknown_model")
     folder = download_dir(cfg)
-    folder.mkdir(parents=True, exist_ok=True)
-    base = f"{_hf_endpoint()}/{meta['repo']}/resolve/main"
+    if not _writable(folder):
+        raise TaggerError(
+            f"模型目录不可写：{folder}。请在设置里修改反推模型目录，"
+            "或让服务对 ComfyUI 模型目录有写权限。",
+            code="download_dir_unwritable",
+        )
     onnx = folder / f"{name}.onnx"
     tags = folder / f"{name}.csv"
-    if not onnx.is_file():
-        _fetch(f"{base}/model.onnx", onnx)
-    if not tags.is_file():
-        _fetch(f"{base}/selected_tags.csv", tags)
-    return onnx, tags
+    errors: list[str] = []
+    for endpoint in _hf_endpoints():
+        base = f"{endpoint}/{meta['repo']}/resolve/main"
+        try:
+            if not onnx.is_file():
+                _fetch(f"{base}/model.onnx", onnx)
+            if not tags.is_file():
+                _fetch(f"{base}/selected_tags.csv", tags)
+            return onnx, tags
+        except TaggerError as exc:
+            # 目录不可写换镜像也没用，直接抛出
+            if exc.code == "download_dir_unwritable":
+                raise
+            errors.append(f"{endpoint}：{exc.message}")
+    raise TaggerError(
+        "；".join(errors) or "模型下载失败",
+        code="download_failed",
+    )
 
 
 # --------------------------------------------------------------------------- 推理

@@ -150,6 +150,46 @@ def test_list_models_reports_installed_entries():
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_hf_endpoints_prefers_official_then_mirror():
+    import os
+
+    original = os.environ.pop("HF_ENDPOINT", None)
+    try:
+        assert tagger._hf_endpoints() == [
+            "https://huggingface.co",
+            "https://hf-mirror.com",
+        ]
+        os.environ["HF_ENDPOINT"] = "hf-mirror.com"
+        assert tagger._hf_endpoints() == ["https://hf-mirror.com"]
+    finally:
+        if original is None:
+            os.environ.pop("HF_ENDPOINT", None)
+        else:
+            os.environ["HF_ENDPOINT"] = original
+
+
+def test_download_dir_falls_back_to_storage_when_unwritable():
+    folder = _tmp()
+    try:
+        # model_root 指向一个普通文件 → 其下的 onnx 目录无法创建
+        blocker = folder / "blocked"
+        blocker.write_text("x", encoding="utf-8")
+        cfg = {"model_root": str(blocker), "tagger": {"dir": "", "model": "wd-v1-4-moat-tagger-v2"}}
+        originals = (tagger.config.load_config, tagger.config.STORAGE_DIR)
+        tagger.config.load_config = lambda: cfg
+        tagger.config.STORAGE_DIR = str(folder / "storage")
+        tagger._WRITABLE.clear()
+        try:
+            target = tagger.download_dir()
+        finally:
+            tagger.config.load_config, tagger.config.STORAGE_DIR = originals
+            tagger._WRITABLE.clear()
+        assert target == folder / "storage" / "models" / "wd14"
+        assert target.is_dir()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_missing_model_without_download():
     folder = _tmp()
     try:

@@ -434,8 +434,10 @@ VOSR2 三件套模型包完整性判定与引擎构造、非法倍率拒绝、
 
 目录下需要成对存在 `<name>.onnx` 与 `<name>.csv`（`selected_tags.csv` 重命名而来）。
 首次反推时若模型缺失会自动从 HuggingFace 下载到 `tagger.dir`（未配置时落到
-`<model_root>/onnx`，再回退到 storage）。下载目录没有网络时，可设置环境变量
-`HF_ENDPOINT=https://hf-mirror.com` 走镜像后重启服务。
+`<model_root>/onnx`，再回退到 storage）。下载前会写探针文件确认目录可写：
+ComfyUI 模型目录只读时自动落到 `storage/models/wd14`，不会抛 `WinError 5`。
+下载源默认先试 `huggingface.co`，失败后自动换 `hf-mirror.com`；设置环境变量
+`HF_ENDPOINT` 后只使用该地址（重启服务生效）。
 
 内置 11 个 SmilingWolf 模型（默认 `wd-v1-4-moat-tagger-v2`），未安装的项也会出现在
 模型下拉框里并标注「需下载」。

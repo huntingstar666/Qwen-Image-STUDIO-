@@ -1455,3 +1455,104 @@
     max-height: 42vh;
   }
 }
+
+/* ===== AI 面板：方案预设 / 本次保护（图片精修与图生图共用） ===== */
+
+.ai-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 6px;
+}
+
+.ai-preset {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.ai-preset:hover {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+.ai-preset.active {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+}
+
+.ai-preset-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ai-preset-name {
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.ai-preset-badge,
+.ai-preset-chip {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.ai-preset-badge {
+  background: var(--accent-dim, rgba(120, 170, 255, 0.16));
+  color: var(--accent);
+}
+
+.ai-preset-chip {
+  margin-left: auto;
+  background: var(--warn-dim, rgba(240, 180, 80, 0.16));
+  color: var(--warn, #e0a03c);
+}
+
+.ai-preset-sum {
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ai-guards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-guard {
+  padding: 5px 6px;
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.ai-guard-note {
+  margin-top: 6px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+

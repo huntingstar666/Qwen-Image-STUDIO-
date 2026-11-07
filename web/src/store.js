@@ -38,6 +38,10 @@ const DEFAULT_T2I = {
 
 const DEFAULT_EDIT = {
   prompt: '',
+  // 编辑预设（两页共用，数值由 /api/meta.edit_presets 下发）
+  preset: 'mask_edit',
+  overrides: {},
+  protection: { color: true, zeroShift: true },
   sizeMode: 'follow',
   width: 1024,
   height: 1024,

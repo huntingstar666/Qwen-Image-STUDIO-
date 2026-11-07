@@ -1860,6 +1860,7 @@ PRESET_VERSION = 1
 - **P13-1 ✅** 新增 `server/presets.py`（5 预设 + `PRESET_VERSION=1` + 「显式 > 预设 > 内置默认」合并，只补缺不覆盖）；新增 `GET /api/meta` 下发 `edit_presets`。采样档复用已有 `turbo9_ckpt`（与文档里的 "turbo9_gh" 是同一份 Turbo 权重 + 9 段 sigma，不新增重复档位）。验证：`tests/test_edit_presets.py` 8 条全绿。
 - **P13-2 ✅** `zero_shift` 默认开（仅 `size_mode=follow`；custom/ratio/扩图仍自动关），显式关闭时写 `quality.warnings`。验证：`test_zero_shift_defaults_on_and_can_be_disabled`、全量 **391 passed**。
 - **P13-3 ⏳** 代码接线已完成（见 P14-2），真机大幅外补回归待跑。
+- **P13-4 ⏳** 预设卡片 + 两个保护开关 + payload 预设模式已接入图片精修（见 P14-3 / P15-1）；高级折叠（P14-1）与 B1~B6 待补。
 
 **总验收口径：** 切到任一预设不改任何高级项，直接出图即为该预设的最佳效果；关掉两个保护开关后能回到旧行为；图片精修与图生图用同一预设出图参数一致（同 seed 同图）。
 
@@ -2118,6 +2119,7 @@ settings.edit = {
 **施工状态（2026-11-07）：**
 
 - **P14-2 ✅** `outpaint.max_side` 已透传到 `imaging.outpaint_canvas`（缺省 5120，服务端校验 1024~8192，超范围 400）；扩图裁块下限默认 **1024**、接缝默认 **3%/3%**，编辑档仍是 768 / 4%/5%（决策 37 分家）。验证：`test_generate_edit_outpaint_honors_max_side`、`test_generate_edit_outpaint_preset_uses_1024_crop_and_3pct_seam`；全量 **391 passed**。
+- **P14-3 ✅** 预设模式数据流落地：`studio/payload.js` 新增 `nestOverrides`，传 `settings.preset` 时只发 `preset` + 覆盖项（+ 关闭的保护开关），未改高级项时 payload 里除 `preset` 外不多任何字段；`local.scheme/feather/mask_expand/preprocess` 未覆盖时不落字段，由后端预设补全。不带 `preset` 的旧调用保持原 payload（回归零变化）。任务约定优先：`task=remove` 强制 `fills=true + green_overlay`，`task=outpaint` 强制 `gray_fill + fills=false`。
 
 ### 14.10 决策（钉死）
 
@@ -2255,6 +2257,10 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 | P15-5 | 移除任务：图生图可选 `task.mode=remove`，强制 `fills=true` + 绿提示只读说明 | `components/edit.js` | 选移除后出图无残影；提示词自动补「移除图像中的绿色区域」 |
 | P15-6 | 结果回显统一（scheme / zero_shift / mask_band / outside_max_abs / preset） | `components/edit.js`、`studio/aiPanel.js` | 两页结果卡片字段一致 |
 | P15-7 | 真机回归：同图同 seed 两页各预设出图参数一致 | `.cache/smoke_real_edit.py` | 两页 `job.params` 归一化后仅差工具态字段（画笔/图层） |
+
+**施工状态（2026-11-07）：**
+
+- **P15-1 ⏳** 公共模块已抽出并接入图片精修：`studio/presets.js`（`/api/meta` 拉取 + 预设/覆盖项合并 + 无蒙版降级）、`studio/guards.js`（色彩校准 / 零像素偏移两开关，值写 `settings.edit.protection` 并跨页共享）；`advanced.js` 随 P14-1 补齐后两页共用。`store.DEFAULT_EDIT` 新增 `preset/overrides/protection` 三项默认值。
 
 ### 15.8 决策（钉死）
 

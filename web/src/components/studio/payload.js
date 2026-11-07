@@ -116,7 +116,31 @@ function clampStrength(value, fallback = 0.48) {
 }
 
 /**
+ * 把扁平覆盖项（`local.feather`）展开成请求里的嵌套对象。
+ * 未覆盖的键不出现，后端按「显式 > 预设 > 内置默认」补全（§13.5）。
+ */
+export function nestOverrides(overrides) {
+  const out = {};
+  for (const [key, value] of Object.entries(overrides || {})) {
+    const parts = String(key).split('.');
+    let cursor = out;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const part = parts[i];
+      if (!cursor[part] || typeof cursor[part] !== 'object') cursor[part] = {};
+      cursor = cursor[part];
+    }
+    cursor[parts[parts.length - 1]] = value;
+  }
+  return out;
+}
+
+/**
  * 构造 /api/edit payload。
+ *
+ * 两种模式：
+ * - 传 `settings.preset`：只发 `preset` + 覆盖项（+ 关闭的保护开关），其余由后端预设补全；
+ * - 不传 `settings.preset`：保持旧行为（完整 local/preprocess/zero_shift），第三方与老前端不受影响。
+ *
  * @param {{
  *   main: {data:string, name:string, width:number, height:number},
  *   mask: string|null,
@@ -151,6 +175,10 @@ export function buildEditPayload({
   const work = workSize({ width: main?.width, height: main?.height }, { preprocess, maxSide });
   const scheme = resolveScheme(settings.scheme, settings.hasMask ?? hasMask, settings.coverage || 0);
 
+  const presetId = String(settings.preset || '').trim();
+  const overrides = settings.overrides && typeof settings.overrides === 'object' ? settings.overrides : {};
+  const protection = settings.protection || {};
+
   const loraList = [];
   const taskLora = loras.taskLora || null;
   if (taskLora?.name) loraList.push({ name: taskLora.name, strength: clampStrength(taskLora.strength, 1) });
@@ -158,27 +186,7 @@ export function buildEditPayload({
     if (item?.name) loraList.push({ name: item.name, strength: clampStrength(item.strength, 1) });
   }
 
-  const local = {
-    enabled: hasMask && settings.localEnabled !== false,
-    scheme,
-    feather: Math.round(Number(settings.feather ?? 32) || 0),
-    color_match: settings.colorGuard !== false,
-    color_strength: 0.6,
-    color_restore: settings.colorGuard !== false,
-    color_restore_strength: 1.0,
-    mask_expand: Math.round(Number(settings.maskExpand ?? 0) || 0),
-    context_factor: 1.5,
-    context_pixels: 96,
-    blend_pixels: 24,
-    fills: task === 'remove',
-    hint: task === 'remove' ? 'green' : 'none',
-    expand_top: 1.3,
-    expand_bottom: 1.4,
-    expand_left: 1.4,
-    expand_right: 1.4,
-  };
-
-  return {
+  const payload = {
     prompt: text,
     negative_prompt: String(negative || ''),
     images: [
@@ -193,7 +201,6 @@ export function buildEditPayload({
     fit: 'pad',
     pad_mode: 'edge',
     mask: hasMask ? { data: mask } : null,
-    local,
     resolution: 0,
     steps: Math.max(1, Math.round(Number(sampling.steps) || 9)),
     cfg: Number(sampling.cfg) || 1,
@@ -210,18 +217,7 @@ export function buildEditPayload({
       loras.consistency && loras.consistencyName
         ? { name: loras.consistencyName, strength: clampStrength(loras.strength, 0.48) }
         : null,
-
-    // ===== 追加字段：后端未实现时忽略 =====
     task: { mode: task },
-    preprocess: {
-      enabled: preprocess,
-      max_side: maxSide,
-      min_side: MIN_SIDE_DEFAULT,
-      multiple: SNAP,
-      mode: 'downscale_only',
-    },
-    zero_shift: { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 },
-    color_guard: { enabled: settings.colorGuard !== false, outside_exact: true, icc: 'srgb' },
     meta: {
       source: 'web/studio',
       rawPrompt: String(prompt || ''),
@@ -230,9 +226,67 @@ export function buildEditPayload({
       workSize: { width: work.width, height: work.height },
       maskSize: hasMask ? { width: main?.width || 0, height: main?.height || 0 } : null,
       consistencyStrength: loras.consistency ? clampStrength(loras.strength, 0.48) : null,
+      preset: presetId || null,
       client: 'qwen-image2.1-web',
     },
   };
+
+  if (!presetId) {
+    // ===== 旧行为：完整参数（兼容第三方与老前端）=====
+    payload.local = {
+      enabled: hasMask && settings.localEnabled !== false,
+      scheme,
+      feather: Math.round(Number(settings.feather ?? 32) || 0),
+      color_match: settings.colorGuard !== false,
+      color_strength: 0.6,
+      color_restore: settings.colorGuard !== false,
+      color_restore_strength: 1.0,
+      mask_expand: Math.round(Number(settings.maskExpand ?? 0) || 0),
+      context_factor: 1.5,
+      context_pixels: 96,
+      blend_pixels: 24,
+      fills: task === 'remove',
+      hint: task === 'remove' ? 'green' : 'none',
+      expand_top: 1.3,
+      expand_bottom: 1.4,
+      expand_left: 1.4,
+      expand_right: 1.4,
+    };
+    payload.preprocess = {
+      enabled: preprocess,
+      max_side: maxSide,
+      min_side: MIN_SIDE_DEFAULT,
+      multiple: SNAP,
+      mode: 'downscale_only',
+    };
+    payload.zero_shift = { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 };
+    payload.color_guard = { enabled: settings.colorGuard !== false, outside_exact: true, icc: 'srgb' };
+    return payload;
+  }
+
+  // ===== 预设模式：preset + 覆盖项 =====
+  payload.preset = presetId;
+  const extra = nestOverrides(overrides);
+  const localExtra = { ...(extra.local || {}) };
+  // 任务训练约定优先于预设文案：移除必须填洞 + 绿提示，扩图必须灰提示。
+  if (task === 'remove') {
+    localExtra.fills = true;
+    localExtra.hint = 'green_overlay';
+  } else if (task === 'outpaint') {
+    localExtra.fills = false;
+    localExtra.hint = 'gray_fill';
+  }
+  // 保护开关只在关闭时显式落字段；默认开由预设提供。
+  if (protection.color === false) {
+    localExtra.color_match = false;
+    localExtra.color_restore = false;
+  }
+  if (Object.keys(localExtra).length) extra.local = localExtra;
+  if (protection.zeroShift === false) {
+    extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };
+  }
+  Object.assign(payload, extra);
+  return payload;
 }
 
 /** auto：遮罩面积小用整画布（a，接缝更稳），面积大用区域裁剪（b，更快）。 */

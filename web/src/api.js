@@ -64,6 +64,11 @@ export const api = {
     return request('/api/health', { timeout: 8000 });
   },
 
+  /** GET /api/meta —— 版本号 + 编辑预设摘要（预设数值唯一来源） */
+  meta() {
+    return request('/api/meta', { timeout: 15000 });
+  },
+
   /** GET /api/options —— 模型、采样器、比例、turbo profile */
   options() {
     return request('/api/options', { timeout: 30000 });

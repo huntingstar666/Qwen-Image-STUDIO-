@@ -16,6 +16,7 @@ import { JobRunner } from '../jobView.js';
 import { toastError, toastSuccess, toastWarn } from '../toast.js';
 import { confirmDialog } from '../modal.js';
 import { escapeHtml, loadImage } from '../../utils.js';
+import { patchSettings, store } from '../../store.js';
 import {
   buildEditPayload,
   detectTask,
@@ -23,6 +24,18 @@ import {
   pickTaskLora,
   workSize,
 } from './payload.js';
+import {
+  defaultPresetId,
+  effectiveValue,
+  findPreset,
+  loadPresets,
+  modifiedKeys,
+  normalizeProtection,
+  presetTaskMode,
+  resolvePresetForMask,
+  withOverride,
+} from './presets.js';
+import { mountGuards } from './guards.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -48,6 +61,18 @@ function readFile(file) {
 export function mountAiPanel(host, ctx) {
   host.innerHTML = `
     <div class="ai-pane">
+      <section class="ai-section">
+        <div class="ai-label">方案预设 <span class="ai-label-note" data-ref="presetNote"></span></div>
+        <div class="ai-presets" data-ref="presets"></div>
+        <div class="ai-hint" data-ref="presetHint"></div>
+      </section>
+
+      <section class="ai-section">
+        <div class="ai-label">本次保护</div>
+        <div data-ref="guards"></div>
+        <div class="ai-guard-note" data-ref="guardNote" hidden></div>
+      </section>
+
       <section class="ai-section">
         <div class="ai-label">指令</div>
         <textarea class="ai-prompt" data-ref="prompt" rows="4"
@@ -102,33 +127,29 @@ export function mountAiPanel(host, ctx) {
           <select class="select" data-ref="ratio"></select>
         </label>
 
-        <label class="ai-check"><input type="checkbox" data-ref="preprocess" checked /><span>大图预处理</span>
+        <label class="ai-check" title="大图先缩到长边上限再送模型，出图后按记录还原；关掉后 4K 图更慢且可能爆显存。">
+          <input type="checkbox" data-ref="preprocess" checked /><span>大图预处理</span>
           <select class="select sm" data-ref="maxSide">
             ${STEP_OPTIONS.map((value) => `<option value="${value}">长边 ${value}</option>`).join('')}
           </select>
         </label>
-        <label class="ai-check is-locked"><input type="checkbox" checked disabled /><span>零像素偏移保护</span>
-          <span class="ai-tag ok">32 对齐 · resolution 0</span>
-        </label>
-        <label class="ai-check"><input type="checkbox" data-ref="colorGuard" checked /><span>零色差保护</span>
-          <span class="ai-tag ok">遮罩外逐像素不变</span>
-        </label>
         <div class="ai-row">
-          <label class="ai-field">
+          <label class="ai-field" title="遮罩边缘向内羽化的像素数。越大拼接越柔；写 0 会被当成 32（要硬边请填 1）。">
             <span>羽化</span>
-            <input class="input mono" type="number" min="0" max="128" step="4" value="32" data-ref="feather" />
+            <input class="input mono" type="number" min="0" max="256" step="4" value="32" data-ref="feather" />
           </label>
-          <label class="ai-field">
+          <label class="ai-field" title="把可写入区域向外扩 N 像素。0 = 严格只改选区；调大会轻微改写选区外。">
             <span>遮罩外扩</span>
-            <input class="input mono" type="number" min="0" max="64" step="4" value="0" data-ref="maskExpand" />
+            <input class="input mono" type="number" min="0" max="256" step="4" value="0" data-ref="maskExpand" />
           </label>
         </div>
-        <label class="ai-field">
+        <label class="ai-field" title="区域裁剪只采样遮罩附近（快、省显存）；整画布保留更多上下文（稳）；原生不做遮罩合成。">
           <span>局部策略</span>
           <select class="select" data-ref="scheme">
-            <option value="auto">自动（推荐）</option>
+            <option value="auto">自动（按选区面积）</option>
             <option value="b">区域裁剪（快）</option>
             <option value="a">整画布（稳）</option>
+            <option value="native">原生（不合遮罩）</option>
           </select>
         </label>
         <div class="ai-work mono" data-ref="workInfo"></div>
@@ -176,6 +197,11 @@ export function mountAiPanel(host, ctx) {
 
   const ref = (name) => host.querySelector(`[data-ref="${name}"]`);
   const refs = {
+    presets: ref('presets'),
+    presetNote: ref('presetNote'),
+    presetHint: ref('presetHint'),
+    guards: ref('guards'),
+    guardNote: ref('guardNote'),
     prompt: ref('prompt'),
     count: ref('count'),
     mention: ref('mention'),
@@ -199,7 +225,6 @@ export function mountAiPanel(host, ctx) {
     ratio: ref('ratio'),
     preprocess: ref('preprocess'),
     maxSide: ref('maxSide'),
-    colorGuard: ref('colorGuard'),
     feather: ref('feather'),
     maskExpand: ref('maskExpand'),
     scheme: ref('scheme'),
@@ -223,6 +248,7 @@ export function mountAiPanel(host, ctx) {
     quality: ref('quality'),
   };
 
+  const editSettings = store.state.edit || {};
   const state = {
     prompt: '',
     refs: [],
@@ -233,12 +259,137 @@ export function mountAiPanel(host, ctx) {
     options: null,
     turboProfiles: [],
     turboId: '',
+    presets: [],
+    presetVersion: 1,
+    presetId: String(editSettings.preset || ''),
+    overrides: { ...(editSettings.overrides || {}) },
+    protection: normalizeProtection(editSettings.protection),
   };
+
+  /** 预设 / 覆盖项 / 保护开关跨页共享，写回同一份 settings.edit。 */
+  function persistEdit() {
+    patchSettings({
+      edit: {
+        preset: state.presetId,
+        overrides: state.overrides,
+        protection: state.protection,
+      },
+    });
+  }
+
+  function currentPreset() {
+    return findPreset(state.presets, state.presetId);
+  }
+
+  function presetValue(key, fallback) {
+    return effectiveValue(currentPreset(), state.overrides, key, fallback);
+  }
+
+  function setOverride(key, value) {
+    state.overrides = withOverride(currentPreset(), state.overrides, key, value);
+    persistEdit();
+    renderPresets();
+    syncGuardNote();
+  }
 
   const runner = new JobRunner(refs.jobHost, {
     idleText: '圈出要修改的区域，写好指令后点击「修改」。',
     idleGlyph: '✦',
   });
+
+  mountGuards(refs.guards, {
+    value: state.protection,
+    onChange(next) {
+      state.protection = next;
+      persistEdit();
+    },
+  });
+
+  /* ------------------------------------------------------------ 预设 */
+
+  function renderPresets() {
+    if (!state.presets.length) {
+      refs.presets.innerHTML = '<div class="ai-hint">未连接后端，暂不能选择预设</div>';
+      refs.presetNote.textContent = '';
+      refs.presetHint.textContent = '预设数值由后端下发，连接后自动出现。';
+      return;
+    }
+    const dirty = modifiedKeys(currentPreset(), state.overrides).length > 0;
+    refs.presets.innerHTML = state.presets
+      .map((item) => {
+        const active = item.id === state.presetId;
+        return `<button type="button" class="ai-preset${active ? ' active' : ''}" data-preset="${escapeHtml(item.id)}"
+          title="${escapeHtml(item.summary || '')}">
+          <span class="ai-preset-head">
+            <span class="ai-preset-name">${escapeHtml(item.label || item.id)}</span>
+            ${item.default ? '<span class="ai-preset-badge">推荐</span>' : ''}
+            ${active && dirty ? '<span class="ai-preset-chip">已修改</span>' : ''}
+          </span>
+          <span class="ai-preset-sum">${escapeHtml(item.summary || '')}</span>
+        </button>`;
+      })
+      .join('');
+    refs.presetNote.textContent = `v${state.presetVersion}`;
+    refs.presetHint.textContent = currentPreset()?.summary || '';
+  }
+
+  function selectPreset(id) {
+    const preset = findPreset(state.presets, id);
+    if (!preset) return;
+    state.presetId = id;
+    persistEdit();
+    const mode = presetTaskMode(preset);
+    if (mode === 'remove' || mode === 'outpaint') refs.task.value = mode;
+    else if (refs.task.value === 'remove' || refs.task.value === 'outpaint') refs.task.value = 'auto';
+    renderPresets();
+    syncPresetValues();
+    renderMeta();
+    syncGuardNote();
+  }
+
+  /** 界面回显预设的生效值（不改覆盖项；用户动过才写 override）。 */
+  function syncPresetValues() {
+    const preset = currentPreset();
+    if (!preset) return;
+    const preEnabled = presetValue('preprocess.enabled', true) !== false;
+    refs.preprocess.checked = preEnabled;
+    const maxSide = Number(presetValue('preprocess.max_side', 2048)) || 2048;
+    if (![...refs.maxSide.options].some((option) => Number(option.value) === maxSide)) {
+      refs.maxSide.insertAdjacentHTML('beforeend', `<option value="${maxSide}">长边 ${maxSide}</option>`);
+    }
+    refs.maxSide.value = String(maxSide);
+    refs.maxSide.disabled = !preEnabled;
+    refs.feather.value = String(Math.round(Number(presetValue('local.feather', 32)) || 0));
+    refs.maskExpand.value = String(Math.round(Number(presetValue('local.mask_expand', 0)) || 0));
+    const scheme = String(presetValue('local.scheme', 'a') || 'a');
+    if ([...refs.scheme.options].some((option) => option.value === scheme)) refs.scheme.value = scheme;
+  }
+
+  function syncGuardNote() {
+    const outpaint = refs.task.value === 'outpaint';
+    refs.guardNote.hidden = !outpaint;
+    refs.guardNote.textContent = outpaint
+      ? '扩图会改变输出尺寸，零像素偏移校验自动关闭；原图区域仍逐字节保留。'
+      : '';
+  }
+
+  async function loadPresetMeta() {
+    try {
+      const meta = await loadPresets();
+      state.presets = meta.list;
+      state.presetVersion = meta.version;
+      if (!findPreset(state.presets, state.presetId)) {
+        state.presetId = meta.defaultId || defaultPresetId(state.presets);
+      }
+      renderPresets();
+      syncPresetValues();
+      renderMeta();
+      syncGuardNote();
+    } catch (err) {
+      renderPresets();
+      toastWarn('读取预设失败，提交时会按后端默认参数执行');
+    }
+  }
 
   /* ------------------------------------------------------------ 选项 */
 
@@ -582,6 +733,19 @@ export function mountAiPanel(host, ctx) {
     }
 
     const loraState = collectLoras();
+    const resolved = resolvePresetForMask(state.presetId, source.hasMask);
+    if (resolved.degraded) {
+      toastWarn(`「${resolved.from}」需要蒙版，本次已按「整画布」执行`);
+    }
+    if (loraState.task === 'outpaint') {
+      const edges = ['outpaint.top', 'outpaint.bottom', 'outpaint.left', 'outpaint.right'].map((key) =>
+        Number(presetValue(key, 0)) || 0,
+      );
+      if (!edges.some((value) => value > 0)) {
+        toastWarn('扩图需要至少一条外扩边：先在高级设置里填写上/下/左/右百分比');
+        return;
+      }
+    }
     const settings = {
       sizeMode: refs.sizeMode.value,
       width: Number(refs.width.value) || source.main.width,
@@ -589,12 +753,9 @@ export function mountAiPanel(host, ctx) {
       ratio: refs.ratio.value,
       preprocess: refs.preprocess.checked,
       maxSide: Number(refs.maxSide.value) || 2048,
-      zeroShift: true,
-      colorGuard: refs.colorGuard.checked,
-      localEnabled: source.hasMask,
-      scheme: refs.scheme.value,
-      feather: Number(refs.feather.value) || 0,
-      maskExpand: Number(refs.maskExpand.value) || 0,
+      preset: resolved.id,
+      overrides: state.overrides,
+      protection: state.protection,
       hasMask: source.hasMask,
       coverage: source.coverage || 0,
     };
@@ -764,8 +925,27 @@ export function mountAiPanel(host, ctx) {
   refs.width.addEventListener('input', renderMeta);
   refs.height.addEventListener('input', renderMeta);
   refs.ratio.addEventListener('change', renderMeta);
-  refs.preprocess.addEventListener('change', renderMeta);
-  refs.maxSide.addEventListener('change', renderMeta);
+  refs.preprocess.addEventListener('change', () => {
+    setOverride('preprocess.enabled', refs.preprocess.checked);
+    refs.maxSide.disabled = !refs.preprocess.checked;
+    renderMeta();
+  });
+  refs.maxSide.addEventListener('change', () => {
+    setOverride('preprocess.max_side', Number(refs.maxSide.value) || 2048);
+    renderMeta();
+  });
+  refs.feather.addEventListener('change', () => {
+    setOverride('local.feather', Math.max(0, Math.round(Number(refs.feather.value) || 0)));
+  });
+  refs.maskExpand.addEventListener('change', () => {
+    setOverride('local.mask_expand', Math.max(0, Math.round(Number(refs.maskExpand.value) || 0)));
+  });
+  refs.scheme.addEventListener('change', () => setOverride('local.scheme', refs.scheme.value));
+
+  refs.presets.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-preset]');
+    if (button) selectPreset(button.dataset.preset);
+  });
 
   refs.turbo.addEventListener('change', () => {
     state.turboId = refs.turbo.value;
@@ -778,6 +958,7 @@ export function mountAiPanel(host, ctx) {
       mode === 'auto'
         ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
         : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[mode] || mode}`;
+    syncGuardNote();
   });
 
   refs.consistency.addEventListener('change', () => {
@@ -884,7 +1065,9 @@ export function mountAiPanel(host, ctx) {
   syncBusy();
   renderRefs();
   renderMeta();
+  syncGuardNote();
   loadOptions();
+  loadPresetMeta();
 
   return controller;
 }

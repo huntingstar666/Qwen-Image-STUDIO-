@@ -5,7 +5,7 @@
  *   getSource()  取得主图 / 蒙版的烘焙结果（提交时调用）
  *   showResult(url|null)  在画布上预览结果（null = 回到底图）
  *   compare(urls) 打开对比对话框
- *   addOverlay(file) / getLayers() / selectLayer(id) / removeLayer(id) / setLayerOpacity(id,v) / scaleLayer(id,f)
+ *   addOverlay(file) / getLayers() / selectLayer(id) / removeLayer(id) / cloneLayer(id) / moveLayer(id,delta) / setLayerOpacity(id,v) / scaleLayer(id,f)
  *   getMainThumb() 主图缩略图
  *
  * 本模块不直接操作 StudioDoc，全部通过 ctx 转发，方便独立演进。
@@ -876,6 +876,9 @@ export function mountAiPanel(host, ctx) {
           <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" data-dir="1" title="放大">＋</button>
           <input class="ai-layer-alpha" type="range" min="0" max="100" step="1" value="${Math.round(layer.opacity * 100)}"
             data-layer-alpha="${layer.id}" title="不透明度" />
+          <button class="ai-layer-btn" type="button" data-layer-copy="${layer.id}" title="复制图层">⧉</button>
+          <button class="ai-layer-btn" type="button" data-layer-move="${layer.id}" data-dir="-1" title="下移一层">↓</button>
+          <button class="ai-layer-btn" type="button" data-layer-move="${layer.id}" data-dir="1" title="上移一层">↑</button>
           <button class="ai-layer-btn" type="button" data-layer-del="${layer.id}" title="删除">×</button>
         </div>`,
       )
@@ -1336,6 +1339,18 @@ export function mountAiPanel(host, ctx) {
     const scale = event.target.closest('[data-layer-scale]');
     if (scale) {
       ctx.scaleLayer?.(scale.dataset.layerScale, scale.dataset.dir === '1' ? 1.1 : 1 / 1.1);
+      renderLayers();
+      return;
+    }
+    const copy = event.target.closest('[data-layer-copy]');
+    if (copy) {
+      ctx.cloneLayer?.(copy.dataset.layerCopy);
+      renderLayers();
+      return;
+    }
+    const move = event.target.closest('[data-layer-move]');
+    if (move) {
+      ctx.moveLayer?.(move.dataset.layerMove, Number(move.dataset.dir) || 0);
       renderLayers();
     }
   });

@@ -52,9 +52,10 @@ export class OverlayLayer {
     ctx.restore();
   }
 
-  clone() {
+  /** @param {{ fresh?: boolean }} [options] fresh = true 时生成新 id（复制图层用） */
+  clone({ fresh = false } = {}) {
     return new OverlayLayer(this.image, {
-      id: this.id,
+      id: fresh ? '' : this.id,
       name: this.name,
       x: this.x,
       y: this.y,

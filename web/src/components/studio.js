@@ -582,6 +582,32 @@ export function createStudioPage(host) {
         scheduleDraw();
       }
     },
+    /** 复制叠加层（副本偏移 16px，可撤销）。 */
+    cloneLayer(id) {
+      if (!doc) return null;
+      const copy = doc.cloneOverlay(id);
+      if (!copy) return null;
+      const blob = layerBlobs.get(id);
+      if (blob) layerBlobs.set(copy.id, blob);
+      selectedLayerId = copy.id;
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return copy;
+    },
+    /** 图层排序：delta = +1 上移一层 / -1 下移一层。 */
+    moveLayer(id, delta) {
+      if (!doc) return false;
+      const from = doc.layers.findIndex((layer) => layer.id === id);
+      if (from < 0) return false;
+      const moved = doc.moveOverlay(id, from + (Number(delta) || 0));
+      if (moved < 0) return false;
+      selectedLayerId = id;
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      return true;
+    },
     setLayerOpacity(id, value) {
       if (!doc) return;
       doc.setOverlayOpacity(id, value);

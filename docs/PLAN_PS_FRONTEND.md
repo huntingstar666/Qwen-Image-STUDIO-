@@ -716,6 +716,15 @@ DOM 结构：
   4. **真机 GPU 目检**：自动化环境无法覆盖 HiDPI 真实合成器差异（D18.4 已记录 headed 窗口被遮挡时 rAF 被节流），保留为人工项，不阻塞本条销项。
   5. **S-25 实测**：在 iframe 新 realm 中把 `CanvasRenderingContext2D.prototype.filter` 改为「setter 空实现、读取恒为 `none`」，再动态 import `studioDoc.js`，得到 `supportsCanvasFilter === false`（同页主 realm 仍为 `true`），探针能正确识别不支持环境；该分支下 `applyCanvasFilterCapability()` 禁用曝光 / 亮度 / 对比度 / 饱和度四个滑杆并显示说明，色温与色调保留。
 
+- **D7.1 文档模型 + 图层创建（已完成）** —— 把原先散在 `StudioDoc` 里的叠加层数组抽成独立图层栈内核：
+  - 新增 `studio/document.js`：`createDocument({width,height})` 产出 `{ width, height, layers, activeId }`；`addLayer(doc, layer, {index, activate})`、`removeLayer(doc, id)`、`moveLayer(doc, id, toIndex)`、`cloneLayer(doc, id, {offset, name, index})`、`findLayer / indexOf / layerCount / layersOf`。全部是零依赖纯函数，约定 `layers[0]` 为最底层、末尾为最上层；`moveLayer` 越界会裁剪，位置未变返回 `-1`（避免产生空撤销步）。
+  - `studioDoc.js`：`this._doc = createDocument(this.oriented)`，`layers` 改为访问器（外部读写语义不变，`rotate/flip` 里 `this.layers = []` 照旧可用）；`addOverlay` / `removeOverlay` 改走内核并补 `_base = null`；新增 `cloneOverlay(id)`（副本上移 16px）与 `moveOverlay(id, toIndex)`，两者都会 `snapshot()`，可撤销。
+  - `layers.js`：`OverlayLayer.clone({ fresh })` 支持 `fresh: true` 时生成新 id，复制图层不再撞 id；快照/恢复仍用默认 `fresh: false`。
+  - `studio.js`：图层控制器新增 `cloneLayer(id)`（同步沿用源图层 Blob，便于自动保存）与 `moveLayer(id, delta)`（把 delta 换算成目标下标），操作后统一 `updateHistoryUi / scheduleSave / scheduleDraw`。
+  - `aiPanel.js`：图层条每行新增「⧉ 复制 / ↓ 下移 / ↑ 上移」三个小按钮，事件里调用 `ctx.cloneLayer` / `ctx.moveLayer` 后重绘列表。
+  - 实测（headless Chromium，1024×768 工程，叠加 `overlay-a.png` + `overlay-b.png`）：初始 `[a, b]` → 复制后 `[a, a 副本, b]`（副本紧跟源层上方）；对已在顶层的 `b` 点「上移」为 no-op；`b` 点「下移」→ `[a, b, a 副本]`；删除首层后剩两层，`撤销` 逐级还原到空；全程控制台无报错。
+  - 范围说明：`history.js`（D7.4）与 `renderer.js`（D7.2）本次未拆分，图层渲染仍由 `studioDoc.renderBase()` 统一合成（已被 §17.7 导出像素一致性覆盖）；`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时再实现，当前工程持久化仍走 Blob + 快照。
+
 - **D15.1 高清放大入口（已完成）** —— 顶栏新增「放大」按钮（`data-ref="upscaleBtn"`，无主图禁用；AI 预览态先被 `previewBlocked('放大')` 拦住，避免放大错版本）。点击后打开 `studio/upscaleDialog.js` 弹窗：
   - 引擎来自 `api.upscaleModels()` 的 `ready` 项，文案映射 VOSR2 细节优先 / SeedVR2 质量优先 / FlashVSR 速度优先，默认取响应的 `default_engine`；倍率 2× / 4×，默认取 `defaults.scale`。
   - 输入是 `doc.bake('image/png')`（含变换、调色、叠加层），提交 `api.upscale({ image, engine, scale })`，用 `pollJob` 每 700ms 刷新进度条与状态文案；失败/取消/超时都有明确状态，可中途「取消任务」（`api.cancelJob`）。
@@ -1090,7 +1099,7 @@ DOM 结构：
 
 | 编号 | 交付项 | 改动 | 验证 |
 | --- | --- | --- | --- |
-| D7.1 | 文档模型 + 图层创建 | 新增 `document.js`、`layers.js` | 新建/删除/复制/排序正确 |
+| D7.1 | 文档模型 + 图层创建 | 新增 `document.js`（图层栈纯函数）；`studioDoc.js` 接入；`aiPanel` 图层条加复制/上移/下移 | 新建/删除/复制/排序正确 |
 | D7.2 | 合成渲染器 | 新增 `renderer.js`；`studio.js` 接画布 | 多图层叠加、透明度、显隐正确 |
 | D7.3 | 图层面板 | 新增 `panels/layers.js`、`studio.css` | 拖拽排序、重命名、锁定、不透明度 |
 | D7.4 | 历史记录 + 快捷键 | 新增 `history.js`；`studio.js` | 100 步回退；撤销重做覆盖图层与画笔 |
@@ -1209,7 +1218,7 @@ DOM 结构：
 | D19.4 | 编码与内存 | 已完成 | 本次提交 | §18 S-14~S-19 |
 | D19.5 | 事件与生命周期 | 已完成 | 本次提交 | §18 S-21~S-24 |
 | D19.6 | 兼容与降级 | 已完成 | 本次提交 | §18 S-25 |
-| D7.1 | 文档模型 + 图层创建 | 未开始 | — | — |
+| D7.1 | 文档模型 + 图层创建 | 已完成 | 本次提交 | `document.js` 提供 `createDocument / addLayer / removeLayer / moveLayer / cloneLayer / findLayer / indexOf / layerCount`（纯函数、零依赖，`layers[0]` 为最底层）；`StudioDoc.layers` 改为图层栈访问器，`addOverlay / removeOverlay` 走内核，新增 `cloneOverlay / moveOverlay`；AI 面板图层条加「⧉ 复制 / ↓ 上移 / ↑ 下移」，操作均入撤销栈。实测 1024×768 工程叠加两张扣图：复制插在源层上方（`overlay-a.png 副本`）、对顶层再上移为 no-op、下移后顺序 `[a, b, a副本]`、删除后两层、撤销逐级还原至空；控制台无报错。`docToJSON/fromJSON` 推迟到 D7.3 图层面板接线时实现（当前持久化仍走 Blob + 工程快照） |
 | D7.2 | 合成渲染器 | 未开始 | — | — |
 | D7.3 | 图层面板 | 未开始 | — | — |
 | D7.4 | 历史记录 + 快捷键 | 未开始 | — | — |

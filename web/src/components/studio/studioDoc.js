@@ -11,6 +11,16 @@
  */
 
 import { OverlayLayer } from './layers.js';
+import {
+  addLayer,
+  cloneLayer,
+  createDocument,
+  findLayer as findDocLayer,
+  layerCount,
+  layersOf,
+  moveLayer,
+  removeLayer,
+} from './document.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -73,12 +83,24 @@ export class StudioDoc {
     this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
-    /** @type {OverlayLayer[]} 叠加层（底图不在其中，底图永远锁定） */
-    this.layers = [];
+    /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
+    this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
     this.history = [];
     this.future = [];
     this._base = null;
     this.snapshot();
+  }
+
+  /* ---------------------------------------------------------- 图层栈 */
+
+  /** @type {OverlayLayer[]} 0 为最底层，末尾为最上层 */
+  get layers() {
+    return layersOf(this._doc);
+  }
+
+  set layers(next) {
+    this._doc.layers = Array.isArray(next) ? next : [];
+    this._doc.activeId = '';
   }
 
   /* ---------------------------------------------------------- 尺寸 */
@@ -342,27 +364,46 @@ export class StudioDoc {
     const width = (image.naturalWidth || image.width) * scale;
     const height = (image.naturalHeight || image.height) * scale;
     const layer = new OverlayLayer(image, {
-      name: options.name || `叠加 ${this.layers.length + 2}`,
+      name: options.name || `叠加 ${layerCount(this._doc) + 2}`,
       x: options.x ?? Math.round((box.width - width) / 2),
       y: options.y ?? Math.round((box.height - height) / 2),
       scale,
       opacity: options.opacity ?? 1,
     });
-    this.layers.push(layer);
+    addLayer(this._doc, layer);
+    this._base = null;
     this.snapshot();
     return layer;
   }
 
   findLayer(id) {
-    return this.layers.find((layer) => layer.id === id) || null;
+    return findDocLayer(this._doc, id);
   }
 
   removeOverlay(id) {
-    const before = this.layers.length;
-    this.layers = this.layers.filter((layer) => layer.id !== id);
-    if (this.layers.length === before) return false;
+    const removed = removeLayer(this._doc, id);
+    if (!removed) return false;
+    this._base = null;
     this.snapshot();
     return true;
+  }
+
+  /** 复制图层：副本插在源图层上方并偏移 16px，可撤销。 */
+  cloneOverlay(id) {
+    const copy = cloneLayer(this._doc, id, { offset: 16 });
+    if (!copy) return null;
+    this._base = null;
+    this.snapshot();
+    return copy;
+  }
+
+  /** 调整图层顺序（+1 上移一层 / -1 下移一层），可撤销。 */
+  moveOverlay(id, toIndex) {
+    const index = moveLayer(this._doc, id, toIndex);
+    if (index < 0) return -1;
+    this._base = null;
+    this.snapshot();
+    return index;
   }
 
   /**

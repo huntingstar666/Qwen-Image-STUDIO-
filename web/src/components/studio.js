@@ -1104,7 +1104,7 @@ export function createStudioPage(host) {
     updateMaskStatus();
     setTool(tool === 'view' ? 'view' : tool);
     setPreview(null);
-    ai?.resetResult?.();
+    ai?.resetTaskContext?.();
     ai?.refresh?.();
     requestAnimationFrame(() => {
       fitView();

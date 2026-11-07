@@ -600,6 +600,20 @@ export function mountAiPanel(host, ctx) {
     syncPrompt();
   }
 
+  /** 删除参考图后同步指令：移除指向它的 @图N，并把后面的引用整体前移一位。 */
+  function dropMention(index) {
+    const chars = ['一', '二', '三', '四'];
+    const label = chars[index - 1];
+    if (!label) return;
+    let text = refs.prompt.value.replace(new RegExp(`@图${label}[ \\t]*`, 'g'), '');
+    for (let n = index + 1; n <= chars.length; n += 1) {
+      text = text.replace(new RegExp(`@图${chars[n - 1]}`, 'g'), `@图${chars[n - 2]}`);
+    }
+    if (text === refs.prompt.value) return;
+    refs.prompt.value = text;
+    syncPrompt();
+  }
+
   function renderMentionsMenu() {
     const items = ['图一 · 主图', ...state.refs.map((item, index) => `图${['二', '三', '四'][index] || index + 2} · ${item.name}`)];
     refs.mentions.innerHTML = items
@@ -806,8 +820,13 @@ export function mountAiPanel(host, ctx) {
           syncBusy();
           const image = job?.images?.[0];
           if (!image) return;
-          state.resultUrl = api.fileUrl(image.url || image.path || '');
-          state.resultInfo = { width: image.width, height: image.height, task: refs.task.value };
+          const url = api.fileUrl(image.url || image.path || '');
+          if (!url) {
+            toastError(new Error('后端未返回结果地址'), '生成失败');
+            return;
+          }
+          state.resultUrl = url;
+          state.resultInfo = { width: image.width, height: image.height, task: loraState.task };
           refs.resultActions.hidden = false;
           renderQuality(job);
           if (state.resultInfo.width && state.resultInfo.height) {
@@ -869,7 +888,10 @@ export function mountAiPanel(host, ctx) {
   refs.refs.addEventListener('click', (event) => {
     const button = event.target.closest('[data-ref-del]');
     if (!button) return;
+    const index = state.refs.findIndex((item) => item.id === button.dataset.refDel);
+    if (index < 0) return;
     state.refs = state.refs.filter((item) => item.id !== button.dataset.refDel);
+    dropMention(index + 2);
     renderRefs();
   });
 
@@ -1068,6 +1090,16 @@ export function mountAiPanel(host, ctx) {
       refs.adoptHint.hidden = true;
       refs.quality.hidden = true;
       refs.quality.innerHTML = '';
+    },
+    /** 换主图 / 载入结果：参考图与指令属于上一张图，清空避免串任务 */
+    resetTaskContext() {
+      state.refs = [];
+      refs.prompt.value = '';
+      refs.refInput.value = '';
+      syncPrompt();
+      renderRefs();
+      controller.resetResult();
+      renderMeta();
     },
     /** studio 端画完蒙版后调用：更新任务识别与提示 */
     onMaskChanged(coverage) {

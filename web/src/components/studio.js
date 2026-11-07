@@ -23,6 +23,10 @@ import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openCompareDialog } from './compare.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 
+const MAX_IMAGE_SIDE = 8192;
+const MAX_IMAGE_PIXELS = 40_000_000;
+const MAX_FILE_BYTES = 30 * 1024 * 1024;
+
 const TOOLS = [
   {
     id: 'view',
@@ -380,15 +384,18 @@ export function createStudioPage(host) {
     /** 结果回流：把结果图载入为新底图（蒙版与历史随新文档清空），可继续精修 / 再次扩图。 */
     async adoptResult(url, meta = {}) {
       if (!url) return null;
+      const token = ++openSeq;
       try {
         const image = await loadImage(url);
+        if (token !== openSeq) return null;
+        if (imageTooLarge(image, 'AI 结果')) return null;
         const stem = (doc?.name || 'result').replace(/\.[^.]+$/, '') || 'result';
         const suffix = meta.task === 'outpaint' ? '-扩图' : '-精修';
         const next = new StudioDoc(image, `${stem}${suffix}.png`);
         setDoc(next);
         return { width: next.size.width, height: next.size.height, name: next.name };
       } catch (err) {
-        toastError(err, '载入结果失败');
+        if (token === openSeq) toastError(err, '载入结果失败');
         return null;
       }
     },
@@ -401,6 +408,7 @@ export function createStudioPage(host) {
     async addOverlay(file) {
       if (!doc) throw new Error('请先打开一张主图');
       if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件');
+      if (fileTooLarge(file, '叠加图')) return null;
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result || ''));
@@ -408,6 +416,7 @@ export function createStudioPage(host) {
         reader.readAsDataURL(file);
       });
       const image = await loadImage(dataUrl);
+      if (imageTooLarge(image, '叠加图')) return null;
       const layer = doc.addOverlay(image, { name: file.name || '叠加图' });
       selectedLayerId = layer.id;
       setTool('move');
@@ -636,10 +645,15 @@ export function createStudioPage(host) {
 
     // AI 结果预览（覆盖底图；按住 Tab 可临时看回底图）
     if (preview.image && !preview.flash) {
+      const pw = preview.image.naturalWidth || preview.image.width;
+      const ph = preview.image.naturalHeight || preview.image.height;
+      const scale = Math.min(w / pw, h / ph);
+      const dw = pw * scale;
+      const dh = ph * scale;
       ctx.save();
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(preview.image, view.x, view.y, w, h);
+      ctx.drawImage(preview.image, view.x + (w - dw) / 2, view.y + (h - dh) / 2, dw, dh);
       ctx.restore();
     }
 
@@ -1049,14 +1063,33 @@ export function createStudioPage(host) {
     return String(name || 'studio').replace(/\.[^.]+$/, '') || 'studio';
   }
 
-  function loadImage(src, name) {
+  function loadImage(src) {
     return new Promise((resolve, reject) => {
       const image = new Image();
+      if (/^https?:/i.test(src)) image.crossOrigin = 'anonymous';
       image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('图片解码失败'));
+      image.onerror = () => reject(new Error('图片加载失败，可能是格式不支持或跨域限制'));
       image.src = src;
     });
   }
+
+  function fileTooLarge(file, label = '图片') {
+    if (file.size <= MAX_FILE_BYTES) return false;
+    toastWarn(`${label}超过 ${Math.round(MAX_FILE_BYTES / 1048576)}MB，请先压缩`);
+    return true;
+  }
+
+  function imageTooLarge(image, label = '图片') {
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    if (width <= MAX_IMAGE_SIDE && height <= MAX_IMAGE_SIDE && width * height <= MAX_IMAGE_PIXELS) {
+      return false;
+    }
+    toastWarn(`${label}尺寸过大（${width}×${height}），请压缩到长边 ≤ ${MAX_IMAGE_SIDE}、总像素 ≤ 4000 万`);
+    return true;
+  }
+
+  let openSeq = 0;
 
   async function openFile(file) {
     if (!file) return;
@@ -1064,9 +1097,13 @@ export function createStudioPage(host) {
       toastWarn('请选择图片文件（PNG / JPG / WebP）');
       return;
     }
+    if (fileTooLarge(file)) return;
     const url = URL.createObjectURL(file);
+    const token = ++openSeq;
     try {
       const image = await loadImage(url);
+      if (token !== openSeq) return;
+      if (imageTooLarge(image)) return;
       setDoc(new StudioDoc(image, file.name || 'untitled.png'));
     } catch (err) {
       toastError(err, '打开图片失败');
@@ -1077,12 +1114,15 @@ export function createStudioPage(host) {
   }
 
   async function openUrl(url, name) {
+    const token = ++openSeq;
     try {
       const image = await loadImage(url);
+      if (token !== openSeq) return false;
+      if (imageTooLarge(image)) return false;
       setDoc(new StudioDoc(image, name || 'material.png'));
       return true;
     } catch (err) {
-      toastError(err, '打开图片失败');
+      if (token === openSeq) toastError(err, '打开图片失败');
       return false;
     }
   }
@@ -1276,7 +1316,8 @@ export function createStudioPage(host) {
         toastWarn('还没有可用的历史结果，先打开一张本地图片吧');
         return;
       }
-      await openUrl(url.startsWith('/') ? url : `/files/${url}`, record.images[0].filename || 'history.png');
+      const normalized = url.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `/files/${url}`;
+      await openUrl(normalized, record.images[0].filename || 'history.png');
     } catch (err) {
       toastError(err, '读取历史失败');
     }

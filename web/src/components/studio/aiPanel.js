@@ -39,6 +39,9 @@ import { mountAdvanced } from './advanced.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
+const MAX_REF_SIDE = 4096;
+const MAX_REF_PIXELS = 24_000_000;
+const MAX_REF_BYTES = 20 * 1024 * 1024;
 const TASK_LABELS = {
   auto: '自动识别',
   edit: '通用编辑',
@@ -563,21 +566,32 @@ export function mountAiPanel(host, ctx) {
   }
 
   async function addRefFiles(files) {
+    const before = state.refs.length;
     for (const file of [...files]) {
       if (state.refs.length >= MAX_REFS) {
         toastWarn(`最多再添加 ${MAX_REFS} 张参考图`);
         break;
       }
       if (!file.type.startsWith('image/')) continue;
+      if (file.size > MAX_REF_BYTES) {
+        toastWarn(`参考图 ${file.name || ''} 超过 ${Math.round(MAX_REF_BYTES / 1048576)}MB，已跳过`);
+        continue;
+      }
       try {
         const dataUrl = await readFile(file);
         const image = await loadImage(dataUrl);
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        if (width > MAX_REF_SIDE || height > MAX_REF_SIDE || width * height > MAX_REF_PIXELS) {
+          toastWarn(`参考图尺寸过大（${width}×${height}），已跳过`);
+          continue;
+        }
         state.refs.push({
           id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           name: file.name || '参考图',
           dataUrl,
-          width: image.naturalWidth,
-          height: image.naturalHeight,
+          width,
+          height,
         });
       } catch (err) {
         toastError(err, '读取参考图失败');
@@ -585,7 +599,7 @@ export function mountAiPanel(host, ctx) {
     }
     renderRefs();
     refs.refInput.value = '';
-    insertMention(state.refs.length + 1);
+    if (state.refs.length > before) insertMention(before + 2);
   }
 
   function insertMention(index) {

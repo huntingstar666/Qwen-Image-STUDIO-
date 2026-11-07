@@ -195,6 +195,13 @@ export function errorMessage(err) {
   return err.message || String(err);
 }
 
+/** 任务 LoRA 预设的展示名（后端 `config.LORA_TASKS` 的 id → 中文名）。 */
+const LORA_LABELS = {
+  consistency: '一致性（GH 无偏移）',
+  remove: '万物移除（GH）',
+  outpaint: '扩图（GH）',
+};
+
 /**
  * 把对象参数渲染成中文键值对文本（历史详情/参数摘要用）。
  * 只展示常见字段，避免把超长 meta 全量倒出来。
@@ -225,8 +232,21 @@ export function summarizeParams(params) {
   }
   if (params.turbo?.enabled) lines.push(`Turbo：${params.turbo.profile || '开启'}`);
   if (Array.isArray(params.loras) && params.loras.length) {
-    lines.push(`LoRA：${params.loras.map((x) => `${x.name} @ ${x.strength}`).join('、')}`);
+    lines.push(
+      `LoRA：${params.loras
+        .map((item) => {
+          const name = item.name || LORA_LABELS[item.preset] || 'LoRA';
+          const strength = Number(item.strength);
+          return `${name}${Number.isFinite(strength) ? ` @ ${strength.toFixed(2)}` : ''}`;
+        })
+        .join('、')}`,
+    );
   }
-  if (params.consistency_lora) lines.push(`一致性 LoRA：${params.consistency_lora.name} @ ${params.consistency_lora.strength}`);
+  if (params.consistency_lora) {
+    const item = params.consistency_lora;
+    const name = item.name || LORA_LABELS[item.preset] || '一致性 LoRA';
+    const strength = Number(item.strength);
+    lines.push(`一致性 LoRA：${name}${Number.isFinite(strength) ? ` @ ${strength.toFixed(2)}` : ''}`);
+  }
   return lines.length ? lines.join('\n') : '—';
 }

@@ -153,7 +153,7 @@ export function mountAiPanel(host, ctx) {
         </label>
         <label class="ai-slider">
           <span class="ai-slider-head"><span>一致性强度</span><span class="mono" data-ref="strengthLabel">0.48</span></span>
-          <input type="range" min="20" max="80" step="1" value="48" data-ref="strength" />
+          <input type="range" min="0" max="200" step="1" value="48" data-ref="strength" />
         </label>
         <div class="ai-row">
           <select class="select" data-ref="loraPick"><option value="">选择要叠加的 LoRA</option></select>
@@ -239,15 +239,19 @@ export function mountAiPanel(host, ctx) {
     presetId: String(editSettings.preset || ''),
     overrides: { ...(editSettings.overrides || {}) },
     protection: normalizeProtection(editSettings.protection),
+    consistencyOn: editSettings.consistency !== false,
+    consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
   };
 
-  /** 预设 / 覆盖项 / 保护开关跨页共享，写回同一份 settings.edit。 */
+  /** 预设 / 覆盖项 / 保护开关 / 一致性强度跨页共享，写回同一份 settings.edit。 */
   function persistEdit() {
     patchSettings({
       edit: {
         preset: state.presetId,
         overrides: state.overrides,
         protection: state.protection,
+        consistency: state.consistencyOn,
+        consistencyStrength: state.consistencyStrength,
       },
     });
   }
@@ -905,11 +909,29 @@ export function mountAiPanel(host, ctx) {
     syncGuardNote();
   });
 
+  /** 一致性强度唯一写入口：滑块、标签、共享设置一起更新（B2/B6）。 */
+  function setStrength(value) {
+    const next = Math.min(2, Math.max(0, Number(value) || 0));
+    state.consistencyStrength = next;
+    refs.strength.value = String(Math.round(next * 100));
+    refs.strengthLabel.textContent = next.toFixed(2);
+  }
+
+  refs.consistency.checked = state.consistencyOn;
+  refs.strength.disabled = !state.consistencyOn;
+  setStrength(state.consistencyStrength);
+
   refs.consistency.addEventListener('change', () => {
-    refs.strength.disabled = !refs.consistency.checked;
+    state.consistencyOn = refs.consistency.checked;
+    refs.strength.disabled = !state.consistencyOn;
+    persistEdit();
   });
   refs.strength.addEventListener('input', () => {
     refs.strengthLabel.textContent = (Number(refs.strength.value) / 100).toFixed(2);
+  });
+  refs.strength.addEventListener('change', () => {
+    setStrength(Number(refs.strength.value) / 100);
+    persistEdit();
   });
 
   refs.loraAdd.addEventListener('click', () => {
@@ -936,8 +958,8 @@ export function mountAiPanel(host, ctx) {
         (item) => `
         <div class="ai-lora">
           <span class="ai-lora-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name.split(/[\\/]/).pop())}</span>
-          <input class="input mono ai-lora-strength" type="number" min="0" max="1" step="0.05" value="${item.strength}"
-            data-lora-strength="${escapeHtml(item.name)}" />
+          <input class="input mono ai-lora-strength" type="number" min="0" max="2" step="0.05"
+            value="${Number(item.strength).toFixed(2)}" data-lora-strength="${escapeHtml(item.name)}" />
           <button class="ai-layer-btn" type="button" data-lora-del="${escapeHtml(item.name)}">×</button>
         </div>`,
       )
@@ -948,7 +970,7 @@ export function mountAiPanel(host, ctx) {
     const input = event.target.closest('[data-lora-strength]');
     if (!input) return;
     const item = state.customLoras.find((entry) => entry.name === input.dataset.loraStrength);
-    if (item) item.strength = Math.min(1, Math.max(0, Number(input.value) || 0));
+    if (item) item.strength = Math.min(2, Math.max(0, Number(input.value) || 0));
   });
   refs.loraList.addEventListener('click', (event) => {
     const button = event.target.closest('[data-lora-del]');

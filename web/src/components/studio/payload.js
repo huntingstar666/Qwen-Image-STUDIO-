@@ -112,7 +112,7 @@ export function pickConsistencyLora(loras, defaultPath = '') {
 function clampStrength(value, fallback = 0.48) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.min(1, Math.max(0, n));
+  return Math.min(2, Math.max(0, n));
 }
 
 /**
@@ -216,7 +216,7 @@ export function buildEditPayload({
     consistency_lora:
       loras.consistency && loras.consistencyName
         ? { name: loras.consistencyName, strength: clampStrength(loras.strength, 0.48) }
-        : null,
+        : false,
     task: { mode: task },
     meta: {
       source: 'web/studio',
@@ -247,6 +247,7 @@ export function buildEditPayload({
       blend_pixels: 24,
       fills: task === 'remove',
       hint: task === 'remove' ? 'green' : 'none',
+      consistency: Boolean(loras.consistency),
       expand_top: 1.3,
       expand_bottom: 1.4,
       expand_left: 1.4,
@@ -281,6 +282,8 @@ export function buildEditPayload({
     localExtra.color_match = false;
     localExtra.color_restore = false;
   }
+  // 一致性 LoRA 关掉时要显式落 local.consistency=false（B1：后端把 null 当"未传"=默认开）。
+  if (!loras.consistency) localExtra.consistency = false;
   if (Object.keys(localExtra).length) extra.local = localExtra;
   if (protection.zeroShift === false) {
     extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };

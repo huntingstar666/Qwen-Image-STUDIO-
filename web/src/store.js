@@ -42,6 +42,8 @@ const DEFAULT_EDIT = {
   preset: 'mask_edit',
   overrides: {},
   protection: { color: true, zeroShift: true },
+  consistency: true,
+  consistencyStrength: 0.48,
   sizeMode: 'follow',
   width: 1024,
   height: 1024,

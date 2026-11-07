@@ -1860,7 +1860,13 @@ PRESET_VERSION = 1
 - **P13-1 ✅** 新增 `server/presets.py`（5 预设 + `PRESET_VERSION=1` + 「显式 > 预设 > 内置默认」合并，只补缺不覆盖）；新增 `GET /api/meta` 下发 `edit_presets`。采样档复用已有 `turbo9_ckpt`（与文档里的 "turbo9_gh" 是同一份 Turbo 权重 + 9 段 sigma，不新增重复档位）。验证：`tests/test_edit_presets.py` 8 条全绿。
 - **P13-2 ✅** `zero_shift` 默认开（仅 `size_mode=follow`；custom/ratio/扩图仍自动关），显式关闭时写 `quality.warnings`。验证：`test_zero_shift_defaults_on_and_can_be_disabled`、全量 **391 passed**。
 - **P13-3 ⏳** 代码接线已完成（见 P14-2），真机大幅外补回归待跑。
-- **P13-4 ⏳** 预设卡片 + 两个保护开关 + payload 预设模式已接入图片精修（见 P14-3 / P15-1）；高级折叠（P14-1）与 B1~B6 待补。
+- **P13-4 ✅** 预设卡片、两个保护开关、8 组高级设置全部接入图片精修（见 P14-1 / P14-3 / P15-1）。§13.8 六条显示/语义问题一并修掉：
+  - **B1** 关闭一致性时 `consistency_lora:false` **且** `local.consistency:false`，后端不再默认挂载；
+  - **B2** 强度滑块范围 0~2（step 0.01，显示两位小数），新增 `setStrength()` 统一写滑块 + 标签 + 共享设置；
+  - **B3** 自定义 LoRA 强度上限 2，显示统一 `toFixed(2)`，`clampStrength` 上限同步改 2；
+  - **B4** 初始化即按勾选状态同步滑块 disabled；
+  - **B5** 历史摘要 LoRA 名缺失时回退「一致性 LoRA / LoRA」中文名（`utils.summarizeParams`）；
+  - **B6** 预设 / 覆盖项 / 保护开关 / 一致性强度只存一份（`settings.edit`），两页共用。
 
 **总验收口径：** 切到任一预设不改任何高级项，直接出图即为该预设的最佳效果；关掉两个保护开关后能回到旧行为；图片精修与图生图用同一预设出图参数一致（同 seed 同图）。
 

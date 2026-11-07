@@ -770,3 +770,334 @@ DOM 结构：
 - 不碰 `web/assets/css/app.css`（当前仅换行符差异，无实际内容改动，但仍视为公共文件）。
 - 新增能力全部落在 `web/src/components/studio/` 新模块 + `studio.css` 增量类；`studio.js` 只做装配。
 - 专业修图是纯前端能力，不新增后端接口；AI 相关（消除/超分/主体选择）走已有 `/api/edit`、`/api/jobs`。
+
+---
+
+## 14. 工程实施总纲（S0~S15 详细落地计划）
+
+> 本文把 §12（工作室打磨 S1~S6）和 §13（专业修图 S7~S13）合并成一条可执行流水线，并补上全景 / 高清放大的接入位（S14~S15）。
+> 原则：**一次只做一个交付项，完成一项提交一项，提交后立刻回写本文档台账。**
+> 当前状态：全部未开始，等通知后从 S0 启动。
+
+### 14.1 里程碑与依赖
+
+| 里程碑 | 范围 | 交付项 | 前置 | 出口标准 |
+| --- | --- | --- | --- | --- |
+| **M0 预检** | 环境、开关、基线 | D0.1~D0.2 | 无 | 基线截图、pytest 全绿、开关可关闭新 UI |
+| **M1 基础体验** | 导入、参考图、富文本 @、右栏与视觉 | D1.1~D6.1 | M0 | §12.10 验收清单全过 |
+| **M2 图层内核** | 文档 / 图层 / 历史 / 合成 | D7.1~D7.4 | M1 | 10 层 60fps，100 步历史 |
+| **M3 选区与调色** | 选区增强、蒙版、专业调色 | D8.1~D9.4 | M2 | 调整可回改、可蒙版、导出与预览一致 |
+| **M4 修复与创作** | 修复、磨皮、液化、马赛克、文字、贴纸 | D10.1~D11.4 | M3 | 人像/去物/文字三类样片通过 |
+| **M5 进阶** | 混合模式、图层样式、LUT、快照、AI 项 | D12.1~D13.3 | M4 | 与 PS 常用效果肉眼一致；AI 项单独验收 |
+| **M6 能力接入** | 全景图、高清放大 | D14.1~D15.1 | 后端就绪 | 结果可回流图层 |
+
+依赖说明：
+
+- S7 的文档 / 历史内核是 S8~S13 的地基，必须先做。
+- 选区（S8）先于调色（S9），因为局部调整和调整层蒙版都依赖选区。
+- 文字 / 贴纸（S11）依赖图层（S7），不依赖修复（S10）。
+- 全景 / 放大（S14/S15）等后端：全景看 `PLAN_PANORAMA.md`，放大看 VOSR2（当前有未提交改动，勿碰）。
+
+### 14.2 M0 预检（D0）
+
+| 项 | 内容 |
+| --- | --- |
+| 工作区快照 | 开工前 `git status` 记录他人未提交文件：`server/upscalers/*`、`config.py`、`main.py`、`imageTools.js`、`settings.js`、`i18n.js`；实施期间不碰 |
+| 基线 | 8722 打开文生图 / 图像编辑 / 图片精修，各存一张截图与 console 日志到 `.cache/shots/` |
+| 测试基线 | `python -m pytest tests -q` 全绿；记录数量（当前 419） |
+| Node 测试 | 确认 `node -v`；若 ≥ 18，用内置 `node --test` 跑纯函数测试，不引入依赖 |
+| 开关 | `studio/flags.js` 导出 `studioV2`，默认 `true`，`localStorage.wb.studio.v2='0'` 可回退旧面板 |
+| 浏览器 | 以 Chrome/Edge 为主；Safari 仅在 M1 后抽检，不阻塞 |
+
+### 14.3 模块蓝图
+
+新增目录 `web/src/components/studio/`（已存在 `aiPanel.js` 等）：
+
+| 模块 | 对外 API | 依赖 | 步骤 |
+| --- | --- | --- | --- |
+| `flags.js` | `isEnabled(name)` | 无 | D0 |
+| `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
+| `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
+| `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`、`docToJSON/fromJSON` | 无 | D7 |
+| `layers.js` | `createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 |
+| `history.js` | `createHistory(limit)` → `push/undo/redo/jump/snapshot` | 无 | D7 |
+| `renderer.js` | `render(doc, viewport)`、`renderLayer(layer)`、`dirty(rect)` | `layers` | D7 |
+| `selection.js` | `rectSelect/ellipseSelect/lassoSelect/wandSelect`、`feather/expand/invert`、`toMask()` | 无 | D8 |
+| `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、LUT、直方图（纯函数） | 无 | D9 |
+| `adjustments.js` | `applyAdjustment(imageData, params)`、调整层合成 | `color` | D9 |
+| `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
+| `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
+| `tools/smudge.js` | 涂抹 | `renderer` | D10 |
+| `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
+| `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
+| `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
+| `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
+| `panels/layers.js` | 图层面板 | `document/layers` | D7 |
+| `panels/adjust.js` | 调色面板 | `color/adjustments` | D9 |
+| `panels/history.js` | 历史记录面板 | `history` | D7/D12 |
+| `io.js` | IndexedDB 自动保存、项目导入导出、图片导出 | `document` | D7 |
+
+`studio.js` 只保留装配：工具切换、画布事件、面板挂载；不再新增业务算法。
+
+### 14.4 数据模型
+
+```js
+// document.js
+{
+  id, name, width, height,          // 文档像素尺寸，sRGB
+  layers: [Layer],                  // 数组顺序 = 从下到上
+  activeLayerId,
+  selection: Selection | null,
+  viewport: { zoom, panX, panY },
+  dirty: boolean,
+  meta: { origin: 'local'|'warehouse'|'history'|'ai', refs: [] }
+}
+
+// Layer
+{
+  id, type: 'pixel'|'text'|'sticker'|'adjust'|'fill'|'group',
+  name, visible, opacity, blend,    // blend 见 13.6
+  locked: { pixels: false, position: false, alpha: false },
+  parentId: null,                   // 组用
+  bitmap: HTMLCanvasElement|null,   // 像素层 / 贴纸栅格缓存
+  mask: HTMLCanvasElement|null,     // 灰度蒙版
+  transform: { x, y, scaleX, scaleY, rotation },
+  text: { content, font, size, weight, lineHeight, letterSpacing, align, color, stroke, shadow },
+  sticker: { src, naturalWidth, naturalHeight },
+  adjust: { kind: 'curves'|'levels'|'hsl'|'balance'|'white'|'lut', params, lutId },
+  clipping: false,
+  style: { stroke, shadow, glow, gradient } // P1
+}
+
+// Selection
+{ path: Path2D, bounds: {x,y,w,h}, feather: 0, mode: 'new'|'add'|'sub'|'intersect' }
+
+// History
+{ stack: [Command], index, limit: 100, snapshots: [{ id, label, at, doc }] }
+// Command: { label, mergeKey?, undo(), redo() }
+```
+
+持久化：
+
+- IndexedDB 库 `wb-studio`，表 `projects`：`{ id, name, updatedAt, width, height, layers: [{...,blob|dataUrl}], selection }`。
+- 自动保存：停止操作 5s 后写入；同一项目只保留最近 5 个版本。
+- 工程文件：`.wbstudio.json`（图层图片以 dataURL 内嵌），用于导入导出；大文件提示。
+
+### 14.5 渲染管线
+
+1. **坐标**：文档像素坐标为唯一真值；`viewport` 负责屏幕映射，画笔半径按文档像素存储、按缩放显示。
+2. **合成**：自下而上逐层绘制到主离屏 Canvas：
+   - 普通层：`drawImage`；
+   - 蒙版：临时 Canvas 上先画图层，再 `destination-in` 画蒙版；
+   - 调整层：对下方已合成结果做一次像素处理，再按蒙版回贴；
+   - 组：递归合成到组离屏 Canvas，再按组不透明度/混合模式贴回；
+   - 混合模式映射到 `globalCompositeOperation`（正片叠底 `multiply`、滤色 `screen`、叠加 `overlay`、柔光 `soft-light` 等）。
+3. **性能**：
+   - 预览只渲染视口内区域，`renderScale = min(1, 视口宽/文档宽)`；
+   - 图层位图缓存 + 脏矩形；画笔绘制只重绘当前层局部；
+   - 缩略图 64px，200ms 节流；
+   - 4K 文档限制 12 层，超出提示；内存超 1.5GB 时降级预览。
+4. **颜色**：只处理 sRGB；不做 ICC/CMYK（与 §13.1 一致）。
+5. **导出**：全分辨率合成 → `toBlob`；PNG 无损、JPG 质量 0.92；导出前可选拼合/包含蒙版。
+
+### 14.6 关键算法实现
+
+| 能力 | 实现要点 |
+| --- | --- |
+| 曲线 | 控制点 → 单调三次插值 → 256 项 LUT；R/G/B 与 RGB 复合分别生成 LUT，渲染时查表 |
+| 色阶 | 输入黑/白/灰点归一化 → 线性映射 + gamma；输出区间映射 |
+| HSL | RGB↔HSL；8 个色相带按色相距离加权（约 40° 过渡）；每带 H/S/L 偏移后混合回原值 |
+| 色彩平衡 | 用亮度分区权重（阴影/中间调/高光）分别施加三组偏移，保持总亮度 |
+| 白平衡 | 色温/色调转 RGB 增益（近似 Tanner Helland），灰点吸管取中性色反推增益 |
+| LUT | 解析 `.cube` 的 `LUT_3D_SIZE` 与数据；三线性插值；强度按原图/结果混合 |
+| 直方图 | 抽样步长 `max(1, floor(pixels/200000))`；256 桶；120ms 节流；统计削波像素占比 |
+| 模糊 | Stack Blur（O(n)）近似高斯；动感/径向用方向采样；预览降采样 |
+| 频率分离 | 低频 = 半径 8~20 模糊；高频 = 原图 + 128 − 低频；线性光混合，纹理强度单独控制 |
+| 双边滤波 | 5×5/9×9 核，空间 σ 与颜色 σ 可调；4K 预览先降采样 |
+| 污点修复 | 以笔刷为中心环形采样候选块，按梯度差选最优，羽化回贴 |
+| 仿制图章 | `sourceOffset = 首次落笔 - Alt 取样点`；对齐模式固定偏移，非对齐每次重取；按笔刷 alpha 累积 |
+| 涂抹 | 每笔蘸取笔刷范围像素作为 pickup，按强度与拖动方向混合到目标 |
+| 液化 | 16/32px 网格位移场；笔刷按半径与压力累加位移；双线性重采样；冻结区不更新；pointerup 提交历史 |
+| 马赛克 | 按块取平均色回填；局部马赛克通过笔刷蒙版控制强度 |
+| 选区 | 魔棒 = 容差洪泛填充；羽化 = 对蒙版做模糊；扩展/收缩 = 形态学膨胀/腐蚀；反选 = 蒙版取反 |
+| 文字 | `measureText` 逐字计算字距；`letterSpacing` 原生支持则优先；描边 `strokeText`、阴影 `shadowBlur`；编辑用叠加 DOM 输入框，提交后栅格化 |
+| 贴纸 | 图片/SVG 转位图缓存；八向手柄缩放、旋转吸附 15°、Shift 等比 |
+
+### 14.7 交互与状态
+
+- **工具状态机**：`idle → hover → drawing → committing`；`pointerup` 才写入历史，拖拽过程只改临时层。
+- **历史粒度**：一次完整笔画 / 一次面板提交 / 一次图层操作为一条命令；滑块拖动用 `mergeKey` 合并为一条。
+- **快捷键**：V 抓手、B 画笔、E 橡皮、L 套索、W 魔棒、C 裁剪、T 文字、S 仿制图章、R 涂抹、X 液化、M 矩形、O 椭圆、Space 临时平移、`[`/`]` 笔刷大小、Ctrl/Cmd+Z 撤销、Shift+Ctrl/Cmd+Z 重做、Ctrl/Cmd+Enter 提交 AI 修改。
+- **画布手势**：滚轮以光标为中心缩放；Space 拖拽平移；触屏双指缩放/平移；缩放 5%~800%。
+- **自动保存**：空闲 5s 写 IndexedDB；崩溃后进入工作室提示恢复。
+- **可访问性**：所有图标按钮有 `aria-label`；面板可 Tab 到达；动效遵守 `prefers-reduced-motion`。
+
+### 14.8 交付项与提交粒度
+
+> 每个交付项 = 1 次提交 = 1 次文档台账更新。提交前先跑该交付项的验证。
+
+#### M0
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D0.1 | 预检与基线 | 无代码 | 截图、console、pytest 数量记录 |
+| D0.2 | 功能开关 | 新增 `studio/flags.js`；`studio.js` 读取 | 关闭开关恢复旧面板 |
+
+#### M1 基础体验（§12）
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D1.1 | 导入选择器 | 新增 `importPicker.js` | 本地/仓库/最近结果三来源可取图 |
+| D1.2 | 主图导入入口与拖拽矩阵 | `studio.js`、`studio.css` | 顶栏「导入 ▾」；拖 2 张 = 1 主图 + 1 参考图 |
+| D1.3 | 空状态素材仓库入口 | `studio.js`、`studio.css` | 空画布两个按钮都可用 |
+| D2.1 | 参考图三来源 | `aiPanel.js`、`studio.css` | 本地/仓库/最近结果多选，上限 3 |
+| D2.2 | 参考图拖拽与去重 | `aiPanel.js`、`studio.css` | 文件/图库缩略图可拖入；重复图被忽略 |
+| D3.1 | 富文本编辑器内核 | 新增 `promptEditor.js` | chip 原子删除、序列化 `@图二`、IME 正常 |
+| D3.2 | @ 菜单与编号联动 | `aiPanel.js`、`studio.css` | 输入 @ 出菜单；删参考图 chip 同步 |
+| D4.1 | 右栏 3 段 + 扩图上下文 | `studio.js`、`studio.css` | 5 tab 变 3；扩图只在工具激活时出现 |
+| D4.2 | 蒙版工具浮条 | `studio.js`、`studio.css` | 画笔参数跟随工具；蒙版功能不回归 |
+| D4.3 | AI「更多设置」折叠 | `aiPanel.js`、`studio.css` | 默认只显示指令/参考图/修改；摘要实时更新 |
+| D5.1 | 左栏分组 + 顶栏导入/导出菜单 | `studio.js`、`studio.css` | 工具分组正确；导出项齐全 |
+| D5.2 | 视觉规范与响应式 | `studio.css` | 1440/1280/1024 无横向滚动 |
+| D6.1 | M1 回归与文档 | 本文档 | §12.10 全过；pytest 全绿 |
+
+#### M2 图层内核
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D7.1 | 文档模型 + 图层创建 | 新增 `document.js`、`layers.js` | 新建/删除/复制/排序正确 |
+| D7.2 | 合成渲染器 | 新增 `renderer.js`；`studio.js` 接画布 | 多图层叠加、透明度、显隐正确 |
+| D7.3 | 图层面板 | 新增 `panels/layers.js`、`studio.css` | 拖拽排序、重命名、锁定、不透明度 |
+| D7.4 | 历史记录 + 快捷键 | 新增 `history.js`；`studio.js` | 100 步回退；撤销重做覆盖图层与画笔 |
+
+#### M3 选区与调色
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D8.1 | 选区核心 | 新增 `selection.js`、`tools/brush.js` | 魔棒/反选/羽化/扩展收缩；选区可显示蚂蚁线 |
+| D8.2 | 图层蒙版 | `layers.js`、`panels/layers.js` | 蒙版可画可擦；与选区联动 |
+| D9.1 | 调色数学库 | 新增 `color.js` | 曲线/色阶/HSL/平衡/白平衡单测（node --test） |
+| D9.2 | 直方图 + LUT | `color.js`、`panels/adjust.js` | 直方图实时；.cube 加载正确 |
+| D9.3 | 调整图层 | 新增 `adjustments.js`、`panels/adjust.js` | 可回改/显隐/加蒙版；导出与预览一致 |
+| D9.4 | 局部调整（P1） | `selection.js`、`panels/adjust.js` | 线性/径向/画笔局部生效 |
+
+#### M4 修复与创作
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D10.1 | 污点修复 | 新增 `tools/clone.js`（spot 模式） | 去痘/去小物体自然 |
+| D10.2 | 仿制图章 / 修复画笔 | `tools/clone.js` | Alt 取样、对齐/非对齐正确 |
+| D10.3 | 涂抹 | 新增 `tools/smudge.js` | 头发/水面方向感自然 |
+| D10.4 | 磨皮 | 新增 `tools/skin.js`（或并入 clone） | 频率分离保留纹理 |
+| D10.5 | 液化 | 新增 `tools/liquify.js` | 膨胀/收缩/左推可重建 |
+| D11.1 | 马赛克 / 模糊 | 新增 `tools/mosaic.js` | 局部马赛克边缘自然 |
+| D11.2 | 文字图层 | 新增 `tools/text.js`、`panels/text.js` | 可编辑换字体/描边/投影 |
+| D11.3 | 贴纸 | 新增 `tools/sticker.js` | 导入/缩放/旋转/混合模式 |
+| D11.4 | 形状与图案图章（P1） | `tools/sticker.js`、`tools/clone.js` | 形状可调填充描边 |
+
+#### M5 进阶
+
+| 编号 | 交付项 | 改动 | 验证 |
+| --- | --- | --- | --- |
+| D12.1 | 混合模式 + 剪贴蒙版 | `layers.js`、`panels/layers.js` | 与 PS 常用模式肉眼一致 |
+| D12.2 | 图层样式 | `layers.js`、`panels/layers.js` | 描边/阴影/发光/渐变叠加 |
+| D12.3 | 历史快照 | `history.js`、`panels/history.js` | 快照可命名、可回跳 |
+| D13.1 | AI 主体选择（P2） | `selection.js` + 后端 | 需后端能力，单独评估 |
+| D13.2 | 内容识别填充（P2） | `tools/clone.js` + `/api/edit` | 框选消除结果自然 |
+| D13.3 | 透视变换 / 路径文字（P2） | `tools/sticker.js`、`tools/text.js` | 不阻塞主线 |
+
+#### M6 能力接入
+
+| 编号 | 交付项 | 前置 | 验证 |
+| --- | --- | --- | --- |
+| D14.1 | 全景图入口 | `PLAN_PANORAMA.md` 后端就绪 | 全景结果可作为新图层/新文档 |
+| D15.1 | 高清放大入口 | VOSR2 后端提交并稳定 | 结果卡片可放大回流 |
+
+### 14.9 测试策略
+
+| 层级 | 方式 | 覆盖 |
+| --- | --- | --- |
+| 纯函数 | `node --test web/tests/studio/*.test.mjs`（Node ≥18，无依赖） | 曲线/色阶/HSL/LUT、富文本序列化、选区数学、坐标变换 |
+| 浏览器冒烟 | Playwright（Chrome） | 导入矩阵、@ 引用、3 段切换、图层排序、调色回改、导出 |
+| 视觉基线 | `.cache/shots/` 截图对比 | 面板布局、空状态、调色前后 |
+| 性能 | 2048² × 8 层拖滑块 ≥30fps；4K 单层可编辑 | 渲染管线 |
+| 回归 | `python -m pytest tests -q` | 后端零改动，必须保持全绿 |
+| 可访问性 | 键盘走查 + 对比度检查 | 主要流程 |
+
+若 Node 不可用，纯函数测试降级为浏览器内 `console.assert` 脚本，不阻塞交付，但需要在台账注明。
+
+### 14.10 风险与回滚
+
+| 风险 | 处理 |
+| --- | --- |
+| contenteditable 兼容性 | 只支持 Chrome/Edge 主路径；序列化兜底 trim；异常时回退 textarea（flags 开关） |
+| 大图内存爆炸 | 限制 12 层；预览降采样；超出提示并禁止新增像素层 |
+| 调整层性能 | 预览用低分辨率 + 节流；提交时全分辨率一次性处理 |
+| LUT 文件格式差异 | 只支持标准 `.cube`；解析失败 toast 并回退 |
+| 字体版权 | 只列系统字体 + 明确标注可商用字体；不内置商业字体 |
+| 与同事改动冲突 | 开工前检查 `git status`；不碰 `app.css`、`edit.js`、`refLibrary.js`、`payload.js`、`jobView.js`；发现同文件改动先停 |
+| 新面板异常 | `flags.js` 可关闭 studioV2，回退旧面板 |
+| 单项提交出错 | 只 revert 当前提交；历史/图层不影响已提交的 M1 |
+
+### 14.11 提交与文档维护规范
+
+1. 一个交付项（D 编号）完成 → 先自测 → 再提交，提交信息中文，前缀 `feat(studio):` / `fix(studio):` / `docs(studio):`。
+2. 只 `git add` 本交付项涉及的文件；绝不提交 `web/assets/css/app.css`、他人未提交文件、`.cache/`、测试截图。
+3. 提交后立刻在 §14.12 台账写入：状态、日期、commit、验证结论、遗留问题。
+4. 每个里程碑结束追加一次冒烟截图与性能数据。
+5. 若中途被打断，台账的「当前进行中」列必须指向唯一的 D 编号。
+
+### 14.12 进度台账
+
+| 编号 | 交付项 | 状态 | 提交 | 备注 |
+| --- | --- | --- | --- | --- |
+| D0.1 | 预检与基线 | 未开始 | — | — |
+| D0.2 | 功能开关 | 未开始 | — | — |
+| D1.1 | 导入选择器 | 未开始 | — | — |
+| D1.2 | 主图导入入口与拖拽 | 未开始 | — | — |
+| D1.3 | 空状态素材仓库入口 | 未开始 | — | — |
+| D2.1 | 参考图三来源 | 未开始 | — | — |
+| D2.2 | 参考图拖拽与去重 | 未开始 | — | — |
+| D3.1 | 富文本编辑器内核 | 未开始 | — | — |
+| D3.2 | @ 菜单与编号联动 | 未开始 | — | — |
+| D4.1 | 右栏 3 段 + 扩图上下文 | 未开始 | — | — |
+| D4.2 | 蒙版工具浮条 | 未开始 | — | — |
+| D4.3 | AI 更多设置折叠 | 未开始 | — | — |
+| D5.1 | 左栏分组 + 顶栏菜单 | 未开始 | — | — |
+| D5.2 | 视觉规范与响应式 | 未开始 | — | — |
+| D6.1 | M1 回归与文档 | 未开始 | — | — |
+| D7.1 | 文档模型 + 图层创建 | 未开始 | — | — |
+| D7.2 | 合成渲染器 | 未开始 | — | — |
+| D7.3 | 图层面板 | 未开始 | — | — |
+| D7.4 | 历史记录 + 快捷键 | 未开始 | — | — |
+| D8.1 | 选区核心 | 未开始 | — | — |
+| D8.2 | 图层蒙版 | 未开始 | — | — |
+| D9.1 | 调色数学库 | 未开始 | — | — |
+| D9.2 | 直方图 + LUT | 未开始 | — | — |
+| D9.3 | 调整图层 | 未开始 | — | — |
+| D9.4 | 局部调整 | 未开始 | — | — |
+| D10.1 | 污点修复 | 未开始 | — | — |
+| D10.2 | 仿制图章 / 修复画笔 | 未开始 | — | — |
+| D10.3 | 涂抹 | 未开始 | — | — |
+| D10.4 | 磨皮 | 未开始 | — | — |
+| D10.5 | 液化 | 未开始 | — | — |
+| D11.1 | 马赛克 / 模糊 | 未开始 | — | — |
+| D11.2 | 文字图层 | 未开始 | — | — |
+| D11.3 | 贴纸 | 未开始 | — | — |
+| D11.4 | 形状与图案图章 | 未开始 | — | — |
+| D12.1 | 混合模式 + 剪贴蒙版 | 未开始 | — | — |
+| D12.2 | 图层样式 | 未开始 | — | — |
+| D12.3 | 历史快照 | 未开始 | — | — |
+| D13.1 | AI 主体选择 | 未开始 | — | 待后端 |
+| D13.2 | 内容识别填充 | 未开始 | — | 待后端 |
+| D13.3 | 透视变换 / 路径文字 | 未开始 | — | — |
+| D14.1 | 全景图入口 | 未开始 | — | 待全景后端 |
+| D15.1 | 高清放大入口 | 未开始 | — | 待 VOSR2 提交 |
+
+### 14.13 启动顺序（等通知后）
+
+1. D0.1 预检 → D0.2 开关。
+2. 按 D1.1 → D1.2 → … → D6.1 完成 M1，每项提交一次。
+3. M1 验收通过后再进 D7.1；之后按里程碑顺序推进。
+4. D14/D15 只在对应后端合入后启动。
+

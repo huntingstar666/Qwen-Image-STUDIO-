@@ -44,6 +44,7 @@ import { chainConfigOf, imageUrlToDataUrl, meanDeltaE } from './studio/chain.js'
 import { mountGuards } from './studio/guards.js';
 import { mountAdvanced } from './studio/advanced.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
+import { mountPanoramaPanel } from './studio/panoramaPanel.js';
 
 const MAX_IMAGES = 10;
 
@@ -98,9 +99,11 @@ export function createEditPage(host) {
                 <option value="inpaint">局部重绘</option>
                 <option value="remove">元素移除</option>
                 <option value="outpaint">扩图</option>
+                <option value="panorama">全景</option>
               </select>
             </label>
             <div class="ai-hint" data-ref="taskNote"></div>
+            <div data-ref="panoramaHost" hidden></div>
             <div data-ref="guardsHost"></div>
             <div class="ai-guard-note" data-ref="guardNote" hidden></div>
           </div>
@@ -435,6 +438,7 @@ export function createEditPage(host) {
     presetHint: ref('presetHint'),
     taskMode: ref('taskMode'),
     taskNote: ref('taskNote'),
+    panoramaHost: ref('panoramaHost'),
     guardsHost: ref('guardsHost'),
     guardNote: ref('guardNote'),
     advancedHost: ref('advancedHost'),
@@ -1348,9 +1352,12 @@ export function createEditPage(host) {
     });
   }
 
+  let panoramaPanel = null;
+
   function updateSizeInfo() {
     const mode = refs.sizeMode.value;
     const first = images[0] || null;
+    panoramaPanel?.refresh();
     if (mode === 'follow') {
       refs.sizeInfo.textContent = first ? `${fmtNum(snapUp(first.width))} × ${fmtNum(snapUp(first.height))}` : '上传后确定';
       refs.canvasHint.textContent = first && (first.width % 32 || first.height % 32)
@@ -1645,6 +1652,14 @@ export function createEditPage(host) {
     },
   });
 
+  panoramaPanel = mountPanoramaPanel(refs.panoramaHost, {
+    getSize: () => {
+      const image = images[0];
+      return image ? { width: image.width, height: image.height } : null;
+    },
+  });
+  panoramaPanel.init().catch(() => {});
+
   function activeTaskMode() {
     const preset = currentPreset();
     const fallback = preset ? presetTaskMode(preset) : 'edit';
@@ -1655,6 +1670,7 @@ export function createEditPage(host) {
   const TASK_NOTES = {
     remove: '元素移除：提交时强制 fills=true + 绿色提示图，并自动补「移除图像中的绿色区域」；遮罩外逐字节保留。',
     outpaint: '扩图：用「⤢ 扩图」的四边百分比外补，提交时强制 fills=false + 灰色提示。',
+    panorama: '全景：按目标比例做最小外扩，整画布采样；源图保持原尺寸或等比缩小，向外补画布。',
     inpaint: '局部重绘：只重绘蒙版内，其余逐像素保留。',
   };
 
@@ -1663,12 +1679,15 @@ export function createEditPage(host) {
     const note = TASK_NOTES[activeTaskMode()] || '';
     refs.taskNote.textContent = note;
     refs.taskNote.hidden = !note;
+    const isPanorama = activeTaskMode() === 'panorama';
+    refs.panoramaHost.hidden = !isPanorama;
+    if (isPanorama) panoramaPanel?.refresh();
   }
 
   refs.taskMode.addEventListener('change', () => {
     edit.taskMode = refs.taskMode.value;
-    // 移除 / 扩图有专属 LoRA 与提示图约定，显式选任务时同步到对应预设
-    if (edit.taskMode === 'remove' || edit.taskMode === 'outpaint') {
+    // 移除 / 扩图 / 全景有专属提示图约定，显式选任务时同步到对应预设
+    if (['remove', 'outpaint', 'panorama'].includes(edit.taskMode)) {
       if (findPreset(presetList, edit.taskMode)) edit.preset = edit.taskMode;
     }
     patchSettings({ edit: { taskMode: edit.taskMode, preset: edit.preset } });
@@ -2261,6 +2280,11 @@ export function createEditPage(host) {
       } else if (taskMode === 'outpaint') {
         localExtra.fills = false;
         localExtra.hint = 'gray_fill';
+      } else if (taskMode === 'panorama') {
+        // 全景必须整画布采样 + 灰边提示，覆盖预设里的任何裁剪/提示差异。
+        localExtra.scheme = 'a';
+        localExtra.fills = false;
+        localExtra.hint = 'gray_fill';
       }
       // 一致性关掉时必须显式落 false（B1：后端把 null 当"未传"）
       if (!consistencyOn) localExtra.consistency = false;
@@ -2286,7 +2310,23 @@ export function createEditPage(host) {
       } else if (taskMode === 'outpaint') {
         payload.local.fills = false;
         payload.local.hint = 'gray_fill';
+      } else if (taskMode === 'panorama') {
+        payload.local.fills = false;
+        payload.local.hint = 'gray_fill';
+        payload.local.scheme = 'a';
       }
+    }
+    if (taskMode === 'panorama') {
+      payload.panorama = {
+        aspect: String(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama.aspect', '2:1')),
+        long_side: Number(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama.long_side', 3072)) || 3072,
+        wrap: Boolean(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama.wrap', false)),
+        seam_blend: Number(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama.seam_blend', 24)) || 24,
+      };
     }
     return payload;
   }

@@ -143,7 +143,8 @@ def elements_to_boxes(elements: list, width: int, height: int) -> list:
             ymin, xmin, ymax, xmax = (float(v) / 1000.0 for v in bbox)
         except (TypeError, ValueError) as exc:
             raise ValueError("bboxes element 的 'bbox' 必须含四个数字") from exc
-        etype = "text" if element.get("type") == "text" else "obj"
+        etype = "text" if element.get("type") == "text" else (
+            "character" if element.get("type") == "character" else "obj")
         boxes.append({
             "x": round(min(xmin, xmax) * width),
             "y": round(min(ymin, ymax) * height),
@@ -242,6 +243,9 @@ def build_elements(regions: list) -> list:
             continue
         etype = "text" if region.get("type") == "text" else "obj"
         element = {"type": etype}
+        if region.get("type") == "character":
+            # 前端按框标注的「角色」：layout_prompt 据此输出 character（优先级低于序号表）
+            element["character"] = True
         element["bbox"] = _norm_bbox(region)
         if etype == "text":
             element["text"] = region.get("text", "")
@@ -262,13 +266,20 @@ def layout_prompt(prompt: str, elements: list, width: int, height: int,
 
     没有可用 element 时**原样返回 prompt**（节点行为），否则返回紧凑 JSON：
     `{"summary":{"caption":...},"items":[...],"bbox_coord_space":"abs_centralized","bbox_format":"yxyx"}`。
+
+    `character_boxes` 额外支持 `"-1"`：表示**所有非文字框**都按 character 处理
+    （节点原文只认序号；`-1` 是本项目 UI「多角色」的约定）。
     """
-    characters = {int(i) for i in re.findall(r"\d+", str(character_boxes or ""))}
+    raw_characters = str(character_boxes or "").strip()
+    all_characters = raw_characters == "-1"
+    characters = set() if all_characters else {
+        int(i) for i in re.findall(r"\d+", raw_characters)}
     items = []
     for i, el in enumerate(elements if isinstance(elements, list) else []):
         if not isinstance(el, dict):
             continue
-        label = "text" if el.get("type") == "text" else ("character" if i + 1 in characters else "object")
+        is_character = bool(all_characters or el.get("character") or i + 1 in characters)
+        label = "text" if el.get("type") == "text" else ("character" if is_character else "object")
         item: dict[str, Any] = {"label": label, "caption": el.get("desc", "")}
         if item["label"] == "text":
             item["text"] = el.get("text", "")

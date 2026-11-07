@@ -213,6 +213,11 @@ export const api = {
     return request('/api/engine/warmup', { method: 'POST', body: {}, timeout: 300000 });
   },
 
+  /** POST /api/settings —— 运行期设置（显存策略：文本编码器是否常驻） */
+  updateSettings(patch) {
+    return request('/api/settings', { method: 'POST', body: patch, timeout: 60000 });
+  },
+
   /** 结果图/历史图静态地址（后端返回相对路径，这里做兜底拼接） */
   fileUrl(path) {
     if (!path) return '';

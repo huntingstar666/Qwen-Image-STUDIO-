@@ -1150,3 +1150,308 @@
   font-size: 10.5px;
   text-align: center;
 }
+
+/* =============================================================
+ * 边界框布局设计器（MOSS bbox）
+ * 沿用姿态工作室的弹窗结构：左侧缩放画布 + 右侧参数列表。
+ * ============================================================= */
+
+.bbox-dialog-modal {
+  width: min(1020px, 94vw) !important;
+  max-width: min(1020px, 94vw) !important;
+}
+
+.bbox-studio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  min-width: 0;
+}
+
+.bbox-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bbox-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bbox-char {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bbox-char-select {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+
+.bbox-size {
+  color: var(--dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bbox-grow {
+  flex: 1;
+}
+
+.bbox-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: radial-gradient(circle at 50% 16%, #121820, #05070a 74%);
+  overflow: hidden;
+}
+
+.bbox-canvas {
+  display: block;
+  height: auto !important;
+  max-width: 100%;
+  border-radius: 8px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.bbox-canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.bbox-stage-tip {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.58);
+  color: #cfd6dd;
+  font-size: 10.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.bbox-hint {
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.bbox-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  max-height: min(64vh, 560px);
+}
+
+.bbox-side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.bbox-count {
+  color: var(--dim);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.bbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  padding-right: 2px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.bbox-list[hidden],
+.bbox-empty[hidden],
+.bbox-warn[hidden] {
+  display: none;
+}
+
+.bbox-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 150px;
+  padding: 18px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.bbox-warn {
+  padding: 7px 9px;
+  border: 1px solid var(--bad);
+  border-radius: var(--radius-xs);
+  background: var(--bad-dim);
+  color: var(--bad);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.bbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.bbox-row:hover {
+  border-color: var(--line);
+}
+
+.bbox-row.is-active {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--accent-ring), var(--shadow-card);
+}
+
+.bbox-row.is-invalid {
+  border-color: var(--bad);
+  box-shadow: 0 0 0 1px var(--bad-dim);
+}
+
+.bbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bbox-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.bbox-type {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.bbox-del {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+.bbox-del:hover {
+  border-color: var(--bad);
+  background: var(--bad-dim);
+  color: var(--bad);
+}
+
+.bbox-row-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.bbox-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.bbox-field .input {
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 7px;
+  font-size: 10.5px;
+}
+
+.bbox-field .input:disabled {
+  border-color: var(--line-soft);
+  background: transparent;
+  color: var(--dim);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.bbox-note {
+  flex: 0 0 auto;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.65;
+}
+
+@media (max-width: 860px) {
+  .bbox-studio {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bbox-side {
+    max-height: none;
+  }
+
+  .bbox-list {
+    max-height: 42vh;
+  }
+}

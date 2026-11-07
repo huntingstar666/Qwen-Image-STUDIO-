@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,6 +87,51 @@ def test_build_layout_prompt_from_request():
     assert item["bbox"] == [-512, -512, 0, 0]
 
 
+def test_layout_prompt_honours_per_box_character_type():
+    payload = {
+        "enabled": True,
+        "canvas": [1000, 1000],
+        "character_boxes": "",
+        "items": [
+            {"x": 0, "y": 0, "width": 200, "height": 200, "type": "character", "desc": "主角"},
+            {"x": 300, "y": 0, "width": 200, "height": 200, "type": "object", "desc": "苹果"},
+        ],
+    }
+    text, _info = moss.build_layout_prompt("画面", payload, 1000, 1000)
+    assert [item["label"] for item in json.loads(text)["items"]] == ["character", "object"]
+
+
+def test_layout_prompt_minus_one_marks_all_non_text_as_character():
+    payload = {
+        "enabled": True,
+        "canvas": [1000, 1000],
+        "character_boxes": "-1",
+        "items": [
+            {"x": 0, "y": 0, "width": 200, "height": 200, "desc": "甲"},
+            {"x": 200, "y": 200, "width": 200, "height": 60, "type": "text", "text": "标题"},
+            {"x": 500, "y": 500, "width": 200, "height": 200, "desc": "乙"},
+        ],
+    }
+    text, _info = moss.build_layout_prompt("画面", payload, 1000, 1000)
+    assert [item["label"] for item in json.loads(text)["items"]] == [
+        "character", "text", "character"]
+
+
+def test_update_config_only_writes_patch():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as folder:
+        target = Path(folder) / "config.json"
+        target.write_text(json.dumps({"port": 9999, "keep_text_encoder_resident": True}),
+                          encoding="utf-8")
+        updated = config.update_config({"keep_text_encoder_resident": False}, str(target))
+        assert updated["keep_text_encoder_resident"] is False
+        assert updated["port"] == 9999
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        assert raw == {"port": 9999, "keep_text_encoder_resident": False}
+    config.reload_config()  # 还原模块级缓存，避免影响其它测试
+
+
 def test_slg_defaults_off():
     assert moss.slg_config(None, True) is None
     cfg = {"single_layers": "22", "start_percent": 0.0, "end_percent": 0.5}
@@ -127,6 +173,73 @@ def test_profile_aliases_and_public_list():
         raise AssertionError("未知模型应抛 ValueError")
     public = models.public_list(config.load_config())
     assert [item["id"] for item in public] == ["qwen", "moss"]
+
+
+def test_public_list_exposes_turbo_and_samplers():
+    by_id = {item["id"]: item for item in models.public_list(config.load_config())}
+    moss = by_id["moss"]
+    assert moss["samplers"] == ["er_sde", "euler"]
+    presets = {preset["id"]: preset for preset in moss["turbo"]}
+    assert presets["moss8"]["steps"] == 8
+    assert presets["moss8"]["cfg"] == 1.0
+    assert presets["moss8"]["sampler"] == "euler"
+    assert presets["moss8"]["lora"]["file"]
+    assert isinstance(presets["moss8"]["lora"]["missing"], bool)
+    assert presets["none"]["steps"] == 50
+    assert presets["none"]["sampler"] == "er_sde"
+    qwen = by_id["qwen"]
+    assert qwen["samplers"] == config.SAMPLERS
+    assert "er_sde" in qwen["samplers"]
+    assert qwen["turbo"] and qwen["turbo"][0]["id"] == "turbo8_official"
+
+
+def test_pipeline_status_exposes_resident_model():
+    class _StubEngine:
+        def __init__(self, loaded):
+            self._loaded = loaded
+
+        def status(self):
+            return {"available": True, "loaded": self._loaded}
+
+    pipe = pipeline.Pipeline(_StubEngine({"unet": "moss_image_sft_bf16", "clip": None,
+                                          "vae": None, "loras": []}))
+    assert pipe.status()["model"] == "qwen"
+    idle = pipeline.Pipeline(_StubEngine({"unet": None, "clip": None,
+                                          "vae": None, "loras": []}))
+    assert idle.status()["model"] is None
+
+
+def test_pipeline_release_text_encoder_calls_engines():
+    class _StubEngine:
+        def __init__(self, released):
+            self._released = released
+            self.calls = 0
+
+        def status(self):
+            return {"available": True, "loaded": {}}
+
+        def release_text_encoder(self):
+            self.calls += 1
+            return self._released
+
+    engine = _StubEngine(True)
+    pipe = pipeline.Pipeline(engine)
+    assert pipe.release_text_encoder() == 1
+    assert engine.calls == 1
+    assert pipeline.Pipeline(_StubEngine(False)).release_text_encoder() == 0
+
+
+def test_engine_config_carries_memory_policy():
+    class _EngineConfig:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    mod = types.SimpleNamespace(EngineConfig=_EngineConfig)
+    profile = {"id": "moss", "unet": "u", "clip": "c", "vae": "v"}
+    engine_cfg = pipeline._make_engine_config(
+        mod, "engine", profile, {"keep_text_encoder_resident": False})
+    assert engine_cfg.keep_text_encoder_resident is False
+    assert engine_cfg.text_backend == "moss"
 
 
 def test_sampling_plan_moss_default_and_accelerated():

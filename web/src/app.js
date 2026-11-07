@@ -125,6 +125,11 @@ function renderTopbar() {
       <div class="status" data-ref="vram" title="显存占用（已用 / 总量）">
         <span class="status-label">显存</span>
         <span class="status-detail" data-role="text">—</span>
+        <select class="mini-select" data-ref="vramPolicy" aria-label="文本编码器显存策略"
+          title="文本编码器显存策略：常驻更快，让位约省 9GB（每单多约 1 秒重新上卡）">
+          <option value="resident">编码器常驻</option>
+          <option value="offload">采样让位</option>
+        </select>
         <button class="status-action" type="button" data-ref="freeVram" title="POST /api/engine/free（unload=true）：释放显存并卸载模型">释放</button>
       </div>
       <div class="status" data-ref="ollama" title="Ollama 本地大模型（用于提示词润色）">
@@ -142,6 +147,29 @@ function renderTopbar() {
   host.querySelector('[data-ref="polishModel"]').addEventListener('change', (event) => {
     patchSettings({ polishModel: event.target.value });
     toast(`润色模型已切换为 ${event.target.value}`, 'info', { timeout: 2200 });
+  });
+  host.querySelector('[data-ref="vramPolicy"]').addEventListener('change', async (event) => {
+    const select = event.currentTarget;
+    const resident = select.value === 'resident';
+    select.disabled = true;
+    try {
+      const result = await api.updateSettings({ keep_text_encoder_resident: resident });
+      if (resident) {
+        toast('已切换：文本编码器常驻显存（出图更快）', 'success', { timeout: 4200 });
+      } else {
+        toast(
+          `已切换：采样时文本编码器让位，约省 9GB${result?.released ? '（已立即释放）' : ''}`,
+          'success',
+          { timeout: 4200 },
+        );
+      }
+      await pollHealth();
+    } catch (err) {
+      select.value = resident ? 'offload' : 'resident';
+      toastWarn(err?.message || '显存策略切换失败');
+    } finally {
+      select.disabled = false;
+    }
   });
   host.querySelector('[data-ref="freeVram"]').addEventListener('click', async (event) => {
     const button = event.currentTarget;
@@ -326,6 +354,18 @@ function renderHealth(health) {
     });
   } else {
     setStatus('vram', { text: '—', title: engine.reason || '未获取到显存信息' });
+  }
+
+  // 显存策略：文本编码器常驻 / 采样让位（服务端 config.json 持久化）
+  const policySelect = document.querySelector('[data-ref="vramPolicy"]');
+  if (policySelect && health.config) {
+    const resident = health.config.keep_text_encoder_resident !== false;
+    if (document.activeElement !== policySelect) {
+      policySelect.value = resident ? 'resident' : 'offload';
+    }
+    policySelect.title = resident
+      ? '文本编码器常驻显存：出图更快（MOSS 约 9GB 常驻）；切到「采样让位」可省显存'
+      : '采样时文本编码器让位：约省 9GB，每单多约 1 秒重新上卡；切到「编码器常驻」更快';
   }
 
   const ollama = health.ollama || {};

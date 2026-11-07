@@ -325,6 +325,8 @@ class EngineConfig:
     clip_type: str = "qwen_image"
     #: 文本编码方式："qwen"（带参考图 / keep_vision）或 "moss"（纯 tokenize）
     text_backend: str = "qwen"
+    #: 文本编码器是否常驻显存。False = 采样/解码前挪出显存，每单多花约 1s 重新上卡
+    keep_text_encoder_resident: bool = True
     #: 采样 latent 通道数（Qwen 64 / MOSS 128）与下采样倍数
     latent_channels: int = LATENT_CHANNELS
     latent_downscale: int = LATENT_DOWNSCALE
@@ -924,14 +926,19 @@ class NativeEngine:
     # ------------------------------------------------------------ 文本编码器上下卡
 
     def _text_encoder_offload_skipped(self) -> bool:
-        return os.environ.get(KEEP_TEXT_ENCODER_ENV, "").strip().lower() in (
-            "1", "true", "yes", "on")
+        # 环境变量是显式覆盖（基准脚本用），未设置时跟随 EngineConfig
+        env = os.environ.get(KEEP_TEXT_ENCODER_ENV, "").strip().lower()
+        if env in ("1", "true", "yes", "on"):
+            return True
+        if env in ("0", "false", "no", "off"):
+            return False
+        return bool(getattr(self.config, "keep_text_encoder_resident", True))
 
-    def _offload_text_encoder(self) -> None:
+    def _offload_text_encoder(self, *, force: bool = False) -> None:
         """把 CLIP 权重挪出显存（采样/解码阶段用不到它）。"""
         if self._clip is None or self._text_encoder_offloaded:
             return
-        if self._text_encoder_offload_skipped():
+        if not force and self._text_encoder_offload_skipped():
             return
         libs = self._libs
         if libs is None:
@@ -944,6 +951,23 @@ class NativeEngine:
             logger.info("文本编码器已挪出显存（%.2fs），腾给采样/VAE", time.time() - t0)
         except Exception:  # pragma: no cover - 老版本 ComfyUI 没这个函数
             logger.warning("文本编码器 offload 失败，继续（不影响正确性）", exc_info=True)
+
+    def release_text_encoder(self) -> bool:
+        """立即把文本编码器挪出显存（显存策略切到「让位」时调用）；返回是否真的释放了。
+
+        正在出图时返回 False（不阻塞请求）：策略已经存进配置，下一次采样前会自动让位。
+        """
+        if self._clip is None or self._text_encoder_offloaded:
+            return False
+        if not self._gen_lock.acquire(blocking=False):
+            return False
+        try:
+            if self._clip is None or self._text_encoder_offloaded:
+                return False
+            self._offload_text_encoder(force=True)
+            return bool(self._text_encoder_offloaded)
+        finally:
+            self._gen_lock.release()
 
     def _ensure_text_encoder_loaded(self) -> None:
         """需要编码时把 CLIP 装回显存；返回耗时写入 self._last_clip_reload_seconds。"""

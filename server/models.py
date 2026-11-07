@@ -55,6 +55,11 @@ def _basename(path: str | None) -> str | None:
     return os.path.basename(path.replace("\\", "/")) if path else None
 
 
+def _stem(path: str | None) -> str | None:
+    name = _basename(path)
+    return name.rsplit(".", 1)[0] if name else None
+
+
 def _resolve(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     if name == "moss":
         raw = cfg.get("moss") or {}
@@ -147,13 +152,62 @@ def default_profile(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     return get(cfg, cfg.get("model"))
 
 
+def _moss_turbo(cfg: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """MOSS 的 Turbo 预设（格式对齐 TurboControl.profiles）。"""
+    accel = profile["accelerator"]
+    lora_path = accel.get("lora")
+    lora_file = _basename(lora_path)
+    lora_stem = _stem(lora_path)
+    presets: list[dict[str, Any]] = []
+    if lora_path:
+        presets.append({
+            "id": "moss8",
+            "label": f"8 步加速 · {lora_stem} @{accel['strength']}",
+            "kind": "lora",
+            "steps": accel["steps"],
+            "cfg": accel["cfg"],
+            "sampler": accel["sampler"],
+            "scheduler": accel["scheduler"],
+            "lora": {
+                "name": lora_stem,
+                "file": lora_file,
+                "strength": accel["strength"],
+                "missing": not os.path.exists(lora_path),
+            },
+            "unet": None,
+            "note": "挂载 8 步 LoRA，步数 / CFG / 采样器随预设切换。",
+        })
+    presets.append({
+        "id": "none",
+        "label": "不加速",
+        "kind": "none",
+        "steps": profile["steps"],
+        "cfg": profile["cfg"],
+        "sampler": profile["sampler"],
+        "scheduler": profile["scheduler"],
+        "lora": None,
+        "unet": None,
+        "note": f"{profile['steps']} 步 / CFG {profile['cfg']} / {profile['sampler']}。",
+    })
+    return presets
+
+
 def public_list(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """供 /api/options 的精简档案（不暴露绝对路径，只给文件名与缺失项）。"""
     cfg = cfg or config.load_config()
+    qwen_turbo: list[dict[str, Any]] | None = None
     out: list[dict[str, Any]] = []
     for model_id in MODEL_IDS:
         p = get(cfg, model_id)
         missing = [k for k in ("unet", "clip", "vae") if not p.get(k)]
+        if p["id"] == "qwen":
+            if qwen_turbo is None:
+                qwen_turbo = config.turbo_profiles_public(cfg)
+            turbo = qwen_turbo
+            samplers = list(config.SAMPLERS)
+        else:
+            turbo = _moss_turbo(cfg, p)
+            samplers = ["er_sde", "euler"]
         out.append({
             "id": p["id"],
             "label": p["label"],
@@ -178,6 +232,8 @@ def public_list(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                 "sampler": p["accelerator"].get("sampler"),
                 "scheduler": p["accelerator"].get("scheduler"),
             },
+            "turbo": turbo,
+            "samplers": samplers,
             "slg": p["slg"],
             "capabilities": p["capabilities"],
             "files": {k: _basename(p.get(k)) for k in ("unet", "clip", "vae")},

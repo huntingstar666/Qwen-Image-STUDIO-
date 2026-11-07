@@ -289,6 +289,7 @@ def api_health() -> dict[str, Any]:
             "model_root": cfg.get("model_root"),
             "engine_dir": cfg.get("engine_dir"),
             "idle_unload_minutes": cfg.get("idle_unload_minutes"),
+            "keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True)),
             "has_default_models": all(config.default_model_paths(cfg).values()),
         },
     }
@@ -832,6 +833,26 @@ def api_engine_free(payload: dict[str, Any] = Body(default={})) -> dict[str, Any
         return {"ok": True, "note": "引擎尚未加载"}
     engine.free(unload=bool(payload.get("unload")))
     return {"ok": True, "unload": bool(payload.get("unload"))}
+
+
+@app.post("/api/settings")
+def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """运行期设置：显存策略（文本编码器是否常驻显存）。"""
+    if "keep_text_encoder_resident" not in payload:
+        raise ApiError("没有可修改的设置项", code="missing_field")
+    value = payload.get("keep_text_encoder_resident")
+    if not isinstance(value, bool):
+        raise ApiError("keep_text_encoder_resident 必须是布尔值", code="invalid_field")
+    cfg = config.update_config({"keep_text_encoder_resident": value})
+    released = 0
+    if not value:
+        # 切到「让位」时立即归还显存，不用等下一次采样
+        released = get_pipeline().release_text_encoder()
+    return {
+        "ok": True,
+        "released": released,
+        "config": {"keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True))},
+    }
 
 
 @app.post("/api/engine/warmup")

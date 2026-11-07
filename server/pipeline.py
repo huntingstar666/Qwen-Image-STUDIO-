@@ -519,13 +519,15 @@ class Pipeline:
                     "找不到引擎代码目录 engine/comfy。请先执行：\n"
                     "  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\port_engine.ps1"
                 )
-            if cfg.get("keep_text_encoder_resident", True):
-                # 引擎默认每单把 CLIP 挪出显存再装回（省显存，但每单多 0.8~1.4s）。
-                # 32GB 卡上 16GB 权重放得下，连续出图保持常驻更快。
-                os.environ.setdefault("QWEN_NATIVE_KEEP_TEXT_ENCODER", "1")
             engine_config = _make_engine_config(mod, engine_dir, profile, cfg)
             engine = mod.NativeEngine(engine_config)
             self._engines[model_id] = engine
+
+        # 显存策略可在运行期切换（/api/settings），这里每次取引擎都同步一次
+        engine_cfg = getattr(engine, "config", None)
+        if engine_cfg is not None and hasattr(engine_cfg, "keep_text_encoder_resident"):
+            engine_cfg.keep_text_encoder_resident = bool(
+                cfg.get("keep_text_encoder_resident", True))
 
         # 换模型：把其它引擎已加载的权重卸掉（否则两套 9~20GB 权重会 OOM）
         for other_id, other in self._engines.items():
@@ -550,10 +552,31 @@ class Pipeline:
 
     def status(self) -> dict[str, Any]:
         try:
-            return (self._engine or self.engine).status()
+            info = dict((self._engine or self.engine).status())
         except Exception as exc:  # noqa: BLE001
-            return {"available": False, "reason": str(exc),
+            info = {"available": False, "reason": str(exc),
                     "loaded": {"unet": None, "clip": None, "vae": None, "loras": []}}
+        # 当前驻留模型：仅当权重真的在显存里才算（空闲卸载后回到 None）
+        loaded = info.get("loaded") or {}
+        info["model"] = self._active_model if loaded.get("unet") else None
+        return info
+
+    def release_text_encoder(self) -> int:
+        """把已加载引擎的文本编码器挪出显存，返回实际释放的引擎数。
+
+        对应顶栏「显存策略 = 让位」：立即归还约 9GB，而不是等下一次采样。
+        """
+        released = 0
+        for engine in self._engines.values():
+            if engine is None:
+                continue
+            fn = getattr(engine, "release_text_encoder", None)
+            if callable(fn):
+                try:
+                    released += 1 if fn() else 0
+                except Exception:  # noqa: BLE001 - 释放失败不影响设置保存
+                    pass
+        return released
 
     # -- 分派 ---------------------------------------------------------------
     def generate(self, job) -> None:
@@ -1218,13 +1241,15 @@ def _make_engine_config(mod, engine_dir: str, profile: dict[str, Any],
         "tiled_decode_threshold": int(cfg.get("tiled_decode_threshold") or 600_000),
         # 文本编码缓存：同提示词连抽多张时复用 conditioning
         "encode_cache_size": int(cfg.get("encode_cache_size", 8)),
+        # 显存策略：文本编码器是否常驻（运行期可在顶栏切换）
+        "keep_text_encoder_resident": bool(cfg.get("keep_text_encoder_resident", True)),
     }
     try:
         return mod.EngineConfig(engine_dir=engine_dir, **kwargs)
     except TypeError:
         for key in ("vae_tile_size", "vae_tile_overlap", "tiled_decode_threshold",
                     "encode_cache_size", "clip_type", "text_backend",
-                    "latent_channels", "latent_downscale"):
+                    "latent_channels", "latent_downscale", "keep_text_encoder_resident"):
             kwargs.pop(key, None)
         return mod.EngineConfig(comfy_root=engine_dir, **kwargs)
 

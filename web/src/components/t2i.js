@@ -1752,6 +1752,7 @@ export function createT2IPage(host) {
       layoutHint: profile.capabilities?.bbox && bbox.enabled && bbox.items.length
         ? '这是边界框布局任务：框内文字与物体位置已在布局中单独指定，主提示词只描述整体画面，不要把框内文字写进主提示词。'
         : '',
+      styleHint: stylePicker.styleHint(),
       button: refs.polish,
       ratios: ratioList(),
       targetSize: {

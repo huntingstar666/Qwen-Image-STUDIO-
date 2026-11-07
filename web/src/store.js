@@ -9,6 +9,8 @@
 const STORAGE_KEY = 'qi21.workbench.settings.v1';
 
 const DEFAULT_T2I = {
+  model: '',
+  byModel: {},
   ratioId: '1:1',
   width: 2048,
   height: 2048,
@@ -28,6 +30,8 @@ const DEFAULT_T2I = {
   clip: '',
   vae: '',
   negativePrompt: '',
+  slg: { enabled: false, singleLayers: '', doubleLayers: '', startPercent: 0, endPercent: 0.5 },
+  bbox: { enabled: false, characterBoxes: '1', items: [] },
 };
 
 const DEFAULT_EDIT = {
@@ -88,7 +92,7 @@ function loadSettings() {
       ...parsed,
       theme: ['light', 'dark', 'system'].includes(parsed?.theme) ? parsed.theme : 'system',
       sidebarCollapsed: Boolean(parsed?.sidebarCollapsed),
-      t2i: { ...DEFAULT_T2I, ...(parsed?.t2i || {}) },
+      t2i: { ...structuredClone(DEFAULT_T2I), ...(parsed?.t2i || {}) },
       edit: { ...DEFAULT_EDIT, ...(parsed?.edit || {}) },
       creativePresets: parsed?.creativePresets && typeof parsed.creativePresets === 'object' ? parsed.creativePresets : {},
       imageAngle: { ...DEFAULT_SETTINGS.imageAngle, ...(parsed?.imageAngle || {}) },
@@ -289,6 +293,15 @@ export function applyOptionDefaults(options) {
   const defaults = options?.defaults || {};
   const t2i = settings.t2i;
   const edit = settings.edit;
+  // 模型选择：没有保存过就用后端默认模型
+  const profiles = options?.model_profiles || [];
+  const modelIds = profiles.map((profile) => profile.id);
+  const defaultModel = options?.default_model || modelIds[0] || 'qwen';
+  if (!modelIds.includes(t2i.model)) t2i.model = defaultModel;
+  if (!t2i.byModel || typeof t2i.byModel !== 'object') t2i.byModel = {};
+  if (!t2i.slg || typeof t2i.slg !== 'object') t2i.slg = { ...DEFAULT_T2I.slg };
+  if (!t2i.bbox || typeof t2i.bbox !== 'object') t2i.bbox = { ...DEFAULT_T2I.bbox };
+  if (!Array.isArray(t2i.bbox.items)) t2i.bbox.items = [];
   if (!t2i.unet && defaults.unet) t2i.unet = defaults.unet;
   if (!t2i.clip && defaults.clip) t2i.clip = defaults.clip;
   if (!t2i.vae && defaults.vae) t2i.vae = defaults.vae;

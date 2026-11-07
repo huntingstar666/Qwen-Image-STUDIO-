@@ -58,15 +58,19 @@ App Shell（所有页面共享）：
 ### 文生图页其余内容
 
 - 大提示词 / 负向提示词、字数统计、清空；
-- 比例选择：`/api/options.ratios`，按钮显示实际 `w × h` 与「32 的倍数」提示；
-- 自定义宽高（自动向上对齐 32，实时提示对齐结果）；
-- 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；
-- 采样步数预设 chips（`/api/options.steps_presets`）；
-- **Turbo 开关**：只选加速预设（`/api/options.turbo_profiles`），调度 / 加速 LoRA / 底模全部由预设自动处理；开启时沿用上次选择的预设，步数 / CFG / 采样器按预设锁定；「自动切换 Turbo 底模」预设会临时切换 UNET 下拉并禁用，关闭 Turbo 后恢复；
-- 透明背景（RGBA）开关；
-- 高级折叠区：UNET / CLIP / VAE 模型下拉 + LoRA 多选（强度 0~2）；
-- **润色提示词**：`POST /api/polish` → 原文 / 润色后对比，展示模型、耗时、`wh_ratio`、`ratio_follow`、fallback；可一键采用（可选同时切换建议比例）或回退；
-- 右侧结果区：任务进度（value/max/label）、耗时、取消、结果图、尺寸、`align.canvas`、`quality.*`、复制提示词、下载；底部实时参数摘要。
+- **模型切换**：底部参数栏「模型」pill 在 Qwen-Image 2.1 / MOSS-Image (sft) 间切换；切换只改参数、生成时才换权重（单模型常驻，运行中禁切）；小圆点表示显存驻留状态（绿=已驻留，黄=驻留的是另一个模型）；卡片显示每模型默认步数 / CFG / 采样器与缺失权重；
+- 比例选择：`/api/options.ratios`，按钮显示实际 `w × h` 与「N 的倍数」提示（Qwen 32 对齐 / MOSS 16 对齐）；
+- 自定义宽高（自动向上对齐到当前模型的倍数，实时提示对齐结果）；
+- 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；标签后的 `tag-hint` 标出模型默认值，改动后变为「已改 · 默认 X」；
+- 采样步数预设 chips（Qwen 取 `/api/options.steps_presets`；MOSS 为 50 步 / Turbo 8 步）；
+- **Turbo 开关**：预设按当前模型取（`model_profiles[].turbo`）；Qwen 沿用全局 sigma 预设，MOSS 为「8 步加速 · moss-8steps @1.0」/「不加速」；开启时步数 / CFG / 采样器按预设锁定，关闭后还原；
+- **SLG（仅 MOSS）**：折叠块「SLG 跳过层引导（实验）」，默认关闭；可设单层（默认 22）/ 双层 / 起止比例；
+- **边界框布局（仅 MOSS）**：底部「布局」pill 或高级设置面板打开设计器；画布拖拽新建框、移动 / 八向缩放，支持 object / character / text 三类；文字框必须填写文字；布局开启时批量锁定为 1；尺寸变化时按比例缩放或清空；
+- 透明背景（RGBA）开关（仅 Qwen；MOSS 下自动隐藏）；
+- 高级折叠区：Qwen 显示 UNET / CLIP / VAE 下拉 + LoRA 多选（强度 0~2）；MOSS 显示只读权重文件名 + LoRA 多选；
+- 抽屉顶部「当前模型」条：模型名、默认参数、权重文件、「恢复默认」按钮；
+- **润色提示词**：`POST /api/polish`（带 `image_model`，MOSS 走 MOSS 提示词工程）→ 原文 / 润色后对比，展示模型、耗时、`wh_ratio`、`ratio_follow`、fallback；可一键采用（可选同时切换建议比例）或回退；
+- 右侧结果区：任务进度（value/max/label）、耗时、取消、结果图、尺寸、`align.canvas`、`quality.*`、复制提示词、下载；底部实时参数摘要（首行含模型与默认/自定义标记）。
 
 ### 图像编辑页其余内容
 

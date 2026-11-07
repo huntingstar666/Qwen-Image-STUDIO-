@@ -334,6 +334,20 @@ export class StylePicker {
     return { creativePresets: presets, imageAngle: angle };
   }
 
+  /** 已选风格 / 滤镜 / 视角的文本摘要，供润色模型理解最终会拼进去的参数。 */
+  styleHint() {
+    const { creativePresets, imageAngle } = this.getMeta();
+    const parts = [];
+    for (const [slot, preset] of Object.entries(creativePresets)) {
+      const label = preset.name || KIND_LABELS[slot] || slot;
+      const detail = preset.description || preset.prompt || '';
+      parts.push(`${KIND_LABELS[slot] || slot}「${label}」${detail ? `：${detail}` : ''}`);
+    }
+    if (imageAngle) parts.push(`视角「${this.describeAngle()}」`);
+    if (!parts.length) return '';
+    return `已选风格参数：${parts.join('；')}。这些参数会在提交时由前端拼接进提示词，改写结果只写画面与主体描述，不要重复这些风格词。`;
+  }
+
   /** 提交时调用：正文原文 + 预设合成；vendor 未就绪时原样返回。 */
   composePrompt(rawPrompt) {
     const prompt = String(rawPrompt ?? '');

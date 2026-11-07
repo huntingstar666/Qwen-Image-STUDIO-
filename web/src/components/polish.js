@@ -14,6 +14,9 @@ import { escapeHtml, fmtNum } from '../utils.js';
  * @param {string} options.prompt 原始提示词
  * @param {'t2i'|'edit'} options.mode
  * @param {string|null} [options.model] Ollama 模型
+ * @param {string|null} [options.imageModel] 图像模型档案 id（qwen / moss），决定用哪套提示词工程
+ * @param {string} [options.layoutHint] 追加给润色模型的补充说明（不会写入最终提示词以外的地方）
+ * @param {string} [options.styleHint] 已选风格 / 滤镜 / 视角摘要，供润色模型对齐语气但避免重复
  * @param {HTMLButtonElement} [options.button] 触发按钮（用于 loading 状态）
  * @param {Array<{id:string,w:number,h:number}>} [options.ratios] 可匹配的比例表
  * @param {{width:number,height:number}} [options.targetSize] 目标尺寸，供模型判断构图
@@ -24,6 +27,9 @@ export async function polishWithDialog({
   prompt,
   mode = 't2i',
   model = null,
+  imageModel = null,
+  layoutHint = '',
+  styleHint = '',
   button = null,
   ratios = [],
   targetSize = null,
@@ -42,6 +48,11 @@ export async function polishWithDialog({
   }
   try {
     const payload = { prompt: text, mode, model: model || null };
+    if (imageModel) payload.image_model = imageModel;
+    const hints = [layoutHint, styleHint]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (hints.length) payload.prompt = `${text}\n\n（补充说明：${hints.join(' ')}）`;
     if (targetSize) payload.target_size = targetSize;
     if (pose?.image) {
       payload.pose = {

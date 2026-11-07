@@ -59,7 +59,7 @@ RATIOS: list[dict[str, Any]] = [
 ]
 
 SAMPLERS: list[str] = [
-    "euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms",
+    "euler", "er_sde", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms",
     "dpmpp_2s_ancestral", "dpmpp_2m", "dpmpp_sde", "dpmpp_2m_sde",
     "dpmpp_3m_sde", "ddim", "uni_pc", "lcm", "res_multistep", "res_multistep_cfg_pp",
 ]
@@ -341,6 +341,27 @@ def save_config(cfg: dict[str, Any], path: str | None = None) -> str:
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     return target
+
+
+def update_config(patch: dict[str, Any], path: str | None = None) -> dict[str, Any]:
+    """只把给定键写回 config.json（不动用户手改的其他字段），并刷新缓存。"""
+    target = path or CONFIG_PATH
+    raw: dict[str, Any] = {}
+    if os.path.isfile(target):
+        try:
+            with open(target, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, json.JSONDecodeError):
+            pass  # 文件损坏时按空配置重建
+    raw.update(patch or {})
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(raw, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    if path:
+        return load_config(path, refresh=True)
+    return reload_config()
 
 
 def reload_config() -> dict[str, Any]:

@@ -616,6 +616,7 @@ export function createEditPage(host) {
       prompt: promptEditor.getSemantic(),
       mode: 'edit',
       model: store.state.polishModel || null,
+      styleHint: stylePicker.styleHint(),
       button: refs.polish,
       targetSize: images[0] ? { width: images[0].width, height: images[0].height } : null,
       pose: poseState

@@ -13,6 +13,7 @@ import { toastError, toastSuccess, toastWarn } from './toast.js';
 const SECTIONS = [
   { id: 'appearance', icon: 'palette', label: () => t('settings.nav.appearance') },
   { id: 'models', icon: 'folder', label: () => t('settings.nav.models') },
+  { id: 'defaults', icon: 'spark', label: () => t('settings.nav.defaults') },
   { id: 'llm', icon: 'spark', label: () => t('settings.nav.llm') },
   { id: 'runtime', icon: 'gauge', label: () => t('settings.nav.runtime') },
   { id: 'about', icon: 'info', label: () => t('settings.nav.about') },
@@ -113,12 +114,24 @@ function formFromData(data) {
   };
 }
 
+/** 默认模型槽位的草稿值（空串 = 跟随出厂）。 */
+function defaultsFromData(data) {
+  const slots = data?.model_defaults?.slots || {};
+  const out = {};
+  for (const [key, item] of Object.entries(slots)) out[key] = item?.expected || '';
+  return out;
+}
+
 function ensureState() {
   if (!state) {
     state = {
       section: 'appearance',
       data: null,
       form: emptyForm(),
+      slotDraft: null,
+      slotSaved: null,
+      options: null,
+      optionsLoading: false,
       dirty: false,
       loading: false,
       saving: false,
@@ -204,6 +217,13 @@ function bindEvents() {
   });
 
   overlay.addEventListener('change', (event) => {
+    const slot = event.target.closest('[data-slot]');
+    if (slot) {
+      state.slotDraft = { ...state.slotDraft, [slot.dataset.slot]: slot.value };
+      markDirty();
+      render();
+      return;
+    }
     const field = event.target.closest('[data-field]');
     if (!field) return;
     writeField(field.dataset.field, field.type === 'checkbox' ? field.checked : field.value);
@@ -478,6 +498,87 @@ function renderModels() {
   `;
 }
 
+function slotSelect(slotKey, slot, current) {
+  const list = (state.options?.[slot.kind] || []).map((item) => ({
+    value: item.value,
+    label: item.label || item.value,
+  }));
+  if (current && !list.some((item) => item.value === current)) {
+    list.unshift({ value: current, label: t('defaults.notScanned', { value: current }) });
+  }
+  const options = list
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.value)}" ${item.value === current ? 'selected' : ''}>${escapeHtml(item.label)}</option>`,
+    )
+    .join('');
+  return `
+    <select class="set-input set-select mono" data-slot="${slotKey}">
+      <option value="" ${current ? '' : 'selected'}>${t('defaults.followFactory')}</option>
+      ${options}
+    </select>`;
+}
+
+function slotChip(slot, pending) {
+  if (pending) return `<span class="set-chip">${t('defaults.pending')}</span>`;
+  return slot.found
+    ? `<span class="set-chip ok">${t('defaults.found')}</span>`
+    : `<span class="set-chip warn">${t('defaults.missingSlot')}</span>`;
+}
+
+function renderDefaults() {
+  const audit = state.data?.model_defaults;
+  if (!audit) return `<p class="set-note">${t('defaults.loading')}</p>`;
+  const slots = audit.slots || {};
+  const missing = (audit.missing || []).map((key) => slots[key]?.label || key);
+  const banner = audit.matched
+    ? `<div class="notice info">${t('defaults.ok')} ${t('defaults.okHint')}</div>`
+    : `<div class="notice warn">${t('defaults.missing')} ${t('defaults.missingHint', { slots: missing.join('、') })}</div>`;
+
+  if (!state.options) {
+    return `${banner}${group(t('defaults.title'), `<div class="set-row"><span class="set-desc">${t('defaults.loading')}</span></div>`)}`;
+  }
+
+  const rows = Object.entries(slots)
+    .map(([key, slot]) => {
+      const draft = state.slotDraft?.[key] ?? '';
+      const saved = state.slotSaved?.[key] ?? '';
+      const pending = draft !== saved;
+      const hint = [
+        escapeHtml(slot.value || slot.expected || '—'),
+        slot.via ? t(`defaults.via.${slot.via}`) : '',
+        slot.source === 'factory' ? t('defaults.follow') : t('defaults.custom'),
+        slot.required ? t('defaults.required') : t('defaults.optional'),
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return row(
+        `${escapeHtml(slot.label)}${slot.required ? ' *' : ''}`,
+        hint,
+        `${slotSelect(key, slot, draft)}${slotChip(slot, pending)}`,
+      );
+    })
+    .join('');
+
+  const actions =
+    row(
+      t('defaults.resetAll'),
+      t('defaults.resetAllDesc'),
+      `<button class="set-mini-btn" type="button" data-action="reset-defaults">${t('defaults.resetAll')}</button>`,
+    ) +
+    row(
+      t('defaults.recheck'),
+      t('defaults.recheckDesc'),
+      `<button class="set-mini-btn" type="button" data-action="recheck-defaults">${t('defaults.recheck')}</button>`,
+    );
+
+  return `
+    ${banner}
+    ${group(t('defaults.title'), rows, t('defaults.desc'))}
+    ${group(t('defaults.actions'), actions, t('defaults.saveHint'))}
+  `;
+}
+
 function renderLlm() {
   const form = state.form.llm;
   const models = state.data?.llm?.models || [];
@@ -582,6 +683,7 @@ function renderAbout() {
 const RENDERERS = {
   appearance: renderAppearance,
   models: renderModels,
+  defaults: renderDefaults,
   llm: renderLlm,
   runtime: renderRuntime,
   about: renderAbout,
@@ -606,6 +708,7 @@ function render() {
     return;
   }
   renderNav();
+  if (section.id === 'defaults' && !state.options) loadModelOptions();
   refs.title.textContent = `${t('settings.title')} · ${section.label()}`;
   refs.sub.textContent = t('settings.subtitle');
   refs.close.setAttribute('aria-label', t('settings.close'));
@@ -617,6 +720,21 @@ function render() {
  * 行为
  * ============================================================ */
 
+async function loadModelOptions() {
+  if (state.optionsLoading) return;
+  state.optionsLoading = true;
+  try {
+    const data = await api.options();
+    state.options = data?.models || {};
+  } catch (err) {
+    state.options = {};
+    toastError(err, '扫描候选模型失败');
+  } finally {
+    state.optionsLoading = false;
+    if (state?.section === 'defaults') render();
+  }
+}
+
 async function load() {
   state.loading = true;
   state.error = '';
@@ -625,6 +743,8 @@ async function load() {
     const data = await api.getSettings();
     state.data = data;
     state.form = formFromData(data);
+    state.slotDraft = defaultsFromData(data);
+    state.slotSaved = { ...state.slotDraft };
     state.dirty = false;
     state.testResult = null;
   } catch (err) {
@@ -635,8 +755,17 @@ async function load() {
   }
 }
 
+/** 只提交用户改过的槽位；空串 = 清空自定义，回落出厂。 */
+function collectSlotPatch() {
+  const patch = {};
+  for (const [key, value] of Object.entries(state.slotDraft || {})) {
+    if ((state.slotSaved?.[key] ?? '') !== value) patch[key] = value;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
 function buildPayload() {
-  return {
+  const payload = {
     comfy_root: state.form.model.comfy_root.trim(),
     model_root: state.form.model.model_root.trim(),
     extra_model_roots: splitLines(state.form.model.extra_model_roots),
@@ -653,6 +782,9 @@ function buildPayload() {
     idle_unload_minutes: Number(state.form.runtime.idle_unload_minutes) || 0,
     vram_reserve: Number(state.form.runtime.vram_reserve) || 0,
   };
+  const slots = collectSlotPatch();
+  if (slots) payload.model_defaults = { slots };
+  return payload;
 }
 
 async function save() {
@@ -687,6 +819,8 @@ async function save() {
     const result = await api.updateSettings(payload);
     state.data = result;
     state.form = formFromData(result);
+    state.slotDraft = defaultsFromData(result);
+    state.slotSaved = { ...state.slotDraft };
     state.dirty = false;
     state.testResult = null;
     toastSuccess(t('settings.savedToast'));
@@ -703,6 +837,29 @@ async function save() {
     state.saving = false;
     renderFooter();
   }
+}
+
+/** 全部恢复出厂：清空所有自定义槽位（保存后才写盘）。 */
+function resetDefaults() {
+  if (!state.slotDraft) return;
+  let changed = false;
+  for (const key of Object.keys(state.slotDraft)) {
+    if (state.slotDraft[key] !== '') {
+      state.slotDraft[key] = '';
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  markDirty();
+  render();
+}
+
+/** 重新读取设置并重算默认模型匹配结果（丢弃未保存修改）。 */
+async function recheckDefaults() {
+  if (state.dirty && !window.confirm('有未保存的修改，重新检测将丢弃它们。继续？')) return;
+  state.dirty = false;
+  await load();
+  if (!state.error) toastSuccess(t('defaults.rechecked'));
 }
 
 async function rescan() {
@@ -760,6 +917,12 @@ function handleAction(action) {
       break;
     case 'rescan':
       rescan();
+      break;
+    case 'reset-defaults':
+      resetDefaults();
+      break;
+    case 'recheck-defaults':
+      recheckDefaults();
       break;
     case 'test-ollama':
       testOllama();

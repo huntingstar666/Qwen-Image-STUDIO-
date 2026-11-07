@@ -33,13 +33,12 @@ import {
   normalizeProtection,
   presetTaskMode,
   resolvePresetForMask,
-  withOverride,
 } from './presets.js';
 import { mountGuards } from './guards.js';
+import { mountAdvanced } from './advanced.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
-const STEP_OPTIONS = [1024, 1536, 2048, 2560];
 const TASK_LABELS = {
   auto: '自动识别',
   edit: '通用编辑',
@@ -127,33 +126,13 @@ export function mountAiPanel(host, ctx) {
           <select class="select" data-ref="ratio"></select>
         </label>
 
-        <label class="ai-check" title="大图先缩到长边上限再送模型，出图后按记录还原；关掉后 4K 图更慢且可能爆显存。">
-          <input type="checkbox" data-ref="preprocess" checked /><span>大图预处理</span>
-          <select class="select sm" data-ref="maxSide">
-            ${STEP_OPTIONS.map((value) => `<option value="${value}">长边 ${value}</option>`).join('')}
-          </select>
-        </label>
-        <div class="ai-row">
-          <label class="ai-field" title="遮罩边缘向内羽化的像素数。越大拼接越柔；写 0 会被当成 32（要硬边请填 1）。">
-            <span>羽化</span>
-            <input class="input mono" type="number" min="0" max="256" step="4" value="32" data-ref="feather" />
-          </label>
-          <label class="ai-field" title="把可写入区域向外扩 N 像素。0 = 严格只改选区；调大会轻微改写选区外。">
-            <span>遮罩外扩</span>
-            <input class="input mono" type="number" min="0" max="256" step="4" value="0" data-ref="maskExpand" />
-          </label>
-        </div>
-        <label class="ai-field" title="区域裁剪只采样遮罩附近（快、省显存）；整画布保留更多上下文（稳）；原生不做遮罩合成。">
-          <span>局部策略</span>
-          <select class="select" data-ref="scheme">
-            <option value="auto">自动（按选区面积）</option>
-            <option value="b">区域裁剪（快）</option>
-            <option value="a">整画布（稳）</option>
-            <option value="native">原生（不合遮罩）</option>
-          </select>
-        </label>
         <div class="ai-work mono" data-ref="workInfo"></div>
         <div class="ai-warn" data-ref="workWarn" hidden></div>
+      </section>
+
+      <section class="ai-section">
+        <div class="ai-label">高级设置 <span class="ai-label-note" data-ref="advNote">数值 = 预设 + 你的覆盖</span></div>
+        <div data-ref="advanced"></div>
       </section>
 
       <section class="ai-section">
@@ -223,11 +202,7 @@ export function mountAiPanel(host, ctx) {
     height: ref('height'),
     ratioRow: ref('ratioRow'),
     ratio: ref('ratio'),
-    preprocess: ref('preprocess'),
-    maxSide: ref('maxSide'),
-    feather: ref('feather'),
-    maskExpand: ref('maskExpand'),
-    scheme: ref('scheme'),
+    advanced: ref('advanced'),
     workInfo: ref('workInfo'),
     workWarn: ref('workWarn'),
     turbo: ref('turbo'),
@@ -285,13 +260,6 @@ export function mountAiPanel(host, ctx) {
     return effectiveValue(currentPreset(), state.overrides, key, fallback);
   }
 
-  function setOverride(key, value) {
-    state.overrides = withOverride(currentPreset(), state.overrides, key, value);
-    persistEdit();
-    renderPresets();
-    syncGuardNote();
-  }
-
   const runner = new JobRunner(refs.jobHost, {
     idleText: '圈出要修改的区域，写好指令后点击「修改」。',
     idleGlyph: '✦',
@@ -342,27 +310,9 @@ export function mountAiPanel(host, ctx) {
     if (mode === 'remove' || mode === 'outpaint') refs.task.value = mode;
     else if (refs.task.value === 'remove' || refs.task.value === 'outpaint') refs.task.value = 'auto';
     renderPresets();
-    syncPresetValues();
+    advanced.refresh();
     renderMeta();
     syncGuardNote();
-  }
-
-  /** 界面回显预设的生效值（不改覆盖项；用户动过才写 override）。 */
-  function syncPresetValues() {
-    const preset = currentPreset();
-    if (!preset) return;
-    const preEnabled = presetValue('preprocess.enabled', true) !== false;
-    refs.preprocess.checked = preEnabled;
-    const maxSide = Number(presetValue('preprocess.max_side', 2048)) || 2048;
-    if (![...refs.maxSide.options].some((option) => Number(option.value) === maxSide)) {
-      refs.maxSide.insertAdjacentHTML('beforeend', `<option value="${maxSide}">长边 ${maxSide}</option>`);
-    }
-    refs.maxSide.value = String(maxSide);
-    refs.maxSide.disabled = !preEnabled;
-    refs.feather.value = String(Math.round(Number(presetValue('local.feather', 32)) || 0));
-    refs.maskExpand.value = String(Math.round(Number(presetValue('local.mask_expand', 0)) || 0));
-    const scheme = String(presetValue('local.scheme', 'a') || 'a');
-    if ([...refs.scheme.options].some((option) => option.value === scheme)) refs.scheme.value = scheme;
   }
 
   function syncGuardNote() {
@@ -382,7 +332,7 @@ export function mountAiPanel(host, ctx) {
         state.presetId = meta.defaultId || defaultPresetId(state.presets);
       }
       renderPresets();
-      syncPresetValues();
+      advanced.refresh();
       renderMeta();
       syncGuardNote();
     } catch (err) {
@@ -390,6 +340,17 @@ export function mountAiPanel(host, ctx) {
       toastWarn('读取预设失败，提交时会按后端默认参数执行');
     }
   }
+
+  const advanced = mountAdvanced(refs.advanced, {
+    getPreset: currentPreset,
+    getOverrides: () => state.overrides,
+    apply(next) {
+      state.overrides = next;
+      persistEdit();
+      renderPresets();
+    },
+    onChange: renderMeta,
+  });
 
   /* ------------------------------------------------------------ 选项 */
 
@@ -502,8 +463,8 @@ export function mountAiPanel(host, ctx) {
     refs.customSize.hidden = mode !== 'custom';
     refs.ratioRow.hidden = mode !== 'ratio';
     const work = workSize(size, {
-      preprocess: refs.preprocess.checked,
-      maxSide: Number(refs.maxSide.value) || 2048,
+      preprocess: presetValue('preprocess.enabled', true) !== false,
+      maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
     });
     const output =
       mode === 'custom'
@@ -522,7 +483,6 @@ export function mountAiPanel(host, ctx) {
 
   if (!refs.width.value) refs.width.value = '1024';
   if (!refs.height.value) refs.height.value = '1024';
-  refs.maxSide.value = '2048';
 
   /* ------------------------------------------------------------ 参考图 */
 
@@ -751,8 +711,8 @@ export function mountAiPanel(host, ctx) {
       width: Number(refs.width.value) || source.main.width,
       height: Number(refs.height.value) || source.main.height,
       ratio: refs.ratio.value,
-      preprocess: refs.preprocess.checked,
-      maxSide: Number(refs.maxSide.value) || 2048,
+      preprocess: presetValue('preprocess.enabled', true) !== false,
+      maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
       preset: resolved.id,
       overrides: state.overrides,
       protection: state.protection,
@@ -925,22 +885,6 @@ export function mountAiPanel(host, ctx) {
   refs.width.addEventListener('input', renderMeta);
   refs.height.addEventListener('input', renderMeta);
   refs.ratio.addEventListener('change', renderMeta);
-  refs.preprocess.addEventListener('change', () => {
-    setOverride('preprocess.enabled', refs.preprocess.checked);
-    refs.maxSide.disabled = !refs.preprocess.checked;
-    renderMeta();
-  });
-  refs.maxSide.addEventListener('change', () => {
-    setOverride('preprocess.max_side', Number(refs.maxSide.value) || 2048);
-    renderMeta();
-  });
-  refs.feather.addEventListener('change', () => {
-    setOverride('local.feather', Math.max(0, Math.round(Number(refs.feather.value) || 0)));
-  });
-  refs.maskExpand.addEventListener('change', () => {
-    setOverride('local.mask_expand', Math.max(0, Math.round(Number(refs.maskExpand.value) || 0)));
-  });
-  refs.scheme.addEventListener('change', () => setOverride('local.scheme', refs.scheme.value));
 
   refs.presets.addEventListener('click', (event) => {
     const button = event.target.closest('[data-preset]');

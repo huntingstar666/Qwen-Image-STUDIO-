@@ -2120,6 +2120,7 @@ settings.edit = {
 
 - **P14-2 ✅** `outpaint.max_side` 已透传到 `imaging.outpaint_canvas`（缺省 5120，服务端校验 1024~8192，超范围 400）；扩图裁块下限默认 **1024**、接缝默认 **3%/3%**，编辑档仍是 768 / 4%/5%（决策 37 分家）。验证：`test_generate_edit_outpaint_honors_max_side`、`test_generate_edit_outpaint_preset_uses_1024_crop_and_3pct_seam`；全量 **391 passed**。
 - **P14-3 ✅** 预设模式数据流落地：`studio/payload.js` 新增 `nestOverrides`，传 `settings.preset` 时只发 `preset` + 覆盖项（+ 关闭的保护开关），未改高级项时 payload 里除 `preset` 外不多任何字段；`local.scheme/feather/mask_expand/preprocess` 未覆盖时不落字段，由后端预设补全。不带 `preset` 的旧调用保持原 payload（回归零变化）。任务约定优先：`task=remove` 强制 `fills=true + green_overlay`，`task=outpaint` 强制 `gray_fill + fills=false`。
+- **P14-1 ✅** 新增 `studio/advanced.js`（7 组可调 + 1 条只读约定）：裁切与上下文 / 接缝与羽化 / 合成策略 / 色彩还原 / 一致性 / 大图预处理 / 扩图；每项带单位、范围、作用提示（行内 hint + `title`），生效值 = 覆盖项 > 预设 > 显示兜底。恢复分三级：单项 ↺、分组 ↺（标题旁显示「N 项已改」）、全部恢复。`aiPanel` 的旧内联参数（羽化/外扩/局部策略/预处理）已并入高级设置，提交时只有覆盖项进 payload。
 
 ### 14.10 决策（钉死）
 
@@ -2260,7 +2261,7 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 
 **施工状态（2026-11-07）：**
 
-- **P15-1 ⏳** 公共模块已抽出并接入图片精修：`studio/presets.js`（`/api/meta` 拉取 + 预设/覆盖项合并 + 无蒙版降级）、`studio/guards.js`（色彩校准 / 零像素偏移两开关，值写 `settings.edit.protection` 并跨页共享）；`advanced.js` 随 P14-1 补齐后两页共用。`store.DEFAULT_EDIT` 新增 `preset/overrides/protection` 三项默认值。
+- **P15-1 ✅** 公共模块已抽出并接入图片精修：`studio/presets.js`（`/api/meta` 拉取 + 预设/覆盖项合并 + 无蒙版降级）、`studio/guards.js`（色彩校准 / 零像素偏移两开关，值写 `settings.edit.protection` 并跨页共享）、`studio/advanced.js`（8 组高级设置 + 三级恢复）。`store.DEFAULT_EDIT` 新增 `preset/overrides/protection`。图生图页在 P15-2/P15-3 直接 import 同一份。
 
 ### 15.8 决策（钉死）
 

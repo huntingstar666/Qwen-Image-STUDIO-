@@ -661,7 +661,7 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
         raise ApiError("task 必须是对象")
     # inpaint / replace 是前端 detectTask 的合法产出，后端按普通编辑处理
     if isinstance(task, dict) and task.get("mode") not in (
-            None, "edit", "remove", "outpaint", "inpaint", "replace"):
+            None, "edit", "remove", "outpaint", "inpaint", "replace", "panorama"):
         raise ApiError(f"未知 task.mode：{task.get('mode')!r}")
 
     outpaint = payload.get("outpaint")
@@ -684,6 +684,31 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 raise ApiError("outpaint.max_side 必须是整数")
             if not 1024 <= max_side <= 8192:
                 raise ApiError("outpaint.max_side 必须在 1024~8192")
+
+    panorama = payload.get("panorama")
+    if panorama is not None:
+        if not isinstance(panorama, dict):
+            raise ApiError("panorama 必须是对象")
+        aspect = str(panorama.get("aspect") or "2:1")
+        if aspect not in imaging.PANORAMA_ASPECTS:
+            raise ApiError(
+                f"panorama.aspect 只支持 {'/'.join(imaging.PANORAMA_ASPECTS)}")
+        if panorama.get("long_side") is not None:
+            try:
+                long_side = int(panorama["long_side"])
+            except (TypeError, ValueError):
+                raise ApiError("panorama.long_side 必须是整数")
+            if not 1024 <= long_side <= 4096:
+                raise ApiError("panorama.long_side 必须在 1024~4096")
+        if panorama.get("wrap") is not None and not isinstance(panorama["wrap"], bool):
+            raise ApiError("panorama.wrap 必须是布尔值")
+        if panorama.get("seam_blend") is not None:
+            try:
+                seam_blend = int(panorama["seam_blend"])
+            except (TypeError, ValueError):
+                raise ApiError("panorama.seam_blend 必须是整数")
+            if not 0 <= seam_blend <= 128:
+                raise ApiError("panorama.seam_blend 必须在 0~128")
 
     local = payload.get("local")
     if local is not None:

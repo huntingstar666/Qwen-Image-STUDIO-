@@ -85,10 +85,21 @@ def test_outpaint_preset_splits_crop_and_seam_defaults():
     assert outpaint["outpaint"]["max_side"] == 5120
 
 
+def test_panorama_preset_uses_full_canvas_sampling():
+    """全景档必须走整画布采样（scheme=a），裁块会破坏横向连续性。"""
+    panorama, _ = presets.merge({"preset": "panorama"})
+    assert panorama["task"]["mode"] == "panorama"
+    assert panorama["local"]["scheme"] == "a"
+    assert panorama["local"]["hint"] == "gray_fill"
+    assert panorama["panorama"] == {
+        "aspect": "2:1", "long_side": 3072, "wrap": False, "seam_blend": 24,
+    }
+
+
 def test_public_presets_and_meta_endpoint():
     items = presets.public_presets()
     assert [item["id"] for item in items] == [
-        "mask_edit", "remove", "outpaint", "canvas", "native",
+        "mask_edit", "remove", "outpaint", "panorama", "canvas", "native",
         "chain_mask", "chain_native"]
     assert [item["id"] for item in items if item["default"]] == ["mask_edit"]
     assert all(item["summary"] and item["params"] for item in items)

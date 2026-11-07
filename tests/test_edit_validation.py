@@ -163,6 +163,38 @@ def test_rejects_outpaint_non_numeric():
         main._validate_edit_params({"outpaint": {"top": "多"}})
 
 
+def test_accepts_panorama_payload():
+    main._validate_edit_params({
+        "task": {"mode": "panorama"},
+        "panorama": {"aspect": "3:1", "long_side": 3072,
+                     "wrap": True, "seam_blend": 32},
+    })
+
+
+def test_rejects_non_object_panorama():
+    with pytest.raises(main.ApiError, match="panorama"):
+        main._validate_edit_params({"panorama": ["2:1"]})
+
+
+def test_rejects_unknown_panorama_aspect():
+    with pytest.raises(main.ApiError, match="panorama.aspect"):
+        main._validate_edit_params({"panorama": {"aspect": "16:9"}})
+
+
+def test_rejects_panorama_long_side_out_of_range():
+    with pytest.raises(main.ApiError, match="panorama.long_side"):
+        main._validate_edit_params({"panorama": {"long_side": 512}})
+    with pytest.raises(main.ApiError, match="panorama.long_side"):
+        main._validate_edit_params({"panorama": {"long_side": 5000}})
+
+
+def test_rejects_panorama_wrap_and_seam_blend():
+    with pytest.raises(main.ApiError, match="panorama.wrap"):
+        main._validate_edit_params({"panorama": {"wrap": "yes"}})
+    with pytest.raises(main.ApiError, match="panorama.seam_blend"):
+        main._validate_edit_params({"panorama": {"seam_blend": 256}})
+
+
 def test_rejects_unknown_local_scheme():
     with pytest.raises(main.ApiError, match="local.scheme"):
         main._validate_edit_params({"local": {"scheme": "c"}})

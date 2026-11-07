@@ -21,7 +21,8 @@ from typing import Any
 
 #: 预设参数变更时必须 +1（写进 ``job.params.preset_version``，历史回放才不会串图）。
 #: 2：新增 ``chain_mask`` / ``chain_native`` 两套连续编辑预设。
-PRESET_VERSION = 2
+#: 3：新增 ``panorama`` 全景预设（整画布采样 + 宽幅画布）。
+PRESET_VERSION = 3
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -135,6 +136,40 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "band_mode": "lowfreq",
         },
         "outpaint": {"max_side": 5120},
+        **_COMMON,
+    },
+    "panorama": {
+        "label": "全景",
+        "summary": "参考图 → 宽幅全景 · 2:1 / 3:1 / 4:1 · 整画布采样 · 接缝融合",
+        "default": False,
+        "task": {"mode": "panorama"},
+        "local": {
+            "enabled": True,
+            # 全景必须整画布采样，裁块方案（b）会破坏横向连续性。
+            "scheme": "a",
+            "fills": False,
+            "crop_min_side": 0,
+            "crop_max_side": 4096,
+            "expand_pct": 0.0,
+            "feather_pct": 0.0,
+            "blend_pixels": 24,
+            "dither": True,
+            "feather": 32,
+            "mask_expand": 0,
+            "color_match": True,
+            "color_strength": 0.6,
+            "color_restore": True,
+            "color_restore_strength": 1.0,
+            "consistency": True,
+            "hint": "gray_fill",
+            "band_mode": "lowfreq",
+        },
+        "panorama": {
+            "aspect": "2:1",
+            "long_side": 3072,
+            "wrap": False,
+            "seam_blend": 24,
+        },
         **_COMMON,
     },
     "canvas": {

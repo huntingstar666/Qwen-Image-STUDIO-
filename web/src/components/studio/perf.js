@@ -100,10 +100,54 @@ export function perfReset() {
   for (const probe of registry.values()) probe.reset();
 }
 
+/**
+ * D18.4：通用帧间隔基准，供「rAF 驱动」交互做回归对比（不依赖探针开关）。
+ *
+ *   const r = await measureFrames(40, (i, count) => drag((i / count) * 200));
+ *   // { frames, avg, peak, over16, total }
+ */
+export function measureFrames(count = 40, tick, { budget = 16.7 } = {}) {
+  if (typeof requestAnimationFrame !== 'function') {
+    return Promise.resolve({ frames: 0, avg: 0, peak: 0, over16: 0, total: 0 });
+  }
+  return new Promise((resolve) => {
+    const samples = [];
+    const began = performance.now();
+    let last = began;
+    let i = 0;
+    const step = () => {
+      const now = performance.now();
+      if (i > 0) samples.push(now - last);
+      last = now;
+      i += 1;
+      try {
+        tick?.(i, count);
+      } catch (err) {
+        console.error('[perf] measureFrames tick 失败', err);
+      }
+      if (i < count) {
+        requestAnimationFrame(step);
+        return;
+      }
+      const frames = samples.length;
+      const total = samples.reduce((sum, value) => sum + value, 0);
+      resolve({
+        frames,
+        avg: frames ? Number((total / frames).toFixed(2)) : 0,
+        peak: frames ? Number(Math.max(...samples).toFixed(2)) : 0,
+        over16: samples.filter((value) => value > budget).length,
+        total: Number((performance.now() - began).toFixed(1)),
+      });
+    };
+    requestAnimationFrame(step);
+  });
+}
+
 if (typeof window !== 'undefined') {
   window.__wbPerf = {
     snapshot: perfSnapshot,
     reset: perfReset,
+    measure: measureFrames,
     probes: registry,
     enabled: isPerfEnabled(),
   };

@@ -702,6 +702,13 @@ DOM 结构：
   5. **蒙版编辑器实测达标、不改代码**：用页内 `import('/src/components/maskEditor.js')` 起独立 4K 实例（4096² 底图 + 4096² 蒙版/预览，视口 1050×820、viewScale 0.195），连续画笔 40 帧 **16.55ms 均 / 22.7ms 峰**，已由 `requestDraw()` 的 rAF 合并 + 显示分辨率视图层兜住，无需降采样或脏矩形改造。
   实测前后同环境（headless Chromium 1440×900、DPR 1、4096² 测试图、显示 438×438 / 11%）：裁剪拖动 resize 40 帧 **16.68ms 均 / 18.0ms 峰 / 20 帧 >16.7ms**（D18.1 基线 30.43 / 51.2 / 39 帧）；水印拖动 16.63ms 均 / 17.9ms 峰。正确性回归：应用裁剪后工作尺寸 4096² → 187²，`裁剪输出` 回「整图」、操作史 1 步、撤销后恢复 4096²；叠加层 `imageCanvas` 中心像素 `[130,124,113,255]` 非空、`overlayCanvas` 顶边白线存在；截图 `.screenshots/d18-3-image-tools-after-*.png`、`.screenshots/d18-3-crop-resize-*.png`。已知：合成 PointerEvent 下 `setPointerCapture` 会抛 `NotFoundError`（仅测试脚本问题，测试前 stub 掉该 API），控制台无应用侧异常；DPR 2 与真实浏览器留待 D18.4。
 
+- **D18.4 性能回归基准（已完成）** —— 目标是把 D18.1~D18.3 的结论固化成可复用的回归口径，不改渲染逻辑：
+  1. **通用帧间隔基准**：`perf.js` 新增导出 `measureFrames(count=40, tick, {budget=16.7})`，按 rAF 采样帧间隔并返回 `{ frames, avg, peak, over16, total }`；`tick(i, count)` 供调用方驱动一次拖动，采样过程不依赖探针开关，headless / headed 都能直接跑。同时挂到 `window.__wbPerf.measure`，控制台一行命令即可复测（§17.6.1「复测方法」第 3 步）。
+  2. **DPR 2 复测**：headless Chromium 无法用启动参数改 DPR（`playwright_resize {device:'iPad Pro 11'}` 只改视口，实测页面 `devicePixelRatio` 仍为 1），改用 `Object.defineProperty(window,'devicePixelRatio',{get:()=>2})` 后触发一次 stage 尺寸变化让 `sizeCanvas()` 重算，验证到后备存储 922×970 / CSS 461×485（翻倍路径生效）。4K 底图 + 800² 叠加层 + 已涂蒙版下，四个交互 `draw()` 均 <16ms：缩放 0.21ms、蒙版涂抹 5.93ms、叠加层拖动 5.94ms、调色拖动 13.74ms（含松手一次 133.3ms 全量合成，一次性成本）。
+  3. **真实浏览器（headed DPR 1、1440×900、canvas 698）复测**：`draw()` 缩放 0.37ms / 蒙版 0.64ms / 叠加层 0.48ms / 调色 3.07ms，全部不高于 headless 同场景；但自动化环境窗口被系统遮挡，rAF 被节流到 ~1fps，帧间隔数据不可用，已在文档中标注，只采用 `draw()`。
+  4. **结论与遗留**：DPR 2 下叠加层拖动帧间隔 25.92ms 明显高于 `draw()` 5.94ms，差异在合成器侧（4 倍像素的软件光栅化），不在 JS 渲染管线；真实 HiDPI GPU 浏览器需人工目检。若后续要再降延迟，调色代理可从 1024 降到 720，叠加层拖动可暂停非必要 DOM 层刷新（均未落地，只作备注）。
+  数据与复测步骤写入 §17.6 / §17.6.1，台账 §14.12 收口；本轮只改 `perf.js` 与本文档，未触碰 `studio.js` / `imageTools.js` / `maskEditor.js`，工作区无冲突。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1174,7 +1181,7 @@ DOM 结构：
 | D18.1 | 性能探针与基线 | 已完成 | 本次提交 | 方案 §17.4~§17.6；`studio/perf.js` + `studio.js` 接入，4K 基线已填表（§17.6） |
 | D18.2 | 工作室交互优化 | 已完成 | 本次提交 | 脏矩形 tint、叠加底层缓存、调色低分代理；4K 实测见 §17.6 |
 | D18.3 | 图像工具与蒙版优化 | 已完成 | 本次提交 | 工作画布签名缓存 + 尺寸签名 + rAF 叠加层合并；裁剪 30.43→16.68ms；蒙版编辑器实测 16.55ms 达标未改代码；4K 实测见 §17.6 |
-| D18.4 | 性能回归基准 | 未开始 | — | — |
+| D18.4 | 性能回归基准 | 已完成 | 本次提交 | `perf.js` 新增 `measureFrames` 并挂 `__wbPerf.measure`；DPR 2 四场景 `draw()` 均 <16ms；headed 真实浏览器复测见 §17.6.1 |
 | D19.1 | 数据与输出一致性 | 已完成 | 本次提交 | §18 S-01~S-04 |
 | D19.2 | AI 任务上下文 | 已完成 | 本次提交 | §18 S-05~S-08 |
 | D19.3 | 输入健壮性 | 已完成 | 本次提交 | §18 S-09~S-13 |
@@ -1660,8 +1667,30 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 | 历史 20 步内存 | 4096² | 每步 67MB，预算 256MB → 仅保留 3 步（≈201MB） | 未改动（已满足） | <256MB |
 
 > 测量环境：Chromium headless、视口 1440×900、DPR 1、4K 测试图为 4096×4096 渐变 + 色块；`__wbPerf` 探针统计 `draw()` 耗时（不含浏览器合成），各场景在同一页面会话内 `reset → 操作 → snapshot` 连续采样。D18.2 数据在画布实际可见（756×551、缩放 12%）下取得，并带 1 个 800² 叠加层与已涂蒙版；D18.3 的图像工具数据在显示画布 438×438（缩放 11%）下按「rAF 帧间隔」采样，蒙版编辑器为页内独立实例（视口 1050×820、viewScale 0.195）。
-> 已知限制：headless 下 `performance.memory.usedJSHeapSize` 被量化到 10MB 粒度，只能作趋势参考；画布后备存储不计入 JS 堆，历史内存按 `HISTORY_BUDGET` 字节预算与实测可撤销步数折算；无 GPU 合成差异未覆盖，待 D18.4 在真实浏览器与 DPR 2 下复测。headless 的合成 `PointerEvent` 需先 stub `setPointerCapture`，否则会抛 `NotFoundError` 中断拖动。
+> 已知限制：headless 下 `performance.memory.usedJSHeapSize` 被量化到 10MB 粒度，只能作趋势参考；画布后备存储不计入 JS 堆，历史内存按 `HISTORY_BUDGET` 字节预算与实测可撤销步数折算；无 GPU 合成差异未覆盖，见 §17.6.1 的 DPR 2 / 真实浏览器复测。headless 的合成 `PointerEvent` 需先 stub `setPointerCapture`，否则会抛 `NotFoundError` 中断拖动。
 > 结论：工作室平移 / 缩放 / 蒙版涂抹 / 叠加层拖动 / 调色拖拽，以及图像工具裁剪 / 水印拖动、蒙版编辑器画笔，均已进入 16ms 预算（调色松手后一次性全分辨率合成为 127ms，属预期的一次性成本）；剩余帧间隔抖动来自 rAF 与 16.7ms 的对齐，不再有全量重算。
+
+### 17.6.1 D18.4 回归复测（DPR 2 / 真实浏览器）
+
+| 场景 | DPR 2 headless `draw()` 均 / 峰（帧数） | DPR 2 帧间隔 均 / 峰 | headed DPR 1 `draw()` 均 / 峰（帧数） |
+| --- | --- | --- | --- |
+| 缩放 | 0.21ms / 0.9ms（21） | 16.45 / 18.2 | 0.37ms / 1.1ms（20） |
+| 蒙版涂抹 | 5.93ms / 37.5ms（41） | 16.30 / 18.5 | 0.64ms / 5.3ms（40） |
+| 叠加层拖动 | 5.94ms / 7.7ms（36） | 25.92 / 50.3 | 0.48ms / 1.2ms（35） |
+| 调色拖动 | 13.74ms / 133.3ms（35，含松手一次全量） | 16.55 / 24.1 | 3.07ms / 86.6ms（35） |
+
+- 复测条件：4096² 底图 + 1 个 800² 叠加层 + 已涂蒙版；DPR 2 画布后备存储 922×970（CSS 461×485）；`draw()` 含 1 帧 = 1 次合成。
+- DPR 2 构造方式：headless Chromium 无法通过启动参数改 DPR，用 `Object.defineProperty(window,'devicePixelRatio',{get:()=>2})` 后触发一次 stage 尺寸变化让 `sizeCanvas()` 重新计算，等效验证「后备存储翻倍」路径；真实 HiDPI 合成差异未覆盖。
+- headed（`headless:false`，1440×900，DPR 1）：窗口在自动化环境中被系统遮挡，rAF 被节流到 ~1fps，**帧间隔不可用**；但 `draw()` 数据有效，且都 ≤ headless 同场景数值。
+- 结论：DPR 2 下四个交互的 `draw()` 均 <16ms（最高为调色拖动 13.74ms，其中 133.3ms 峰值来自松手后的全分辨率合成，属一次性成本），满足 §17.7 第一条；叠加层拖动的帧间隔 25.92ms 与 `draw()` 5.94ms 不匹配，差异在合成器侧（DPR 2 下 4 倍像素的软件光栅化），真实 GPU 浏览器需人工目检。
+- 后续如需更低延迟：调色拖动可把 1024 代理再降到 720；叠加层拖动可考虑拖动期间暂停非必要的 DOM 层刷新。
+
+**复测方法（后续里程碑对比用）**
+
+1. `localStorage['wb.studio.perf']='1'` 后刷新，确认 `window.__wbPerf.enabled === true`。
+2. 单帧耗时：`__wbPerf.reset()` → 执行交互 → `__wbPerf.snapshot().probes.find(p => p.label === 'studio.draw')`。
+3. 帧间隔：`__wbPerf.measure(40, (i, n) => 拖动一步)` → 返回 `{ frames, avg, peak, over16, total }`（D18.4 新增，`perf.js` 导出 `measureFrames`）。
+4. 合成 PointerEvent 前先 stub `element.setPointerCapture = () => {}`，否则 headless 下会抛 `NotFoundError` 中断拖动。
 
 ### 17.7 验收标准
 

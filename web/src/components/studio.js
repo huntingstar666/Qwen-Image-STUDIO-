@@ -2509,6 +2509,7 @@ export function createStudioPage(host) {
       spaceDown = false;
       outpaint?.destroy?.();
       outpaint = null;
+      ai?.destroy?.();
       tint = null;
       tintDirty = true;
       thumbCache = { doc: null, base: null, url: '' };

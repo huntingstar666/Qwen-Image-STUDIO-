@@ -36,6 +36,7 @@ import {
 } from './presets.js';
 import { mountGuards } from './guards.js';
 import { mountAdvanced } from './advanced.js';
+import { openImportPicker } from './importPicker.js';
 
 const MAX_REFS = 3;
 const MAX_LORAS = 2;
@@ -95,10 +96,17 @@ export function mountAiPanel(host, ctx) {
         <div class="ai-label">参考图 <span class="ai-label-note" data-ref="refCount"></span></div>
         <div class="ai-refs" data-ref="refs"></div>
         <div class="ai-row">
-          <button class="btn ghost sm" type="button" data-ref="addRef">+ 添加参考图</button>
+          <div class="ai-ref-add" data-ref="addRefWrap">
+            <button class="btn ghost sm" type="button" data-ref="addRef" aria-haspopup="menu" aria-expanded="false">+ 添加参考图 ▾</button>
+            <div class="ai-ref-menu" role="menu" data-ref="addRefMenu" hidden>
+              <button type="button" role="menuitem" data-ref-source="local">本地文件</button>
+              <button type="button" role="menuitem" data-ref-source="warehouse">素材仓库</button>
+              <button type="button" role="menuitem" data-ref-source="history">最近结果</button>
+            </div>
+          </div>
           <button class="btn ghost sm" type="button" data-ref="addOverlayBtn">叠加扣图</button>
         </div>
-        <input type="file" accept="image/*" hidden data-ref="refInput" />
+        <input type="file" accept="image/*" multiple hidden data-ref="refInput" />
         <input type="file" accept="image/*" hidden data-ref="overlayInput" />
         <div class="ai-hint">图一 = 主图（锁定为底图）；叠加图会画进主图，可拖动/缩放/调透明度。</div>
         <div class="ai-layers" data-ref="layers"></div>
@@ -199,7 +207,9 @@ export function mountAiPanel(host, ctx) {
     submitHint: ref('submitHint'),
     refs: ref('refs'),
     refCount: ref('refCount'),
+    addRefWrap: ref('addRefWrap'),
     addRef: ref('addRef'),
+    addRefMenu: ref('addRefMenu'),
     addOverlayBtn: ref('addOverlayBtn'),
     refInput: ref('refInput'),
     overlayInput: ref('overlayInput'),
@@ -926,8 +936,80 @@ export function mountAiPanel(host, ctx) {
   refs.submit.addEventListener('click', submit);
   refs.openOutpaint.addEventListener('click', () => ctx.openOutpaint?.());
 
-  refs.addRef.addEventListener('click', () => refs.refInput.click());
-  refs.refInput.addEventListener('change', () => addRefFiles(refs.refInput.files || []));
+  /* 添加参考图：本地 / 素材仓库 / 最近结果三来源共用统一导入选择器。 */
+  function setRefMenu(open) {
+    refs.addRefMenu.hidden = !open;
+    refs.addRef.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function focusRefMenuItem(index) {
+    const items = [...refs.addRefMenu.querySelectorAll('[data-ref-source]')];
+    if (!items.length) return;
+    const next = (index + items.length) % items.length;
+    items[next].focus();
+  }
+
+  function openRefPicker(source) {
+    openImportPicker({
+      title: '添加参考图',
+      accept: 'ref',
+      multiple: true,
+      max: Math.max(1, MAX_REFS - state.refs.length),
+      initialSource: source,
+      onPick(items) {
+        void addRefItems(items);
+      },
+    });
+  }
+
+  refs.addRef.addEventListener('click', (event) => {
+    if (refs.addRef.disabled) return;
+    event.stopPropagation();
+    setRefMenu(refs.addRefMenu.hidden);
+  });
+
+  refs.addRef.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    setRefMenu(true);
+    focusRefMenuItem(0);
+  });
+
+  refs.addRefMenu.addEventListener('keydown', (event) => {
+    const items = [...refs.addRefMenu.querySelectorAll('[data-ref-source]')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setRefMenu(false);
+      refs.addRef.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusRefMenuItem(index + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusRefMenuItem(index - 1);
+    }
+  });
+
+  refs.addRefMenu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-ref-source]');
+    if (!item) return;
+    setRefMenu(false);
+    const source = item.dataset.refSource;
+    if (source === 'local') refs.refInput.click();
+    else openRefPicker(source);
+  });
+
+  function onRefMenuOutside(event) {
+    if (!refs.addRefMenu.hidden && !refs.addRefWrap.contains(event.target)) setRefMenu(false);
+  }
+  document.addEventListener('click', onRefMenuOutside);
+
+  refs.refInput.addEventListener('change', () => {
+    const files = [...(refs.refInput.files || [])];
+    refs.refInput.value = '';
+    void addRefFiles(files);
+  });
   refs.refs.addEventListener('click', (event) => {
     const button = event.target.closest('[data-ref-del]');
     if (!button) return;
@@ -1179,6 +1261,10 @@ export function mountAiPanel(host, ctx) {
     /** 宿主从统一导入选择器拿到 dataURL 条目后批量加入参考图。 */
     addRefItems(items) {
       return addRefItems(items);
+    },
+    /** 宿主销毁时解绑 document 级菜单监听。 */
+    destroy() {
+      document.removeEventListener('click', onRefMenuOutside);
     },
     /** 本机工程恢复：把保存的 AI 现场写回面板（不改动已提交的任务）。 */
     restoreState(persist, refsData) {

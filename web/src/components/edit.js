@@ -28,6 +28,14 @@ import { openCompareDialog } from './compare.js';
 import { consumeHandoff } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
 import { escapeHtml, fmtNum, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
+import {
+  defaultPresetId,
+  findPreset,
+  loadPresets,
+  presetTaskMode,
+  resolvePresetForMask,
+} from './studio/presets.js';
+import { nestOverrides } from './studio/payload.js';
 
 const MAX_IMAGES = 10;
 
@@ -51,6 +59,7 @@ export function createEditPage(host) {
   let modelsField = null;
   let dragFrom = null;
   let lastSeed = null;
+  let presetList = [];
 
   host.innerHTML = `
     <div class="page wb-page page-edit-v2">
@@ -1846,6 +1855,49 @@ export function createEditPage(host) {
   /* ============================================================
    * 提交
    * ============================================================ */
+  /** 拉取预设摘要；失败时退回旧参数集提交，不影响可用性。 */
+  async function ensurePresets() {
+    if (presetList.length) return presetList;
+    try {
+      const data = await loadPresets();
+      presetList = data.list || [];
+    } catch {
+      presetList = [];
+    }
+    return presetList;
+  }
+
+  /**
+   * 旧设置项 → 覆盖项（§15.6）：只在与预设值不同时落字段，
+   * 保证「没改高级项时提交里只有 preset」。
+   */
+  function legacyEditOverrides(presetMeta) {
+    const local = presetMeta?.params?.local || {};
+    const out = {};
+    const differs = (a, b) =>
+      typeof a === 'number' || typeof b === 'number'
+        ? Math.abs(Number(a) - Number(b)) > 1e-6
+        : a !== b;
+    const presetScheme = String(local.scheme || '');
+    if (presetScheme && presetScheme !== 'native') {
+      const uiScheme = refs.schemeB.checked ? 'b' : 'a';
+      if (uiScheme !== presetScheme) out['local.scheme'] = uiScheme;
+    }
+    const pairs = [
+      ['local.feather', Math.round(Number(edit.feather) || 0), Number(local.feather ?? 32)],
+      ['local.color_match', refs.colorMatch.checked, local.color_match !== false],
+      ['local.color_strength', Number(edit.colorStrength), Number(local.color_strength ?? 0.6)],
+      ['local.mask_expand', Math.round(Number(edit.maskExpand) || 0), Number(local.mask_expand ?? 0)],
+      ['local.context_factor', Number(edit.contextFactor), 1.5],
+      ['local.context_pixels', Math.round(Number(edit.contextPixels) || 0), 96],
+      ['local.blend_pixels', Math.round(Number(edit.blendPixels) || 0), Number(local.blend_pixels ?? 24)],
+    ];
+    for (const [key, value, presetValue] of pairs) {
+      if (differs(value, presetValue)) out[key] = value;
+    }
+    return out;
+  }
+
   function collectPayload(precomputedMask = null) {
     const mode = refs.sizeMode.value;
     const first = images[0];
@@ -1870,7 +1922,18 @@ export function createEditPage(host) {
     // 指令框里的 @ 引用按参考图顺序映射成 <imageN>，与后端多图 token 对齐
     const promptText = promptEditor.getSemantic().trim();
 
-    return {
+    // 预设：有遮罩默认局部编辑，无遮罩降级整画布（§15.4 / 决策 53）
+    const hasMask = Boolean(mask.dataURL);
+    const wantedPreset = String(edit.preset || defaultPresetId(presetList) || 'mask_edit');
+    const resolvedPreset = resolvePresetForMask(wantedPreset, hasMask);
+    const presetMeta = findPreset(presetList, resolvedPreset.id);
+    const presetId = presetMeta ? resolvedPreset.id : '';
+    const taskMode = presetId ? presetTaskMode(presetMeta) : 'edit';
+    const consistency = consistencyOn
+      ? { name: refs.consistencyLora.value, strength: Number(refs.consistencyStrength.value) }
+      : false;
+
+    const payload = {
       // 指令正文保持原文，风格/滤镜/视角在这里合成
       prompt: stylePicker.composePrompt(promptText),
       negative_prompt: refs.negative.value.trim(),
@@ -1883,17 +1946,7 @@ export function createEditPage(host) {
       fit: refs.fit.value || 'pad',
       pad_mode: 'edge',
       mask: mask.dataURL ? { data: mask.dataURL } : null,
-      local: {
-        enabled: localEnabled,
-        scheme: refs.schemeB.checked ? 'b' : 'a',
-        feather: Math.round(Number(edit.feather) || 0),
-        color_match: refs.colorMatch.checked,
-        color_strength: Number(edit.colorStrength),
-        mask_expand: Math.round(Number(edit.maskExpand) || 0),
-        context_factor: Number(edit.contextFactor),
-        context_pixels: Math.round(Number(edit.contextPixels) || 0),
-        blend_pixels: Math.round(Number(edit.blendPixels) || 0),
-      },
+      task: { mode: taskMode },
       resolution: 0,
       steps: Number(refs.steps.value) || 25,
       cfg: Number(refs.cfg.value) || 4,
@@ -1907,9 +1960,7 @@ export function createEditPage(host) {
       },
       models: { unet: models.unet || '', clip: models.clip || '', vae: models.vae || '' },
       loras: loraPicker.getValue(),
-      consistency_lora: consistencyOn
-        ? { name: refs.consistencyLora.value, strength: Number(refs.consistencyStrength.value) }
-        : null,
+      consistency_lora: consistency,
       // 姿态图作为 image1：后端会把指令里的 <imageN> 顺延为 <image(N+1)>
       pose: poseState
         ? {
@@ -1944,6 +1995,40 @@ export function createEditPage(host) {
       // 仅供结果面板显示遮罩叠加，不发送
       __maskOverlay: mask.dataURL || null,
     };
+
+    if (presetId) {
+      // 预设模式：只发 preset + 覆盖项（§14.4）；其余参数由后端预设补全
+      payload.preset = presetId;
+      const extra = nestOverrides({ ...legacyEditOverrides(presetMeta), ...(edit.overrides || {}) });
+      const localExtra = { ...(extra.local || {}) };
+      // 任务训练约定优先于预设文案
+      if (taskMode === 'remove') {
+        localExtra.fills = true;
+        localExtra.hint = 'green_overlay';
+      } else if (taskMode === 'outpaint') {
+        localExtra.fills = false;
+        localExtra.hint = 'gray_fill';
+      }
+      // 一致性关掉时必须显式落 false（B1：后端把 null 当"未传"）
+      if (!consistencyOn) localExtra.consistency = false;
+      if (Object.keys(localExtra).length) extra.local = localExtra;
+      Object.assign(payload, extra);
+    } else {
+      // 旧参数集：不带 preset 时保持原行为
+      payload.local = {
+        enabled: localEnabled,
+        scheme: refs.schemeB.checked ? 'b' : 'a',
+        feather: Math.round(Number(edit.feather) || 0),
+        color_match: refs.colorMatch.checked,
+        color_strength: Number(edit.colorStrength),
+        mask_expand: Math.round(Number(edit.maskExpand) || 0),
+        context_factor: Number(edit.contextFactor),
+        context_pixels: Math.round(Number(edit.contextPixels) || 0),
+        blend_pixels: Math.round(Number(edit.blendPixels) || 0),
+        consistency: consistencyOn,
+      };
+    }
+    return payload;
   }
 
   const DEFAULT_ACTION_HINT = '第 1 张图会被完整读取，输出尺寸遵循所选模式';
@@ -2010,6 +2095,8 @@ export function createEditPage(host) {
       if (stylePicker.hasSelection() && !stylePicker.isReady()) {
         toastWarn('风格模块未就绪：本次将只使用原始编辑指令（可稍后重试）');
       }
+      // 预设摘要必须先就绪：决定 preset / task.mode 与覆盖项合并
+      await ensurePresets();
       const payload = collectPayload(maskResult);
       const maskOverlay = payload.__maskOverlay;
       delete payload.__maskOverlay;
@@ -2032,7 +2119,7 @@ export function createEditPage(host) {
             scheduler: payload.scheduler,
           },
         },
-        maskDataUrl: payload.local.enabled ? maskOverlay : null,
+        maskDataUrl: refs.localEnabled.checked ? maskOverlay : null,
         onProgress: syncActionProgress,
         onDone: (job) => {
           refs.resultState.textContent = '已完成';

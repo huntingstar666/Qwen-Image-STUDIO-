@@ -638,6 +638,45 @@ function renderAppearance() {
   `;
 }
 
+/** 放大引擎在扫描结果里的一组行：状态 / 目录 /（VOSR2）模型包 / 缺失项。 */
+function upscaleEngineRows(engine) {
+  const chip = engine.ready
+    ? `<span class="set-chip ok">${t('upscale.ready')}</span>`
+    : `<span class="set-chip warn">${t('upscale.notReady')}</span>`;
+  const missing = (engine.missing || []).length
+    ? `<div class="scan-dir-row"><span class="set-mono-note">${t('upscale.missing')}：${escapeHtml((engine.missing || []).join(', '))}</span></div>`
+    : '';
+  // VOSR2 是「目录 → 模型包 → 四件套」结构，单独列出选中的包与已识别到的包。
+  const bundles =
+    engine.id === 'vosr2'
+      ? `<div class="scan-dir-row">
+           <span class="scan-dir-kind">${t('upscale.bundle')}</span>
+           <span class="scan-dir-paths">${
+             engine.model_bundle
+               ? `<span class="set-chip ${engine.ready ? 'ok' : 'warn'}">${escapeHtml(engine.model_bundle)}</span>`
+               : '—'
+           }</span>
+         </div>
+         <div class="scan-dir-row">
+           <span class="scan-dir-kind">${t('upscale.bundlesFound')}</span>
+           <span class="scan-dir-paths mono">${escapeHtml(
+             (engine.bundles || []).length ? engine.bundles.join(', ') : t('upscale.noneFound'),
+           )}</span>
+         </div>`
+      : '';
+  return `
+    <div class="scan-row">
+      <span class="scan-label">${escapeHtml(engine.label || engine.id)}</span>
+      <span class="scan-count">${chip}</span>
+    </div>
+    <div class="scan-dir-row">
+      <span class="scan-dir-kind">${t('upscale.dir')}</span>
+      <span class="scan-dir-paths mono">${escapeHtml(engine.dir || '—')}</span>
+    </div>
+    ${bundles}
+    ${missing}`;
+}
+
 function renderScan(scan) {
   if (!scan) return `<p class="set-note">${t('models.scanning')}</p>`;
   const counts = scan.counts || {};
@@ -668,6 +707,12 @@ function renderScan(scan) {
     .map(([kind, dirs]) => `${kind}: ${dirs.join(' · ')}`);
   const missingDefaults = (scan.missing_defaults || []).join(', ');
 
+  // 放大模型也属于「模型目录」的扫描范围，这里和生图模型一起汇总。
+  const upscale = scan.upscale || state.data?.upscale?.scan || {};
+  const upscaleEngines = Object.values(upscale.engines || {});
+  const upscaleReady = upscaleEngines.filter((engine) => engine.ready).length;
+  const upscaleRows = upscaleEngines.map((engine) => upscaleEngineRows(engine)).join('');
+
   const dirsList = Object.entries(scan.dirs || {})
     .map(
       ([kind, dirs]) => `
@@ -686,6 +731,19 @@ function renderScan(scan) {
       </div>
       <div class="scan-grid">${rows}</div>
       <div class="scan-yaml">${yamlText}</div>
+      ${
+        upscaleRows
+          ? `<div class="scan-upscale">
+               <div class="scan-upscale-head">
+                 <span class="scan-label">${t('models.upscale')}</span>
+                 <span class="set-chip ${upscaleReady === upscaleEngines.length ? 'ok' : 'warn'}">
+                   ${t('models.upscaleReady', { n: upscaleReady, total: upscaleEngines.length })}
+                 </span>
+               </div>
+               ${upscaleRows}
+             </div>`
+          : ''
+      }
       ${
         missingDefaults
           ? `<p class="scan-warn">${t('models.defaultsMissing')}：${escapeHtml(missingDefaults)}</p>`
@@ -1120,26 +1178,7 @@ function renderUpscaleScan() {
   const scan = state.data?.upscale?.scan;
   if (!scan) return `<p class="set-note">${t('upscale.scanning')}</p>`;
   const engines = scan.engines || {};
-  const rows = Object.values(engines)
-    .map((engine) => {
-      const chip = engine.ready
-        ? `<span class="set-chip ok">${t('upscale.ready')}</span>`
-        : `<span class="set-chip warn">${t('upscale.notReady')}</span>`;
-      const missing = (engine.missing || []).length
-        ? `<span class="set-mono-note">${t('upscale.missing')}：${escapeHtml((engine.missing || []).join(', '))}</span>`
-        : '';
-      return `
-        <div class="scan-row">
-          <span class="scan-label">${escapeHtml(engine.label || engine.id)}</span>
-          <span class="scan-count">${chip}</span>
-        </div>
-        <div class="scan-dir-row">
-          <span class="scan-dir-kind">${t('upscale.dir')}</span>
-          <span class="scan-dir-paths mono">${escapeHtml(engine.dir || '—')}</span>
-        </div>
-        ${missing ? `<div class="scan-dir-row">${missing}</div>` : ''}`;
-    })
-    .join('');
+  const rows = Object.values(engines).map((engine) => upscaleEngineRows(engine)).join('');
   return `
     <div class="scan-summary">
       <div class="scan-total">
@@ -1516,7 +1555,10 @@ async function rescan() {
       if (scan.upscale && state.data.upscale) state.data.upscale.scan = scan.upscale;
     }
     render();
-    toastSuccess(`已重新扫描：${scan.total} 个模型文件`);
+    const engines = Object.values(scan.upscale?.engines || {});
+    const readyCount = engines.filter((engine) => engine.ready).length;
+    const upscaleText = engines.length ? ` · 放大引擎 ${readyCount}/${engines.length} 可用` : '';
+    toastSuccess(`已重新扫描：${scan.total} 个模型文件${upscaleText}`);
   } catch (err) {
     toastError(err, '扫描模型目录失败');
   }

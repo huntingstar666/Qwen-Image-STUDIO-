@@ -461,6 +461,8 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """设置页读取的完整（已脱敏）配置视图。"""
     cfg = cfg or config.load_config()
     scan = config.scan_summary(cfg)
+    upscale_scan = upscale_registry.scan_all(cfg)
+    scan["upscale"] = upscale_scan
     active_id = str(cfg.get("llm_active") or "")
     profiles = [
         _public_llm_profile(profile, probe=profile.get("id") == active_id)
@@ -494,7 +496,7 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "upscale": {
             **(cfg.get("upscale") or {}),
             "dirs": upscale_registry.resolve_dirs(cfg),
-            "scan": upscale_registry.scan_all(cfg),
+            "scan": upscale_scan,
             "status": upscale_manager.get_manager().status(),
         },
         "scan": scan,

@@ -729,6 +729,25 @@ html[data-theme="dark"] .set-seg-item.active {
   word-break: break-all;
 }
 
+.scan-upscale {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line-soft);
+}
+
+.scan-upscale .scan-row:nth-child(odd) {
+  border-right: 0;
+}
+
+.scan-upscale-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
 /* ------------------------------------------------------------- AI 模型服务 */
 
 .llm-profile-row {

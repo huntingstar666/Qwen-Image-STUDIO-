@@ -257,8 +257,8 @@ export function createStudioPage(host) {
                 <div class="studio-empty-title">开始精修</div>
                 <div class="studio-empty-hint">打开一张图片，或直接从素材仓库「在图片精修中打开」；支持拖拽与粘贴。</div>
                 <div class="studio-empty-actions">
-                  <button class="btn primary" type="button" data-ref="emptyOpen">打开图片</button>
-                  <button class="btn ghost" type="button" data-ref="emptySample">用近期结果试试</button>
+                  <button class="btn primary" type="button" data-ref="emptyOpen">从本地选择</button>
+                  <button class="btn ghost" type="button" data-ref="emptyWarehouse">从素材仓库</button>
                 </div>
               </div>
               <div class="studio-cropbar" data-ref="cropbar" hidden>
@@ -382,7 +382,7 @@ export function createStudioPage(host) {
     canvas: ref('canvas'),
     empty: ref('empty'),
     emptyOpen: ref('emptyOpen'),
-    emptySample: ref('emptySample'),
+    emptyWarehouse: ref('emptyWarehouse'),
     cropbar: ref('cropbar'),
     cropInfo: ref('cropInfo'),
     cropApply: ref('cropApply'),
@@ -2029,26 +2029,11 @@ export function createStudioPage(host) {
   document.addEventListener('click', onDocumentClick);
 
   refs.emptyOpen.addEventListener('click', () => refs.fileInput.click());
+  refs.emptyWarehouse.addEventListener('click', () => openMainPicker('warehouse'));
   refs.fileInput.addEventListener('change', () => {
     const files = [...(refs.fileInput.files || [])];
     refs.fileInput.value = '';
     void importLocalFiles(files);
-  });
-
-  refs.emptySample?.addEventListener('click', async () => {
-    try {
-      const data = await (await fetch('/api/history?limit=1')).json();
-      const record = data?.items?.[0];
-      const url = record?.images?.[0]?.url;
-      if (!url) {
-        toastWarn('还没有可用的历史结果，先打开一张本地图片吧');
-        return;
-      }
-      const normalized = url.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `/files/${url}`;
-      await openUrl(normalized, record.images[0].filename || 'history.png');
-    } catch (err) {
-      toastError(err, '读取历史失败');
-    }
   });
 
   refs.favoriteBtn.addEventListener('click', collect);

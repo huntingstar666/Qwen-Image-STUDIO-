@@ -32,6 +32,7 @@ import {
   storageAvailable,
 } from './studio/persistence.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
+import { createPerfProbe } from './studio/perf.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -152,14 +153,8 @@ export function createStudioPage(host) {
   /* D5.3：拖动期间复用的画布矩形，避免 pointermove 触发同步布局。 */
   let dragRect = null;
   let cropBoxStyle = { left: '', top: '', width: '', height: '' };
-  const perfOn = (() => {
-    try {
-      return localStorage.getItem('wb.studio.perf') === '1';
-    } catch {
-      return false;
-    }
-  })();
-  let perfFrames = [];
+  /* D18.1：性能探针（localStorage['wb.studio.perf']='1' 时启用）。 */
+  const perf = createPerfProbe('studio.draw');
 
   /* 本机工程持久化（D17.1）：工程 id、主图源 Blob、叠加层 Blob 与自动保存节流。 */
   let projectId = '';
@@ -813,13 +808,14 @@ export function createStudioPage(host) {
   }
 
   function draw() {
-    const t0 = perfOn ? performance.now() : 0;
+    const t0 = perf.start();
     const width = refs.canvas.clientWidth;
     const height = refs.canvas.clientHeight;
     ctx.clearRect(0, 0, width, height);
     if (!doc) {
       syncCropOverlay();
       outpaint?.syncGhost?.();
+      perf.end(t0);
       return;
     }
     const image = doc.renderBase();
@@ -943,15 +939,7 @@ export function createStudioPage(host) {
     // 扩图幽灵层（DOM 覆盖，跟随画布缩放/平移）
     outpaint?.syncGhost?.();
 
-    if (perfOn) {
-      perfFrames.push(performance.now() - t0);
-      if (perfFrames.length >= 60) {
-        const avg = perfFrames.reduce((sum, value) => sum + value, 0) / perfFrames.length;
-        const max = Math.max(...perfFrames);
-        console.info(`[studio perf] draw 平均 ${avg.toFixed(2)}ms / 最大 ${max.toFixed(2)}ms（${perfFrames.length} 帧）`);
-        perfFrames = [];
-      }
-    }
+    perf.end(t0);
   }
 
   /* ============================================================

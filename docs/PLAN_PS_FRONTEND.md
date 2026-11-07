@@ -686,6 +686,8 @@ DOM 结构：
 
 - **D16.2 图片对比（已完成）** —— 新增 `web/src/components/studio/compareLauncher.js`：统一把候选图整理成 `compare.js` 需要的结构（`references = 本次结果 + AI 参考图 + 编辑历史`，`results = [{ label: '当前主图' }]`），不改 `compare.js`。当前主图由 `studio.js` 新增的 `getMainImage()` 调 `doc.bake('image/png')` 烘焙；历史图沿用 `sessionHistory` 的 Blob 读取，并给 `ensureResultUrl()` 增加 `pin` 选项——对比弹窗正在展示的 objectURL 不参与 6 张 LRU 回收，避免图片地址被提前释放。四个入口全部接到同一函数：顶栏「对比」按钮（`compareAllBtn`，随文档启用）、AI 结果卡片「与底图对比」（把 `runner.getResults()` 一并作为本次结果候选）、历史卡片 hover「对比」（按 `initialHistoryId` 预选该条）、`Shift+C`（在工具快捷键前拦截，不抢 `C` 裁剪）。原 `studio.js` 的 `ctx.compare` 与 `openCompareDialog` 引入已删除，避免两套组装逻辑。浏览器实测（模拟 2 条历史记录）：顶栏对比弹出选择面板，参考图 2 张（历史 #2/#1），结果图自动选中「当前主图」；点「开始对比」进入竖线对比并算出像素统计（测试图为纯色块，平均差异 50.5 / 255，仅验证链路，不代表真实结果质量）；点历史 #1 卡片的「对比」，弹窗预选 `历史 #1`；`Shift+C` 正常打开；关闭后画布、工具、滚动位置不变；`exception` 日志为空。已知限制：AI 真实结果卡片未接后端实测，但与历史卡片共用同一 `compareAll()`；4K 主图烘焙 PNG 有一次性耗时，入口在生成任务进行中时由面板 toast 拦截。
 
+- **D18.1 性能探针与基线（已完成）** —— 新增 `web/src/components/studio/perf.js`：`createPerfProbe(label,{window=60})` 返回 `start/end/hit/reset/snapshot`，`end()` 记录一帧耗时并每 60 帧 `console.info` 一次（含 `performance.memory` 堆提示）；`perfSnapshot()/perfReset()` 汇总全部探针并挂到 `window.__wbPerf`，方便分场景 `reset → 操作 → snapshot`。开关仍是 `localStorage['wb.studio.perf']='1'`，关闭时所有方法零成本。`studio.js` 删除原内联 `perfOn / perfFrames / t0 / 60 帧日志`（约 10 行），改为顶部 `import { createPerfProbe }` + `const perf = createPerfProbe('studio.draw')`，`draw()` 用 `perf.start()/perf.end(t0)`，空文档提前 return 分支也会记一帧。`imageTools.js` / `maskEditor.js` 属同事 WIP（高清放大接入），本轮**未接入探针**，图像工具基线改用页面级「rAF 帧间隔 + 同步 dispatch 耗时」测量，避免改冲突文件。4K（4096×4096）实测：平移 draw 0.20ms 均 / 0.40ms 峰（41 帧）、缩放 0.13ms 均 / 0.30ms 峰（20 帧）—— 平移缩放只做缓存底图 blit，已远低于 16ms；蒙版涂抹 45.15ms 均 / 144.2ms 峰、叠加层拖动 102.06ms 均 / 127.5ms 峰、调色滑杆 123.62ms 均 / 162.8ms 峰 —— 三者每帧都在重建 4K 合成（`renderMaskTint` 全图重绘 / `invalidateBase` 全量重绘），是 D18.2 的主要目标；图像工具裁剪拖动帧间隔 30.43ms 均 / 51.2ms 峰（40 帧中 39 帧超标，同步 dispatch 仅 0.09ms/move，说明耗时在每次 move 的异步 `render()` 全量重建工作画布），留给 D18.3。历史内存：4K 蒙版单步快照 67MB，`HISTORY_BUDGET = 256MB` 生效 —— 连续 20 次快照后实测只剩 3 步可撤销（≈201MB，符合预算），JS 堆 20 步增量 <10MB（headless 下 `performance.memory` 被量化，仅作趋势参考）。测试数据（`p-mw6i8p9i-5oh3qe` 工程及其 `layers/refs` 记录）已清理，工作区不改他人文件。已知限制：headless 无 GPU 合成差异未覆盖，待 D18.4 在真实浏览器与 DPR 2 下复测。数据同步写入 §17.6 基线表。
+
 ---
 
 ## 13. 专业修图能力路线图（对标 Photoshop，v3 规划，未实施）
@@ -1155,7 +1157,7 @@ DOM 结构：
 | D6.1 | M1 回归与文档 | 已完成 | 本次提交 | §12.10 十项全勾；pytest 488 passed；三档宽度、导出菜单、粘贴、payload 映射复测通过 |
 | D16.1 | AI 编辑历史卡片 | 已完成 | b0aaba5 | 方案 §15.2；`sessionHistory.js` + `studio/aiHistory.js`，刷新可恢复、载入还原指令/参考图 |
 | D16.2 | 图片对比 | 已完成 | 本次提交 | 方案 §15.3；`compareLauncher.js`，顶栏/结果卡片/历史卡片/Shift+C 四入口 |
-| D18.1 | 性能探针与基线 | 未开始 | — | 探针已在 D5.3 落地（`localStorage.wb.studio.perf`），其余基线待补 |
+| D18.1 | 性能探针与基线 | 已完成 | 本次提交 | 方案 §17.4~§17.6；`studio/perf.js` + `studio.js` 接入，4K 基线已填表（§17.6） |
 | D18.2 | 工作室交互优化 | 未开始 | — | 排查见 §17 |
 | D18.3 | 图像工具与蒙版优化 | 未开始 | — | 需与 `imageTools.js` 当前 WIP 协调 |
 | D18.4 | 性能回归基准 | 未开始 | — | — |
@@ -1633,13 +1635,17 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 
 | 场景 | 分辨率 | 当前 | 目标 |
 | --- | --- | --- | --- |
-| 裁剪拖动 | 4096² | 0.012ms/move、0 次重绘（D5.3 实测） | <16ms/帧 |
-| 平移 / 缩放 | 4096² | 待测 | <16ms/帧 |
-| 蒙版涂抹 | 4096² | 待测 | <16ms/帧 |
-| 叠加层拖动 | 4096² | 待测 | <16ms/帧 |
-| 调色滑杆 | 4096² | 待测 | 预览 <16ms/帧 |
-| 图像工具裁剪拖动 | 4096² | 待测 | <16ms/帧 |
-| 历史 20 步内存 | 4096² | 待测 | <256MB |
+| 裁剪拖动（工作室） | 4096² | 0.012ms/move、0 次重绘（D5.3 实测） | <16ms/帧 |
+| 平移 / 缩放 | 4096² | 平移 draw 0.20ms 均 / 0.40ms 峰（41 帧）；缩放 0.13ms 均 / 0.30ms 峰（20 帧） | <16ms/帧 |
+| 蒙版涂抹 | 4096² | draw 45.15ms 均 / 144.2ms 峰（41 帧） | <16ms/帧 |
+| 叠加层拖动 | 4096² | draw 102.06ms 均 / 127.5ms 峰（31 帧） | <16ms/帧 |
+| 调色滑杆 | 4096² | draw 123.62ms 均 / 162.8ms 峰（40 帧） | 预览 <16ms/帧 |
+| 图像工具裁剪拖动 | 4096² | 帧间隔 30.43ms 均 / 51.2ms 峰（40 帧中 39 帧 >16.7ms；同步 0.09ms/move） | <16ms/帧 |
+| 历史 20 步内存 | 4096² | 蒙版单步 67MB；256MB 预算触发淘汰，实测仅保留 3 步可撤销（≈201MB）；JS 堆增量 <10MB | <256MB |
+
+> 测量环境：Chromium headless、视口 1440×900、DPR 1、后端未启动（纯前端链路），4K 测试图为 4096×4096 渐变 + 色块；`__wbPerf` 探针统计 `draw()` 耗时（不含浏览器合成），蒙版/叠加层/调色均在同一次页面会话内连续采样。
+> 已知限制：headless 下 `performance.memory.usedJSHeapSize` 被量化到 10MB 粒度，只能作趋势参考；画布后备存储不计入 JS 堆，历史内存按 `HISTORY_BUDGET` 字节预算与实测可撤销步数折算。
+> 结论：平移 / 缩放 / 工作室裁剪已达标；蒙版涂抹、叠加层拖动、调色滑杆、图像工具裁剪拖动均远超 16ms，分别交给 D18.2（前三个）与 D18.3（图像工具）处理。
 
 ### 17.7 验收标准
 

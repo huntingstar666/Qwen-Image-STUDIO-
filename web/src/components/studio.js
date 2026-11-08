@@ -9189,6 +9189,12 @@ export function createStudioPage(host) {
       void saveNow();
       return;
     }
+    // D23.10：Ctrl/Cmd + D 取消选区。只有存在选区时才拦截，避免抢掉浏览器「加书签」。
+    if (mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'd' && selection) {
+      event.preventDefault();
+      clearSelection();
+      return;
+    }
     // D23.3：合并（可见/拼合不要求选中层）与粘贴图层
     if (doc && mod && event.key.toLowerCase() === 'e') {
       event.preventDefault();
@@ -9278,6 +9284,12 @@ export function createStudioPage(host) {
     if (key === 'escape') {
       if (openGroupId) {
         closeRailFlyout();
+        return;
+      }
+      // D23.10：有选区时先取消选区，再按一次才退出裁剪 / 切回抓手。
+      if (selection) {
+        event.preventDefault();
+        clearSelection();
         return;
       }
       cropRect = null;

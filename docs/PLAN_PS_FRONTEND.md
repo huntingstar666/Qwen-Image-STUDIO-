@@ -885,6 +885,17 @@ DOM 结构：
   - 实测（headless Chromium，800×600 纯色底 `[40,60,90]` + 240×160 左绿右黄贴纸）：贴纸工具点击后图层条出现 `d113-sticker.png`、右侧自动切到「贴纸」页且显示 100% / 0° / 正常；导入后左半 `[46,204,113]`、右半 `[241,196,15]`，与底图叠加位置正确。切「正片叠底」后左半变为 `[8,48,40]`、右半 `[38,46,6]`（与 40×46/255 等理论值一致）。缩放 50% 后图层 `x=219,y=180,w=120,h=80`、中心保持 `(279,220)`，原左侧外沿回到底色。旋转 45° 后中心右移 40px 处仍为黄、远离旋转区域的 `(360,150)` 回到底色。拖旋转圆点一次得到 30°（15° 吸附）；拖左上角点缩放由 0.5 → 0.337 且中心 `(279,220)` 不变。水平翻转后左右颜色互换。重置后设 70% / 60° / 水平+垂直翻转 / 滤色，刷新后图层完整恢复（`x=316,y=244,scale=0.7,rotation=60,w=168,h=112`，分页仍为「贴纸」）。截图 `.screenshots/D11.3-sticker-fresh-2026-11-08T05-01-55-162Z.png`、`.screenshots/D11.3-sticker-blend-rotate-2026-11-08T05-04-46-163Z.png`。
   - 说明：本轮贴纸只做单张图片层，不含内置贴纸库与「另存为素材」；SVG 依赖浏览器 `Image` 解码，复杂 SVG（外链字体/滤镜）可能不完整，建议导入 PNG/WebP。
 
+- **D11.4 形状与图案图章（已完成）** —— 矢量形状层 + 平铺图案盖章：
+  - 新增 `studio/shapeLayer.js`：`SHAPE_KINDS`（矩形/椭圆/直线/箭头）、`SHAPE_DEFAULTS`、`class ShapeLayer`（几何 + `fill/stroke/strokeWidth/radius`，圆角矩形手写路径，箭头画主杆 + 实心三角；`bounds/hitTest` 支持负宽高与直线距离命中；`clone`、`hasMask()=>false`）、`shapeLayerFromProps`。
+  - 新增 `studio/pattern.js`：`tilePatch(source, sw, sh, dw, dh, offsetX, offsetY)`（纯函数，按取样原点正模平铺，负 offset 也正确回绕）、`patternDab(ctx, source, {x,y,radius,opacity,softness,pattern})`（读一次取样矩形 → 平铺成笔刷窗口 → 径向柔边贴回修复层）。
+  - 形状工具（D）：拖动时按当前样式画实时预览，松手才建层；左侧「文字 / 贴纸 / 形状」组，右侧新增「形状」分页（类型、填充、描边宽度/颜色、圆角、删除）。未选中形状时改的是「新建默认样式」，选中后改的是该层且可撤销。
+  - 图案图章（N）：Alt + 拖框取样（虚线框持续显示，浮条显示「图案 W × H」并可清除），再涂抹按平铺图案复制；整笔一次撤销，结果写入修复层随工程持久化。
+  - `StudioDoc.renderSample()` 改为「干净底图 + 叠加层/文字/形状」的合成（仅临时摘掉修复层），让图案与仿制取样都遵循「所见即所取」；取样坐标仍为未裁剪图像空间。
+  - 图层与持久化：`kind:'shape'` 记录 `width/height/shape/fill/stroke/shapeStrokeWidth/radius`，恢复时按原 id 还原；图层面板显示「形状」徽标，不提供蒙版/缩放按钮。
+  - 单测：新增 `web/tests/studio/shapeLayer.test.mjs` 6 项与 `pattern.test.mjs` 4 项（平铺、相位、负 offset、非法尺寸），`node --test web/tests/studio/shapeLayer.test.mjs web/tests/studio/pattern.test.mjs` → `pass 10 / fail 0`。
+  - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`）：拖出 `(100,100)-(300,250)` 得到「形状 1」200×150、填充 `#ff3b30`，中心像素 `[255,59,48]`、外部仍为底色。改填充 `#2ecc71`、描边 6、白色、圆角 20 后中心 `[46,204,113]`、左边框 `[255,255,255]`、圆角处为抗锯齿混色 `[91,106,129]`。切换类型后同一层变为椭圆（中心绿、角落底色）；再建箭头 170×100、描边 8 后杆中部与箭头尖端均为白色。刷新后 3 个形状的几何与样式完整恢复。图案图章 Alt 拖框 100×60 取样（覆盖椭圆绿色区域），提示「图案 100 × 60」；在 `(600,450)` 涂抹后该处变为 `[46,204,113]`、笔刷外仍为底色，刷新后图案仍保留。截图 `.screenshots/D11.4-shapes-pattern-2026-11-08T05-11-36-210Z.png`。
+  - 说明：形状层暂不支持旋转/透视与虚线描边；图案图章与修复类一样写入修复层（非破坏、可撤销），不做独立图案层。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1080,6 +1091,10 @@ DOM 结构：
 | `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
 | `tools/text.js` | 文字图层创建与编辑（D11.2 暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2（已落地） |
 | `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`（文字图层实体与绘制） | 无 | D11.2 |
+| `shapeLayer.js` | `ShapeLayer` / `SHAPE_KINDS` / `SHAPE_DEFAULTS` / `shapeLayerFromProps`（形状图层实体与绘制） | 无 | D11.4 |
+| `pattern.js` | `tilePatch` / `patternDab`（图案平铺与柔边盖章） | 无 | D11.4 |
+| `tools/shape.js` | 形状创建与样式编辑（D11.4 暂内联在 `studio.js`，图层实体在 `shapeLayer.js`） | `renderer` | D11.4（已落地） |
+| `tools/pattern.js` | 图案图章（D11.4 暂内联在 `studio.js`，算法在 `pattern.js`） | `renderer` | D11.4（已落地） |
 | `tools/sticker.js` | 贴纸导入 / 缩放 / 旋转 / 翻转 / 混合模式（D11.3 暂内联在 `studio.js`，图层实体在 `layers.js`） | `renderer` | D11.3（已落地） |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
 | `panels/adjust.js` | 调色面板（D9.1~D9.3 暂内联在 `studio.js` 的 `data-pane="adjust"`，未拆文件） | `color/adjustments` | D9（已落地） |
@@ -1395,7 +1410,7 @@ DOM 结构：
 | D11.1 | 马赛克 / 模糊 | 已完成 | 本次提交 | 新增 `studio/mosaic.js`（`pixelate` + `mosaicDab`，马赛克/模糊双模式）；`mosaic` 工具（P）+ 模式下拉；单测 4 项；实测见 §12.11 |
 | D11.2 | 文字图层 | 已完成 | 本次提交 | 新增 `studio/textLayer.js`（`TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`）；`StudioDoc.addTextLayer` + 工程持久化 `kind:'text'`；左栏 `text` 工具（T）+ 右侧「文字」分页（文案/字体/字重/字号/颜色/描边/投影/删除）；移动拖动、整页撤销、刷新恢复；单测 6 项；实测见 §12.11 |
 | D11.3 | 贴纸 | 已完成 | 本次提交 | `layers.js` 追加 `BLEND_MODES` / `flipH/flipV/blend` / 旋转命中；`addOverlayFile` 支持落点与切页；`sticker` 工具（G）+ 右侧「贴纸」分页（导入/缩放/旋转/翻转/混合模式/删除）；画布四角缩放 + 旋转圆点（15° 吸附）；工程持久化翻转与混合；单测 5 项；实测见 §12.11 |
-| D11.4 | 形状与图案图章 | 未开始 | — | — |
+| D11.4 | 形状与图案图章 | 已完成 | 本次提交 | 新增 `studio/shapeLayer.js`（矩形/椭圆/直线/箭头，填充/描边/圆角，`kind:'shape'` 持久化）与 `studio/pattern.js`（`tilePatch` + `patternDab`）；`shape` 工具（D）+ 右侧「形状」分页；`pattern` 工具（N）+ Alt 拖框取样 + 浮条提示/清除；`renderSample()` 纳入叠加层/文字/形状；单测 10 项；实测见 §12.11 |
 | D12.1 | 混合模式 + 剪贴蒙版 | 未开始 | — | — |
 | D12.2 | 图层样式 | 未开始 | — | — |
 | D12.3 | 历史快照 | 未开始 | — | — |

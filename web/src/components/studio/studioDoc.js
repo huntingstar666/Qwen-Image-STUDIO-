@@ -26,6 +26,7 @@ import { composite } from './renderer.js';
 import { applyCube } from './color.js';
 import { AdjustmentLayer, applyAdjustmentLayer, normalizeAdjustment } from './adjustments.js';
 import { TextLayer } from './textLayer.js';
+import { ShapeLayer } from './shapeLayer.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -399,7 +400,8 @@ export class StudioDoc {
   }
 
   /**
-   * 不含修复层的「干净底图」，供仿制图章/修复画笔取样（D10.2）。
+   * 不含修复层的「干净底图」，供仿制图章 / 修复画笔 / 图案图章取样。
+   * 包含叠加层、文字层与形状层（所见即所取），只临时摘掉修复层本身，避免把修补结果取样回去。
    * 每次调用都完整重合成一次，但只在落笔开始时调用，不参与逐帧渲染。
    */
   renderSample() {
@@ -409,7 +411,10 @@ export class StudioDoc {
     this._underlay = null;
     let clean;
     try {
-      clean = cloneCanvas(this.renderUnderlay());
+      const base = this.renderUnderlay();
+      clean = makeCanvas(base.width, base.height);
+      // 图层坐标是「旋转后未裁剪」空间，取样时不做裁剪平移。
+      composite(clean.getContext('2d'), base, this.layers, { crop: null });
     } finally {
       this.repair = repair;
       this._underlay = underlay;
@@ -525,6 +530,19 @@ export class StudioDoc {
    */
   addTextLayer(props = {}, { name = '文字', x = 0, y = 0 } = {}) {
     const layer = new TextLayer({ ...props, name, x, y });
+    addLayer(this._doc, layer);
+    this._base = null;
+    this.snapshot();
+    return layer;
+  }
+
+  /**
+   * 新建形状图层（D11.4）。
+   * @param {object} props 见 SHAPE_DEFAULTS（shape/fill/stroke/strokeWidth/radius）
+   * @param {{name?:string,x?:number,y?:number,width?:number,height?:number}} [options]
+   */
+  addShapeLayer(props = {}, { name = '形状', x = 0, y = 0, width = 0, height = 0 } = {}) {
+    const layer = new ShapeLayer({ ...props, name, x, y, width, height });
     addLayer(this._doc, layer);
     this._base = null;
     this.snapshot();

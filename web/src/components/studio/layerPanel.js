@@ -33,16 +33,17 @@ export function createLayerPanel(host, ctx) {
         : '显示图层蒙版（Shift 点击删除）'
       : '添加图层蒙版';
     return `
-      <div class="ai-layer${layer.locked ? ' is-locked' : ''}${layer.visible === false ? ' is-hidden' : ''}${layer.isAdjustment ? ' is-adjust' : ''}${layer.isText ? ' is-text' : ''}" data-layer="${layer.id}" draggable="true">
+      <div class="ai-layer${layer.locked ? ' is-locked' : ''}${layer.visible === false ? ' is-hidden' : ''}${layer.isAdjustment ? ' is-adjust' : ''}${layer.isText ? ' is-text' : ''}${layer.isShape ? ' is-shape' : ''}" data-layer="${layer.id}" draggable="true">
         <span class="ai-layer-grip" title="拖动排序">⋮⋮</span>
         <button class="ai-layer-btn${layer.visible === false ? ' is-off' : ''}" type="button" data-layer-visible="${layer.id}"
           title="${layer.visible === false ? '显示图层' : '隐藏图层'}">${layer.visible === false ? '◌' : '◉'}</button>
         ${layer.isAdjustment ? '<span class="ai-layer-kind" title="调整图层">调整</span>' : ''}
         ${layer.isText ? '<span class="ai-layer-kind" title="文字图层">文字</span>' : ''}
+        ${layer.isShape ? '<span class="ai-layer-kind" title="形状图层">形状</span>' : ''}
         <button class="ai-layer-name" type="button" data-layer-pick="${layer.id}"
           title="单击选中 · 双击重命名">${escapeHtml(layer.name)}</button>
         ${
-          layer.isText
+          layer.isText || layer.isShape
             ? ''
             : `<button class="${maskClass}" type="button" data-layer-mask="${layer.id}"
           title="${maskTitle}">◐</button>
@@ -52,7 +53,7 @@ export function createLayerPanel(host, ctx) {
         <button class="ai-layer-btn" type="button" data-layer-lock="${layer.id}"
           title="${layer.locked ? '解锁图层' : '锁定图层'}">${layer.locked ? '🔒' : '🔓'}</button>
         ${
-          layer.isAdjustment || layer.isText
+          layer.isAdjustment || layer.isText || layer.isShape
             ? ''
             : `<button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" title="缩小">−</button>
         <button class="ai-layer-btn" type="button" data-layer-scale="${layer.id}" data-dir="1" title="放大">＋</button>`

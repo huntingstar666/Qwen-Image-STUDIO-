@@ -55,6 +55,8 @@ import { warpPatch } from './studio/liquify.js';
 import { mosaicDab } from './studio/mosaic.js';
 import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
 import { BLEND_MODES } from './studio/layers.js';
+import { SHAPE_DEFAULTS, SHAPE_KINDS, ShapeLayer } from './studio/shapeLayer.js';
+import { patternDab } from './studio/pattern.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -198,6 +200,22 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 5.5h15v9l-5.5 5.5h-9.5z"/><path d="M19.5 14.5H14v5.5"/><path d="M8 10.5c.9-.8 1.8-.8 2.7 0"/><path d="M13.3 10.5c.9-.8 1.8-.8 2.7 0"/><path d="M9.4 13.4c1.5 1.1 3.7 1.1 5.2 0"/></svg>',
   },
   {
+    id: 'shape',
+    label: '形状',
+    key: 'D',
+    hint: '拖动画出矩形/椭圆/直线/箭头；右侧可调填充、描边与圆角',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="10" height="10" rx="1.5"/><circle cx="16" cy="14" r="4.5"/></svg>',
+  },
+  {
+    id: 'pattern',
+    label: '图案图章',
+    key: 'N',
+    hint: 'Alt 拖框取样，再涂抹按图案平铺复制',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h8"/><path d="M10 20v-4.2L7.4 13a2 2 0 0 1-.4-1.2V7.5A1.5 1.5 0 0 1 8.5 6h7A1.5 1.5 0 0 1 17 7.5v4.3a2 2 0 0 1-.4 1.2L14 15.8V20"/><path d="M10.5 9h3v3h-3z"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -226,11 +244,11 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 /** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic']);
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern']);
 /** 仿制图章 / 修复画笔（D10.2） */
 const CLONE_TOOLS = new Set(['clone', 'healbrush']);
 /** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
-const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic']);
+const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -238,9 +256,9 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
-  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic'] },
+  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
-  { id: 'compose', title: '文字 / 贴纸', tools: ['text', 'sticker'] },
+  { id: 'compose', title: '文字 / 贴纸 / 形状', tools: ['text', 'sticker', 'shape'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
 
@@ -266,6 +284,10 @@ export function createStudioPage(host) {
   let selectedLayerId = null;
   /* D11.3：贴纸工具点击画面后等待文件选择，记录落点（图像坐标）。 */
   let pendingStickerPoint = null;
+  /* D11.4：形状工具的新建样式（无选中形状时作为默认值）。 */
+  const shapeStyle = { ...SHAPE_DEFAULTS };
+  /* D11.4：图案图章的取样矩形（图像坐标，未裁剪空间）。 */
+  let patternRect = null;
   /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
   let selection = null;
   let selPath = null;
@@ -420,6 +442,10 @@ export function createStudioPage(host) {
                     <option value="blur">局部模糊</option>
                   </select>
                 </label>
+                <span class="studio-maskbar-field" data-ref="patternWrap" hidden>
+                  <span data-ref="patternHint">Alt 拖框取样</span>
+                  <button class="btn ghost sm" type="button" data-ref="patternClear">清除图案</button>
+                </span>
                 <span class="spacer"></span>
                 <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
                 <button class="btn ghost sm" type="button" data-ref="maskClear">清除蒙版</button>
@@ -497,6 +523,7 @@ export function createStudioPage(host) {
               <button type="button" data-tab="transform">变换</button>
               <button type="button" data-tab="text">文字</button>
               <button type="button" data-tab="sticker">贴纸</button>
+              <button type="button" data-tab="shape">形状</button>
             </div>
 
             <div class="studio-pane studio-pane-ai" data-pane="ai">
@@ -651,6 +678,30 @@ export function createStudioPage(host) {
               <input type="file" accept="image/*" data-ref="stickerInput" hidden />
             </div>
 
+            <div class="studio-pane" data-pane="shape" hidden>
+              <div class="studio-note">用「形状」工具（D）在画面上拖出矩形/椭圆/直线/箭头；未选中形状时，这里的设置会用于下一个新形状。</div>
+              <div class="studio-pane-title">类型</div>
+              <select class="select" data-ref="shapeKind" aria-label="形状类型">
+                ${SHAPE_KINDS.map((kind) => `<option value="${kind.id}">${kind.label}</option>`).join('')}
+              </select>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>填充</span><input type="color" data-ref="shapeFill" value="${SHAPE_DEFAULTS.fill}" /></label>
+              </div>
+              <label class="studio-slider">
+                <span class="studio-slider-head"><span>描边宽度</span><span class="mono" data-ref="shapeStrokeVal">0</span></span>
+                <input type="range" min="0" max="40" step="1" value="0" data-ref="shapeStrokeWidth" />
+              </label>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>描边色</span><input type="color" data-ref="shapeStroke" value="${SHAPE_DEFAULTS.stroke}" /></label>
+              </div>
+              <label class="studio-slider">
+                <span class="studio-slider-head"><span>圆角</span><span class="mono" data-ref="shapeRadiusVal">0</span></span>
+                <input type="range" min="0" max="200" step="1" value="0" data-ref="shapeRadius" />
+              </label>
+              <button class="btn ghost sm studio-block" type="button" data-ref="shapeDelete" disabled>删除形状</button>
+              <div class="studio-note" data-ref="shapeHint">当前未选中形状：参数将用于新形状。</div>
+            </div>
+
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
               <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
@@ -748,6 +799,18 @@ export function createStudioPage(host) {
     stickerBlend: ref('stickerBlend'),
     stickerDelete: ref('stickerDelete'),
     stickerInput: ref('stickerInput'),
+    shapeKind: ref('shapeKind'),
+    shapeFill: ref('shapeFill'),
+    shapeStrokeWidth: ref('shapeStrokeWidth'),
+    shapeStrokeVal: ref('shapeStrokeVal'),
+    shapeStroke: ref('shapeStroke'),
+    shapeRadius: ref('shapeRadius'),
+    shapeRadiusVal: ref('shapeRadiusVal'),
+    shapeDelete: ref('shapeDelete'),
+    shapeHint: ref('shapeHint'),
+    patternWrap: ref('patternWrap'),
+    patternHint: ref('patternHint'),
+    patternClear: ref('patternClear'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -924,6 +987,9 @@ export function createStudioPage(host) {
       if (layer?.isText) {
         activeTab = 'text';
         syncTabs();
+      } else if (layer?.isShape) {
+        activeTab = 'shape';
+        syncTabs();
       } else if (layer && !layer.isAdjustment) {
         // 选中贴纸/叠加层切到贴纸分页（D11.3）。
         activeTab = 'sticker';
@@ -932,6 +998,7 @@ export function createStudioPage(host) {
       syncAdjustInputs();
       syncTextPane();
       syncStickerPane();
+      syncShapePane();
       scheduleDraw();
     },
     removeLayer(id) {
@@ -942,6 +1009,7 @@ export function createStudioPage(host) {
         layerBlobs.delete(id);
         syncAdjustInputs();
         syncStickerPane();
+        syncShapePane();
         updateHistoryUi();
         scheduleSave();
         scheduleDraw();
@@ -957,6 +1025,7 @@ export function createStudioPage(host) {
       selectedLayerId = copy.id;
       syncAdjustInputs();
       syncStickerPane();
+      syncShapePane();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1041,9 +1110,9 @@ export function createStudioPage(host) {
       if (!doc) return false;
       const layer = doc.findLayer(id);
       if (!layer) return false;
-      // 文字图层没有像素蒙版（D11.2）。
-      if (layer.isText) {
-        toastWarn('文字图层不支持蒙版');
+      // 文字 / 形状图层没有像素蒙版（D11.2 / D11.4）。
+      if (layer.isText || layer.isShape) {
+        toastWarn(layer.isText ? '文字图层不支持蒙版' : '形状图层不支持蒙版');
         return false;
       }
       if (!layer.mask) {
@@ -1107,8 +1176,8 @@ export function createStudioPage(host) {
     scaleLayer(id, factor) {
       if (!doc) return;
       const layer = doc.findLayer(id);
-      // 调整图层与文字图层没有几何尺寸，忽略缩放。
-      if (!layer || layer.isAdjustment || layer.isText) return;
+      // 调整图层与文字/形状图层没有位图尺寸，忽略缩放。
+      if (!layer || layer.isAdjustment || layer.isText || layer.isShape) return;
       doc.scaleOverlay(id, factor);
       doc.commitLayers();
       updateHistoryUi();
@@ -1189,6 +1258,8 @@ export function createStudioPage(host) {
     refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
     if (refs.cloneAlignWrap) refs.cloneAlignWrap.hidden = !CLONE_TOOLS.has(next);
     if (refs.mosaicModeWrap) refs.mosaicModeWrap.hidden = next !== 'mosaic';
+    if (refs.patternWrap) refs.patternWrap.hidden = next !== 'pattern';
+    if (next === 'pattern') updatePatternHint();
     if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
     if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
@@ -1213,6 +1284,10 @@ export function createStudioPage(host) {
       activeTab = 'sticker';
       syncTabs();
       syncStickerPane();
+    } else if (next === 'shape' && doc) {
+      activeTab = 'shape';
+      syncTabs();
+      syncShapePane();
     } else if (next === 'outpaint') {
       activeTab = 'outpaint';
       syncTabs();
@@ -1229,7 +1304,7 @@ export function createStudioPage(host) {
     scheduleSave(1200);
   }
 
-  const TAB_IDS = new Set(['ai', 'adjust', 'transform', 'text', 'sticker']);
+  const TAB_IDS = new Set(['ai', 'adjust', 'transform', 'text', 'sticker', 'shape']);
 
   /** 恢复会话时把历史的 5 tab 归一化：扩图只在对应工具下保留。 */
   function normalizeTab(tab) {
@@ -1498,6 +1573,46 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 形状图层预览（D11.4）：在视口里按当前样式直接画一遍，松手后才真正建层。
+    if (drag?.mode === 'shapeDraw' && drag.end) {
+      const crop = doc.transform.crop;
+      const rect = normalizeRect(drag.start, drag.end);
+      const signed = drag.shape === 'line' || drag.shape === 'arrow';
+      const preview = new ShapeLayer({
+        ...shapeStyle,
+        x: (signed ? drag.start.x : rect.x) + (crop?.x || 0),
+        y: (signed ? drag.start.y : rect.y) + (crop?.y || 0),
+        width: signed ? drag.end.x - drag.start.x : rect.width,
+        height: signed ? drag.end.y - drag.start.y : rect.height,
+      });
+      preview.opacity = 0.9;
+      ctx.save();
+      ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+      ctx.scale(view.scale, view.scale);
+      preview.draw(ctx);
+      ctx.restore();
+    }
+
+    // 图案取样框（D11.4）：拖框中为虚线预览，已取样时持续显示取样范围。
+    {
+      const rect = drag?.mode === 'patternPick' && drag.rect ? drag.rect : tool === 'pattern' ? patternRect : null;
+      if (rect && rect.width > 1 && rect.height > 1) {
+        const crop = doc.transform.crop;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(
+          view.x + (rect.x - (crop?.x || 0)) * view.scale,
+          view.y + (rect.y - (crop?.y || 0)) * view.scale,
+          rect.width * view.scale,
+          rect.height * view.scale,
+        );
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+
     // 局部调整取景辅助线（D9.4）：拖动中实时显示，未拖动时回显已有几何
     {
       const crop = doc.transform.crop;
@@ -1558,10 +1673,10 @@ export function createStudioPage(host) {
 
     // 选中图层的外框；贴纸额外画缩放角点与旋转手柄（D11.3）
     const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
-    if ((tool === 'move' || tool === 'sticker') && activeLayer && !activeLayer.isAdjustment) {
+    if ((tool === 'move' || tool === 'sticker' || tool === 'shape') && activeLayer && !activeLayer.isAdjustment) {
       const crop = doc.transform.crop;
-      if (activeLayer.isText) {
-        // 文字层没有缩放/旋转手柄，沿用普通虚线框。
+      if (activeLayer.isText || activeLayer.isShape) {
+        // 文字 / 形状层没有缩放旋转手柄，沿用普通虚线框。
         const box = activeLayer.bounds();
         const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
         const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;
@@ -2197,6 +2312,52 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 图案图章（D11.4）
+   * ============================================================ */
+
+  /** 图案笔触：按取样矩形平铺填充笔刷窗口，写进修复层。 */
+  function patternAt(point) {
+    if (!doc || !patternRect) return;
+    if (!drag) return;
+    if (!drag.sample) drag.sample = doc.renderSample();
+    const repair = doc.ensureRepair();
+    const ok = patternDab(repair.getContext('2d'), drag.sample, {
+      x: point.x,
+      y: point.y,
+      radius: Math.max(2, brush.size / 2),
+      opacity: brush.opacity,
+      softness: 1 - brush.hardness,
+      pattern: patternRect,
+    });
+    if (!ok) {
+      toastWarn('图案取样区域超出画面，请按住 Alt 重新拖框取样');
+      drag.mode = 'pattern-blocked';
+      return;
+    }
+    doc.invalidateBase();
+  }
+
+  function patternStroke(point) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(2, brush.size * 0.3);
+    if (distance < step) return;
+    const count = Math.floor(distance / step);
+    for (let i = 1; i <= count; i += 1) {
+      const t = (i * step) / distance;
+      patternAt({ x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t });
+    }
+    if (drag) drag.last = point;
+  }
+
+  function updatePatternHint() {
+    if (!refs.patternHint) return;
+    refs.patternHint.textContent = patternRect
+      ? `图案 ${Math.round(patternRect.width)} × ${Math.round(patternRect.height)}`
+      : 'Alt 拖框取样';
+  }
+
+  /* ============================================================
    * 涂抹（D10.3）
    * ============================================================ */
 
@@ -2431,6 +2592,26 @@ export function createStudioPage(host) {
       drag = { mode: 'lasso', points: [maskPoint(point)] };
       return;
     }
+    if (tool === 'shape') {
+      // 形状图层：拖动时只记起止点，松手才建层（D11.4）。
+      drag = { mode: 'shapeDraw', start: point, end: null, shape: shapeStyle.shape };
+      return;
+    }
+    if (tool === 'pattern') {
+      if (event.altKey) {
+        // Alt + 拖框 = 重新取样图案区域。
+        drag = { mode: 'patternPick', start: point, rect: null };
+        return;
+      }
+      if (!patternRect) {
+        toastWarn('按住 Alt 在画面上拖框取样图案，再涂抹复制');
+        return;
+      }
+      drag = { mode: 'patternPaint', last: point, sample: doc.renderSample() };
+      patternAt(point);
+      scheduleDraw();
+      return;
+    }
     if (tool === 'move' || tool === 'sticker') {
       const crop = doc.transform.crop;
       const ix = point.x + (crop?.x || 0);
@@ -2577,6 +2758,21 @@ export function createStudioPage(host) {
       }
       return;
     }
+    if (drag.mode === 'shapeDraw') {
+      drag.end = point;
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'patternPick') {
+      drag.rect = normalizeRect(drag.start, point);
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'patternPaint' || drag.mode === 'pattern-blocked') {
+      if (drag.mode === 'patternPaint') patternStroke(point);
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'stickerScale') {
       const crop = doc.transform.crop;
       const px = point.x + (crop?.x || 0);
@@ -2617,6 +2813,7 @@ export function createStudioPage(host) {
     if (!drag) return;
     const mode = drag.mode;
     const rect = drag.rect;
+    const shapeDrag = drag.mode === 'shapeDraw' && drag.end ? { start: { ...drag.start }, end: { ...drag.end }, shape: drag.shape } : null;
     const points = drag.points;
     const localDrag = drag.mode === 'local' ? { type: drag.type, start: drag.start, end: drag.end } : null;
     drag = null;
@@ -2662,6 +2859,52 @@ export function createStudioPage(host) {
       activeTab = 'ai';
       syncTabs();
       ai?.focusPrompt?.();
+    } else if (mode === 'shapeDraw' && shapeDrag) {
+      // 松手才建形状层：太短的拖动视为误触（D11.4）。
+      const { start, end, shape } = shapeDrag;
+      const box = normalizeRect(start, end);
+      const signed = shape === 'line' || shape === 'arrow';
+      const length = Math.hypot(end.x - start.x, end.y - start.y);
+      const tiny = signed ? length < 4 : box.width < 4 || box.height < 4;
+      if (!tiny) {
+        const crop = doc.transform.crop;
+        const count = doc.layers.filter((layer) => layer.isShape).length + 1;
+        const layer = doc.addShapeLayer(
+          { ...shapeStyle },
+          {
+            name: `形状 ${count}`,
+            x: Math.round((signed ? start.x : box.x) + (crop?.x || 0)),
+            y: Math.round((signed ? start.y : box.y) + (crop?.y || 0)),
+            width: Math.round(signed ? end.x - start.x : box.width),
+            height: Math.round(signed ? end.y - start.y : box.height),
+          },
+        );
+        selectedLayerId = layer.id;
+        editingLayerMaskId = '';
+        // setTool('move') 会把分页拉回 AI，再切到形状页（D11.4）。
+        setTool('move');
+        activeTab = 'shape';
+        syncTabs();
+        syncShapePane();
+        updateHistoryUi();
+        scheduleDraw();
+        scheduleSave();
+        ai?.refresh?.();
+        toast('已创建形状，可在右侧调整填充 / 描边 / 圆角');
+      }
+    } else if (mode === 'patternPick') {
+      if (rect && rect.width > 4 && rect.height > 4) {
+        patternRect = { ...rect };
+        updatePatternHint();
+        toastSuccess(`已取样 ${Math.round(rect.width)} × ${Math.round(rect.height)} 图案，开始涂抹复制`);
+        scheduleDraw();
+      } else {
+        toastWarn('取样框太小，请按住 Alt 重新拖框');
+      }
+    } else if (mode === 'patternPaint' || mode === 'pattern-blocked') {
+      // 整笔图案图章作为一个撤销步（D11.4）。
+      doc?.snapshot();
+      updateHistoryUi();
     } else if (mode === 'stickerScale' || mode === 'stickerRotate') {
       // 贴纸缩放/旋转整段拖动作为一个撤销步（D11.3）。
       commitSticker();
@@ -2833,8 +3076,8 @@ export function createStudioPage(host) {
 
   /** 叠加层优先复用打开时的原始文件；缺失时（撤销/恢复后）再编码一次并缓存。 */
   async function layerBlobFor(layer) {
-    // 调整图层没有位图，只持久化参数与蒙版（D9.3）；文字层只存样式（D11.2）。
-    if (layer.isAdjustment || layer.isText) return null;
+    // 调整图层没有位图，只持久化参数与蒙版（D9.3）；文字/形状层只存样式（D11.2 / D11.4）。
+    if (layer.isAdjustment || layer.isText || layer.isShape) return null;
     const cached = layerBlobs.get(layer.id);
     if (cached) return cached;
     const image = layer.image;
@@ -2932,7 +3175,7 @@ export function createStudioPage(host) {
       layers.push({
         id: layer.id,
         props: {
-          kind: layer.isAdjustment ? 'adjustment' : layer.isText ? 'text' : 'overlay',
+          kind: layer.isAdjustment ? 'adjustment' : layer.isText ? 'text' : layer.isShape ? 'shape' : 'overlay',
           name: layer.name,
           x: layer.x ?? 0,
           y: layer.y ?? 0,
@@ -2961,6 +3204,17 @@ export function createStudioPage(host) {
                 shadowX: layer.shadowX,
                 shadowY: layer.shadowY,
                 shadowColor: layer.shadowColor,
+              }
+            : {}),
+          ...(layer.isShape
+            ? {
+                width: layer.width,
+                height: layer.height,
+                shape: layer.shape,
+                fill: layer.fill,
+                stroke: layer.stroke,
+                shapeStrokeWidth: layer.strokeWidth,
+                radius: layer.radius,
               }
             : {}),
         },
@@ -3189,6 +3443,30 @@ export function createStudioPage(host) {
             x: Number(props.x) || 0,
             y: Number(props.y) || 0,
           });
+          layer.id = record.id;
+          layer.visible = props.visible !== false;
+          layer.locked = Boolean(props.locked);
+          continue;
+        }
+        // D11.4：形状图层按几何 + 样式还原。
+        if (props.kind === 'shape') {
+          const layer = next.addShapeLayer(
+            {
+              shape: props.shape,
+              fill: props.fill,
+              stroke: props.stroke,
+              strokeWidth: props.shapeStrokeWidth,
+              radius: props.radius,
+              opacity: props.opacity,
+            },
+            {
+              name: props.name,
+              x: Number(props.x) || 0,
+              y: Number(props.y) || 0,
+              width: Number(props.width) || 0,
+              height: Number(props.height) || 0,
+            },
+          );
           layer.id = record.id;
           layer.visible = props.visible !== false;
           layer.locked = Boolean(props.locked);
@@ -3430,6 +3708,7 @@ export function createStudioPage(host) {
     syncAdjustInputs();
     syncTextPane();
     syncStickerPane();
+    syncShapePane();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -3831,6 +4110,127 @@ export function createStudioPage(host) {
     }
   });
 
+  /* --------------------------------------------------- 形状（D11.4） */
+
+  /** 当前选中的形状层（没有则返回 null）。 */
+  function shapeTarget() {
+    if (!doc || !selectedLayerId) return null;
+    const layer = doc.findLayer(selectedLayerId);
+    return layer?.isShape ? layer : null;
+  }
+
+  /** 面板编辑目标：选中形状时改形状，否则改「新建默认样式」。 */
+  function shapeStyleTarget() {
+    return shapeTarget() || shapeStyle;
+  }
+
+  function syncShapePane() {
+    const target = shapeTarget();
+    const style = target || shapeStyle;
+    refs.shapeKind.value = style.shape;
+    refs.shapeFill.value = style.fill;
+    refs.shapeStrokeWidth.value = String(Math.round(style.strokeWidth));
+    refs.shapeStrokeVal.textContent = String(Math.round(style.strokeWidth));
+    refs.shapeStroke.value = style.stroke;
+    refs.shapeRadius.value = String(Math.round(style.radius));
+    refs.shapeRadiusVal.textContent = String(Math.round(style.radius));
+    refs.shapeRadius.disabled = style.shape !== 'rect';
+    refs.shapeDelete.disabled = !target;
+    refs.shapeHint.textContent = target
+      ? `正在编辑「${target.name}」：改动可撤销。`
+      : '当前未选中形状：参数将用于新形状。';
+  }
+
+  /** 形状样式落一步撤销（仅在选中形状时）。 */
+  function commitShape() {
+    if (!doc || !shapeTarget()) return;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncShapePane();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    ai?.refresh?.();
+  }
+
+  refs.shapeKind.addEventListener('change', () => {
+    shapeStyleTarget().shape = refs.shapeKind.value;
+    commitShape();
+    syncShapePane();
+    scheduleDraw();
+  });
+
+  refs.shapeFill.addEventListener('input', () => {
+    shapeStyleTarget().fill = refs.shapeFill.value;
+    if (shapeTarget()) {
+      doc.touchLayers();
+      scheduleDraw();
+    }
+  });
+  refs.shapeFill.addEventListener('change', () => {
+    shapeStyleTarget().fill = refs.shapeFill.value;
+    commitShape();
+  });
+
+  refs.shapeStrokeWidth.addEventListener('input', () => {
+    const value = Number(refs.shapeStrokeWidth.value);
+    shapeStyleTarget().strokeWidth = value;
+    refs.shapeStrokeVal.textContent = String(value);
+    if (shapeTarget()) {
+      doc.touchLayers();
+      scheduleDraw();
+    }
+  });
+  refs.shapeStrokeWidth.addEventListener('change', () => {
+    shapeStyleTarget().strokeWidth = Number(refs.shapeStrokeWidth.value);
+    commitShape();
+  });
+
+  refs.shapeStroke.addEventListener('input', () => {
+    shapeStyleTarget().stroke = refs.shapeStroke.value;
+    if (shapeTarget()) {
+      doc.touchLayers();
+      scheduleDraw();
+    }
+  });
+  refs.shapeStroke.addEventListener('change', () => {
+    shapeStyleTarget().stroke = refs.shapeStroke.value;
+    commitShape();
+  });
+
+  refs.shapeRadius.addEventListener('input', () => {
+    const value = Number(refs.shapeRadius.value);
+    shapeStyleTarget().radius = value;
+    refs.shapeRadiusVal.textContent = String(value);
+    if (shapeTarget()) {
+      doc.touchLayers();
+      scheduleDraw();
+    }
+  });
+  refs.shapeRadius.addEventListener('change', () => {
+    shapeStyleTarget().radius = Number(refs.shapeRadius.value);
+    commitShape();
+  });
+
+  refs.shapeDelete.addEventListener('click', () => {
+    const target = shapeTarget();
+    if (!target) return;
+    if (doc.removeOverlay(target.id)) {
+      selectedLayerId = null;
+      syncShapePane();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+      toast('已删除形状');
+    }
+  });
+
+  refs.patternClear.addEventListener('click', () => {
+    patternRect = null;
+    updatePatternHint();
+    scheduleDraw();
+    toast('已清除图案取样');
+  });
   /* --------------------------------------------------- 直方图（D9.2） */
 
   let histAt = 0;
@@ -4046,6 +4446,7 @@ export function createStudioPage(host) {
     if (activeTab === 'adjust') updateHistogram(true);
     if (activeTab === 'text') syncTextPane();
     if (activeTab === 'sticker') syncStickerPane();
+    if (activeTab === 'shape') syncShapePane();
   });
 
   /* ---------------------------------------------------------- 顶栏导入菜单 */

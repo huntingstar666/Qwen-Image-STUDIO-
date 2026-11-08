@@ -640,6 +640,10 @@
   border-color: color-mix(in srgb, #7aa2ff 40%, var(--line-soft));
 }
 
+.ai-layer.is-shape {
+  border-color: color-mix(in srgb, #f6c85f 40%, var(--line-soft));
+}
+
 .studio-maskbar-tool {
   width: 86px;
   height: 28px;

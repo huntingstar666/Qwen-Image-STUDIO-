@@ -834,6 +834,14 @@ DOM 结构：
   - 实测（headless Chromium，800×600：左半 16px 黑白棋盘、右半纯蓝 `#0000ff`，笔刷 24px）：Alt 在 `(24,24)` 取样（toast「已取样：24, 24」），点 `(600,450)` 后该点 `[0,0,255] → [255,255,255]`，`(600,470)` 仍为蓝，说明只复制了笔刷范围内的棋盘格；切修复画笔在 `(16,16)` 取样因窗口越界被拒（不绘制），改在 `(40,40)` 取样后点 `(600,540)` 得中心 `[119,119,255]`、上下相邻 `[0,0,135]`、`(620,540)` 仍纯蓝——纹理被完整复制且整体压到目标蓝色域；对齐校验：开启时第一笔 `(700,200)` 建立偏移后再点 `(700,40)` 源点越界不绘制（保持 `[0,0,255]`），关闭后重新取样同点立即绘出 `[255,255,255]`。刷新 `?cb=62#studio` 恢复后右半仍有 163 个白色采样点（棋盘补丁持久化）。截图 `.screenshots/D10.2-clone-heal-2026-11-08T04-20-56-031Z.png`。
   - 说明：修复画笔用的是「均值平移」，对亮度差异明显的区域有效，形状差异大时仍需手动选源；真正的内容感知补全属 P2 规划，不在本轮。
 
+- **D10.3 涂抹（已完成）** —— 把笔刷范围内的像素沿拖动方向推开，做水面/发丝拖尾：
+  - 新增 `studio/smudge.js`：`normalizeVector(x,y)`（零向量安全）、`smudgeShift(direction, radius, amount=0.35)`（方向 × 半径 × 强度，纯函数）、`smudgeDab(ctx, source, {x,y,dx,dy,radius,opacity,softness})`——读取当前点方形补丁，径向渐变柔边后按 `(dx,dy)` 偏移贴到修复层；取样越界返回 `false`。
+  - 工具：左栏「修复」组新增 `smudge`（涂抹，U）；复用笔刷大小/硬度/不透明度，鼠标指针隐藏并显示笔刷圆环，浮条沿用 `is-heal` 精简模式。
+  - 交互：按下不下笔，沿拖动方向逐帧 `smudgeDab`（每次读取含本次结果的合成底图，因此能连续把颜色推远），整笔仅落一次撤销步；松开后自动保存。
+  - 单测：新增 `web/tests/studio/smudge.test.mjs` 5 项（单位向量、零向量、方向×半径×强度、斜向等长、强度夹取），`node --test web/tests/studio/smudge.test.mjs` → `pass 5 / fail 0`。
+  - 实测（headless Chromium，800×600：左红 `#c0392b`、右蓝 `#1f6fd0`，分界 x=400，笔刷 64px）：从 `(360,300)` 拖到 `(470,300)` 后，红被推过原分界（`x=405/450` 由纯蓝 `[31,111,208]` 变为 `[191,55,41]`），`x=475` 仍为红、`x=600` 保持蓝，形成带柔边的舌头状拖尾；撤销后 `x=405/600` 回到 `[31,111,208]`，重做恢复 `[191,55,41]`。截图 `.screenshots/D10.3-smudge-2026-11-08T04-22-54-971Z.png`。
+  - 说明：当前不是流体模拟，落笔依赖当前合成结果逐步累积，长距离拖动会把颜色推得较远；追求更自然的细节可后续换成双缓冲位移场。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1020,7 +1028,8 @@ DOM 结构：
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔（D10.2 暂内联在 `studio.js`，取样与补丁算法在 `heal.js`） | `renderer` | D10.2（已落地） |
 | `heal.js` | `ringSamples` / `healDab`（污点修复）、`meanRgb` / `shiftPatch` / `cloneDab`（仿制与修复画笔） | 无 | D10.1 / D10.2 |
-| `tools/smudge.js` | 涂抹 | `renderer` | D10 |
+| `tools/smudge.js` | 涂抹（D10.3 暂内联在 `studio.js`，算法在 `smudge.js`） | `renderer` | D10.3（已落地） |
+| `smudge.js` | `normalizeVector` / `smudgeShift` / `smudgeDab`（涂抹位移与柔边贴回） | 无 | D10.3 |
 | `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
 | `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
@@ -1333,7 +1342,7 @@ DOM 结构：
 | D9.4 | 局部调整 | 已完成 | 本次提交 | `adjustments.js` 追加 `normalizeLocal/localStrengthAt/buildLocalMask`；`AdjustmentLayer` 支持 `local` + `setLocal/clearLocal`；调色面板「局部范围」区块（线性/径向/画笔/全图 + 过渡）；画布取景辅助线；随工程保存 `local`；实测见 §12.11 |
 | D10.1 | 污点修复 | 已完成 | 本次提交 | 新增 `studio/heal.js`（`ringSamples` + `healDab` 锥形渐变补丁）；`studioDoc.repair` 修复层并入渲染/历史/旋转翻转；`spot` 工具（J）+ 笔刷参数；随工程保存 `repairBlob`；单测 5 项；实测见 §12.11 |
 | D10.2 | 仿制图章 / 修复画笔 | 已完成 | 本次提交 | `heal.js` 追加 `cloneDab/meanRgb/shiftPatch`；`studioDoc.renderSample()` 提供干净取样源；`clone`（S）/`healbrush`（H）工具 + Alt 取样 + 对齐开关 + 锚点/取样标记；实测见 §12.11 |
-| D10.3 | 涂抹 | 未开始 | — | — |
+| D10.3 | 涂抹 | 已完成 | 本次提交 | 新增 `studio/smudge.js`（`normalizeVector/smudgeShift/smudgeDab`）；`smudge` 工具（U）+ 笔刷参数；写入修复层并整笔一次撤销；单测 5 项；实测见 §12.11 |
 | D10.4 | 磨皮 | 未开始 | — | — |
 | D10.5 | 液化 | 未开始 | — | — |
 | D11.1 | 马赛克 / 模糊 | 未开始 | — | — |

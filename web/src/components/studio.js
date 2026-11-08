@@ -53,6 +53,7 @@ import { normalizeVector, smudgeDab, smudgeShift } from './studio/smudge.js';
 import { skinDab } from './studio/skin.js';
 import { warpPatch } from './studio/liquify.js';
 import { mosaicDab } from './studio/mosaic.js';
+import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -180,6 +181,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4" y="4" width="5" height="5"/><rect x="9" y="4" width="5" height="5"/><rect x="4" y="9" width="5" height="5"/><rect x="14" y="9" width="5" height="5"/><rect x="9" y="14" width="5" height="5"/><rect x="14" y="14" width="5" height="5"/></svg>',
   },
   {
+    id: 'text',
+    label: '文字',
+    key: 'T',
+    hint: '在画面上点一下创建文字图层，右侧可改文案/字体/描边/投影',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6V4.5h14V6"/><path d="M12 4.5V20"/><path d="M9 20h6"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -222,6 +231,7 @@ const TOOL_GROUPS = [
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
   { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
+  { id: 'compose', title: '文字', tools: ['text'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
 
@@ -474,6 +484,7 @@ export function createStudioPage(host) {
               <button type="button" class="active" data-tab="ai">AI 修改</button>
               <button type="button" data-tab="adjust">调整</button>
               <button type="button" data-tab="transform">变换</button>
+              <button type="button" data-tab="text">文字</button>
             </div>
 
             <div class="studio-pane studio-pane-ai" data-pane="ai">
@@ -562,6 +573,42 @@ export function createStudioPage(host) {
               <div class="studio-note">旋转或翻转会清空裁剪框；蒙版会跟随画面一起变换。</div>
             </div>
 
+            <div class="studio-pane" data-pane="text" hidden>
+              <div class="studio-note" data-ref="textEmpty">用「文字」工具（T）在画面上点一下创建文字图层；选中文字层后，这里可以改文案与样式。</div>
+              <div data-ref="textFields" hidden>
+                <div class="studio-pane-title">文案</div>
+                <textarea class="studio-text-input" data-ref="textContent" rows="3" placeholder="输入文字，支持换行"></textarea>
+                <div class="studio-row">
+                  <select class="select" data-ref="textFont" aria-label="字体">
+                    ${TEXT_FONTS.map((font) => `<option value='${font.id}'>${font.label}</option>`).join('')}
+                  </select>
+                  <label class="studio-check"><input type="checkbox" data-ref="textBold" /><span>粗体</span></label>
+                </div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>字号</span><span class="mono" data-ref="textSizeVal">64</span></span>
+                  <input type="range" min="8" max="240" step="1" value="64" data-ref="textSize" />
+                </label>
+                <div class="studio-row">
+                  <label class="studio-check studio-text-color"><span>颜色</span><input type="color" data-ref="textColor" value="#ffffff" /></label>
+                </div>
+                <div class="studio-pane-title">描边</div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>宽度</span><span class="mono" data-ref="textStrokeVal">0</span></span>
+                  <input type="range" min="0" max="24" step="1" value="0" data-ref="textStrokeWidth" />
+                </label>
+                <div class="studio-row">
+                  <label class="studio-check studio-text-color"><span>描边色</span><input type="color" data-ref="textStrokeColor" value="#000000" /></label>
+                </div>
+                <div class="studio-pane-title">投影</div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>模糊</span><span class="mono" data-ref="textShadowVal">0</span></span>
+                  <input type="range" min="0" max="40" step="1" value="0" data-ref="textShadow" />
+                </label>
+                <button class="btn ghost sm studio-block" type="button" data-ref="textDelete">删除文字图层</button>
+                <div class="studio-note">文字图层是非破坏式的：随时能改文案与样式；用「移动叠加图」工具可拖动位置。</div>
+              </div>
+            </div>
+
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
               <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
@@ -632,6 +679,20 @@ export function createStudioPage(host) {
     cloneAligned: ref('cloneAligned'),
     mosaicModeWrap: ref('mosaicModeWrap'),
     mosaicMode: ref('mosaicMode'),
+    textEmpty: ref('textEmpty'),
+    textFields: ref('textFields'),
+    textContent: ref('textContent'),
+    textFont: ref('textFont'),
+    textBold: ref('textBold'),
+    textSize: ref('textSize'),
+    textSizeVal: ref('textSizeVal'),
+    textColor: ref('textColor'),
+    textStrokeWidth: ref('textStrokeWidth'),
+    textStrokeVal: ref('textStrokeVal'),
+    textStrokeColor: ref('textStrokeColor'),
+    textShadow: ref('textShadow'),
+    textShadowVal: ref('textShadowVal'),
+    textDelete: ref('textDelete'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -782,7 +843,13 @@ export function createStudioPage(host) {
       const layer = doc?.findLayer(id);
       // 调整图层没有几何，选中它时保持当前工具，右侧滑杆改为编辑该层（D9.3）。
       if (!layer?.isAdjustment) setTool('move');
+      // 选中文字层直接切到文字分页（D11.2）。
+      if (layer?.isText) {
+        activeTab = 'text';
+        syncTabs();
+      }
       syncAdjustInputs();
+      syncTextPane();
       scheduleDraw();
     },
     removeLayer(id) {
@@ -890,6 +957,11 @@ export function createStudioPage(host) {
       if (!doc) return false;
       const layer = doc.findLayer(id);
       if (!layer) return false;
+      // 文字图层没有像素蒙版（D11.2）。
+      if (layer.isText) {
+        toastWarn('文字图层不支持蒙版');
+        return false;
+      }
       if (!layer.mask) {
         layer.ensureMask();
         toast(`已为「${layer.name}」添加蒙版：用画笔涂抹隐藏，橡皮擦恢复`);
@@ -951,8 +1023,8 @@ export function createStudioPage(host) {
     scaleLayer(id, factor) {
       if (!doc) return;
       const layer = doc.findLayer(id);
-      // 调整图层没有几何尺寸，忽略缩放。
-      if (!layer || layer.isAdjustment) return;
+      // 调整图层与文字图层没有几何尺寸，忽略缩放。
+      if (!layer || layer.isAdjustment || layer.isText) return;
       doc.scaleOverlay(id, factor);
       doc.commitLayers();
       updateHistoryUi();
@@ -1069,7 +1141,7 @@ export function createStudioPage(host) {
     scheduleSave(1200);
   }
 
-  const TAB_IDS = new Set(['ai', 'adjust', 'transform']);
+  const TAB_IDS = new Set(['ai', 'adjust', 'transform', 'text']);
 
   /** 恢复会话时把历史的 5 tab 归一化：扩图只在对应工具下保留。 */
   function normalizeTab(tab) {
@@ -2101,6 +2173,29 @@ export function createStudioPage(host) {
     dragRect = refs.canvas.getBoundingClientRect();
     const point = clampPoint(toImage(event.clientX, event.clientY, dragRect));
 
+    if (tool === 'text' && event.button === 0) {
+      // 在画面上点一下即创建文字图层，并切到「文字」分页直接编辑（D11.2）。
+      const count = doc.layers.filter((layer) => layer.isText).length + 1;
+      const layer = doc.addTextLayer(TEXT_DEFAULTS, {
+        name: `文字 ${count}`,
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+      });
+      selectedLayerId = layer.id;
+      editingLayerMaskId = '';
+      // 先切工具（move 会把分页拉回 AI），再把分页锁到「文字」。
+      setTool('move');
+      activeTab = 'text';
+      syncTabs();
+      syncTextPane();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+      ai?.refresh?.();
+      toast('已创建文字图层，在右侧修改文案与样式');
+      return;
+    }
+
     // 局部调整取景（D9.4）：优先级最高（含「抓手」工具），拖完自动退出，不会误涂或误平移。
     if (localEdit && adjustmentTarget() && event.button === 0) {
       drag = { mode: 'local', type: localEdit, start: point, end: point };
@@ -2515,8 +2610,8 @@ export function createStudioPage(host) {
 
   /** 叠加层优先复用打开时的原始文件；缺失时（撤销/恢复后）再编码一次并缓存。 */
   async function layerBlobFor(layer) {
-    // 调整图层没有位图，只持久化参数与蒙版（D9.3）。
-    if (layer.isAdjustment) return null;
+    // 调整图层没有位图，只持久化参数与蒙版（D9.3）；文字层只存样式（D11.2）。
+    if (layer.isAdjustment || layer.isText) return null;
     const cached = layerBlobs.get(layer.id);
     if (cached) return cached;
     const image = layer.image;
@@ -2614,7 +2709,7 @@ export function createStudioPage(host) {
       layers.push({
         id: layer.id,
         props: {
-          kind: layer.isAdjustment ? 'adjustment' : 'overlay',
+          kind: layer.isAdjustment ? 'adjustment' : layer.isText ? 'text' : 'overlay',
           name: layer.name,
           x: layer.x ?? 0,
           y: layer.y ?? 0,
@@ -2626,6 +2721,22 @@ export function createStudioPage(host) {
           hasMask: Boolean(layer.mask),
           maskVisible: layer.maskVisible,
           ...(layer.isAdjustment ? { params: { ...layer.params }, local: { ...layer.local } } : {}),
+          ...(layer.isText
+            ? {
+                text: layer.text,
+                fontFamily: layer.fontFamily,
+                fontSize: layer.fontSize,
+                fontWeight: layer.fontWeight,
+                color: layer.color,
+                lineHeight: layer.lineHeight,
+                strokeWidth: layer.strokeWidth,
+                strokeColor: layer.strokeColor,
+                shadowBlur: layer.shadowBlur,
+                shadowX: layer.shadowX,
+                shadowY: layer.shadowY,
+                shadowColor: layer.shadowColor,
+              }
+            : {}),
         },
         blob,
         maskBlob: layerMaskBlob,
@@ -2843,6 +2954,18 @@ export function createStudioPage(host) {
           // 没有蒙版快照时按几何重建，保证刷新后局部范围还在（D9.4）。
           if (!record.maskBlob && layer.local?.type !== 'none') layer.setLocal(layer.local);
           await restoreLayerMask(layer, props, record.maskBlob);
+          continue;
+        }
+        // D11.2：文字图层按 props 还原，没有位图。
+        if (props.kind === 'text') {
+          const layer = next.addTextLayer(props, {
+            name: props.name,
+            x: Number(props.x) || 0,
+            y: Number(props.y) || 0,
+          });
+          layer.id = record.id;
+          layer.visible = props.visible !== false;
+          layer.locked = Boolean(props.locked);
           continue;
         }
         if (!record.bitmapBlob) {
@@ -3063,6 +3186,7 @@ export function createStudioPage(host) {
     cropRect = null;
     clearSelection(true);
     editingLayerMaskId = '';
+    selectedLayerId = null;
     tint = null;
     tintDirty = true;
     tintRect = null;
@@ -3074,6 +3198,7 @@ export function createStudioPage(host) {
     refs.dims.textContent = '';
     for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = false;
     syncAdjustInputs();
+    syncTextPane();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -3237,6 +3362,94 @@ export function createStudioPage(host) {
     updateHistoryUi();
     scheduleDraw();
     scheduleSave();
+  });
+
+  /* --------------------------------------------------- 文字图层（D11.2） */
+
+  /** 当前选中的文字层（没有则返回 null）。 */
+  function textTarget() {
+    if (!doc || !selectedLayerId) return null;
+    const layer = doc.findLayer(selectedLayerId);
+    return layer?.isText ? layer : null;
+  }
+
+  function syncTextPane() {
+    const target = textTarget();
+    refs.textEmpty.hidden = Boolean(target);
+    refs.textFields.hidden = !target;
+    if (!target) return;
+    refs.textContent.value = target.text;
+    refs.textFont.value = target.fontFamily;
+    refs.textBold.checked = target.fontWeight >= 600;
+    refs.textSize.value = String(Math.round(target.fontSize));
+    refs.textSizeVal.textContent = String(Math.round(target.fontSize));
+    refs.textColor.value = target.color;
+    refs.textStrokeWidth.value = String(Math.round(target.strokeWidth));
+    refs.textStrokeVal.textContent = String(Math.round(target.strokeWidth));
+    refs.textStrokeColor.value = target.strokeColor;
+    refs.textShadow.value = String(Math.round(target.shadowBlur));
+    refs.textShadowVal.textContent = String(Math.round(target.shadowBlur));
+  }
+
+  function bindTextInput(el, apply) {
+    el.addEventListener('input', () => {
+      const target = textTarget();
+      if (!target) return;
+      apply(target);
+      doc.touchLayers();
+      scheduleDraw();
+    });
+    el.addEventListener('change', () => {
+      const target = textTarget();
+      if (!target) return;
+      apply(target);
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+    });
+  }
+
+  bindTextInput(refs.textContent, (target) => {
+    target.text = refs.textContent.value;
+  });
+  bindTextInput(refs.textFont, (target) => {
+    target.fontFamily = refs.textFont.value;
+  });
+  bindTextInput(refs.textBold, (target) => {
+    target.fontWeight = refs.textBold.checked ? 700 : 400;
+  });
+  bindTextInput(refs.textSize, (target) => {
+    target.fontSize = Number(refs.textSize.value);
+    refs.textSizeVal.textContent = refs.textSize.value;
+  });
+  bindTextInput(refs.textColor, (target) => {
+    target.color = refs.textColor.value;
+  });
+  bindTextInput(refs.textStrokeWidth, (target) => {
+    target.strokeWidth = Number(refs.textStrokeWidth.value);
+    refs.textStrokeVal.textContent = refs.textStrokeWidth.value;
+  });
+  bindTextInput(refs.textStrokeColor, (target) => {
+    target.strokeColor = refs.textStrokeColor.value;
+  });
+  bindTextInput(refs.textShadow, (target) => {
+    target.shadowBlur = Number(refs.textShadow.value);
+    refs.textShadowVal.textContent = refs.textShadow.value;
+  });
+
+  refs.textDelete.addEventListener('click', () => {
+    const target = textTarget();
+    if (!target) return;
+    if (doc.removeOverlay(target.id)) {
+      selectedLayerId = null;
+      syncTextPane();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+      toast('已删除文字图层');
+    }
   });
 
   /* --------------------------------------------------- 直方图（D9.2） */
@@ -3452,6 +3665,7 @@ export function createStudioPage(host) {
     activeTab = button.dataset.tab;
     syncTabs();
     if (activeTab === 'adjust') updateHistogram(true);
+    if (activeTab === 'text') syncTextPane();
   });
 
   /* ---------------------------------------------------------- 顶栏导入菜单 */

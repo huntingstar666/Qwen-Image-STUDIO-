@@ -25,6 +25,7 @@ import { createHistory } from './history.js';
 import { composite } from './renderer.js';
 import { applyCube } from './color.js';
 import { AdjustmentLayer, applyAdjustmentLayer, normalizeAdjustment } from './adjustments.js';
+import { TextLayer } from './textLayer.js';
 
 export const ADJUST_DEFAULTS = {
   exposure: 0,
@@ -508,6 +509,19 @@ export class StudioDoc {
       local,
     });
     if (local?.type && local.type !== 'none') layer.setLocal(local);
+    addLayer(this._doc, layer);
+    this._base = null;
+    this.snapshot();
+    return layer;
+  }
+
+  /**
+   * 新建文字图层（D11.2）。
+   * @param {object} props 见 TEXT_DEFAULTS（text/fontFamily/fontSize/...）
+   * @param {{name?:string, x?:number, y?:number}} [options]
+   */
+  addTextLayer(props = {}, { name = '文字', x = 0, y = 0 } = {}) {
+    const layer = new TextLayer({ ...props, name, x, y });
     addLayer(this._doc, layer);
     this._base = null;
     this.snapshot();

@@ -866,6 +866,15 @@ DOM 结构：
   - 实测（headless Chromium，800×600 的 4px 黑白棋盘，笔刷 160px）：马赛克点按后中心 80×80 区域亮度标准差 `99 → 1`，区域外保持 `99.5`；切「局部模糊」后另一处 `99.5 → 0.5`，撤销回到 `99.5`，中心马赛克不受影响（整笔一次撤销）。修复了 `boxBlur` 返回新数组未写回导致模糊模式无效果的缺陷。截图 `.screenshots/D11.1-mosaic-2026-11-08T04-29-25-596Z.png`。
   - 说明：马赛克方块大小随笔刷线性变化，不做「固定屏幕像素」模式；若需要整脸大块打码，建议调大笔刷或多次涂抹。
 
+- **D11.2 文字图层（已完成）** —— 可编辑、可移动、可撤销的文字层，替代「先在其他软件打好字再导入」：
+  - 新增 `studio/textLayer.js`：`TEXT_FONTS`（system-ui / 微软雅黑 / 宋体 / 楷体 / Georgia / Impact）、`TEXT_DEFAULTS`（默认「双击编辑文字」、64px、600 字重、白字、行高 1.25）、`class TextLayer`（`kind='text'`、`isText`、`font` 拼装、`lines()` 换行拆分、`bounds()` 带缓存测量、`hitTest`、`draw(ctx)` 按裁剪区绘制描边与投影并在 `textBaseline='top'` 下逐行填充、`clone()`、`hasMask()=>false`）、`textLayerFromProps()`。文字层走与叠加层相同的 `composer` 管线，因此支持显隐/锁定/不透明度/排序，但不支持蒙版与缩放按钮。
+  - 文档模型：`StudioDoc.addTextLayer(props,{name,x,y})` 创建并落一次撤销步；`collectProject/applyRestore` 以 `kind:'text'` 区分，持久化文案、字体、字号、字重、颜色、行高、描边宽度/颜色、投影参数。
+  - UI：左栏「合成」组新增 `text`（文字，T）；右侧工作区分页新增「文字」页（`data-pane="text"`），未选中文字层时显示空状态提示，选中后展示文案文本域、字体下拉、加粗、字号、颜色、描边宽度/颜色、投影模糊、删除按钮。工具在画布上点一下即创建文字层并自动切到移动工具 + 文字分页；选中文字层时自动切页并回填参数。
+  - 交互：`input` 实时改属性并只重绘（`touchLayers`），`change` 才落撤销步 + 自动保存；移动工具可直接拖动文字层；`scaleLayer`/`toggleLayerMask`/`layerBlobFor` 对文字层做显式忽略与提示，避免误用。
+  - 单测：新增 `web/tests/studio/textLayer.test.mjs` 6 项（默认值、换行与 bounds、命中测试、描边/投影绘制参数、克隆独立、props 还原），`node --test web/tests/studio/textLayer.test.mjs` → `pass 6 / fail 0`。
+  - 实测（headless Chromium，800×600 空白底）：文字工具点击后图层条出现 `ai-layer is-text` 行「文字 1」，右侧字段可见；改为「LOS 2026」+ 96px + `#e74c3c` + 描边 6 + 投影 12 后红色像素 9006；用移动工具拖动后红色区域左上角由 `(101,311)` 移到 `(215,392)`（dx=114 / dy=81，与画布缩放 0.815 相符）；刷新后文字层与内容随工程恢复。截图 `.screenshots/D11.2-text-layer-2026-11-08T04-42-09-993Z.png`。
+  - 说明：本轮为纯前端文字层，字体取自系统字体列表，不做字体文件上传与路径文字；双击画布直接进入行内编辑暂未实现，统一在右侧面板修改文案。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1059,7 +1068,8 @@ DOM 结构：
 | `liquify.js` | `pushWeight` / `warpPatch`（反向取样形变，D10.5 已落地） | 无 | D10.5 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊（D11.1 暂内联在 `studio.js`，算法在 `mosaic.js`） | `renderer` | D11.1（已落地） |
 | `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
-| `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
+| `tools/text.js` | 文字图层创建与编辑（D11.2 暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2（已落地） |
+| `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`（文字图层实体与绘制） | 无 | D11.2 |
 | `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
 | `panels/adjust.js` | 调色面板（D9.1~D9.3 暂内联在 `studio.js` 的 `data-pane="adjust"`，未拆文件） | `color/adjustments` | D9（已落地） |
@@ -1373,7 +1383,7 @@ DOM 结构：
 | D10.4 | 磨皮 | 已完成 | 本次提交 | 新增 `studio/skin.js`（`boxBlur/smoothSkin/skinDab` 频率分离）；`skin` 工具（K）+ 笔刷参数（不透明度兼作强度）；单测 6 项；实测见 §12.11 |
 | D10.5 | 液化 | 已完成 | 本次提交 | 新增 `studio/liquify.js`（`pushWeight` + `warpPatch` 反向取样形变）；`liquify` 工具（Y）+ 累计位移；单测 4 项；实测见 §12.11 |
 | D11.1 | 马赛克 / 模糊 | 已完成 | 本次提交 | 新增 `studio/mosaic.js`（`pixelate` + `mosaicDab`，马赛克/模糊双模式）；`mosaic` 工具（P）+ 模式下拉；单测 4 项；实测见 §12.11 |
-| D11.2 | 文字图层 | 未开始 | — | — |
+| D11.2 | 文字图层 | 已完成 | 本次提交 | 新增 `studio/textLayer.js`（`TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`）；`StudioDoc.addTextLayer` + 工程持久化 `kind:'text'`；左栏 `text` 工具（T）+ 右侧「文字」分页（文案/字体/字重/字号/颜色/描边/投影/删除）；移动拖动、整页撤销、刷新恢复；单测 6 项；实测见 §12.11 |
 | D11.3 | 贴纸 | 未开始 | — | — |
 | D11.4 | 形状与图案图章 | 未开始 | — | — |
 | D12.1 | 混合模式 + 剪贴蒙版 | 未开始 | — | — |

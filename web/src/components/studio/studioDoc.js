@@ -611,6 +611,19 @@ export class StudioDoc {
     return true;
   }
 
+  /** 批量删除（D23.2 多选）：只落一次快照，一次撤销全部恢复。 */
+  removeOverlays(ids) {
+    let removed = 0;
+    for (const id of ids || []) {
+      if (removeLayer(this._doc, id)) removed += 1;
+    }
+    if (removed) {
+      this._base = null;
+      this.snapshot();
+    }
+    return removed;
+  }
+
   /** 复制图层：副本插在源图层上方并偏移 16px，可撤销。 */
   cloneOverlay(id) {
     const copy = cloneLayer(this._doc, id, { offset: 16 });

@@ -30,12 +30,12 @@ export function createLayerColumn(host, ctx) {
       <span class="mono" data-lc-alpha-val>100%</span>
     </label>
     <div class="studio-layers-foot">
-      <button type="button" data-lc-act="down" title="下移一层">↓</button>
-      <button type="button" data-lc-act="up" title="上移一层">↑</button>
-      <button type="button" data-lc-act="bottom" title="置底">⤓</button>
-      <button type="button" data-lc-act="top" title="置顶">⤒</button>
-      <button type="button" data-lc-act="copy" title="复制图层">⧉</button>
-      <button type="button" data-lc-act="del" title="删除图层">🗑</button>
+      <button type="button" data-lc-act="up" title="上移一层（Alt + ]）"><span class="glyph">↑</span><span class="label">上移</span></button>
+      <button type="button" data-lc-act="down" title="下移一层（Alt + [）"><span class="glyph">↓</span><span class="label">下移</span></button>
+      <button type="button" data-lc-act="top" title="置顶（Ctrl/Cmd + Shift + ]）"><span class="glyph">⤒</span><span class="label">置顶</span></button>
+      <button type="button" data-lc-act="bottom" title="置底（Ctrl/Cmd + Shift + [）"><span class="glyph">⤓</span><span class="label">置底</span></button>
+      <button type="button" data-lc-act="copy" title="复制图层（Ctrl/Cmd + J）"><span class="glyph">⧉</span><span class="label">复制</span></button>
+      <button type="button" data-lc-act="del" title="删除图层（Delete）"><span class="glyph">✕</span><span class="label">删除</span></button>
     </div>
     <button class="studio-layers-spine" type="button" data-lc-spine title="展开图层栏" aria-label="展开图层栏">
       <span class="studio-layers-spine-count mono" data-lc-spine-count>0</span>
@@ -60,12 +60,16 @@ export function createLayerColumn(host, ctx) {
 
   function rowHtml(layer) {
     const isBase = layer.kind === 'base';
-    const selected = ctx.getSelectedLayerId?.() === layer.id;
+    const selectedIds = ctx.getSelectedLayerIds?.() || [];
+    const primaryId = ctx.getSelectedLayerId?.() || '';
+    const selected = selectedIds.includes(layer.id) || primaryId === layer.id;
+    const primary = primaryId === layer.id;
     const hidden = layer.visible === false;
     const classes = [
       'studio-layer',
       isBase ? 'is-base' : '',
       selected ? 'is-selected' : '',
+      primary ? 'is-primary' : '',
       hidden ? 'is-hidden' : '',
       layer.locked ? 'is-locked' : '',
       layer.isAdjustment ? 'is-adjust' : '',
@@ -108,7 +112,11 @@ export function createLayerColumn(host, ctx) {
           <button class="studio-layer-name" type="button" data-layer-pick="${layer.id}" title="${escapeHtml(
             isBase ? layer.name : '单击选中 · 双击重命名',
           )}">${escapeHtml(layer.name)}</button>
-          <span class="studio-layer-meta">${chips.join('')}<span class="studio-layer-alpha mono">${opacity}%</span></span>
+          <span class="studio-layer-meta">${chips.join('')}${
+            ctx.isLayerOutside?.(layer)
+              ? '<span class="studio-layer-oob" title="图层部分在画布外">•</span>'
+              : ''
+          }<span class="studio-layer-alpha mono">${opacity}%</span></span>
         </span>
         <button class="studio-layer-icon${hidden ? ' is-off' : ''}" type="button" data-layer-visible="${layer.id}"
           title="${hidden ? '显示图层' : '隐藏图层'}">${hidden ? '◌' : '◉'}</button>
@@ -146,6 +154,14 @@ export function createLayerColumn(host, ctx) {
     host.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
+  /** 供 F2 调用：打开该行的名称输入框。 */
+  function beginRename(id) {
+    const name = host.querySelector(`[data-layer-pick="${id}"]`);
+    if (!name) return false;
+    name.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    return true;
+  }
+
   /* ---------------------------------------------------------- 单击操作 */
 
   host.addEventListener('click', (event) => {
@@ -157,7 +173,11 @@ export function createLayerColumn(host, ctx) {
     const pick = event.target.closest('[data-layer-pick]');
     if (pick) {
       if (pick.dataset.layerPick === 'base') ctx.selectNone?.();
-      else ctx.selectLayer?.(pick.dataset.layerPick);
+      else
+        ctx.selectLayer?.(pick.dataset.layerPick, {
+          additive: event.metaKey || event.ctrlKey,
+          range: event.shiftKey,
+        });
       return;
     }
     const eye = event.target.closest('[data-layer-visible]');
@@ -310,5 +330,5 @@ export function createLayerColumn(host, ctx) {
 
   render();
 
-  return { render, setCollapsed };
+  return { render, setCollapsed, beginRename };
 }

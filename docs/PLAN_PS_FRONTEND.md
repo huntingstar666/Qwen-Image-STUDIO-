@@ -1048,6 +1048,16 @@ DOM 结构：
   - 实测（headless Chromium 1440×900）：网格 `58px 200px 610px 336px`、主图行名 `g01.webp`、计数 0；叠加 g03/g05 后行 `[g05, g03, 主图]`、缩略图可见、新层自动选中；下移 / 置顶 / 复制（`g05.webp 副本`）/ 删除顺序正确；双击改名「改名图层」生效；真实拖拽把第 2 行拖到第 1 行后顺序更新；主图眼睛 → `.is-base-hidden` + 行 `is-hidden`/`◌`，再点恢复；蒙版 chip 变 `is-on` 并出现 ✎；不透明度 40% 同步行内文本；收起 → 40px 书脊 + 网格 `58px 40px 770px 336px` + storage `0`，展开回 200 / storage `1`；刷新后图层顺序、改名与主图显隐恢复；有图层时点版本卡弹出上述确认；`node --test web/tests/studio/*.test.mjs` **139 passed**。
   - 偏差：≤980 堆叠布局下图层栏整体隐藏（原方案「保留 40px 书脊」在纵向堆叠里没有可用形态）。
 
+- **D23.2 图层系统 L2：自由变换 + 多选（已完成）**：
+  - 自由变换：`pointerdown/pointermove` 新增 `freePoint/rawPoint`，图层拖动/缩放/旋转/透视四角不再过 `clampPoint()`，可完整拖出画布；栅格类工具（笔刷/选区/裁剪等）仍用夹取坐标。拖动时按住 `Shift` 锁定水平/垂直。
+  - 手柄光标：新增 `hitLayerHandle()` + `cursorForHandle()`，内部 `move`、旋转点 `grab`、四角按旋转后的对角方向取 `nwse-resize / nesw-resize`、透视四角 `grab`；拖动中统一 `grabbing`，`setTool()` 与收笔时清理 inline cursor。
+  - 多选：`selectedLayerIds` 集合 + `selectLayerById(id,{additive,range})`；Ctrl/Cmd 加选、Shift 按面板顺序连选、点空白清空；画布点选与面板点选走同一入口；主选 `.is-primary`（更亮描边），其余 `.is-selected`。
+  - 多选操作：眼睛 / 锁 / 删除作用于全部选中；`StudioDoc.removeOverlays(ids)` 只落一次快照（一次撤销全部恢复）；删除后主选落到剩余选中层；拖动/缩放/旋转仍只作用于主选。
+  - 快捷键（非输入框、非只读标签）：`Alt+]` / `Alt+[` 上移/下移，`Ctrl/Cmd+Shift+]` / `[` 置顶/置底，`Ctrl/Cmd+J` 复制，`Delete/Backspace` 删除（多选一次删完），`F2` 改名（`layerPanel.beginRename`）。
+  - 越界提示：`isLayerOutside()` → 行内橙色圆点 + `title="图层部分在画布外"`。
+  - 面板按钮加强：底部工具条改为 2×3 带文字标签（上移 / 下移 / 置顶 / 置底 / 复制 / 删除），描边 + 背景 + hover accent + 按下缩放；行内眼睛/锁放大到 20px、蒙版 chip 提到 9px。
+  - 实测（headless Chromium 1440×900）：Shift 连选两行、Ctrl 加选主选切换正确；`Delete` 一次删两层、撤销一次全部恢复；`Alt+]` 把「g03」置顶、`Ctrl+Shift+[` 置底；`F2` 打开行内改名输入；画布中心光标为 `move`，切工具后清空；把 g05 拖出画布后行内出现橙色越界圆点；底部按钮渲染为「↑上移 / ↓下移 / ⤒置顶 / ⤓置底 / ⧉复制 / ✕删除」；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1583,7 +1593,7 @@ DOM 结构：
 | D22.1 | 主图版本抽屉 | 已完成（V1~V4） | 本次提交 | 底部通栏 Dock 96px + 64×64 卡片；`studioVersions/studioVersionBlobs`（DB v2）落原始/AI/放大版本，原始卡第一张；点击切换主图 + 220ms 弹跳 + 150ms 画布淡入 + 当前圆点，`currentVersionId` 持久化；上限 30 张淘汰最旧非原始版本；滚轮横向轮播 + 键盘；右键菜单（对比/另存/删除此版本/从此处重开）；右端「项目历史」书脊浮层 + 全局历史页「精修工程」分组（同源 `listProjects()`，打开走 `wb.studio.openProject` 交接）；实测见 §12.11 |
 | D22.2 | 项目生命周期 | 已完成 | 本次提交 | 顶栏 `＋` 项目菜单（新建本地/素材仓库、立即保存 Ctrl+S、重命名、关闭、删除）+ 导入菜单「作为新主图」；`startNewProject` 改为选中图片后再关旧工程；`closeProject` 改 async（等在途保存 → 补存 → `clearLastProject`）；`saveNow` 等待真实落盘；删除走 `clearProject` 回空状态；实测见 §12.11 |
 | D23.1 | 图层系统 L1：左侧可折叠图层栏 | 已完成 | 本次提交 | 四栏布局（工具轨 58 / 图层 200 可收 40 / 画布 / 检查器 336）；`createLayerColumn` 顶层在上 + 主图虚拟行置底、32px 缩略图、眼睛/锁/蒙版、不透明度、六键工具条；`baseVisible` 透明底合成与工程持久化；AI 分页移除内嵌列表；版本切换弹图层丢弃确认；实测见 §12.11 |
-| D23.2 | 图层系统 L2：自由变换 + 多选 | 方案定稿（等通知实施） | — | 图层拖动/缩放/旋转不再夹在图像内；手柄悬停切换 cursor；Ctrl/Shift 多选、Alt+] / Alt+[ 排序、双击改名；详见 §20.6 |
+| D23.2 | 图层系统 L2：自由变换 + 多选 | 已完成 | 本次提交 | 图层自由坐标（可拖出画布）、手柄 cursor（move/grab/nwse/nesw）、Ctrl 加选 + Shift 连选、多选显隐/锁定/删除（一次快照）、Alt+] / Alt+[ 排序、Ctrl+Shift+] / [ 置顶置底、Ctrl+J 复制、Delete 删除、F2 改名、越界圆点；底部工具条改带文字标签；实测见 §12.11 |
 | D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 方案定稿（等通知实施） | — | 合并选中 / 向下合并 / 合并可见 / 拼合；**与主图合并后结果自动成为新主图，AI 编辑逻辑不变**；单层导出 PNG；IndexedDB `layerLibrary`；跨工程复制粘贴；详见 §20.7 |
 | D23.4 | 图层系统 L4：AI 结果图层 / 图层组 / 组级调整 | 方案定稿（等通知实施） | — | AI 结果「作为新图层」保留主图；`groupId` 图层组与组参数；调整层作用域到组；详见 §20.8 |
 | D24.1 | 工作室全屏铺满 | 已完成 | 本次提交 | `showPage` 切换 `.app-main/#viewport` 的 `is-studio`；viewport 去限宽/内边距、flex 吃掉顶栏以下高度；`.page-host/.page-studio` 100%；`.studio` 去边框圆角；实测 1440×900 四边零缝隙、无页面滚动 |
@@ -2883,7 +2893,7 @@ studioVersionBlobs（IndexedDB）
 
 **提交建议**：`feat(studio): 左侧可折叠图层栏与主图行（D23.1 L1）`
 
-### 20.6 L2：自由变换 + 多选（解决「拖不动 / 没箭头」）
+### 20.6 L2：自由变换 + 多选（解决「拖不动 / 没箭头」）——已完成
 
 **目标**：图层在画布上像 PS 一样自由；鼠标有明确光标；可多选批量操作。
 

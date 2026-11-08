@@ -317,6 +317,8 @@ export function createStudioPage(host) {
   /* D18.2：调色滑杆拖动期间用低分辨率代理预览，change 后再全分辨率合成。 */
   let adjustPreview = false;
   let selectedLayerId = null;
+  /* D23.2：多选集合；selectedLayerId 继续表示「主选」（最后点击的那层）。 */
+  const selectedLayerIds = new Set();
   /* D23.1：左侧图层栏（可折叠）+ 主图显隐 + 缩略图缓存。 */
   let layersPanel = null;
   let baseVisible = true;
@@ -1310,6 +1312,138 @@ export function createStudioPage(host) {
     return true;
   }
 
+  /* ============================================================
+   * 图层多选与手柄命中（D23.2 L2）
+   * ============================================================ */
+
+  /** 面板顺序（顶层在前）的图层 id 列表。 */
+  function panelLayerIds() {
+    return doc ? doc.layers.slice().reverse().map((layer) => layer.id) : [];
+  }
+
+  /** 统一选中入口：普通 / Ctrl(Cmd) 加选 / Shift 连选。 */
+  function selectLayerById(id, { additive = false, range = false } = {}) {
+    if (!doc || !id) return;
+    if (range && selectedLayerId) {
+      const order = panelLayerIds();
+      const a = order.indexOf(selectedLayerId);
+      const b = order.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        selectedLayerIds.clear();
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) selectedLayerIds.add(order[i]);
+        selectedLayerId = id;
+      }
+    } else if (additive) {
+      if (selectedLayerIds.has(id)) {
+        selectedLayerIds.delete(id);
+        if (selectedLayerId === id) selectedLayerId = [...selectedLayerIds].pop() || null;
+      } else {
+        selectedLayerIds.add(id);
+        selectedLayerId = id;
+      }
+    } else {
+      selectedLayerIds.clear();
+      selectedLayerIds.add(id);
+      selectedLayerId = id;
+    }
+    editingLayerMaskId = '';
+    const layer = doc.findLayer(id);
+    // 调整图层没有几何，选中时保持当前工具（D9.3）。
+    if (!layer?.isAdjustment) setTool('move');
+    if (layer?.isText) {
+      activeTab = 'text';
+      syncTabs();
+    } else if (layer?.isShape) {
+      activeTab = 'shape';
+      syncTabs();
+    } else if (layer && !layer.isAdjustment) {
+      activeTab = 'sticker';
+      syncTabs();
+    }
+    syncAdjustInputs();
+    syncTextPane();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    scheduleDraw();
+    syncLayersPanel();
+  }
+
+  /** 当前操作作用于哪些图层：点在多选内 → 全部选中，否则只作用该层。 */
+  function actionLayerIds(id) {
+    return selectedLayerIds.size > 1 && selectedLayerIds.has(id) ? [...selectedLayerIds] : [id];
+  }
+
+  /** 删除图层（多选时一次快照删完，可一次撤销）。 */
+  function removeLayers(ids) {
+    if (!doc || !ids?.length) return false;
+    const removed = doc.removeOverlays(ids);
+    if (!removed) return false;
+    for (const id of ids) {
+      layerBlobs.delete(id);
+      if (editingLayerMaskId === id) editingLayerMaskId = '';
+      selectedLayerIds.delete(id);
+      if (selectedLayerId === id) selectedLayerId = [...selectedLayerIds].pop() || null;
+    }
+    syncAdjustInputs();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    return true;
+  }
+
+  /**
+   * 手柄命中（视口坐标）：旋转圆点 / 四角 / 图层内部。
+   * 与 pointerdown 共用同一套几何，只是这里用于鼠标光标。
+   */
+  function hitLayerHandle(clientX, clientY, rect) {
+    const active = selectedLayerId ? doc?.findLayer(selectedLayerId) : null;
+    if (!active || active.locked) return null;
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    const crop = doc.transform.crop;
+    const toView = (point) => ({
+      x: view.x + (point.x - (crop?.x || 0)) * view.scale,
+      y: view.y + (point.y - (crop?.y || 0)) * view.scale,
+    });
+    if (perspectiveEdit && active.quad && !active.isText && !active.isShape) {
+      const hit = active.quad.some((point) => {
+        const v = toView(point);
+        return Math.hypot(v.x - px, v.y - py) <= 11;
+      });
+      if (hit) return 'persp';
+    }
+    if (!active.isAdjustment && !active.isText && !active.isShape) {
+      const handles = stickerHandles(active);
+      const centerView = toView(handles.centerDoc);
+      if (Math.hypot(handles.knobView.x - px, handles.knobView.y - py) <= 11) return 'rotate';
+      const index = handles.cornersView.findIndex(
+        (corner) => Math.hypot(corner.x - px, corner.y - py) <= 11,
+      );
+      if (index >= 0) {
+        const corner = handles.cornersView[index];
+        const diagonal =
+          (corner.x - centerView.x) * (corner.y - centerView.y) >= 0 ? 'nwse' : 'nesw';
+        return `corner-${diagonal}`;
+      }
+    }
+    const imagePoint = toImage(clientX, clientY, rect);
+    const ix = imagePoint.x + (crop?.x || 0);
+    const iy = imagePoint.y + (crop?.y || 0);
+    return active.hitTest(ix, iy) ? 'inside' : null;
+  }
+
+  function cursorForHandle(kind) {
+    if (kind === 'rotate' || kind === 'persp') return 'grab';
+    if (kind === 'inside') return 'move';
+    if (kind === 'corner-nwse') return 'nwse-resize';
+    if (kind === 'corner-nesw') return 'nesw-resize';
+    return '';
+  }
+
   const ai = mountAiPanel(refs.aiPane, {
     /** AI 面板里的指令 / 参考图 / 参数变化后，合并到同一条自动保存。 */
     onPersistChange() {
@@ -1414,46 +1548,12 @@ export function createStudioPage(host) {
     getLayers() {
       return doc?.layers || [];
     },
-    selectLayer(id) {
-      selectedLayerId = id;
-      editingLayerMaskId = '';
-      const layer = doc?.findLayer(id);
-      // 调整图层没有几何，选中它时保持当前工具，右侧滑杆改为编辑该层（D9.3）。
-      if (!layer?.isAdjustment) setTool('move');
-      // 选中文字层直接切到文字分页（D11.2）。
-      if (layer?.isText) {
-        activeTab = 'text';
-        syncTabs();
-      } else if (layer?.isShape) {
-        activeTab = 'shape';
-        syncTabs();
-      } else if (layer && !layer.isAdjustment) {
-        // 选中贴纸/叠加层切到贴纸分页（D11.3）。
-        activeTab = 'sticker';
-        syncTabs();
-      }
-      syncAdjustInputs();
-      syncTextPane();
-      syncStickerPane();
-      syncShapePane();
-      syncLayerProps();
-      scheduleDraw();
-      syncLayersPanel();
+    selectLayer(id, options = {}) {
+      selectLayerById(id, options);
     },
     removeLayer(id) {
       if (!doc) return;
-      if (doc.removeOverlay(id)) {
-        if (selectedLayerId === id) selectedLayerId = null;
-        if (editingLayerMaskId === id) editingLayerMaskId = '';
-        layerBlobs.delete(id);
-        syncAdjustInputs();
-        syncStickerPane();
-        syncShapePane();
-        syncLayerProps();
-        updateHistoryUi();
-        scheduleSave();
-        scheduleDraw();
-      }
+      removeLayers(actionLayerIds(id));
     },
     /** 复制叠加层（副本偏移 16px，可撤销）。 */
     cloneLayer(id) {
@@ -1463,6 +1563,8 @@ export function createStudioPage(host) {
       const blob = layerBlobs.get(id);
       if (blob) layerBlobs.set(copy.id, blob);
       selectedLayerId = copy.id;
+      selectedLayerIds.clear();
+      selectedLayerIds.add(copy.id);
       syncAdjustInputs();
       syncStickerPane();
       syncShapePane();
@@ -1510,13 +1612,17 @@ export function createStudioPage(host) {
       scheduleSave();
       return true;
     },
-    /** 锁定/解锁：锁定后画布上不可点选、不可拖动，但继续参与合成。 */
+    /** 锁定/解锁：多选时作用于全部选中；锁定后不可拖动，但仍参与合成。 */
     toggleLayerLock(id) {
       if (!doc) return false;
-      const layer = doc.findLayer(id);
-      if (!layer) return false;
-      layer.locked = !layer.locked;
-      if (layer.locked && selectedLayerId === id) selectedLayerId = null;
+      const ids = actionLayerIds(id);
+      const layers = ids.map((item) => doc.findLayer(item)).filter(Boolean);
+      if (!layers.length) return false;
+      const nextLocked = !layers[0].locked;
+      for (const layer of layers) {
+        layer.locked = nextLocked;
+        if (nextLocked && selectedLayerId === layer.id) selectedLayerId = null;
+      }
       doc.commitLayers();
       syncAdjustInputs();
       syncLayerProps();
@@ -1525,13 +1631,17 @@ export function createStudioPage(host) {
       scheduleDraw();
       return true;
     },
-    /** 显示/隐藏图层（D9.3）：隐藏的图层不参与合成与点选，可撤销。 */
+    /** 显示/隐藏图层（D9.3）：多选时作用于全部选中，可撤销。 */
     toggleLayerVisible(id) {
       if (!doc) return false;
-      const layer = doc.findLayer(id);
-      if (!layer) return false;
-      layer.visible = layer.visible === false;
-      if (!layer.visible && selectedLayerId === id) selectedLayerId = null;
+      const ids = actionLayerIds(id);
+      const layers = ids.map((item) => doc.findLayer(item)).filter(Boolean);
+      if (!layers.length) return false;
+      const nextVisible = layers[0].visible === false;
+      for (const layer of layers) {
+        layer.visible = nextVisible;
+        if (!nextVisible && selectedLayerId === layer.id) selectedLayerId = null;
+      }
       doc.touchLayers();
       doc.commitLayers();
       syncAdjustInputs();
@@ -1639,6 +1749,9 @@ export function createStudioPage(host) {
     getSelectedLayerId() {
       return selectedLayerId;
     },
+    getSelectedLayerIds() {
+      return [...selectedLayerIds];
+    },
     getBaseVisible() {
       return baseVisible;
     },
@@ -1660,10 +1773,22 @@ export function createStudioPage(host) {
     getLayerThumb(layer) {
       return layerThumbFor(layer);
     },
+    /** 图层是否部分在画布外（面板行小圆点提示，D23.2）。 */
+    isLayerOutside(layer) {
+      if (!doc || !layer || layer.kind === 'base' || layer.isAdjustment) return false;
+      const crop = doc.transform.crop;
+      const size = doc.size;
+      const x = (layer.x ?? 0) - (crop?.x || 0);
+      const y = (layer.y ?? 0) - (crop?.y || 0);
+      const w = layer.width || 0;
+      const h = layer.height || 0;
+      return x < -1 || y < -1 || x + w > size.width + 1 || y + h > size.height + 1;
+    },
     /** 点主图行：清空选中，不改工具，也不写撤销栈。 */
     selectNone() {
       if (!doc) return;
       selectedLayerId = null;
+      selectedLayerIds.clear();
       editingLayerMaskId = '';
       syncAdjustInputs();
       syncTextPane();
@@ -1832,6 +1957,8 @@ export function createStudioPage(host) {
 
   function setTool(next) {
     if (!TOOLS.some((item) => item.id === next)) return;
+    // 切工具时清掉手柄光标，交回 CSS 的 data-tool 规则（D23.2）。
+    if (refs.canvas?.style?.cursor) refs.canvas.style.cursor = '';
     if (next !== 'outpaint') {
       outpaint?.deactivate?.();
       outpaint?.restorePreset?.();
@@ -3380,7 +3507,8 @@ export function createStudioPage(host) {
     if (!doc) return;
     refs.canvas.setPointerCapture?.(event.pointerId);
     dragRect = refs.canvas.getBoundingClientRect();
-    const point = clampPoint(toImage(event.clientX, event.clientY, dragRect));
+    const freePoint = toImage(event.clientX, event.clientY, dragRect);
+    const point = clampPoint(freePoint);
 
     if (tool === 'text' && event.button === 0) {
       // 在画面上点一下即创建文字图层，并切到「文字」分页直接编辑（D11.2）。
@@ -3538,9 +3666,10 @@ export function createStudioPage(host) {
       return;
     }
     if (tool === 'move' || tool === 'sticker') {
+      // D23.2：图层用自由坐标（不再夹在图像内），栅格类工具仍用 clampPoint。
       const crop = doc.transform.crop;
-      const ix = point.x + (crop?.x || 0);
-      const iy = point.y + (crop?.y || 0);
+      const ix = freePoint.x + (crop?.x || 0);
+      const iy = freePoint.y + (crop?.y || 0);
 
       // 选中贴纸的角手柄 / 旋转圆点优先于普通拖动（D11.3）；透视编辑时改拖四角（D13.3）。
       const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
@@ -3557,7 +3686,7 @@ export function createStudioPage(host) {
           drag = { mode: 'perspCorner', layer: active, index };
           return;
         }
-      } else if (active && !active.isAdjustment && !active.isText) {
+      } else if (active && !active.isAdjustment && !active.isText && !active.isShape) {
         const handles = stickerHandles(active);
         const px = event.clientX - dragRect.left;
         const py = event.clientY - dragRect.top;
@@ -3586,21 +3715,12 @@ export function createStudioPage(host) {
 
       const layer = [...(doc.layers || [])].reverse().find((item) => item.hitTest(ix, iy));
       if (layer) {
-        selectedLayerId = layer.id;
-        editingLayerMaskId = '';
-        // 选中即切到对应分页：文字层 → 文字，贴纸/叠加层 → 贴纸（D11.2 / D11.3）。
-        if (layer.isText) {
-          activeTab = 'text';
-          syncTabs();
-          syncTextPane();
-        } else if (!layer.isAdjustment) {
-          activeTab = 'sticker';
-          syncTabs();
-          syncStickerPane();
-        }
-        syncLayerProps();
-        drag = { mode: 'moveLayer', layer, start: point, originX: layer.x, originY: layer.y };
-        scheduleDraw();
+        // 画布点选同样支持 Ctrl 加选 / Shift 连选（D23.2）。
+        selectLayerById(layer.id, {
+          additive: event.metaKey || event.ctrlKey,
+          range: event.shiftKey,
+        });
+        drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
         return;
       }
       if (tool === 'sticker') {
@@ -3609,6 +3729,14 @@ export function createStudioPage(host) {
         refs.stickerInput.value = '';
         refs.stickerInput.click();
         return;
+      }
+      if (selectedLayerId) {
+        selectedLayerIds.clear();
+        selectedLayerId = null;
+        editingLayerMaskId = '';
+        syncLayerProps();
+        syncLayersPanel();
+        scheduleDraw();
       }
       drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
       refs.canvas.classList.add('is-grabbing');
@@ -3619,6 +3747,14 @@ export function createStudioPage(host) {
     const rect = dragRect || refs.canvas.getBoundingClientRect();
     cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     if (!drag) {
+      // D23.2：手柄光标（旋转抓手 / 四角斜向箭头 / 内部移动）。
+      if (tool === 'move' || tool === 'sticker') {
+        refs.canvas.style.cursor = doc
+          ? cursorForHandle(hitLayerHandle(event.clientX, event.clientY, rect))
+          : '';
+      } else if (refs.canvas.style.cursor) {
+        refs.canvas.style.cursor = '';
+      }
       if (MASK_TOOLS.has(tool)) scheduleDraw();
       return;
     }
@@ -3628,7 +3764,8 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
-    const point = clampPoint(toImage(event.clientX, event.clientY, rect));
+    const rawPoint = toImage(event.clientX, event.clientY, rect);
+    const point = clampPoint(rawPoint);
     const imagePoint = maskPoint(point);
     if (drag.mode === 'paint') {
       strokeTo(imagePoint);
@@ -3720,8 +3857,9 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'stickerScale') {
       const crop = doc.transform.crop;
-      const px = point.x + (crop?.x || 0);
-      const py = point.y + (crop?.y || 0);
+      const px = rawPoint.x + (crop?.x || 0);
+      const py = rawPoint.y + (crop?.y || 0);
+      refs.canvas.style.cursor = 'grabbing';
       const dist = Math.hypot(px - drag.center.x, py - drag.center.y);
       setStickerScale(drag.layer, (drag.startScale * dist) / drag.startDist);
       doc.touchLayers();
@@ -3731,8 +3869,9 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'stickerRotate') {
       const crop = doc.transform.crop;
-      const px = point.x + (crop?.x || 0);
-      const py = point.y + (crop?.y || 0);
+      const px = rawPoint.x + (crop?.x || 0);
+      const py = rawPoint.y + (crop?.y || 0);
+      refs.canvas.style.cursor = 'grabbing';
       const angle = Math.atan2(py - drag.center.y, px - drag.center.x);
       let deg = drag.origin + ((angle - drag.startAngle) * 180) / Math.PI;
       // 默认吸附 15°；按住 Alt 自由旋转（D11.3）。
@@ -3746,18 +3885,27 @@ export function createStudioPage(host) {
     if (drag.mode === 'perspCorner') {
       const crop = doc.transform.crop;
       drag.layer.quad[drag.index] = {
-        x: Math.round((point.x + (crop?.x || 0)) * 10) / 10,
-        y: Math.round((point.y + (crop?.y || 0)) * 10) / 10,
+        x: Math.round((rawPoint.x + (crop?.x || 0)) * 10) / 10,
+        y: Math.round((rawPoint.y + (crop?.y || 0)) * 10) / 10,
       };
       drag.layer._warpCache = null;
+      refs.canvas.style.cursor = 'grabbing';
       doc.touchLayers();
       scheduleDraw();
       return;
     }
     if (drag.mode === 'moveLayer') {
       const layer = drag.layer;
-      layer.x = Math.round(drag.originX + (point.x - drag.start.x));
-      layer.y = Math.round(drag.originY + (point.y - drag.start.y));
+      let dx = rawPoint.x - drag.start.x;
+      let dy = rawPoint.y - drag.start.y;
+      // 按住 Shift 锁定水平/垂直（D23.2）。
+      if (event.shiftKey) {
+        if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+        else dx = 0;
+      }
+      layer.x = Math.round(drag.originX + dx);
+      layer.y = Math.round(drag.originY + dy);
+      refs.canvas.style.cursor = 'grabbing';
       doc.touchLayers();
       scheduleDraw();
     }
@@ -3765,6 +3913,7 @@ export function createStudioPage(host) {
 
   function endDrag() {
     refs.canvas.classList.remove('is-grabbing');
+    if (refs.canvas.style.cursor) refs.canvas.style.cursor = '';
     dragRect = null;
     if (!drag) return;
     const mode = drag.mode;
@@ -5584,6 +5733,7 @@ export function createStudioPage(host) {
     resetSegmentHints();
     editingLayerMaskId = '';
     selectedLayerId = null;
+    selectedLayerIds.clear();
     pendingStickerPoint = null;
     perspectiveEdit = false;
     tint = null;
@@ -7259,6 +7409,7 @@ export function createStudioPage(host) {
       updateMaskStatus();
       tintDirty = true;
       selectedLayerId = null;
+      selectedLayerIds.clear();
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
@@ -7272,6 +7423,7 @@ export function createStudioPage(host) {
       updateMaskStatus();
       tintDirty = true;
       selectedLayerId = null;
+      selectedLayerIds.clear();
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
@@ -7798,6 +7950,26 @@ export function createStudioPage(host) {
       void saveNow();
       return;
     }
+    // D23.2：图层排序 / 复制快捷键（带修饰键，避开工具键）。
+    if (doc && selectedLayerId) {
+      const bracket = event.key === ']' || event.key === '[';
+      const up = event.key === ']';
+      if (mod && event.shiftKey && bracket) {
+        event.preventDefault();
+        moveLayerEdgeTo(selectedLayerId, up ? 'top' : 'bottom');
+        return;
+      }
+      if (event.altKey && bracket) {
+        event.preventDefault();
+        ai?.layerCtx?.moveLayer?.(selectedLayerId, up ? 1 : -1);
+        return;
+      }
+      if (mod && !event.shiftKey && event.key.toLowerCase() === 'j') {
+        event.preventDefault();
+        ai?.layerCtx?.cloneLayer?.(selectedLayerId);
+        return;
+      }
+    }
     if (event.code === 'Space') {
       // 按钮/链接获得焦点时保留空格的原生激活行为，不抢来平移。
       const target = event.target;
@@ -7813,6 +7985,19 @@ export function createStudioPage(host) {
       return;
     }
     if (mod) return;
+    // D23.2：删除 / 重命名（仅有主选时生效）。
+    if (doc && selectedLayerId) {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        removeLayers(selectedLayerIds.size ? [...selectedLayerIds] : [selectedLayerId]);
+        return;
+      }
+      if (event.key === 'F2') {
+        event.preventDefault();
+        layersPanel?.beginRename(selectedLayerId);
+        return;
+      }
+    }
     const key = event.key.toLowerCase();
     if (key === '[') {
       brush.size = Math.max(4, brush.size - 8);

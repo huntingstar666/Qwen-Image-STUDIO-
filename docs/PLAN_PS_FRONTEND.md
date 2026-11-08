@@ -1084,6 +1084,8 @@ DOM 结构：
 
 ### 13.6 图层系统
 
+> 现状：D7 图层内核 + 基础图层面板（列表/显隐/锁定/蒙版/排序/改名/不透明度）已完成，但面板埋在 AI 分页；缺自由变换、多选、合并、图层库、图层组。**后续按 §20 的 D23.1~D23.4（L1~L4）推进**，本节余下条目作为长期目标保留。
+
 - 图层类型：像素层、文字层、贴纸/图片层、调整层、填充层、组。
 - 操作：新建、复制、删除、重命名、拖拽排序、显隐、锁定（位置/像素/透明）、不透明度、混合模式。
 - 混合模式首版：正常、正片叠底、滤色、叠加、柔光、强光、颜色减淡、颜色加深、差值。
@@ -1551,6 +1553,10 @@ DOM 结构：
 | D21.1 | 抠图 / 透明导出 | 已完成（P0~P4） | 本次提交 | 新增 `studio/cutout.js`（边缘预设 / alpha 预处理 / 输出矩形 / 去色边 / 固定尺寸）+ 单测 10 项；选区条「抠出选区 ▾」：透明 PNG / 复制 / 抠图层 / 白底 JPG + 边缘三档 + 去色边 + 固定尺寸（含 16~8192 自定义）+ 选区组（≤6）+ 批量导出；`renderBase → 裁 crop → destination-in → 去色边 → contain`；抠图层走 `addOverlayFile`；实测见 §12.11 |
 | D22.1 | 主图版本抽屉 | 已完成（V1~V4） | 本次提交 | 底部通栏 Dock 96px + 64×64 卡片；`studioVersions/studioVersionBlobs`（DB v2）落原始/AI/放大版本，原始卡第一张；点击切换主图 + 220ms 弹跳 + 150ms 画布淡入 + 当前圆点，`currentVersionId` 持久化；上限 30 张淘汰最旧非原始版本；滚轮横向轮播 + 键盘；右键菜单（对比/另存/删除此版本/从此处重开）；右端「项目历史」书脊浮层 + 全局历史页「精修工程」分组（同源 `listProjects()`，打开走 `wb.studio.openProject` 交接）；实测见 §12.11 |
 | D22.2 | 项目生命周期 | 已完成 | 本次提交 | 顶栏 `＋` 项目菜单（新建本地/素材仓库、立即保存 Ctrl+S、重命名、关闭、删除）+ 导入菜单「作为新主图」；`startNewProject` 改为选中图片后再关旧工程；`closeProject` 改 async（等在途保存 → 补存 → `clearLastProject`）；`saveNow` 等待真实落盘；删除走 `clearProject` 回空状态；实测见 §12.11 |
+| D23.1 | 图层系统 L1：左侧可折叠图层栏 | 方案定稿（等通知实施） | — | 复用 `studio/layerPanel.js` 并搬到左栏第 4 列（200px，可收成 40px 书脊）；列表改「顶层在上 + 主图置底」；补齐置顶/置底、主图显隐、图层缩略图；详见 §20.5 |
+| D23.2 | 图层系统 L2：自由变换 + 多选 | 方案定稿（等通知实施） | — | 图层拖动/缩放/旋转不再夹在图像内；手柄悬停切换 cursor；Ctrl/Shift 多选、Alt+] / Alt+[ 排序、双击改名；详见 §20.6 |
+| D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 方案定稿（等通知实施） | — | 合并选中 / 向下合并 / 合并可见 / 拼合；单层导出 PNG；IndexedDB `layerLibrary`；跨工程复制粘贴；详见 §20.7 |
+| D23.4 | 图层系统 L4：AI 结果图层 / 图层组 / 组级调整 | 方案定稿（等通知实施） | — | AI 结果「作为新图层」保留主图；`groupId` 图层组与组参数；调整层作用域到组；详见 §20.8 |
 
 ### 14.13 启动顺序（等通知后）
 
@@ -1560,6 +1566,7 @@ DOM 结构：
 4. M1B 完成后即可并行启动 D19.1 → D19.2；M1C 后收口 D19.3 → D19.4 → D19.5 → D19.6。
 5. M1C 与 M1D 验收通过后再进 D7.1；之后按里程碑顺序推进。
 6. D14/D15 只在对应后端合入后启动。
+7. D23.1 → D23.4（图层系统 L1~L4）在 D21/D22 收口后启动，完整方案与验收见 §20。
 
 ---
 
@@ -2650,6 +2657,397 @@ studioVersionBlobs（IndexedDB）
 - 重命名只改 `projects.name`，不动文档内容与版本链。
 
 补充约定（本章）：D21.1 / D22.1 / D22.2 都不改已有工具语义；抠图产物不写回文档，除非用户显式「新建抠图层」；Dock 与项目历史面板是导航层，不进入撤销栈。实施顺序建议 **D22.2 项目生命周期（新建/关闭/删除 + 换主图）→ D22.1 V1/V2（Dock + 版本链）→ D21.1 P0（透明 PNG）**，先解决「开了一张图就出不来」的阻塞问题。
+
+---
+
+## 20. 图层系统：PS 式图层栈（L1~L4 方案定稿，等通知实施）
+
+> **状态：方案定稿，本轮不改代码。等用户通知后按 L1 → L2 → L3 → L4 顺序实施，每阶段单独提交并回写 §12.11 / §14.12。**
+> **背景**：用户完成「抠出选区 → 新建抠图层」后提出——图层放哪、怎么切层、怎么管理、缩放没有光标、移动被画布限制、怎么把抠图放进另一张图、怎么导入多图层、怎么合并；并建议把左栏空白区做成当前项目的图层面板（见用户截图 2 红框）。本章给出完整方案。
+
+### 20.1 现状核实（代码级，已逐一确认）
+
+#### 20.1.1 已经具备的能力（不要重造）
+
+| 能力 | 实现位置 | 说明 |
+| --- | --- | --- |
+| 图层数据模型 | `studio/layers.js` `OverlayLayer` | `x/y/scale/opacity/rotation/flipH/flipV/blend/clipped/quad/locked/visible/mask`，`clone()`、`hitTest()`、`draw()` |
+| 图层栈文档 | `studio/studioDoc.js` | `doc.layers[0]` 是**最底层**，末尾是**最上层**；`renderBase()` 用 `renderer.composite()` 按栈序绘制 |
+| 增删改排 API | `studioDoc.js` + `studio.js` ctx | `addOverlay / removeOverlay / cloneOverlay / moveOverlay / setOverlayOpacity / scaleOverlay / findLayer / touchLayers / commitLayers`；ctx 包装 `selectLayer / removeLayer / cloneLayer / moveLayer / moveLayerTo / renameLayer / toggleLayerLock / toggleLayerVisible / toggleLayerMask / editLayerMask / removeLayerMask / getMaskLayer` |
+| 图层面板 | `studio/layerPanel.js`（`createLayerPanel`） | 已有：列表、显隐、锁定、蒙版、±缩放、复制、上移/下移、删除、不透明度滑杆、双击改名、拖拽排序 |
+| 图层面板挂载点 | `studio/aiPanel.js` 第 113 行 `<div class="ai-layers">` | **挂在「AI 修改」分页中段**（参考图之后、提交按钮之前） |
+| 图层持久化 | `studio.js` `collectProject()` / `applyRestore()` | 每层 `props + bitmapBlob + maskBlob` 写 IndexedDB `layers`，刷新/重开工程可恢复 |
+| 画布变换手柄 | `studio.js` `stickerHandles()` + `draw()` 2166~2191 | 四角方块 + 旋转圆点；`pointerdown` 已按 11px 命中判定 |
+| 合成语义 | `renderer.js` | 支持混合模式、剪贴蒙版、调整图层、裁剪偏移 |
+
+#### 20.1.2 用户感受的直接原因（关键结论）
+
+1. **「不能切换图层」**：不是没有图层面板，而是它被埋在「AI 修改」分页的参考图下面、提交按钮上面。用户当前在「贴纸」分页（截图 1 右栏），根本看不到它 → 误以为没有。
+2. **「抠出来看不出变化」**：`新增抠图层` 的坐标是 `x=crop.x, y=crop.y, scale=1`，与原图**完全重合**，只是被选中框圈住，视觉上没有任何差异。
+3. **「能缩放但没有箭头」**：手柄画在 Canvas 上，`pointermove` 没有根据命中区域改 `canvas.style.cursor`，所以永远是默认箭头。
+4. **「图层移动受限」**：所有指针坐标都过 `clampPoint()`（`studio.js` 2284 行），被夹在图像 `0..width/height`；图层拖动用的是夹取后的点，拖到图像边缘就停。
+5. **「顺序看起来不对」**：现有面板按 `layers` 数组顺序自上而下渲染，而数组 0 是底层 → **底层显示在面板最上面**，与 PS 相反。
+
+#### 20.1.3 缺口清单（按阶段）
+
+| 缺口 | 阶段 |
+| --- | --- |
+| 图层面板搬到左侧常驻 + 折叠；列表顶层在上；主图行；置顶/置底；缩略图 | L1 |
+| 图层自由移动/缩放（不夹取）；手柄 cursor；多选；快捷键；改名入口统一 | L2 |
+| 合并选中 / 向下合并 / 合并可见 / 拼合；单层导出；图层库；跨工程复制粘贴 | L3 |
+| AI 结果「作为新图层」；图层组；组级调整层 | L4 |
+
+### 20.2 PS 图层语义（锁死，避免后续歧义）
+
+1. **栈序**：面板最上面 = 最上层（最后绘制）；最下面 = 主图（背景层）。`doc.layers[0]` 仍是最底层，只有**面板渲染**做反转，不改数据。
+2. **主图**：等价 PS 的「背景」层。固定最底、不可拖动/删除/重命名；可显隐、可锁定；隐藏后导出为透明底（PS 同款）。
+3. **多选**：`Ctrl/Cmd + 点击` 加选，`Shift + 点击` 连选，点击空白清空；主选（最后点击）决定右栏属性作用于谁。
+4. **操作作用域**：显隐/锁定/删除作用于全部选中；拖动/缩放/旋转只作用于主选（与 PS 一致）。
+5. **合并**：合并会**栅格化**文字/形状/调整层（提示一次，可撤销）；剪贴蒙版与混合模式在合并时按当前合成结果固化。
+6. **撤销**：所有结构性操作（新增/删除/排序/合并/显隐/锁定/改名）入撤销栈；拖动与滑杆只在松手时落一步（现状已如此）。
+7. **不限层数**：受内存约束；超过 20 层时提示一次，不硬性禁止。
+
+### 20.3 目标布局与交互
+
+#### 20.3.1 布局（左栏第 4 列，可折叠）
+
+```
+.studio-body（grid）
+├─ .studio-rail      58px   工具轨（不变）
+├─ .studio-layers   200px   图层面板（新增，可收成 40px 书脊）
+├─ .studio-stage     1fr    画布
+└─ .studio-panel    336px   检查器（不变）
+```
+
+- CSS 变量：`--studio-rail-w: 58px`（已有）、`--studio-layers-w: 200px`（新增）；收起时 `.studio-layers.is-collapsed { --studio-layers-w: 40px }` 或直接 `grid-template-columns` 切换。
+- 断点：视口 `≤ 1200px` 默认收起；`≤ 980px` 堆叠布局下仍保留 40px 书脊（或并入工具轨顶部按钮）。
+- 记忆：`localStorage['wb.studio.layersOpen'] = '1' | '0'`，默认 `1`（宽屏）。
+- 书脊：40px 竖排「图层」+ 层数角标，点击展开（复用 Dock 右端「项目历史」书脊的视觉）。
+- 画布让位：展开后画布宽度减少 200px；`fitView()` 的 padding 已按容器计算，无需改算法。
+
+#### 20.3.2 面板结构
+
+```
+┌ 图层 · 3 ──────────────── ＋导入  ⧉合并 ┐
+│ [缩略图] 合并图层 1      ◉ 🔓 混合角标   │  ← 最上层
+│ [缩略图] 抠图 1          ◉ 🔓 剪 蒙      │
+│ [缩略图] 文字 · 标题      ◉ 🔓 文字      │
+│ [缩略图] 主图（背景）     ◉ 🔒           │  ← 最底层，固定
+├──────────────────────────────────────────┤
+│ ↑ ↓ ⤒ ⤓  ⧉复制  ⇩合并  ⭳导出  🗑删除    │  底部工具条
+└──────────────────────────────────────────┘
+```
+
+- 头部：`图层 · N`、`＋ 导入`（多选文件 / 素材仓库 / 图层库）、`合并` 下拉。
+- 列表：32×32 缩略图（透明底棋盘格）、名称（双击改名）、眼睛、锁、混合/剪贴/蒙版/文字/形状/调整角标、不透明度数字。
+- 底部工具条：上移 / 下移 / 置顶 / 置底 / 复制 / 合并选中 / 导出 PNG / 删除；随选中数量启用或置灰。
+- 空态：只有主图行 + 提示「从文件或图层库添加图层」。
+
+#### 20.3.3 行交互
+
+| 操作 | 行为 |
+| --- | --- |
+| 单击行 | 选中为主选（右栏切到贴纸/文字/形状/调整对应分页，沿用 `selectLayer`） |
+| Ctrl/Cmd + 单击 | 加入/移出多选 |
+| Shift + 单击 | 从主选到当前行连选 |
+| 双击名称 | 行内输入框改名（Enter 提交 / Esc 取消） |
+| 拖拽行 | 排序；落点显示插入线；拖到主图下方无效 |
+| 眼睛 | 显隐（可撤销）；`Alt + 点击眼睛` = 只显示该层（solo，L3） |
+| 锁 | 锁定后画布不可点选/拖动，仍参与合成 |
+| 右键 | 重命名 / 复制 / 合并选中 / 向下合并 / 导出 PNG / 存入图层库 / 删除 |
+| 主图行 | 只能显隐/锁定，不能拖动、删除、改名 |
+
+### 20.4 数据模型与不变量（增量，不破坏现有渲染）
+
+**保持不变**
+
+- `doc.layers[0]` 最底、末尾最上；`renderer.drawLayers()` 不改顺序语义。
+- 每层 props 与 blob 的持久化结构不变；`layerBlobs` 缓存不变。
+- `selectedLayerId` 继续表示「主选」，兼容现有所有单层逻辑。
+
+**新增**
+
+| 项 | 位置 | 说明 |
+| --- | --- | --- |
+| `selectedLayerIds: Set<string>` | `studio.js` | 多选集合；主选仍在 `selectedLayerId` |
+| `baseVisible: boolean` | `studio.js`（会话 + 工程 session） | 主图显隐；不写进 `doc`，合成时决定是否铺 underlay |
+| `groupId: string` | `OverlayLayer`（L4） | 图层组归属；空串 = 顶层 |
+| `layerThumbs: Map<string,string>` | `studio.js` | 48px WebP dataURL 缓存，按 layer.id + scale 失效 |
+| `layerLibrary` store | `persistence.js`（L3，DB v3） | 跨工程图层库 |
+| `wb.studio.layersOpen` | localStorage | 图层栏展开状态 |
+
+**主图行的语义**
+
+- 面板用虚拟行 `{ id: 'base', kind: 'base', name: doc.name, visible: baseVisible, locked: true }`，**不放进 `doc.layers`**。
+- `baseVisible = false` 时，`renderBase()` 只画图层、不铺 underlay（导出为透明底 + 图层）；画布给棋盘格底提示。
+- 工程持久化：`session.baseVisible` 随工程保存；恢复时还原。
+
+**与版本 Dock 的冲突（必须处理）**
+
+- 现状：`switchVersion()` 会 `setDoc(new StudioDoc(...))`，**当前工程的图层会被清空**。
+- L1 起：切换版本前，若 `doc.layers.length > 0`，弹确认「切换版本会丢弃当前 N 个图层（不会自动保存），是否继续？」；确认后按现状清空。
+- 文案与 §19.17 的「切换语义」保持一致，不新增跨版本图层合并能力（L5 再议）。
+
+### 20.5 L1：左侧可折叠图层栏（第一批，先解决「找不到 / 切不了」）
+
+**目标**：把已有图层面板从 AI 分页搬到左侧常驻，顺序改成 PS 式，补齐主图行与置顶/置底，不改渲染与合并。
+
+**改动文件**
+
+- `web/src/components/studio/layerPanel.js`（重构为通用列）
+- `web/src/components/studio/aiPanel.js`（移除内嵌列表，保留「叠加扣图」按钮）
+- `web/src/components/studio.js`（HTML、refs、ctx 方法、同步调用、折叠状态）
+- `web/assets/css/studio.css`（布局与新面板样式）
+- `docs/PLAN_PS_FRONTEND.md`（§12.11 / §14.12 回写）
+
+**详细步骤**
+
+1. **布局**
+   - `.studio-body` 的 `grid-template-columns` 改为 `var(--studio-rail-w) var(--studio-layers-w) minmax(0, 1fr) var(--studio-panel-w)`。
+   - 在 `<div class="studio-rail">` 之后插入 `<aside class="studio-layers" data-ref="layerColumn">`。
+   - `.studio-layers` 纵向 flex：head（固定）/ list（`overflow-y:auto; min-height:0`）/ foot（固定）。
+2. **面板组件**
+   - 把 `createLayerPanel(host, ctx)` 改造成 `createLayerColumn(host, ctx, { showBase = true, reverse = true })`；保留原 dom 渲染逻辑，删掉「按数组顺序」的注释与实现，改为 `list().slice().reverse()`。
+   - 导出 `{ render, setCollapsed }`；`render()` 由 studio 在图层变更后统一调用（`syncLayersPanel()`）。
+   - 行结构升级：`[thumb] [name] [eye] [lock] [badges] [opacity]`，缩略图 32×32。
+   - 主图行：`kind==='base'` 时不显示删除/拖动/蒙版按钮，只保留眼睛与锁（锁恒为真，点击提示「主图不可编辑」）。
+3. **AI 分页清理**
+   - `aiPanel.js` 删除 `<div class="ai-layers">`、`createLayerPanel` 导入与 `layerPanel.render()` 调用；「叠加扣图」按钮保留，点击后若图层栏收起则自动展开并滚动到新行。
+4. **ctx 新增方法（studio.js）**
+   - `listLayersForPanel()`：返回 `[base 虚拟行, ...doc.layers.reverse()]`。
+   - `setBaseVisible(visible)`：改 `baseVisible` → `doc.invalidateBase()` → 重绘 + 保存。
+   - `moveLayerEdge(id, edge)`：`edge='top'|'bottom'`，调 `doc.moveOverlay(id, doc.layers.length-1 | 0)`。
+   - `getLayerThumb(id)`：从 `layer.maskedImage()` 生成 48px WebP，缓存 `layerThumbs`；文字/形状/调整层生成 32px 纯色/字形占位。
+   - `syncLayersPanel()`：`layersPanel.render()`；在所有图层增删改排/选中变化的 ctx 方法末尾调用（`selectLayer/removeLayer/cloneLayer/moveLayer/moveLayerTo/renameLayer/toggleLayerLock/toggleLayerVisible/toggleLayerMask/editLayerMask/removeLayerMask`）。
+5. **顺序换算**
+   - 面板面板下标 `p`（0=顶）↔ 数组下标 `i = layers.length - 1 - p`。
+   - 拖拽落点：目标面板行 `p` → `moveLayerTo(id, layers.length - 1 - p)`；拖到主图行 = `moveLayerTo(id, 0)`。
+6. **折叠**
+   - 头部（或书脊）按钮切换 `.studio-layers.is-collapsed`；写 `localStorage['wb.studio.layersOpen']`。
+   - 初始状态：`innerWidth <= 1200` 默认收起；否则读 storage，默认展开。
+   - 收起时书脊显示「图层」竖排 + 层数；点击展开。
+7. **空状态与禁用**
+   - 无文档：图层栏整体禁用（灰度 + 提示「打开图片后可管理图层」）。
+   - 主图隐藏时：画布上给棋盘格背景，状态栏提示「主图已隐藏，导出为透明底」。
+8. **版本切换保护**
+   - `switchVersion()` 开头：`if (doc?.layers.length) { confirmDialog(...) }`，取消则中止。
+9. **文档与测试**
+   - 回写 §12.11（D23.1 记录）、§14.12 台账勾选。
+   - 手工验收 + 浏览器实测，跑 `node --test web/tests/studio/*.test.mjs`。
+
+**验收（L1）**
+
+1. 打开任意工程，左侧图层栏可见；窗口 ≤1200 时默认收起为 40px 书脊，刷新后状态保持。
+2. 列表**顶层在上**、主图置底且不可拖动/删除；缩略图可见。
+3. 点行能切层（右栏跟随）；眼睛/锁/删除/复制/改名/透明度/上下移/置顶/置底立即生效，可撤销，刷新后恢复。
+4. 拖拽排序落点正确（含拖到最顶/最底）。
+5. 抠图层建立后，面板出现「抠图 N」在「主图」之上；点主图眼睛可对比原图。
+6. 有图层时切换版本会弹确认，取消不切。
+7. 4K 十层滚动与拖动不卡顿（面板只重渲染行，不重绘画布）。
+
+**提交建议**：`feat(studio): 左侧可折叠图层栏与主图行（D23.1 L1）`
+
+### 20.6 L2：自由变换 + 多选（解决「拖不动 / 没箭头」）
+
+**目标**：图层在画布上像 PS 一样自由；鼠标有明确光标；可多选批量操作。
+
+**详细步骤**
+
+1. **去掉图层移动的夹取**
+   - 新增 `freeImagePoint(event, rect)`：`toImage()` 后**不做** `clampPoint`。
+   - `moveLayer` / `stickerScale` / `stickerRotate` / `perspCorner` 改用自由坐标；`paint/smudge/heal/wand/selection/crop` 继续用 `clampPoint()`。
+   - 图层允许完全移出画布；导出只取画布范围（`renderBase()` 尺寸不变，天然裁掉）。
+   - 面板行对越界图层显示小圆点 + `title="图层部分在画布外"`。
+2. **手柄光标**
+   - 新增 `hitLayerHandle(point, rect)`：返回 `'rotate' | 'corner-nw' | 'corner-ne' | 'corner-se' | 'corner-sw' | 'inside' | null`。
+   - `pointermove` 且无 drag 时：`refs.canvas.style.cursor = ...` —— 旋转 `grab`、四角按旋转角取最近一档 `nwse-resize/nesw-resize`、内部 `move`、其它 `default`。
+   - `pointerdown` 进入 drag 后 `grabbing`；`pointerup/pointerleave` 恢复 `default`。
+   - 透视编辑（`perspectiveEdit`）四角同样给 `nwse/nesw`。
+3. **多选状态**
+   - `selectedLayerIds: Set`；`selectLayer(id, { additive, range })`。
+   - `Ctrl/Cmd` 加选、`Shift` 连选（按面板顺序取区间）、点击画布空白清空；主图不可加入。
+   - 面板行 `.is-selected`；主选 `.is-primary`（更亮的描边）。
+4. **多选操作**
+   - 眼睛/锁/删除/导出作用于全部选中；拖动/缩放/旋转只作用于主选。
+   - `removeLayer` 循环删除并只落一次快照（新增 `doc.removeOverlays(ids)` 包装，内部 `removeLayer` + 单次 `snapshot`）。
+5. **快捷键（仅在工作室激活且非输入框时生效）**
+
+   | 操作 | 快捷键 |
+   | --- | --- |
+   | 上移 / 下移一层 | `Alt + ]` / `Alt + [` |
+   | 置顶 / 置底 | `Ctrl/Cmd + Shift + ]` / `Ctrl/Cmd + Shift + [` |
+   | 复制图层 | `Ctrl/Cmd + J` |
+   | 删除图层 | `Delete` / `Backspace` |
+   | 重命名 | `F2` 或双击名称 |
+   | 向下合并 | `Ctrl/Cmd + E`（L3 接入） |
+   | 合并可见 | `Ctrl/Cmd + Shift + E`（L3） |
+   | 拼合图像 | `Ctrl/Cmd + Alt + Shift + E`（L3） |
+   | 复制 / 粘贴图层 | `Ctrl/Cmd + C` / `Ctrl/Cmd + V`（L3） |
+
+   - 需要 `preventDefault()` 的：`Ctrl+J`（浏览器下载）、`Ctrl+E`、`Delete`（避免退格导航）。
+   - 与现有 `W/B/E/...` 工具键冲突通过「带修饰键」规避。
+6. **改名入口统一**
+   - 双击名称行内编辑（已有）保留；新增 `F2`；右键菜单「重命名」。
+7. **越界与吸附（可选）**
+   - 拖动时按住 `Shift` 锁定水平/垂直；不实现吸附网格（避免过度设计）。
+8. **验收**
+   - 图层可拖到完全离开画布再拖回；画布外部分导出时被裁掉。
+   - 悬停四角出现对应斜向箭头；旋转点出现抓手；内部出现移动光标。
+   - Ctrl 加选 2 层后删除，一次撤销全部恢复。
+   - 快捷键全部生效且不触发浏览器默认行为。
+
+**提交建议**：`feat(studio): 图层自由变换、手柄光标与多选（D23.2 L2）`
+
+### 20.7 L3：合并 / 单层导出 / 图层库 / 跨工程
+
+**目标**：把多个图层合成一个；图层可单独带走；抠图能直接放到另一个工程。
+
+#### 20.7.1 合并实现（核心算法）
+
+```text
+mergeLayers(ids, { keepBase = false }):
+  1. 过滤出可参与合成的层（visible，且不在 keepBase 内），按 doc.layers 顺序排序
+  2. canvas = makeCanvas(doc.size.width, doc.size.height)
+  3. ctx = canvas.getContext('2d')
+  4. if (baseVisible) ctx.drawImage(doc.renderUnderlay(), crop.x, crop.y, ...)
+  5. drawLayers(ctx, selected, { crop })     // 复用 renderer，保留 blend/clip/mask/opacity
+  6. layer = doc.addOverlayFromCanvas(canvas, { name: `合并图层 ${n}`, x: crop.x, y: crop.y, scale: 1 })
+  7. doc.removeOverlays(ids)（单次快照）
+  8. snapshot() 一次；invalidateBase；重绘；保存
+```
+
+- 文字/形状/调整层：合并前提示「将栅格化文字/形状/调整层，是否继续？」。
+- 若选中层含 `clipped`，合并时以**合并前**的下层为基座（`drawLayers` 已处理，需传入 base 层）。
+- 若含调整层，调整效果直接烤进合并结果（PS 的「合并可见」同款）。
+
+**四种入口**
+
+| 操作 | 行为 | 快捷键 |
+| --- | --- | --- |
+| 合并选中 | 仅合并当前多选的层（≥2） | 右键 / 工具条 |
+| 向下合并 | 主选与其下一层合并 | `Ctrl/Cmd + E` |
+| 合并可见 | 所有可见层合成一个新层（含主图） | `Ctrl/Cmd + Shift + E` |
+| 拼合图像 | 全部并入主图（主图重烘焙，清空图层） | `Ctrl/Cmd + Alt + Shift + E` |
+
+#### 20.7.2 单层导出
+
+- 行右键 / 工具条「导出 PNG」：以 `doc.size` 建画布，`drawLayers([layer])` 后编码 PNG；透明区域保留。
+- 命名：`${工程名}-${图层名}.png`；透视层导出当前透视结果；文字/形状层导出带样式。
+- 与「另存版本」互不影响（版本 Dock 管主图，图层导出管单层）。
+
+#### 20.7.3 图层库（跨工程）
+
+- IndexedDB：`DB_VERSION 2 → 3`，新增 store `layerLibrary`（keyPath `id`）：
+  ```text
+  { id, name, width, height, thumbUrl, blob, createdAt, meta: { source: 'cutout'|'import', projectId } }
+  ```
+- API（`persistence.js`）：`addLayerAsset / listLayerAssets / loadLayerAssetBlob / deleteLayerAsset / clearLayerAssets`。
+- 入口：
+  - 抠图菜单新增「存入图层库」（当前抠图结果或当前抠图层）；
+  - 图层行右键「存入图层库」；
+  - 图层栏头部 `＋ 导入 → 图层库`，缩略图列表点选后置入当前工程（居中、scale 适配 60%）。
+- 上限：50 个，超出按 `createdAt` 淘汰最旧；设置页「清理」一并清理。
+
+#### 20.7.4 跨工程复制粘贴
+
+- 内存剪贴板：`layerClipboard = [{ props, blob }]`（模块级变量，同一标签内切工程有效）。
+- `Ctrl+C`：序列化选中层 props + blob（`layerBlobs` 或现编码）；
+- 切到另一个工程后 `Ctrl+V`：按当前画布居中/原位粘贴为新图层，`id` 重新生成。
+- 跨标签/刷新后失效，回退到「图层库」路径；文档里写明这一限制。
+
+#### 20.7.5 验收（L3）
+
+1. 合并选中/向下合并/合并可见/拼合后，画布像素与合并前一致（±1）。
+2. 合并文字层出现栅格化提示；撤销一步恢复原图层。
+3. 单层导出 PNG 透明正确，尺寸 = 画布尺寸。
+4. 抠图「存入图层库」后，新建另一个工程可从图层库置入，位置/缩放合理。
+5. 同一标签内复制图层 → 切换工程 → 粘贴成功；刷新后剪贴板失效且不报错。
+
+**提交建议**：`feat(studio): 图层合并、单层导出、图层库与跨工程粘贴（D23.3 L3）`
+
+### 20.8 L4：AI 结果作为图层 / 图层组 / 组级调整
+
+**目标**：AI 修改不再只能「替换主图」，而是像 PS 智能对象一样落成图层；支持图层组。
+
+1. **AI 结果「作为新图层」**
+   - `aiPanel` 结果区在「载入为新底图」旁新增「作为新图层」。
+   - 行为：保留主图；结果图建为 overlay（`x=crop.x, y=crop.y, scale=1`），若本次有蒙版则把蒙版并到该层；名字 `AI 结果 N`。
+   - 与「载入为新底图」并存，明确文案：前者保图层、后者换主图（会清空图层）。
+2. **图层组**
+   - `OverlayLayer.groupId`；面板出现组行（可折叠），组内行缩进 12px。
+   - 组参数：显隐、不透明度、混合模式。
+   - 渲染：`renderer.drawLayers` 前置一步「组内合成」——按组把成员画到离屏画布，再按组参数贴回；组内剪贴只在组内生效。
+   - 组操作：新建组 / 移入组 / 移出组 / 解组 / 组内排序。
+3. **组级调整层**
+   - 调整层新增 `scopeGroupId`；有值时只作用于该组（在组离屏画布内应用），否则作用于全部下层（现状）。
+4. **智能对象（可选，L4 之后）**
+   - 图层保留原始 blob 与原始尺寸，缩放不重复采样；面板角标「智能对象」。
+5. **验收**
+   - AI 结果落层后主图仍在，可单独显隐/移动。
+   - 组显隐/透明度/混合即时生效；组内剪贴不越组。
+   - 组级调整只影响组内像素。
+
+**提交建议**：`feat(studio): AI 结果作为图层与图层组（D23.4 L4）`
+
+### 20.9 快捷键与鼠标总表
+
+| 操作 | 快捷键 / 鼠标 |
+| --- | --- |
+| 切层 | 单击行 |
+| 加选 / 连选 | `Ctrl/Cmd + 单击` / `Shift + 单击` |
+| 上移 / 下移一层 | `Alt + ]` / `Alt + [` |
+| 置顶 / 置底 | `Ctrl/Cmd + Shift + ]` / `[` |
+| 复制图层 | `Ctrl/Cmd + J` |
+| 删除 | `Delete` / `Backspace` |
+| 重命名 | `F2` / 双击名称 |
+| 向下合并 | `Ctrl/Cmd + E` |
+| 合并可见 | `Ctrl/Cmd + Shift + E` |
+| 拼合图像 | `Ctrl/Cmd + Alt + Shift + E` |
+| 复制 / 粘贴图层 | `Ctrl/Cmd + C` / `V` |
+| 缩放图层 | 拖四角（光标 `nwse/nesw`） |
+| 旋转图层 | 拖顶部圆点（`grab/grabbing`） |
+| 移动图层 | 拖图层内部（`move`） |
+| 水平/垂直锁定拖动 | 拖动时按 `Shift` |
+| 画布平移 / 缩放 | 空格拖动 / 滚轮（已有） |
+
+### 20.10 边界与风险
+
+| 风险 | 影响 | 处理 |
+| --- | --- | --- |
+| 左栏新增 200px 挤压画布 | 1280 下画布只剩 ~600px | 可折叠 + ≤1200 默认收起；书脊 40px |
+| 面板与 AI 分页两套列表 | 状态不同步 | L1 直接删除 AI 分页内嵌列表，只保留一套 |
+| 切换版本清空图层 | 用户以为丢数据 | L1 加二次确认；文案写清「不会自动保存图层」 |
+| 主图隐藏后的导出 | 预期不一致 | 明确「隐藏即透明底」；状态栏提示 |
+| 合并 4K 多层耗时 | 卡顿 | 合并只在点击时执行一次；显示 busy；先测 4K 10 层 |
+| 混合/剪贴合并语义 | 结果与预期不符 | 合并走 `drawLayers` 同一管线，保证所见即所得 |
+| 图层内存 | 多张 4K 位图常驻 | 缩略图 48px；blob 懒加载；>20 层提示 |
+| 跨工程粘贴仅同标签 | 刷新失效 | 文档写明；长周期复用走图层库 |
+| 快捷键与浏览器冲突 | `Ctrl+J` 下载等 | 统一 `preventDefault`；仅工作室激活时生效 |
+
+### 20.11 总验收清单
+
+1. 图层栏在左、可折叠、窄屏默认收起、刷新记忆。
+2. 顶层在上、主图置底；单击/Ctrl/Shift 选择正确；拖拽排序准确。
+3. 显隐/锁/删除/复制/改名/透明度/上下移/置顶置底即时生效、可撤销、刷新恢复。
+4. 图层可完全拖出画布；四角/旋转/移动光标正确。
+5. 多选删除只产生一步撤销。
+6. 合并四种结果像素与合并前一致（±1）；文字/形状/调整层栅格化有提示。
+7. 单层导出 PNG 透明正确；图层库可跨工程置入；同标签复制粘贴可用。
+8. AI 结果可作为新图层且主图保留。
+9. 版本切换在有图层时二次确认。
+10. 4K 十层：拖动 ≥30fps，面板滚动不重绘画布。
+
+### 20.12 交付顺序与文档回写
+
+1. **L1** → 提交 → 回写 §12.11（D23.1）+ §14.12 台账。
+2. **L2** → 提交 → 回写 D23.2。
+3. **L3** → 提交 → 回写 D23.3。
+4. **L4** → 提交 → 回写 D23.4。
+
+每阶段完成后：`node --test web/tests/studio/*.test.mjs` 全绿 + 浏览器实测记录（窗口 1280×800 与 1024×700 两档）+ 截图归档到 `.screenshots/`。
+
+> 本章实施顺序与 §14.13 启动顺序不冲突；D23.x 在现有 D21/D22 完成后再开工。
+
 
 
 

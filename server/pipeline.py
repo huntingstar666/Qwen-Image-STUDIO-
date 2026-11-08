@@ -62,17 +62,8 @@ def _pick_seed(value: Any) -> int:
     return seed
 
 
-#: 任务别名：前端 ``detectTask`` 会产出 inpaint/replace，它们都等价于普通编辑。
-_TASK_ALIASES = {
-    "": "edit",
-    "none": "edit",
-    "edit": "edit",
-    "inpaint": "edit",
-    "replace": "edit",
-    "remove": "remove",
-    "outpaint": "outpaint",
-    "panorama": "panorama",
-}
+#: 任务别名：与预设校验共用同一份（``presets.TASK_ALIASES``），避免两套口径。
+_TASK_ALIASES = presets.TASK_ALIASES
 
 #: 任务指令：与 LoRA 的训练提示词保持一致（缺了会留下灰边 / 绿区）。
 _OUTPAINT_INSTRUCTION = "移除图像中的灰色区域，无缝自然延展为完整图像。"

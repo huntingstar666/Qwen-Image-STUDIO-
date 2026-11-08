@@ -460,6 +460,23 @@ def preset_config_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- 校验
 
+#: 任务别名：前端 ``detectTask`` 会产出 inpaint/replace，本质都是普通编辑。
+#: 校验层与执行层共用这一份，避免「API 接受、预设拒绝」这类口径分裂。
+TASK_ALIASES: dict[str, str] = {
+    "": "edit",
+    "none": "edit",
+    "edit": "edit",
+    "inpaint": "edit",
+    "replace": "edit",
+    "remove": "remove",
+    "outpaint": "outpaint",
+    "panorama": "panorama",
+}
+
+#: 局部编辑方案枚举（``raw`` 是 ``native`` 的历史别名）。
+SCHEMES = ("a", "b", "auto", "native", "raw")
+
+
 def _get(params: dict[str, Any], path: str, default: Any = None) -> Any:
     cursor: Any = params
     for part in path.split("."):
@@ -470,10 +487,14 @@ def _get(params: dict[str, Any], path: str, default: Any = None) -> Any:
 
 
 def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
-                    *, custom: bool = False) -> dict[str, list[str]]:
+                    *, custom: bool = False, strict_task: bool = True) -> dict[str, list[str]]:
     """预设 / 自定义搭配的参数校验与冲突检测。
 
     返回 ``{"errors": [...], "warnings": [...]}``；errors 会阻止保存。
+
+    ``strict_task=False`` 用于**请求**校验：任务专属的硬性组合（移除必须 fills+绿区、
+    全景必须整画布+灰提示）在保存预设时才强制，请求里由 ``pipeline`` 按任务档位补齐，
+    否则第三方只传 ``task.mode=remove`` 会被误拒。
     """
     cfg = _cfg(cfg)
     errors: list[str] = []
@@ -521,11 +542,11 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
         return value
 
     task = str(_get(params, "task.mode", "edit")).strip().lower()
-    if task not in ("edit", "remove", "outpaint", "panorama"):
+    if task not in TASK_ALIASES:
         errors.append(f"未知 task.mode：{task!r}")
 
     scheme = str(_get(params, "local.scheme", "a")).strip().lower()
-    if scheme not in ("a", "b", "auto", "native"):
+    if scheme not in SCHEMES:
         errors.append(f"未知 local.scheme：{scheme!r}")
 
     hint = str(_get(params, "local.hint", "none")).strip().lower()
@@ -639,6 +660,9 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
                     continue
                 name = str(item.get("name") or "").strip()
                 if not name:
+                    # {"preset": "remove"} 由 pipeline 解析成文件，不需要文件名。
+                    if item.get("preset"):
+                        continue
                     errors.append(f"loras[{index}] 缺少文件名")
                 elif not config.resolve_model(cfg, "lora", name):
                     errors.append(f"找不到 LoRA：{name!r}")
@@ -651,8 +675,9 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
                         errors.append(f"loras[{index}].strength 必须在 0~2")
 
     # ---- 冲突检测 ----
+    # 任务组合的硬性要求只在「保存预设」时强制；请求里由 pipeline 按任务档位补齐。
     fills = bool(_get(params, "local.fills", False))
-    if task == "remove":
+    if strict_task and task == "remove":
         if not fills:
             errors.append("元素移除要求开启「填充闭合选区」（local.fills=true）")
         if hint != "green_overlay":
@@ -660,7 +685,7 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
     # 内置预设的扩图外边由任务页临时输入，不在预设默认里锁死；自定义搭配要求完整。
     if custom and task == "outpaint" and not any(value > 0 for value in pads):
         errors.append("扩图至少需要一条外扩边大于 0")
-    if task == "panorama":
+    if strict_task and task == "panorama":
         if scheme != "a":
             errors.append("全景必须使用 local.scheme=a（整画布采样）")
         if hint != "gray_fill":
@@ -825,7 +850,9 @@ def merge(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None
         req_task = {**req_task, **copy.deepcopy(preset.get("task") or {})}
     merged["task"] = req_task
     merged["preset"] = preset_id
-    version = int(cfg.get("preset_defaults_version") or PRESET_VERSION)
+    # 版本号描述的是「代码里这套预设 schema」：config 里保存的 preset_defaults_version
+    # 只是上次保存时的快照，升级后必然落后（例如新增 local.crop_floor），不能拿它冒充。
+    version = PRESET_VERSION
     merged["preset_version"] = version
     return merged, {
         "id": preset_id,

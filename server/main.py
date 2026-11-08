@@ -815,6 +815,27 @@ def api_edit(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return _submit("edit", payload, prompt=prompt)
 
 
+def _preset_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """把 API 请求投影成「预设参数」结构，复用 ``presets.validate_params`` 的区间表。
+
+    API 把采样参数放在顶层（steps / cfg / …），预设里是 ``sampling.*``，这里做一次映射；
+    只投影请求里出现的块，缺失的块走默认值，不会产生误报。
+    """
+    view: dict[str, Any] = {}
+    for key in ("task", "local", "preprocess", "zero_shift", "turbo",
+                "outpaint", "panorama", "chain", "consistency"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            view[key] = value
+    sampling: dict[str, Any] = {}
+    for key in ("steps", "cfg", "denoise", "sampler", "scheduler"):
+        if payload.get(key) is not None:
+            sampling[key] = payload[key]
+    if sampling:
+        view["sampling"] = sampling
+    return view
+
+
 def _validate_edit_params(payload: dict[str, Any]) -> None:
     """编辑参数边界校验：不合法直接 400，别等采样时才炸。"""
     size_mode = payload.get("size_mode")
@@ -886,10 +907,11 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
     task = payload.get("task")
     if task is not None and not isinstance(task, dict):
         raise ApiError("task 必须是对象")
-    # inpaint / replace 是前端 detectTask 的合法产出，后端按普通编辑处理
-    if isinstance(task, dict) and task.get("mode") not in (
-            None, "edit", "remove", "outpaint", "inpaint", "replace", "panorama"):
-        raise ApiError(f"未知 task.mode：{task.get('mode')!r}")
+    # 任务枚举与执行层共用 presets.TASK_ALIASES（inpaint / replace 是编辑别名）
+    if isinstance(task, dict) and task.get("mode") is not None:
+        mode = str(task["mode"]).strip().lower()
+        if mode not in presets.TASK_ALIASES:
+            raise ApiError(f"未知 task.mode：{task.get('mode')!r}")
 
     outpaint = payload.get("outpaint")
     if outpaint is not None:
@@ -948,7 +970,8 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
         if not isinstance(local, dict):
             raise ApiError("local 必须是对象")
         scheme = local.get("scheme")
-        if scheme is not None and str(scheme) not in ("a", "b", "none", "auto", "native"):
+        # 与预设校验共用同一份枚举（raw 是 native 的历史别名）
+        if scheme is not None and str(scheme).strip().lower() not in presets.SCHEMES:
             raise ApiError(f"未知 local.scheme：{scheme!r}")
         for key, low, high in (("feather", 0, 256), ("mask_expand", 0, 256),
                                ("blend_pixels", 0, 256), ("context_pixels", 0, 1024)):
@@ -992,6 +1015,15 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
 
     if payload.get("zero_shift") is not None and not isinstance(payload["zero_shift"], dict):
         raise ApiError("zero_shift 必须是对象")
+
+    # 与预设共用同一份区间 / 枚举表：补上本函数没有逐项写的键
+    # （local.expand_* / crop_* / hint / band_mode、chain.*、consistency.* 等）。
+    # strict_task=False：任务专属组合由 pipeline 按任务档位补齐，不在请求层强制。
+    issues = presets.validate_params(
+        _preset_view(payload), config.load_config(), strict_task=False)
+    errors = issues.get("errors") or []
+    if errors:
+        raise ApiError(str(errors[0]))
 
 
 # --------------------------------------------------------------------------- 任务与历史

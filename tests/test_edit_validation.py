@@ -209,6 +209,27 @@ def test_rejects_local_numeric_out_of_range():
         main._validate_edit_params({"local": {"context_factor": 9}})
 
 
+def test_rejects_local_keys_from_shared_table():
+    """local 扩边系数 / 提示图等键此前没校验，现在与预设共用同一张区间表（P1-6）。"""
+    with pytest.raises(main.ApiError, match="上扩系数"):
+        main._validate_edit_params({"local": {"expand_top": 99}})
+    with pytest.raises(main.ApiError, match="local.hint"):
+        main._validate_edit_params({"local": {"hint": "red"}})
+    with pytest.raises(main.ApiError, match="未知 local.scheme"):
+        main._validate_edit_params({"local": {"scheme": "none"}})
+
+
+def test_accepts_raw_scheme_alias():
+    """raw 是 native 的历史别名，校验层与执行层口径一致（P1-7）。"""
+    main._validate_edit_params({"local": {"scheme": "raw"}})
+
+
+def test_request_does_not_enforce_preset_task_combos():
+    """移除/全景的任务组合由 pipeline 补齐，请求层不应因缺省字段被拒。"""
+    main._validate_edit_params({"task": {"mode": "remove"}})
+    main._validate_edit_params({"task": {"mode": "panorama"}})
+
+
 def test_rejects_mask_wrong_type():
     with pytest.raises(main.ApiError, match="mask"):
         main._validate_edit_params({"mask": 123})

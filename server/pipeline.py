@@ -1327,7 +1327,12 @@ class Pipeline:
         reused = None if pose else cond.get("latent")
         latent = reused.clone() if reused is not None else engine.encode_latent(work_image)
         timings["latent"] = round(time.time() - t_start, 2)
-        noise_mask = mask_canvas if scheme == "a" else None
+        # 送采样器的遮罩用硬边（>0.5）：与孤海工作流的硬遮罩一致，
+        # 软边只在合成/贴回阶段用，否则边缘会出现半透明过渡带（阶段 4 · M4）。
+        sample_mask = None
+        if mask_canvas is not None:
+            sample_mask = (mask_canvas > 0.5).astype(mask_canvas.dtype)
+        noise_mask = sample_mask if scheme == "a" else None
 
         job.check_cancel()
         _signal_progress(job, 4, total, "扩散采样")

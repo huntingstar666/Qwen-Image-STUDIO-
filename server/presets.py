@@ -25,7 +25,8 @@ from typing import Any
 #: 4：扩图长边对齐全局 max_side（4096）；原生模式启用整图校色开关。
 #: 5：预设默认值支持全局覆写；新增采样 / 一致性 / LoRA 默认参数与自定义搭配。
 #: 6：新增 local.crop_floor（最小裁剪窗，默认 1024，与孤海一致）。
-PRESET_VERSION = 6
+#: 7：局部编辑默认填充闭合选区（local.fills=true），与孤海一致。
+PRESET_VERSION = 7
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -70,7 +71,8 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
         "local": {
             "enabled": True,
             "scheme": "b",
-            "fills": False,
+            # 闭合描边画出的遮罩先填内部空洞再算包围盒，避免只改一圈边（对齐孤海）。
+            "fills": True,
             "expand_top": 1.3,
             "expand_bottom": 1.4,
             "expand_left": 1.4,
@@ -262,7 +264,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
         "local": {
             "enabled": True,
             "scheme": "b",
-            "fills": False,
+            "fills": True,
             "expand_top": 1.3,
             "expand_bottom": 1.4,
             "expand_left": 1.4,

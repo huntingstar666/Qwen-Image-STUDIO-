@@ -1313,6 +1313,30 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 窄屏自动收起图层栏后置位：放大回 >1200 时据此恢复用户上次的选择（D23.10-5）。 */
+  let narrowAutoCollapsed = false;
+  /** 窄屏下用户手动展开过：本次窄屏期间不再自动收起。 */
+  let narrowUserOpened = false;
+
+  /** 窗口宽度变化：≤1200 自动收起，>1200 恢复持久化的用户选择；用户手动展开后不干预。 */
+  function syncLayersForWidth() {
+    if (window.innerWidth > 1200) {
+      narrowUserOpened = false;
+      if (!narrowAutoCollapsed) return;
+      narrowAutoCollapsed = false;
+      setLayersOpen(readLayersOpen(), { persist: false });
+      return;
+    }
+    if (!layersOpen || narrowAutoCollapsed || narrowUserOpened) return;
+    narrowAutoCollapsed = true;
+    setLayersOpen(false, { persist: false });
+  }
+
+  function onWindowResize() {
+    if (refs.rail.isConnected) closeRailFlyout();
+    syncLayersForWidth();
+  }
+
   /** 显示蒙版色纱（右上角勾选同步）：只影响画布叠色，不改文档。 */
   function setShowMask(next) {
     showMask = Boolean(next);
@@ -2636,10 +2660,14 @@ export function createStudioPage(host) {
   layersPanel = createLayerColumn(refs.layerColumn, {
     ...ai.layerCtx,
     toggleCollapsed() {
+      // 手动开关视为用户选择：记进偏好；窄屏下展开后本次窄屏不再自动收起。
+      narrowAutoCollapsed = false;
+      narrowUserOpened = window.innerWidth <= 1200 && !layersOpen;
       setLayersOpen(!layersOpen);
     },
   });
   setLayersOpen(readLayersOpen(), { persist: false });
+  syncLayersForWidth();
   syncLayersPanel();
 
   function setPreview(url) {
@@ -8458,9 +8486,7 @@ export function createStudioPage(host) {
     if (event.target.closest('.studio-tool-group')) return;
     closeRailFlyout();
   });
-  window.addEventListener('resize', () => {
-    if (refs.rail.isConnected) closeRailFlyout();
-  });
+  window.addEventListener('resize', onWindowResize);
   refs.rail.addEventListener('scroll', closeRailFlyout, { passive: true });
   syncRail();
 
@@ -9482,6 +9508,7 @@ export function createStudioPage(host) {
       editingLayerMaskId = '';
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('paste', onPaste);
       document.removeEventListener('click', onDocumentClick);
       document.removeEventListener('visibilitychange', onVisibilityChange);

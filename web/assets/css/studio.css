@@ -7,7 +7,7 @@
   --studio-rail-w: 58px;
   --studio-panel-w: 336px;
   height: calc(100vh - var(--topbar-h) - 92px);
-  min-height: 480px;
+  min-height: 560px;
 }
 
 .studio {
@@ -205,6 +205,154 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* ------------------------------------------------------------- 主图版本 Dock（D22.1） */
+
+.studio-dock {
+  flex: 0 0 auto;
+  height: 96px;
+  display: flex;
+  align-items: stretch;
+  padding: 0 16px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--glass-strong);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.studio-dock[hidden] {
+  display: none;
+}
+
+.studio-dock-track {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+
+.studio-dock-track::-webkit-scrollbar {
+  display: none;
+}
+
+.studio-dock-item {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  scroll-snap-align: start;
+}
+
+/* 原始卡右侧的 Dock 分隔线 */
+.studio-dock-item.is-first::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: -6px;
+  width: 1px;
+  height: 48px;
+  background: var(--line);
+}
+
+.studio-dock-card {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: var(--panel-2);
+  overflow: hidden;
+  cursor: pointer;
+  transform-origin: bottom center;
+  transition:
+    transform 120ms ease-out,
+    box-shadow 160ms ease-out,
+    border-color 160ms ease-out;
+}
+
+.studio-dock-card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.studio-dock-card:hover,
+.studio-dock-card:focus-visible {
+  transform: translateY(-4px) scale(1.08);
+  border-color: var(--accent);
+  z-index: 2;
+}
+
+.studio-dock-card.is-current {
+  border-color: transparent;
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.studio-dock-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 8.5px;
+  line-height: 14px;
+  text-align: center;
+}
+
+.studio-dock-label {
+  position: absolute;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 96px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+
+.studio-dock-card:hover + .studio-dock-label,
+.studio-dock-card:focus-visible + .studio-dock-label {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-dock-card,
+  .studio-dock-label {
+    transition: none;
+  }
+
+  .studio-dock-card:hover,
+  .studio-dock-card:focus-visible {
+    transform: none;
+  }
 }
 
 /* ------------------------------------------------------------- 工具轨 */

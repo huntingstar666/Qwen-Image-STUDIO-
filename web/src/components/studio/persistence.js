@@ -8,18 +8,32 @@
  * - refs：参考图原图
  * - session：指令、裁剪、变换、调色、AI 参数等轻量现场
  * - aiHistory / aiResults / drafts：预留给 D16 / D17.2 / D17.3
+ * - studioVersions / studioVersionBlobs：主图版本链（D22.1），按工程归档
  *
  * 另含 D17.3 的配额估算、旧工程清理与多标签编辑租约。
  * 所有数据只落在本机浏览器，不上传服务端。
  */
 
 const DB_NAME = 'wb-studio';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const LAYER_STORE = 'layers';
-const ALL_STORES = ['meta', 'projects', 'layers', 'refs', 'session', 'aiHistory', 'aiResults', 'drafts'];
+const VERSION_STORE = 'studioVersions';
+const VERSION_BLOB_STORE = 'studioVersionBlobs';
+const ALL_STORES = [
+  'meta',
+  'projects',
+  'layers',
+  'refs',
+  'session',
+  'aiHistory',
+  'aiResults',
+  'drafts',
+  VERSION_STORE,
+  VERSION_BLOB_STORE,
+];
 
 /** 已写入数据库的签名，避免每次自动保存都重写未变化的大图。 */
 const layerSignatures = new Map();
@@ -245,6 +259,7 @@ export async function saveStudioProject(project) {
       aiParams: project.session?.aiParams || null,
       viewport: project.session?.viewport || null,
       activeTool: project.session?.activeTool || '',
+      currentVersionId: project.session?.currentVersionId || '',
       schemaVersion: SCHEMA_VERSION,
     },
     projectId,
@@ -363,7 +378,7 @@ export async function clearProject(projectId) {
   if (!projectId) return;
   const db = await openDb();
   const tx = db.transaction(
-    ['meta', 'projects', 'layers', 'refs', 'session', 'aiHistory', 'aiResults', 'drafts'],
+    ['meta', 'projects', 'layers', 'refs', 'session', 'aiHistory', 'aiResults', 'drafts', VERSION_STORE, VERSION_BLOB_STORE],
     'readwrite',
   );
   const done = transactionDone(tx);
@@ -380,6 +395,8 @@ export async function clearProject(projectId) {
     deleteByRange(tx.objectStore('layers'), rangeFor(projectId)),
     deleteByRange(tx.objectStore('aiResults'), rangeFor(projectId)),
     deleteByRange(tx.objectStore('drafts'), rangeFor(projectId)),
+    deleteByRange(tx.objectStore(VERSION_STORE), rangeFor(projectId)),
+    deleteByRange(tx.objectStore(VERSION_BLOB_STORE), rangeFor(projectId)),
   ]);
   await done;
 
@@ -389,6 +406,118 @@ export async function clearProject(projectId) {
   for (const key of [...layerSignatures.keys()]) {
     if (key.startsWith(`${projectId}:`)) layerSignatures.delete(key);
   }
+}
+
+/* ============================================================
+ * 主图版本链（D22.1）
+ *
+ * studioVersions：按 `${projectId}:${versionId}` 归档元信息
+ * studioVersionBlobs：同 key 存原始 Blob（缩略图 dataURL 随元信息）
+ * 原始版本永不被裁剪；上限默认 30 张。
+ * ============================================================ */
+
+/** 写入一个主图版本；返回 blobKey。 */
+export async function addStudioVersion(version) {
+  if (!version?.id || !version?.projectId) throw new Error('缺少版本 id');
+  const projectId = version.projectId;
+  const blobKey = `${projectId}:${version.id}`;
+  const db = await openDb();
+  const tx = db.transaction([VERSION_STORE, VERSION_BLOB_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  if (version.blob) tx.objectStore(VERSION_BLOB_STORE).put(version.blob, blobKey);
+  tx.objectStore(VERSION_STORE).put(
+    {
+      id: version.id,
+      projectId,
+      kind: version.kind || 'edit',
+      label: version.label || '',
+      name: version.name || '',
+      width: Number(version.width) || 0,
+      height: Number(version.height) || 0,
+      at: Number(version.at) || Date.now(),
+      fromId: version.fromId || '',
+      thumbUrl: version.thumbUrl || '',
+      meta: version.meta || null,
+      blobKey,
+    },
+    blobKey,
+  );
+  await done;
+  return blobKey;
+}
+
+/** 按时间正序列出某工程的版本链（原始在前）。 */
+export async function listStudioVersions(projectId) {
+  if (!projectId) return [];
+  const db = await openDb();
+  const tx = db.transaction([VERSION_STORE], 'readonly');
+  const done = transactionDone(tx);
+  const items = await collectByRange(tx.objectStore(VERSION_STORE), rangeFor(projectId));
+  await done;
+  return (items || []).sort((a, b) => (a.at || 0) - (b.at || 0));
+}
+
+export async function loadStudioVersionBlob(blobKey) {
+  if (!blobKey) return null;
+  const db = await openDb();
+  const tx = db.transaction([VERSION_BLOB_STORE], 'readonly');
+  const done = transactionDone(tx);
+  const blob = await readRequest(tx.objectStore(VERSION_BLOB_STORE).get(blobKey));
+  await done;
+  return blob || null;
+}
+
+/** 删除单个版本（元信息 + 原图）。原始版本受保护，传 force 才删。 */
+export async function deleteStudioVersion(projectId, versionId, { force = false } = {}) {
+  if (!projectId || !versionId) return false;
+  const blobKey = `${projectId}:${versionId}`;
+  const db = await openDb();
+  const metaTx = db.transaction([VERSION_STORE], 'readonly');
+  const metaDone = transactionDone(metaTx);
+  const record = await readRequest(metaTx.objectStore(VERSION_STORE).get(blobKey));
+  await metaDone;
+  if (!record) return false;
+  if (record.kind === 'original' && !force) return false;
+  const tx = db.transaction([VERSION_STORE, VERSION_BLOB_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  tx.objectStore(VERSION_STORE).delete(blobKey);
+  tx.objectStore(VERSION_BLOB_STORE).delete(blobKey);
+  await done;
+  return true;
+}
+
+/**
+ * 版本上限：保留最新的 `limit` 张，超出时淘汰最旧的非原始版本。
+ * @returns {Promise<string[]>} 被淘汰的版本 id
+ */
+export async function trimStudioVersions(projectId, { limit = 30, keepId = '' } = {}) {
+  const items = await listStudioVersions(projectId);
+  if (items.length <= limit) return [];
+  const overflow = items.length - limit;
+  const doomed = items
+    .filter((item) => item.kind !== 'original' && item.id !== keepId)
+    .slice(0, overflow);
+  for (const item of doomed) {
+    try {
+      await deleteStudioVersion(projectId, item.id, { force: true });
+    } catch {
+      // 单条失败不影响其余
+    }
+  }
+  return doomed.map((item) => item.id);
+}
+
+/** 清空某工程的版本链（用于「从此处重新开始」与清理入口）。 */
+export async function clearStudioVersions(projectId) {
+  if (!projectId) return;
+  const db = await openDb();
+  const tx = db.transaction([VERSION_STORE, VERSION_BLOB_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  await Promise.all([
+    deleteByRange(tx.objectStore(VERSION_STORE), rangeFor(projectId)),
+    deleteByRange(tx.objectStore(VERSION_BLOB_STORE), rangeFor(projectId)),
+  ]);
+  await done;
 }
 
 /* ============================================================

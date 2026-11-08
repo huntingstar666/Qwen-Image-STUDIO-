@@ -24,16 +24,20 @@ import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openUpscaleDialog } from './studio/upscaleDialog.js';
 import { REF_MIME, filesFromDataTransfer, openImportPicker, urlToDataUrl } from './studio/importPicker.js';
 import {
+  addStudioVersion,
   clearLastProject,
   clearProject,
   cleanupProjects,
   createProjectLease,
   estimateStorage,
+  listStudioVersions,
   loadLastProject,
+  loadStudioVersionBlob,
   newProjectId,
   requestPersistentStorage,
   saveStudioProject,
   storageAvailable,
+  trimStudioVersions,
 } from './studio/persistence.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
 import { createPerfProbe } from './studio/perf.js';
@@ -356,6 +360,11 @@ export function createStudioPage(host) {
   let pendingRestore = null;
   /* D22.2：「新建项目 · 本地图片」等选择器返回后再关闭旧工程，避免用户取消选择时误关。 */
   let pendingNewProject = false;
+  /* D22.1：底部 Dock 的主图版本链（按时间正序，原始版本固定第一张）。 */
+  let versions = [];
+  let currentVersionId = '';
+  let versionToken = 0;
+  const MAX_VERSIONS = 30;
   /* D17.3：多标签租约、配额告警与持久化申请。 */
   let lease = null;
   let leaseLocked = false;
@@ -815,6 +824,10 @@ export function createStudioPage(host) {
             </div>
           </aside>
         </div>
+
+        <div class="studio-dock" data-ref="dock" hidden>
+          <div class="studio-dock-track" data-ref="dockTrack" role="listbox" aria-label="主图版本链"></div>
+        </div>
       </div>
     </div>`;
 
@@ -834,6 +847,8 @@ export function createStudioPage(host) {
     exportMenu: ref('exportMenu'),
     compareAllBtn: ref('compareAllBtn'),
     upscaleBtn: ref('upscaleBtn'),
+    dock: ref('dock'),
+    dockTrack: ref('dockTrack'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
     zoomLabel: ref('zoomLabel'),
@@ -1167,6 +1182,10 @@ export function createStudioPage(host) {
           }
         }
         setDoc(next);
+        void recordVersion('edit', sourceBlob, {
+          label: meta.task === 'outpaint' ? nextVersionLabel('outpaint') : undefined,
+          meta: { task: meta.task || '', width: meta.width || 0, height: meta.height || 0 },
+        });
         return { width: next.size.width, height: next.size.height, name: next.name };
       } catch (err) {
         if (token === openSeq) toastError(err, '载入结果失败');
@@ -3729,6 +3748,9 @@ export function createStudioPage(host) {
     projectCreatedAt = Date.now();
     sourceBlob = null;
     layerBlobs.clear();
+    versions = [];
+    currentVersionId = '';
+    renderDock();
     saveDirty = true;
   }
 
@@ -3773,6 +3795,9 @@ export function createStudioPage(host) {
     doc = null;
     sourceBlob = null;
     layerBlobs.clear();
+    versions = [];
+    currentVersionId = '';
+    renderDock();
     thumbCache = { doc: null, base: null, url: '' };
     selection = null;
     selPath = null;
@@ -3913,6 +3938,234 @@ export function createStudioPage(host) {
       toastError(err, '删除项目失败');
     }
   }
+
+  /* ---------------------------------------------------------- 主图版本 Dock（D22.1） */
+
+  const VERSION_BADGES = { original: '原', edit: 'AI', upscale: '放大', import: '导入' };
+
+  function nextVersionLabel(kind) {
+    if (kind === 'original') return '原始主图';
+    const count = versions.filter((item) => item.kind !== 'original').length + 1;
+    if (kind === 'upscale') return `放大 ${count}`;
+    if (kind === 'import') return `导入 ${count}`;
+    if (kind === 'outpaint') return `扩图 ${count}`;
+    return `编辑 ${count}`;
+  }
+
+  /** 160px WebP 缩略图；失败返回空串，卡片用底色兜底。 */
+  async function versionThumb(blob) {
+    if (!blob) return '';
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = await loadImage(url);
+      const width = 160;
+      const height = Math.max(1, Math.round((image.naturalHeight / image.naturalWidth) * width));
+      const canvas = makeCanvas(width, height);
+      canvas.getContext('2d').drawImage(image, 0, 0, width, height);
+      return canvas.toDataURL('image/webp', 0.8);
+    } catch {
+      return '';
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /** 重绘 Dock：卡片按时间正序，原始卡第一张并带分隔线。 */
+  function renderDock() {
+    const track = refs.dockTrack;
+    if (!track) return;
+    if (!doc || !versions.length) {
+      refs.dock.hidden = true;
+      track.textContent = '';
+      return;
+    }
+    refs.dock.hidden = false;
+    const frag = document.createDocumentFragment();
+    for (const version of versions) {
+      const item = document.createElement('div');
+      item.className = 'studio-dock-item';
+      if (version.kind === 'original' && versions.length > 1) item.classList.add('is-first');
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'studio-dock-card';
+      card.dataset.vid = version.id;
+      card.setAttribute('role', 'option');
+      card.setAttribute('aria-selected', version.id === currentVersionId ? 'true' : 'false');
+      if (version.id === currentVersionId) card.classList.add('is-current');
+      const time = version.at ? new Date(version.at).toLocaleString() : '';
+      card.title = `${version.label} · ${fmtNum(version.width)} × ${fmtNum(version.height)}${time ? ` · ${time}` : ''}`;
+      const image = document.createElement('img');
+      image.src = version.thumbUrl || '';
+      image.alt = version.label;
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      card.appendChild(image);
+      const badge = document.createElement('span');
+      badge.className = 'studio-dock-badge';
+      badge.textContent = VERSION_BADGES[version.kind] || '图';
+      card.appendChild(badge);
+      item.appendChild(card);
+      const label = document.createElement('span');
+      label.className = 'studio-dock-label';
+      label.textContent = version.label;
+      item.appendChild(label);
+      frag.appendChild(item);
+    }
+    track.textContent = '';
+    track.appendChild(frag);
+    // 当前卡滚进视野（只调 scrollLeft，不触发整页滚动）。
+    const current = track.querySelector('.studio-dock-card.is-current');
+    if (current) {
+      const trackRect = track.getBoundingClientRect();
+      const cardRect = current.getBoundingClientRect();
+      if (cardRect.left < trackRect.left) {
+        track.scrollLeft -= trackRect.left - cardRect.left + 16;
+      } else if (cardRect.right > trackRect.right) {
+        track.scrollLeft += cardRect.right - trackRect.right + 16;
+      }
+    }
+  }
+
+  /**
+   * 追加一个主图版本并落盘（D22.1）。
+   * 存储不可用时仍留在内存，保证 Dock 可用。
+   */
+  async function recordVersion(kind, blob, options = {}) {
+    const current = doc;
+    if (!current) return null;
+    const last = versions[versions.length - 1];
+    const id = `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const thumbUrl = options.thumbUrl ?? (await versionThumb(blob));
+    if (doc !== current) return null;
+    const record = {
+      id,
+      kind,
+      label: options.label || nextVersionLabel(kind),
+      name: current.name,
+      width: current.sourceSize?.width || current.size.width,
+      height: current.sourceSize?.height || current.size.height,
+      at: Math.max(Date.now(), (last?.at || 0) + 1),
+      fromId: options.fromId ?? currentVersionId,
+      thumbUrl,
+      meta: options.meta || null,
+      blobKey: `${projectId}:${id}`,
+      ...(persistDisabled ? { blob } : {}),
+    };
+    versions = [...versions, record];
+    currentVersionId = id;
+    renderDock();
+    if (persistDisabled || !projectId) return record;
+    try {
+      await addStudioVersion({ ...record, projectId, blob });
+      const removed = await trimStudioVersions(projectId, { limit: MAX_VERSIONS, keepId: id });
+      if (removed.length) versions = versions.filter((item) => !removed.includes(item.id));
+      const stored = await listStudioVersions(projectId);
+      if (stored.length) versions = stored;
+      renderDock();
+    } catch {
+      // 落盘失败不影响当前会话，下次保存会再尝试
+    }
+    return record;
+  }
+
+  /** 载入某个版本为主图：清空蒙版/选区/撤销栈，当前指针同步。 */
+  async function switchVersion(versionId) {
+    if (!doc || !versionId || versionId === currentVersionId) return;
+    const version = versions.find((item) => item.id === versionId);
+    if (!version) return;
+    const token = ++openSeq;
+    let blob = version.blob || null;
+    if (!blob) {
+      try {
+        blob = await loadStudioVersionBlob(version.blobKey || `${projectId}:${version.id}`);
+      } catch {
+        blob = null;
+      }
+    }
+    if (token !== openSeq || !doc) return;
+    if (!blob) {
+      toastWarn('该版本的原图不在本机，无法切换');
+      return;
+    }
+    setPreview(null);
+    flushAdjustPreview();
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = await loadImage(url);
+      if (token !== openSeq) return;
+      const name = doc.name;
+      const next = new StudioDoc(image, name);
+      sourceBlob = blob;
+      setDoc(next);
+      currentVersionId = version.id;
+      renderDock();
+      scheduleSave();
+      toast(`已切换到「${version.label}」`);
+    } catch (err) {
+      toastError(err, '切换版本失败');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /** 打开工程时从本机恢复版本链；老工程没有版本记录时补一张原始卡。 */
+  async function restoreVersions(session) {
+    versions = [];
+    currentVersionId = '';
+    if (!doc || !projectId) {
+      renderDock();
+      return;
+    }
+    if (!persistDisabled) {
+      try {
+        versions = await listStudioVersions(projectId);
+      } catch {
+        versions = [];
+      }
+    }
+    if (!doc) return;
+    if (!versions.length) {
+      await recordVersion('original', sourceBlob || undefined, { label: '原始主图' });
+      return;
+    }
+    currentVersionId = session?.currentVersionId || '';
+    if (!versions.some((item) => item.id === currentVersionId)) {
+      currentVersionId = versions[versions.length - 1].id;
+    }
+    renderDock();
+  }
+
+  refs.dockTrack.addEventListener('click', (event) => {
+    const card = event.target.closest('[data-vid]');
+    if (!card) return;
+    void switchVersion(card.dataset.vid);
+  });
+
+  refs.dockTrack.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const cards = [...refs.dockTrack.querySelectorAll('[data-vid]')];
+    if (!cards.length) return;
+    event.preventDefault();
+    const index = cards.indexOf(document.activeElement);
+    let next = index;
+    if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);
+    else if (event.key === 'ArrowRight') next = Math.min(cards.length - 1, index + 1);
+    else if (event.key === 'Home') next = 0;
+    else next = cards.length - 1;
+    cards[next]?.focus();
+  });
+
+  /** 滚轮 = 卡片轮播（不切换主图），每格约一张卡。 */
+  refs.dockTrack.addEventListener(
+    'wheel',
+    (event) => {
+      if (refs.dockTrack.scrollWidth <= refs.dockTrack.clientWidth) return;
+      event.preventDefault();
+      const delta = (event.deltaY || event.deltaX) * (event.shiftKey ? -1 : 1);
+      refs.dockTrack.scrollLeft += delta;
+    },
+    { passive: false },
+  );
 
   async function fetchBlob(url) {
     try {
@@ -4107,6 +4360,7 @@ export function createStudioPage(host) {
         aiParams,
         viewport,
         activeTool: tool,
+        currentVersionId,
       },
     };
   }
@@ -4376,6 +4630,7 @@ export function createStudioPage(host) {
         refs.cropbar.hidden = false;
         refs.cropInfo.textContent = `${Math.round(cropRect.width)} × ${Math.round(cropRect.height)}`;
       }
+      await restoreVersions(session);
       if (session.activeTab) {
         activeTab = normalizeTab(session.activeTab);
         syncTabs();
@@ -4517,6 +4772,7 @@ export function createStudioPage(host) {
       startLease(projectId);
       sourceBlob = file;
       setDoc(new StudioDoc(image, file.name || 'untitled.png'));
+      void recordVersion('original', file);
     } catch (err) {
       toastError(err, '打开图片失败');
     } finally {
@@ -4525,7 +4781,7 @@ export function createStudioPage(host) {
     }
   }
 
-  async function openUrl(url, name) {
+  async function openUrl(url, name, { kind = 'original' } = {}) {
     const token = ++openSeq;
     try {
       const image = await loadImage(url);
@@ -4540,6 +4796,7 @@ export function createStudioPage(host) {
       // 外链/历史图取不到原文件时，用空白文档先编码一份原图，避免把叠加层烘进底图。
       sourceBlob = fetched || (await next.bakeBlob('image/png').catch(() => null));
       setDoc(next);
+      void recordVersion(kind, sourceBlob);
       return true;
     } catch (err) {
       if (token === openSeq) toastError(err, '打开图片失败');
@@ -5821,7 +6078,7 @@ export function createStudioPage(host) {
     openUpscaleDialog({
       getImage: () => doc.bake('image/png'),
       getSize: () => doc.size,
-      onAdopt: (url, name) => openUrl(url, name),
+      onAdopt: (url, name) => openUrl(url, name, { kind: 'upscale' }),
       onCompare: (url) => ai?.compareAll?.({ extra: [{ url, label: '放大结果' }] }),
     });
   });

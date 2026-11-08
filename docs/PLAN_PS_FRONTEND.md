@@ -875,6 +875,16 @@ DOM 结构：
   - 实测（headless Chromium，800×600 空白底）：文字工具点击后图层条出现 `ai-layer is-text` 行「文字 1」，右侧字段可见；改为「LOS 2026」+ 96px + `#e74c3c` + 描边 6 + 投影 12 后红色像素 9006；用移动工具拖动后红色区域左上角由 `(101,311)` 移到 `(215,392)`（dx=114 / dy=81，与画布缩放 0.815 相符）；刷新后文字层与内容随工程恢复。截图 `.screenshots/D11.2-text-layer-2026-11-08T04-42-09-993Z.png`。
   - 说明：本轮为纯前端文字层，字体取自系统字体列表，不做字体文件上传与路径文字；双击画布直接进入行内编辑暂未实现，统一在右侧面板修改文案。
 
+- **D11.3 贴纸（已完成）** —— 图片贴纸的导入、缩放、旋转、翻转与混合模式：
+  - 图层模型：`layers.js` 新增 `BLEND_MODES`（正常/正片叠底/滤色/叠加/柔光/强光/颜色减淡/颜色加深/差值）与 `flipH/flipV/blend` 字段；`draw()` 写入 `globalCompositeOperation` 并围绕图层中心镜像；`hitTest()` 改为把点反变换到图层本地坐标，旋转后不再误命中 AABB 角落。
+  - 新增 `studio` 内 `addOverlayFile(file, options)`（原 `ctx.addOverlay` 的实体，供 AI 面板与贴纸共用）：支持 `center` 落点、`focusSticker` 切页；`options` 透传 x/y/scale/flip/blend，贴纸导入与工程恢复共用同一条路径。
+  - UI：左栏「文字 / 贴纸」组新增 `sticker`（贴纸，G），在画面空白处点一下即打开文件选择并以点击点为居中导入；点已有贴纸则选中拖动。右侧新增「贴纸」分页：导入、重置变换、缩放（5%~400%）、旋转（−180°~180°）、水平/垂直翻转、混合模式下拉、删除。
+  - 画布手柄：选中贴纸时画旋转后的虚线框 + 四角缩放点 + 顶部旋转圆点；拖角按「到中心距离比」等比缩放且中心不变，拖圆点旋转默认吸附 15°（按住 Alt 自由旋转）。整段拖动只落一次撤销步。
+  - 持久化：工程保存 `flipH/flipV/blend`，恢复时按原 id 还原；`setDoc` 清空待导入落点，避免跨工程误用旧坐标。
+  - 单测：新增 `web/tests/studio/layers.test.mjs` 5 项（模式表与默认值、未知模式回退、旋转命中、draw 写入混合/翻转、clone 保留翻转与混合），`node --test web/tests/studio/layers.test.mjs` → `pass 5 / fail 0`。
+  - 实测（headless Chromium，800×600 纯色底 `[40,60,90]` + 240×160 左绿右黄贴纸）：贴纸工具点击后图层条出现 `d113-sticker.png`、右侧自动切到「贴纸」页且显示 100% / 0° / 正常；导入后左半 `[46,204,113]`、右半 `[241,196,15]`，与底图叠加位置正确。切「正片叠底」后左半变为 `[8,48,40]`、右半 `[38,46,6]`（与 40×46/255 等理论值一致）。缩放 50% 后图层 `x=219,y=180,w=120,h=80`、中心保持 `(279,220)`，原左侧外沿回到底色。旋转 45° 后中心右移 40px 处仍为黄、远离旋转区域的 `(360,150)` 回到底色。拖旋转圆点一次得到 30°（15° 吸附）；拖左上角点缩放由 0.5 → 0.337 且中心 `(279,220)` 不变。水平翻转后左右颜色互换。重置后设 70% / 60° / 水平+垂直翻转 / 滤色，刷新后图层完整恢复（`x=316,y=244,scale=0.7,rotation=60,w=168,h=112`，分页仍为「贴纸」）。截图 `.screenshots/D11.3-sticker-fresh-2026-11-08T05-01-55-162Z.png`、`.screenshots/D11.3-sticker-blend-rotate-2026-11-08T05-04-46-163Z.png`。
+  - 说明：本轮贴纸只做单张图片层，不含内置贴纸库与「另存为素材」；SVG 依赖浏览器 `Image` 解码，复杂 SVG（外链字体/滤镜）可能不完整，建议导入 PNG/WebP。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1052,7 +1062,7 @@ DOM 结构：
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
-| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()`）；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3（已落地） |
+| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend`）；`BLEND_MODES`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3（已落地） |
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer` | `layers/adjustments` | D7（D7.2 已落地，D9.3 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
@@ -1070,7 +1080,7 @@ DOM 结构：
 | `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
 | `tools/text.js` | 文字图层创建与编辑（D11.2 暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2（已落地） |
 | `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`（文字图层实体与绘制） | 无 | D11.2 |
-| `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
+| `tools/sticker.js` | 贴纸导入 / 缩放 / 旋转 / 翻转 / 混合模式（D11.3 暂内联在 `studio.js`，图层实体在 `layers.js`） | `renderer` | D11.3（已落地） |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
 | `panels/adjust.js` | 调色面板（D9.1~D9.3 暂内联在 `studio.js` 的 `data-pane="adjust"`，未拆文件） | `color/adjustments` | D9（已落地） |
 | `panels/history.js` | 历史记录面板 | `history` | D7/D12 |
@@ -1384,7 +1394,7 @@ DOM 结构：
 | D10.5 | 液化 | 已完成 | 本次提交 | 新增 `studio/liquify.js`（`pushWeight` + `warpPatch` 反向取样形变）；`liquify` 工具（Y）+ 累计位移；单测 4 项；实测见 §12.11 |
 | D11.1 | 马赛克 / 模糊 | 已完成 | 本次提交 | 新增 `studio/mosaic.js`（`pixelate` + `mosaicDab`，马赛克/模糊双模式）；`mosaic` 工具（P）+ 模式下拉；单测 4 项；实测见 §12.11 |
 | D11.2 | 文字图层 | 已完成 | 本次提交 | 新增 `studio/textLayer.js`（`TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`）；`StudioDoc.addTextLayer` + 工程持久化 `kind:'text'`；左栏 `text` 工具（T）+ 右侧「文字」分页（文案/字体/字重/字号/颜色/描边/投影/删除）；移动拖动、整页撤销、刷新恢复；单测 6 项；实测见 §12.11 |
-| D11.3 | 贴纸 | 未开始 | — | — |
+| D11.3 | 贴纸 | 已完成 | 本次提交 | `layers.js` 追加 `BLEND_MODES` / `flipH/flipV/blend` / 旋转命中；`addOverlayFile` 支持落点与切页；`sticker` 工具（G）+ 右侧「贴纸」分页（导入/缩放/旋转/翻转/混合模式/删除）；画布四角缩放 + 旋转圆点（15° 吸附）；工程持久化翻转与混合；单测 5 项；实测见 §12.11 |
 | D11.4 | 形状与图案图章 | 未开始 | — | — |
 | D12.1 | 混合模式 + 剪贴蒙版 | 未开始 | — | — |
 | D12.2 | 图层样式 | 未开始 | — | — |

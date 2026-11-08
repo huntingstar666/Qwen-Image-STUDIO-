@@ -459,7 +459,8 @@
 }
 
 .studio-canvas-wrap canvas[data-tool="rect"],
-.studio-canvas-wrap canvas[data-tool="ellipse"] {
+.studio-canvas-wrap canvas[data-tool="ellipse"],
+.studio-canvas-wrap canvas[data-tool="sticker"] {
   cursor: crosshair;
 }
 

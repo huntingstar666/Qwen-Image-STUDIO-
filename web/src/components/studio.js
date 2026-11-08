@@ -54,6 +54,7 @@ import { skinDab } from './studio/skin.js';
 import { warpPatch } from './studio/liquify.js';
 import { mosaicDab } from './studio/mosaic.js';
 import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
+import { BLEND_MODES } from './studio/layers.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -189,6 +190,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6V4.5h14V6"/><path d="M12 4.5V20"/><path d="M9 20h6"/></svg>',
   },
   {
+    id: 'sticker',
+    label: '贴纸',
+    key: 'G',
+    hint: '点画面空白处导入图片；点已有贴纸可拖动，拖角缩放、拖圆点旋转',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 5.5h15v9l-5.5 5.5h-9.5z"/><path d="M19.5 14.5H14v5.5"/><path d="M8 10.5c.9-.8 1.8-.8 2.7 0"/><path d="M13.3 10.5c.9-.8 1.8-.8 2.7 0"/><path d="M9.4 13.4c1.5 1.1 3.7 1.1 5.2 0"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -231,7 +240,7 @@ const TOOL_GROUPS = [
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
   { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
-  { id: 'compose', title: '文字', tools: ['text'] },
+  { id: 'compose', title: '文字 / 贴纸', tools: ['text', 'sticker'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
 
@@ -255,6 +264,8 @@ export function createStudioPage(host) {
   /* D18.2：调色滑杆拖动期间用低分辨率代理预览，change 后再全分辨率合成。 */
   let adjustPreview = false;
   let selectedLayerId = null;
+  /* D11.3：贴纸工具点击画面后等待文件选择，记录落点（图像坐标）。 */
+  let pendingStickerPoint = null;
   /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
   let selection = null;
   let selPath = null;
@@ -485,6 +496,7 @@ export function createStudioPage(host) {
               <button type="button" data-tab="adjust">调整</button>
               <button type="button" data-tab="transform">变换</button>
               <button type="button" data-tab="text">文字</button>
+              <button type="button" data-tab="sticker">贴纸</button>
             </div>
 
             <div class="studio-pane studio-pane-ai" data-pane="ai">
@@ -609,6 +621,36 @@ export function createStudioPage(host) {
               </div>
             </div>
 
+            <div class="studio-pane" data-pane="sticker" hidden>
+              <div class="studio-note" data-ref="stickerEmpty">用「贴纸」工具（G）在画面上点一下导入图片；选中贴纸后，这里可以缩放、旋转、翻转与改混合模式。</div>
+              <div data-ref="stickerFields" hidden>
+                <div class="studio-pane-title">贴纸</div>
+                <div class="studio-row">
+                  <button class="btn ghost sm" type="button" data-ref="stickerImport">＋ 导入贴纸</button>
+                  <button class="btn ghost sm" type="button" data-ref="stickerReset">重置变换</button>
+                </div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>缩放</span><span class="mono" data-ref="stickerScaleVal">100%</span></span>
+                  <input type="range" min="5" max="400" step="1" value="100" data-ref="stickerScale" />
+                </label>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>旋转</span><span class="mono" data-ref="stickerRotateVal">0°</span></span>
+                  <input type="range" min="-180" max="180" step="1" value="0" data-ref="stickerRotate" />
+                </label>
+                <div class="studio-row">
+                  <button class="btn ghost sm" type="button" data-ref="stickerFlipH">水平翻转</button>
+                  <button class="btn ghost sm" type="button" data-ref="stickerFlipV">垂直翻转</button>
+                </div>
+                <div class="studio-pane-title">混合模式</div>
+                <select class="select" data-ref="stickerBlend" aria-label="混合模式">
+                  ${BLEND_MODES.map((mode) => `<option value="${mode.id}">${mode.label}</option>`).join('')}
+                </select>
+                <button class="btn ghost sm studio-block" type="button" data-ref="stickerDelete">删除贴纸</button>
+                <div class="studio-note">画布上也能操作：拖动贴纸移动，拖四角缩放，拖顶部圆点旋转（按住 Alt 不吸附 15°）；不透明度在图层面板调。</div>
+              </div>
+              <input type="file" accept="image/*" data-ref="stickerInput" hidden />
+            </div>
+
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
               <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
@@ -693,6 +735,19 @@ export function createStudioPage(host) {
     textShadow: ref('textShadow'),
     textShadowVal: ref('textShadowVal'),
     textDelete: ref('textDelete'),
+    stickerEmpty: ref('stickerEmpty'),
+    stickerFields: ref('stickerFields'),
+    stickerImport: ref('stickerImport'),
+    stickerReset: ref('stickerReset'),
+    stickerScale: ref('stickerScale'),
+    stickerScaleVal: ref('stickerScaleVal'),
+    stickerRotate: ref('stickerRotate'),
+    stickerRotateVal: ref('stickerRotateVal'),
+    stickerFlipH: ref('stickerFlipH'),
+    stickerFlipV: ref('stickerFlipV'),
+    stickerBlend: ref('stickerBlend'),
+    stickerDelete: ref('stickerDelete'),
+    stickerInput: ref('stickerInput'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -721,6 +776,48 @@ export function createStudioPage(host) {
   };
   const ctx = refs.canvas.getContext('2d');
   const stageEl = refs.stage;
+
+  /**
+   * 读取本地图片并作为叠加层/贴纸加入文档（D11.3）。
+   * options.center 给出「图像坐标中的落点」，图层会以它为居中放置。
+   */
+  async function addOverlayFile(file, options = {}) {
+    if (!doc) throw new Error('请先打开一张主图');
+    if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件');
+    if (fileTooLarge(file, '叠加图')) return null;
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.readAsDataURL(file);
+    });
+    const image = await loadImage(dataUrl);
+    if (imageTooLarge(image, '叠加图')) return null;
+    const { center, focusSticker = false, ...rest } = options;
+    let placement = { ...rest };
+    if (center) {
+      const fit = Math.min(1, (doc.size.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
+      const width = (image.naturalWidth || image.width) * fit;
+      const height = (image.naturalHeight || image.height) * fit;
+      placement = { ...placement, scale: placement.scale ?? fit, x: Math.round(center.x - width / 2), y: Math.round(center.y - height / 2) };
+    }
+    const layer = doc.addOverlay(image, { name: file.name || '叠加图', ...placement });
+    layerBlobs.set(layer.id, file);
+    selectedLayerId = layer.id;
+    editingLayerMaskId = '';
+    setTool('move');
+    // setTool('move') 会把分页拉回 AI，贴纸导入/选中后再切回贴纸分页（D11.3）。
+    if (focusSticker) {
+      activeTab = 'sticker';
+      syncTabs();
+      syncStickerPane();
+    }
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    ai?.refresh();
+    return layer;
+  }
 
   /* ============================================================
    * AI 面板（右栏「AI 修改」）
@@ -811,28 +908,8 @@ export function createStudioPage(host) {
         return null;
       }
     },
-    async addOverlay(file) {
-      if (!doc) throw new Error('请先打开一张主图');
-      if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件');
-      if (fileTooLarge(file, '叠加图')) return null;
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('读取文件失败'));
-        reader.readAsDataURL(file);
-      });
-      const image = await loadImage(dataUrl);
-      if (imageTooLarge(image, '叠加图')) return null;
-      const layer = doc.addOverlay(image, { name: file.name || '叠加图' });
-      layerBlobs.set(layer.id, file);
-      selectedLayerId = layer.id;
-      editingLayerMaskId = '';
-      setTool('move');
-      updateHistoryUi();
-      scheduleDraw();
-      scheduleSave();
-      ai?.refresh();
-      return layer;
+    async addOverlay(file, options = {}) {
+      return addOverlayFile(file, options);
     },
     getLayers() {
       return doc?.layers || [];
@@ -847,9 +924,14 @@ export function createStudioPage(host) {
       if (layer?.isText) {
         activeTab = 'text';
         syncTabs();
+      } else if (layer && !layer.isAdjustment) {
+        // 选中贴纸/叠加层切到贴纸分页（D11.3）。
+        activeTab = 'sticker';
+        syncTabs();
       }
       syncAdjustInputs();
       syncTextPane();
+      syncStickerPane();
       scheduleDraw();
     },
     removeLayer(id) {
@@ -859,6 +941,7 @@ export function createStudioPage(host) {
         if (editingLayerMaskId === id) editingLayerMaskId = '';
         layerBlobs.delete(id);
         syncAdjustInputs();
+        syncStickerPane();
         updateHistoryUi();
         scheduleSave();
         scheduleDraw();
@@ -873,6 +956,7 @@ export function createStudioPage(host) {
       if (blob) layerBlobs.set(copy.id, blob);
       selectedLayerId = copy.id;
       syncAdjustInputs();
+      syncStickerPane();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1125,6 +1209,10 @@ export function createStudioPage(host) {
     } else if (next === 'move') {
       activeTab = 'ai';
       syncTabs();
+    } else if (next === 'sticker' && doc) {
+      activeTab = 'sticker';
+      syncTabs();
+      syncStickerPane();
     } else if (next === 'outpaint') {
       activeTab = 'outpaint';
       syncTabs();
@@ -1141,7 +1229,7 @@ export function createStudioPage(host) {
     scheduleSave(1200);
   }
 
-  const TAB_IDS = new Set(['ai', 'adjust', 'transform', 'text']);
+  const TAB_IDS = new Set(['ai', 'adjust', 'transform', 'text', 'sticker']);
 
   /** 恢复会话时把历史的 5 tab 归一化：扩图只在对应工具下保留。 */
   function normalizeTab(tab) {
@@ -1266,6 +1354,39 @@ export function createStudioPage(host) {
     }
   }
 
+  /**
+   * 选中贴纸的变换手柄：四角 + 顶部旋转圆点。
+   * 同时给出「图像坐标」与「视口坐标」，绘制与命中判断共用一套几何（D11.3）。
+   */
+  function stickerHandles(layer) {
+    const crop = doc?.transform.crop;
+    const width = layer.width;
+    const height = layer.height;
+    const cx = layer.x + width / 2;
+    const cy = layer.y + height / 2;
+    const rad = ((layer.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const toDoc = (px, py) => ({ x: cx + px * cos - py * sin, y: cy + px * sin + py * cos });
+    const toView = (point) => ({
+      x: view.x + (point.x - (crop?.x || 0)) * view.scale,
+      y: view.y + (point.y - (crop?.y || 0)) * view.scale,
+    });
+    const cornersDoc = [
+      toDoc(-width / 2, -height / 2),
+      toDoc(width / 2, -height / 2),
+      toDoc(width / 2, height / 2),
+      toDoc(-width / 2, height / 2),
+    ];
+    // 旋转圆点离顶边固定屏幕距离（26px），缩放画布时手感一致。
+    const knobDoc = toDoc(0, -height / 2 - 26 / Math.max(0.01, view.scale));
+    return {
+      centerDoc: { x: cx, y: cy },
+      cornersView: cornersDoc.map(toView),
+      knobView: toView(knobDoc),
+    };
+  }
+
   function draw() {
     const t0 = perf.start();
     const width = refs.canvas.clientWidth;
@@ -1284,7 +1405,10 @@ export function createStudioPage(host) {
       doc.layers.length > 0 &&
       // 调整层会改写已合成内容，不能走「底图缓存 + 实时图层」捷径（D9.3）。
       !doc.hasAdjustmentLayers &&
-      (drag?.mode === 'moveLayer' || (editingLayerMaskId && drag?.mode === 'paint'));
+      (drag?.mode === 'moveLayer' ||
+        drag?.mode === 'stickerScale' ||
+        drag?.mode === 'stickerRotate' ||
+        (editingLayerMaskId && drag?.mode === 'paint'));
     const image = adjustPreview
       ? doc.renderPreviewBase()
       : liveLayers
@@ -1432,31 +1556,54 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
-    // 选中叠加层的外框
+    // 选中图层的外框；贴纸额外画缩放角点与旋转手柄（D11.3）
     const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
-    if (tool === 'move' && activeLayer && !activeLayer.isAdjustment) {
+    if ((tool === 'move' || tool === 'sticker') && activeLayer && !activeLayer.isAdjustment) {
       const crop = doc.transform.crop;
-      const box = activeLayer.bounds();
-      const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
-      const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;
-      const rw = box.width * view.scale;
-      const rh = box.height * view.scale;
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-      ctx.lineWidth = 1.3;
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(rx, ry, rw, rh);
-      ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      for (const [hx, hy] of [
-        [rx, ry],
-        [rx + rw, ry],
-        [rx, ry + rh],
-        [rx + rw, ry + rh],
-      ]) {
-        ctx.fillRect(hx - 3, hy - 3, 6, 6);
+      if (activeLayer.isText) {
+        // 文字层没有缩放/旋转手柄，沿用普通虚线框。
+        const box = activeLayer.bounds();
+        const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
+        const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;
+        const rw = box.width * view.scale;
+        const rh = box.height * view.scale;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.setLineDash([]);
+        ctx.restore();
+      } else {
+        const handles = stickerHandles(activeLayer);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        handles.cornersView.forEach((handle, index) => {
+          if (index) ctx.lineTo(handle.x, handle.y);
+          else ctx.moveTo(handle.x, handle.y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // 顶部中点 → 旋转圆点的连线
+        const top = {
+          x: (handles.cornersView[0].x + handles.cornersView[1].x) / 2,
+          y: (handles.cornersView[0].y + handles.cornersView[1].y) / 2,
+        };
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(handles.knobView.x, handles.knobView.y);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        for (const handle of handles.cornersView) ctx.fillRect(handle.x - 3.5, handle.y - 3.5, 7, 7);
+        ctx.beginPath();
+        ctx.arc(handles.knobView.x, handles.knobView.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
       }
-      ctx.restore();
     }
 
     // 仿制取样锚点 + 当前取样位置（D10.2）
@@ -2284,15 +2431,63 @@ export function createStudioPage(host) {
       drag = { mode: 'lasso', points: [maskPoint(point)] };
       return;
     }
-    if (tool === 'move') {
+    if (tool === 'move' || tool === 'sticker') {
       const crop = doc.transform.crop;
       const ix = point.x + (crop?.x || 0);
       const iy = point.y + (crop?.y || 0);
+
+      // 选中贴纸的角手柄 / 旋转圆点优先于普通拖动（D11.3）。
+      const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
+      if (active && !active.isAdjustment && !active.isText) {
+        const handles = stickerHandles(active);
+        const px = event.clientX - dragRect.left;
+        const py = event.clientY - dragRect.top;
+        const near = (handle) => Math.hypot(handle.x - px, handle.y - py) <= 11;
+        if (near(handles.knobView)) {
+          drag = {
+            mode: 'stickerRotate',
+            layer: active,
+            center: handles.centerDoc,
+            startAngle: Math.atan2(iy - handles.centerDoc.y, ix - handles.centerDoc.x),
+            origin: active.rotation || 0,
+          };
+          return;
+        }
+        if (handles.cornersView.some(near)) {
+          drag = {
+            mode: 'stickerScale',
+            layer: active,
+            center: handles.centerDoc,
+            startDist: Math.max(1, Math.hypot(ix - handles.centerDoc.x, iy - handles.centerDoc.y)),
+            startScale: active.scale,
+          };
+          return;
+        }
+      }
+
       const layer = [...(doc.layers || [])].reverse().find((item) => item.hitTest(ix, iy));
       if (layer) {
         selectedLayerId = layer.id;
+        editingLayerMaskId = '';
+        // 选中即切到对应分页：文字层 → 文字，贴纸/叠加层 → 贴纸（D11.2 / D11.3）。
+        if (layer.isText) {
+          activeTab = 'text';
+          syncTabs();
+          syncTextPane();
+        } else if (!layer.isAdjustment) {
+          activeTab = 'sticker';
+          syncTabs();
+          syncStickerPane();
+        }
         drag = { mode: 'moveLayer', layer, start: point, originX: layer.x, originY: layer.y };
         scheduleDraw();
+        return;
+      }
+      if (tool === 'sticker') {
+        // 空白处点击：记下落点并打开文件选择，导入的新贴纸以该点居中（D11.3）。
+        pendingStickerPoint = { x: ix, y: iy };
+        refs.stickerInput.value = '';
+        refs.stickerInput.click();
         return;
       }
       drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
@@ -2382,6 +2577,31 @@ export function createStudioPage(host) {
       }
       return;
     }
+    if (drag.mode === 'stickerScale') {
+      const crop = doc.transform.crop;
+      const px = point.x + (crop?.x || 0);
+      const py = point.y + (crop?.y || 0);
+      const dist = Math.hypot(px - drag.center.x, py - drag.center.y);
+      setStickerScale(drag.layer, (drag.startScale * dist) / drag.startDist);
+      doc.touchLayers();
+      syncStickerPane();
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'stickerRotate') {
+      const crop = doc.transform.crop;
+      const px = point.x + (crop?.x || 0);
+      const py = point.y + (crop?.y || 0);
+      const angle = Math.atan2(py - drag.center.y, px - drag.center.x);
+      let deg = drag.origin + ((angle - drag.startAngle) * 180) / Math.PI;
+      // 默认吸附 15°；按住 Alt 自由旋转（D11.3）。
+      if (!event.altKey) deg = Math.round(deg / 15) * 15;
+      drag.layer.rotation = normalizeAngle(deg);
+      doc.touchLayers();
+      syncStickerPane();
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'moveLayer') {
       const layer = drag.layer;
       layer.x = Math.round(drag.originX + (point.x - drag.start.x));
@@ -2442,6 +2662,9 @@ export function createStudioPage(host) {
       activeTab = 'ai';
       syncTabs();
       ai?.focusPrompt?.();
+    } else if (mode === 'stickerScale' || mode === 'stickerRotate') {
+      // 贴纸缩放/旋转整段拖动作为一个撤销步（D11.3）。
+      commitSticker();
     } else if (mode === 'moveLayer') {
       doc?.commitLayers();
       updateHistoryUi();
@@ -2716,6 +2939,9 @@ export function createStudioPage(host) {
           scale: layer.scale ?? 1,
           opacity: layer.opacity,
           rotation: layer.rotation ?? 0,
+          flipH: Boolean(layer.flipH),
+          flipV: Boolean(layer.flipV),
+          blend: layer.blend || 'source-over',
           locked: layer.locked,
           visible: layer.visible !== false,
           hasMask: Boolean(layer.mask),
@@ -2983,6 +3209,9 @@ export function createStudioPage(host) {
             scale: props.scale,
             opacity: props.opacity,
             rotation: props.rotation,
+            flipH: props.flipH,
+            flipV: props.flipV,
+            blend: props.blend,
             locked: props.locked,
             visible: props.visible !== false,
           });
@@ -3187,6 +3416,7 @@ export function createStudioPage(host) {
     clearSelection(true);
     editingLayerMaskId = '';
     selectedLayerId = null;
+    pendingStickerPoint = null;
     tint = null;
     tintDirty = true;
     tintRect = null;
@@ -3199,6 +3429,7 @@ export function createStudioPage(host) {
     for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = false;
     syncAdjustInputs();
     syncTextPane();
+    syncStickerPane();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -3452,6 +3683,154 @@ export function createStudioPage(host) {
     }
   });
 
+  /* --------------------------------------------------- 贴纸（D11.3） */
+
+  /** 当前选中的贴纸/叠加层（调整层与文字层不算）。 */
+  function stickerTarget() {
+    if (!doc || !selectedLayerId) return null;
+    const layer = doc.findLayer(selectedLayerId);
+    return layer && !layer.isAdjustment && !layer.isText ? layer : null;
+  }
+
+  /** 旋转角归一到 (-180, 180]，便于滑杆回显。 */
+  function normalizeAngle(value) {
+    const deg = ((Number(value) || 0) % 360 + 360) % 360;
+    return deg > 180 ? deg - 360 : deg;
+  }
+
+  /** 保持中心不变地设置缩放。 */
+  function setStickerScale(layer, nextScale) {
+    const scale = Math.max(0.02, Math.min(8, Number(nextScale) || 0.02));
+    const cx = layer.x + layer.width / 2;
+    const cy = layer.y + layer.height / 2;
+    layer.scale = scale;
+    layer.x = Math.round(cx - layer.width / 2);
+    layer.y = Math.round(cy - layer.height / 2);
+  }
+
+  /** 贴纸「重置」时的适配缩放：不超过画布宽度的 60%。 */
+  function stickerFitScale(layer) {
+    if (!doc) return layer.scale;
+    return Math.min(1, (doc.size.width * 0.6) / Math.max(1, layer.naturalWidth || 1));
+  }
+
+  function syncStickerPane() {
+    const layer = stickerTarget();
+    refs.stickerEmpty.hidden = Boolean(layer);
+    refs.stickerFields.hidden = !layer;
+    if (!layer) return;
+    const percent = Math.round(layer.scale * 100);
+    refs.stickerScale.value = String(Math.max(5, Math.min(400, percent)));
+    refs.stickerScaleVal.textContent = `${percent}%`;
+    const deg = Math.round(normalizeAngle(layer.rotation));
+    refs.stickerRotate.value = String(deg);
+    refs.stickerRotateVal.textContent = `${deg}°`;
+    refs.stickerBlend.value = layer.blend || 'source-over';
+  }
+
+  /** 贴纸参数落一步撤销 + 自动保存。 */
+  function commitSticker() {
+    if (!doc || !stickerTarget()) return;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncStickerPane();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    ai?.refresh?.();
+  }
+
+  refs.stickerScale.addEventListener('input', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    const percent = Number(refs.stickerScale.value);
+    refs.stickerScaleVal.textContent = `${percent}%`;
+    setStickerScale(layer, percent / 100);
+    doc.touchLayers();
+    scheduleDraw();
+  });
+  refs.stickerScale.addEventListener('change', commitSticker);
+
+  refs.stickerRotate.addEventListener('input', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    layer.rotation = Number(refs.stickerRotate.value);
+    refs.stickerRotateVal.textContent = `${refs.stickerRotate.value}°`;
+    doc.touchLayers();
+    scheduleDraw();
+  });
+  refs.stickerRotate.addEventListener('change', commitSticker);
+
+  refs.stickerFlipH.addEventListener('click', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    layer.flipH = !layer.flipH;
+    commitSticker();
+  });
+
+  refs.stickerFlipV.addEventListener('click', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    layer.flipV = !layer.flipV;
+    commitSticker();
+  });
+
+  refs.stickerBlend.addEventListener('change', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    layer.blend = refs.stickerBlend.value;
+    commitSticker();
+  });
+
+  refs.stickerReset.addEventListener('click', () => {
+    const layer = stickerTarget();
+    if (!layer || !doc) return;
+    setStickerScale(layer, stickerFitScale(layer));
+    layer.rotation = 0;
+    layer.flipH = false;
+    layer.flipV = false;
+    layer.blend = 'source-over';
+    const crop = doc.transform.crop;
+    const size = doc.size;
+    layer.x = Math.round((size.width - layer.width) / 2 + (crop?.x || 0));
+    layer.y = Math.round((size.height - layer.height) / 2 + (crop?.y || 0));
+    commitSticker();
+    toastSuccess('已重置贴纸变换');
+  });
+
+  refs.stickerDelete.addEventListener('click', () => {
+    const layer = stickerTarget();
+    if (!layer) return;
+    if (doc.removeOverlay(layer.id)) {
+      selectedLayerId = null;
+      syncStickerPane();
+      updateHistoryUi();
+      scheduleDraw();
+      scheduleSave();
+      toast('已删除贴纸');
+    }
+  });
+
+  refs.stickerImport.addEventListener('click', () => {
+    pendingStickerPoint = null;
+    refs.stickerInput.value = '';
+    refs.stickerInput.click();
+  });
+
+  refs.stickerInput.addEventListener('change', async () => {
+    const file = refs.stickerInput.files?.[0];
+    const at = pendingStickerPoint;
+    pendingStickerPoint = null;
+    refs.stickerInput.value = '';
+    if (!file || !doc) return;
+    try {
+      const layer = await addOverlayFile(file, { center: at, focusSticker: true });
+      if (layer) toast('已导入贴纸：拖动移动，拖角缩放，拖顶部圆点旋转');
+    } catch (err) {
+      toastError(err, '导入贴纸失败');
+    }
+  });
+
   /* --------------------------------------------------- 直方图（D9.2） */
 
   let histAt = 0;
@@ -3666,6 +4045,7 @@ export function createStudioPage(host) {
     syncTabs();
     if (activeTab === 'adjust') updateHistogram(true);
     if (activeTab === 'text') syncTextPane();
+    if (activeTab === 'sticker') syncStickerPane();
   });
 
   /* ---------------------------------------------------------- 顶栏导入菜单 */

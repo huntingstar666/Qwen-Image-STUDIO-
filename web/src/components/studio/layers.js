@@ -9,8 +9,39 @@
 
 let seq = 0;
 
+/** 贴纸/叠加层可用的混合模式（D11.3），id 直接作为 Canvas globalCompositeOperation。 */
+export const BLEND_MODES = [
+  { id: 'source-over', label: '正常' },
+  { id: 'multiply', label: '正片叠底' },
+  { id: 'screen', label: '滤色' },
+  { id: 'overlay', label: '叠加' },
+  { id: 'soft-light', label: '柔光' },
+  { id: 'hard-light', label: '强光' },
+  { id: 'color-dodge', label: '颜色减淡' },
+  { id: 'color-burn', label: '颜色加深' },
+  { id: 'difference', label: '差值' },
+];
+
+const BLEND_IDS = new Set(BLEND_MODES.map((mode) => mode.id));
+
 export class OverlayLayer {
-  constructor(image, { name = '叠加图', x = 0, y = 0, scale = 1, opacity = 1, rotation = 0, locked = false, visible = true, id = '' } = {}) {
+  constructor(
+    image,
+    {
+      name = '叠加图',
+      x = 0,
+      y = 0,
+      scale = 1,
+      opacity = 1,
+      rotation = 0,
+      flipH = false,
+      flipV = false,
+      blend = 'source-over',
+      locked = false,
+      visible = true,
+      id = '',
+    } = {},
+  ) {
     this.id = id || `ov-${(seq += 1)}`;
     this.image = image;
     this.name = name;
@@ -19,6 +50,11 @@ export class OverlayLayer {
     this.scale = Number(scale) || 1;
     this.opacity = opacity === undefined ? 1 : Number(opacity);
     this.rotation = Number(rotation) || 0;
+    /** 贴纸翻转（D11.3）：围绕图层中心镜像，不影响 x/y/scale。 */
+    this.flipH = Boolean(flipH);
+    this.flipV = Boolean(flipV);
+    /** 混合模式（D11.3），默认正常。 */
+    this.blend = BLEND_IDS.has(blend) ? blend : 'source-over';
     /** 锁定后仍参与合成，但画布上不可点选/拖动（D7.3 图层面板）。 */
     this.locked = Boolean(locked);
     /** 显隐（D9.3 图层面板眼睛按钮）；隐藏的图层不参与合成。 */
@@ -54,8 +90,20 @@ export class OverlayLayer {
 
   hitTest(px, py) {
     if (this.locked || !this.visible) return false;
-    const box = this.bounds();
-    return px >= box.x && px <= box.x + box.width && py >= box.y && py <= box.y + box.height;
+    const width = this.width;
+    const height = this.height;
+    if (width < 1 || height < 1) return false;
+    // 旋转后按图层本地坐标判断，避免 AABB 把角落外的点击也算命中（D11.3）。
+    const cx = this.x + width / 2;
+    const cy = this.y + height / 2;
+    const rad = (-(this.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = px - cx;
+    const dy = py - cy;
+    const lx = dx * cos - dy * sin;
+    const ly = dx * sin + dy * cos;
+    return Math.abs(lx) <= width / 2 && Math.abs(ly) <= height / 2;
   }
 
   hasMask() {
@@ -117,9 +165,11 @@ export class OverlayLayer {
     const source = this.maskedImage();
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
-    if (this.rotation) {
+    ctx.globalCompositeOperation = this.blend || 'source-over';
+    if (this.rotation || this.flipH || this.flipV) {
       ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
-      ctx.rotate((this.rotation * Math.PI) / 180);
+      if (this.rotation) ctx.rotate((this.rotation * Math.PI) / 180);
+      if (this.flipH || this.flipV) ctx.scale(this.flipH ? -1 : 1, this.flipV ? -1 : 1);
       ctx.drawImage(source, -this.width / 2, -this.height / 2, this.width, this.height);
     } else {
       ctx.drawImage(source, this.x, this.y, this.width, this.height);
@@ -137,6 +187,9 @@ export class OverlayLayer {
       scale: this.scale,
       opacity: this.opacity,
       rotation: this.rotation,
+      flipH: this.flipH,
+      flipV: this.flipV,
+      blend: this.blend,
       locked: this.locked,
       visible: this.visible,
     });

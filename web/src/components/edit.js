@@ -2453,8 +2453,9 @@ export function createEditPage(host) {
         localExtra.fills = false;
         localExtra.hint = 'gray_fill';
       }
-      // 一致性关掉时必须显式落 false（B1：后端把 null 当"未传"）
-      if (!consistencyOn) localExtra.consistency = false;
+      // 一致性开关是用户当前选择，必须显式回传（开/关都发）：
+      // 只在关闭时发 false 的话，用户重新打开会沿用预设里保存的 false，UI 勾选等于无效。
+      localExtra.consistency = consistencyOn;
       if (Object.keys(localExtra).length) extra.local = localExtra;
       Object.assign(payload, extra);
 
@@ -2485,7 +2486,12 @@ export function createEditPage(host) {
         delete payload.loras;
       }
       const presetCons = presetParams.consistency;
-      if (consistencyOn && presetCons && typeof presetCons === 'object') {
+      const presetConsEnabled = Boolean(presetCons)
+        && typeof presetCons === 'object'
+        && presetCons.enabled !== false;
+      // 只有预设本身开着一致性、且文件/强度都一致时才交给预设补全；
+      // 预设关着而用户手动勾选开启时，必须显式带 consistency_lora，否则后端会按预设关掉。
+      if (consistencyOn && presetConsEnabled) {
         const loraMatch = !presetCons.lora
           || String(presetCons.lora) === String(payload.consistency_lora?.name || '');
         const strengthMatch = sameNumber(

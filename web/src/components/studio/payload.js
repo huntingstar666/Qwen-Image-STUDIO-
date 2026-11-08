@@ -280,8 +280,9 @@ export function buildEditPayload({
     localExtra.color_match = false;
     localExtra.color_restore = false;
   }
-  // 一致性 LoRA 关掉时要显式落 local.consistency=false（B1：后端把 null 当"未传"=默认开）。
-  if (!loras.consistency) localExtra.consistency = false;
+  // 一致性开关是用户当前选择，开/关都要显式落字段：只在关闭时发 false 的话，
+  // 用户重新打开会沿用预设里保存的 false（B1：后端把 null 当"未传"）。
+  localExtra.consistency = Boolean(loras.consistency);
   if (Object.keys(localExtra).length) extra.local = localExtra;
   if (protection.zeroShift === false) {
     extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };

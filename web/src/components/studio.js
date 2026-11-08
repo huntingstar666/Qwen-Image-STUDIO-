@@ -1526,7 +1526,8 @@ export function createStudioPage(host) {
         if (token !== openSeq) return null;
         if (!sourceBlob) {
           try {
-            sourceBlob = next.bakeBlob('image/png');
+            // 结果链跨域时 fetchBlob 会失败，这里必须 await，否则 sourceBlob 是 Promise。
+            sourceBlob = await next.bakeBlob('image/png');
           } catch {
             sourceBlob = null;
           }
@@ -4389,7 +4390,8 @@ export function createStudioPage(host) {
 
   /** 160px WebP 缩略图；失败返回空串，卡片用底色兜底。 */
   async function versionThumb(blob) {
-    if (!blob) return '';
+    // 只接受真正的 Blob，避免 Promise / 字符串混进来把整个版本落盘打断。
+    if (!blob || typeof blob !== 'object' || typeof blob.size !== 'number') return '';
     const url = URL.createObjectURL(blob);
     try {
       const image = await loadImage(url);
@@ -4492,9 +4494,11 @@ export function createStudioPage(host) {
   async function recordVersion(kind, blob, options = {}) {
     const current = doc;
     if (!current) return null;
+    // 只接受真正的 Blob；异常值退化为「无原图」版本，但版本卡仍然要出现。
+    const safeBlob = blob && typeof blob === 'object' && typeof blob.size === 'number' ? blob : null;
     const last = versions[versions.length - 1];
     const id = `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const thumbUrl = options.thumbUrl ?? (await versionThumb(blob));
+    const thumbUrl = options.thumbUrl ?? (await versionThumb(safeBlob));
     if (doc !== current) return null;
     const record = {
       id,
@@ -4508,14 +4512,14 @@ export function createStudioPage(host) {
       thumbUrl,
       meta: options.meta || null,
       blobKey: `${projectId}:${id}`,
-      ...(persistDisabled ? { blob } : {}),
+      ...(persistDisabled ? { blob: safeBlob } : {}),
     };
     versions = [...versions, record];
     currentVersionId = id;
     renderDock();
     if (persistDisabled || !projectId) return record;
     try {
-      await addStudioVersion({ ...record, projectId, blob });
+      await addStudioVersion({ ...record, projectId, blob: safeBlob });
       const removed = await trimStudioVersions(projectId, { limit: MAX_VERSIONS, keepId: id });
       if (removed.length) versions = versions.filter((item) => !removed.includes(item.id));
       const stored = await listStudioVersions(projectId);

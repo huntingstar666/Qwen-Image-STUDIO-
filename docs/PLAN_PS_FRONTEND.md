@@ -1065,6 +1065,11 @@ DOM 结构：
   - 二次修复（「只有框、什么都看不见」）：先圈选再裁剪、选区被裁到画面外时，抠图结果是全透明，仍会建出一个「只有选框、没有像素」的空图层。`runCutout()` 新增 `cutoutHasPixels(raw)` 检查：全透明时提示「选区里没有可抠出的像素（可能已被裁剪到画面外），请重新圈选」，不建层、不隐藏主图；建层成功后额外 `invalidateBase()` + 重绘，确保立即显示。
   - 实测（headless Chromium）：无裁剪、裁剪 `617 × 567`、以及「先选区后裁剪（选区 0.9% 且在裁剪外）」三种场景：前两者正常建层并显示主体，第三者弹出上述提示且不产生新图层；主图眼睛可随时恢复对比；`node --test` 139 passed。
 
+- **AI 结果未进入版本槽修复（D22.1 补丁）** —— 用户反馈「AI 编辑后的图片没有进下面的卡槽」：
+  - 根因：`adoptResult()` 的 `sourceBlob` 回退分支漏了 `await`（`bakeBlob()` 返回 Promise），而 `fetchBlob()` 对跨域的结果 URL 必然失败，于是 Promise 被当成 Blob 传入 `recordVersion()`；`versionThumb()` 里 `URL.createObjectURL(Promise)` 抛 `TypeError`，整个 `recordVersion()` 中断，Dock 不生成「编辑 N」卡片。
+  - 修复：回退分支改为 `await next.bakeBlob('image/png')`；`versionThumb()` 只接受真正的 Blob（`typeof blob.size === 'number'`）；`recordVersion()` 对非 Blob 退化为「无原图」版本，但版本卡仍照常创建与落盘，不再整条链路失败。
+  - 实测：快门等其它写入点仍正常生成卡片（`原始主图 / 快照 1`，缩略图为 WebP dataURL）；`node --test` 139 passed。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---

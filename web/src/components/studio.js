@@ -1586,18 +1586,33 @@ export function createStudioPage(host) {
   /**
    * 画布点选命中（D23.7）：位图层优先按像素 alpha 判定，
    * 抠图的透明区域可以点穿到下层；文字 / 形状 / 调整层仍按各自几何判定。
+   *
+   * tolerance（图像坐标）= 容差半径：低倍缩放下抠图边缘常差几个屏幕像素，
+   * 只测单点会出现「明明点在人身上，却变成平移画布」的偶发感。
    */
-  function pickLayerAt(ix, iy) {
+  function pickLayerAt(ix, iy, { tolerance = 0 } = {}) {
     if (!doc) return null;
     const layers = doc.layers || [];
+    const probes = tolerance > 0
+      ? [[0, 0], [tolerance, 0], [-tolerance, 0], [0, tolerance], [0, -tolerance]]
+      : [[0, 0]];
     for (let i = layers.length - 1; i >= 0; i -= 1) {
       const layer = layers[i];
       // 隐藏的图层组不参与画布点选（组员眼睛按钮仍保留各自状态）。
       if (layer.groupId && doc.findGroup(layer.groupId)?.visible === false) continue;
-      const hit = layer.hitTestPixel ? layer.hitTestPixel(ix, iy) : layer.hitTest(ix, iy);
-      if (hit) return layer;
+      for (const [ox, oy] of probes) {
+        const x = ix + ox;
+        const y = iy + oy;
+        const hit = layer.hitTestPixel ? layer.hitTestPixel(x, y) : layer.hitTest(x, y);
+        if (hit) return layer;
+      }
     }
     return null;
+  }
+
+  /** 画布点选的容差（图像坐标）：约 4 个屏幕像素，缩得越小容差越大。 */
+  function pickTolerance() {
+    return 4 / Math.max(0.05, view.scale || 1);
   }
 
   function cursorForHandle(kind) {
@@ -4411,7 +4426,7 @@ export function createStudioPage(host) {
       const crop = doc.transform.crop;
       const ix = freePoint.x + (crop?.x || 0);
       const iy = freePoint.y + (crop?.y || 0);
-      const layer = pickLayerAt(ix, iy);
+      const layer = pickLayerAt(ix, iy, { tolerance: pickTolerance() });
       if (layer) {
         selectLayerById(layer.id, {
           additive: event.metaKey || event.ctrlKey,
@@ -4419,6 +4434,12 @@ export function createStudioPage(host) {
           keepTool: true,
         });
         drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
+        return;
+      }
+      // 已选中的图层：落点略偏出可见像素时仍拖动它（与悬停光标的判定一致）。
+      const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
+      if (active && !active.locked && active.visible !== false && !active.isAdjustment && active.hitTest?.(ix, iy)) {
+        drag = { mode: 'moveLayer', layer: active, start: freePoint, originX: active.x, originY: active.y };
         return;
       }
       if (refs.canvas.style.cursor) refs.canvas.style.cursor = '';
@@ -4671,13 +4692,15 @@ export function createStudioPage(host) {
           ? cursorForHandle(hitLayerHandle(event.clientX, event.clientY, rect))
           : '';
       } else if (tool === 'view' && doc) {
-        // 抓手工具：悬停在图层上提示「可拖动」，点住即可单独移动该层。
+        // 抓手工具：悬停提示「可拖动」。判定与 pointerdown 一致（像素 + 容差），
+        // 避免出现「光标说能拖、按下却平移画布」的错位（D23.11）。
         const crop = doc.transform.crop;
         const at = toImage(event.clientX, event.clientY, rect);
-        const over = doc.layers
-          .slice()
-          .reverse()
-          .some((item) => item.hitTest(at.x + (crop?.x || 0), at.y + (crop?.y || 0)));
+        const ix = at.x + (crop?.x || 0);
+        const iy = at.y + (crop?.y || 0);
+        const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
+        const over = Boolean(pickLayerAt(ix, iy, { tolerance: pickTolerance() }))
+          || Boolean(active && !active.locked && active.visible !== false && !active.isAdjustment && active.hitTest?.(ix, iy));
         const next = over ? 'move' : '';
         if (refs.canvas.style.cursor !== next) refs.canvas.style.cursor = next;
       } else if (refs.canvas.style.cursor) {
@@ -6404,10 +6427,14 @@ export function createStudioPage(host) {
   }
 
   function onVisibilityChange() {
-    if (document.visibilityState === 'hidden') flushSave();
+    if (document.visibilityState === 'hidden') {
+      releaseSpacePan();
+      flushSave();
+    }
   }
 
   function onPageHide() {
+    releaseSpacePan();
     flushSave();
   }
 
@@ -9421,6 +9448,17 @@ export function createStudioPage(host) {
     scheduleDraw();
   }
 
+  /**
+   * 松开空格 / 窗口失焦时复位「空格平移」。
+   * keyup 在切换窗口、弹出系统面板时可能收不到，一旦卡住，之后所有左键拖拽
+   * 都会走平移分支（表现为「抓手拖图层却整张画布动」，且偶发）。
+   */
+  function releaseSpacePan() {
+    if (!spaceDown) return;
+    spaceDown = false;
+    refs.canvas.classList.remove('is-grab');
+  }
+
   function onKeyUp(event) {
     if (event.key === '\\' && preview.flash) {
       preview.flash = false;
@@ -9428,12 +9466,12 @@ export function createStudioPage(host) {
       return;
     }
     if (event.code !== 'Space') return;
-    spaceDown = false;
-    refs.canvas.classList.remove('is-grab');
+    releaseSpacePan();
   }
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', releaseSpacePan);
   window.addEventListener('paste', onPaste);
 
   /* ---------------------------------------------------------- 尺寸与交接 */
@@ -9508,6 +9546,7 @@ export function createStudioPage(host) {
       editingLayerMaskId = '';
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', releaseSpacePan);
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('paste', onPaste);
       document.removeEventListener('click', onDocumentClick);

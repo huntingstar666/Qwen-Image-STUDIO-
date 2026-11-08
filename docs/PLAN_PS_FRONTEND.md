@@ -961,6 +961,17 @@ DOM 结构：
   - 实测（headless Chromium）：修复前 1024×575 下 body 440 / 面板 990 / 面板底 811；修复后同一窗口面板 360、AI 面板 191 可滚动（`scrollHeight` 836），滚到底可完整看到「结果 / 编辑历史」，状态栏与历史快照都在视口内；1440×900 下 AI 面板 417 可滚动；941×900（≤980 的堆叠布局）AI 面板按 420 上限滚动，未回归。截图 `.screenshots/before-layout-fix-2026-11-08T06-23-36-865Z.png`、`.screenshots/after-layout-fix-1024x575-2026-11-08T06-24-45-918Z.png`、`.screenshots/after-layout-fix-scrolled-2026-11-08T06-25-22-367Z.png`。
   - 说明：高度极小时（< 480px 视口）页面仍会出现整页滚动，这是桌面工作台的保底行为；面板内部各区块始终可达。
 
+- **D20.2 左侧工具轨收尾修复（已完成）** —— 首尾工具被裁、悬停浮字「修复」：
+  - 根因 1：工具轨是普通 flex 列（21 个工具约 931px），外层 `.studio-body` 加了 `overflow:hidden` 后，窗口较矮时首尾工具被直接裁掉，且工具轨本身没有滚动条（截图里顶部/底部各被切一半）。
+  - 根因 2：`.studio-tool-group-title` 是绝对定位的组名浮字（`left: calc(100% + 8px)`），只要鼠标在组内任意工具上就浮出来，看起来像画布上多了一个「修复」菜单项；且工具轨改成滚动后，该浮字会被 `overflow` 裁掉。
+  - 修复：工具轨改 `overflow-y:auto` + `overflow-x:hidden` + `overscroll-behavior:contain` + 细滚动条；矮窗口（`max-height:820px`）工具 40→36px、间距收紧；删除浮字元素与样式，组名并入工具原生 `title`（如「修复 · 污点修复（J）」）；`setTool()` 切换工具时 `scrollIntoView({ block:'nearest' })`，快捷键切到视口外工具会自动带进视野。
+  - 实测（headless Chromium 1024×575）：工具轨 21 个，`clientHeight 360 / scrollHeight 931`；滚到底最后一个「扩图 / 外补画布」完整可见（479–519 < 527）；按 `X` 自动滚到 563 并高亮扩图，按 `V` 回滚到 8 且「抓手」高亮；DOM 中不再有 `.studio-tool-group-title`；控制台无报错。截图 `.screenshots/after-rail-fix-final-2026-11-08T06-31-41-913Z.png`。
+
+- **D20.3 扩图上下文面板收尾修复（已完成）** —— 切出扩图后右侧不恢复：
+  - 根因：`setTool()` 里从扩图切到别的工具时只把 `activeTab` 改回 `ai`，没有调用 `syncTabs()`，于是「外补画布」上下文面板一直显示、AI 面板一直是 `hidden`（实测 `ai:false / outpaint:true`）。
+  - 修复：`activeTab` 由 `outpaint` 归一为 `ai` 时立即 `syncTabs()`。
+  - 实测：`X` 切扩图 → `ai:false / outpaint:true`；`V` 切回抓手 → `ai:true / outpaint:false`，分页条 64px 始终可见。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1487,6 +1498,8 @@ DOM 结构：
 | D15.1 | 高清放大入口 | 已完成 | 本次提交 | 顶栏「放大」→ `upscaleDialog.js`：读取 `api.upscaleModels()` 列出就绪引擎（VOSR2 / SeedVR2 / FlashVSR，默认 VOSR2），倍率 2×/4×，提交当前烘焙主图后按 `pollJob` 显示进度、可取消；结果卡片显示输出尺寸与文件名，可「载入为主图」（新工程，可继续编辑 / 导出）或「与当前主图对比」（走 `ai.compareAll({ extra })`）。实测 512×384 → 1024×768（vosr2 2×），载入后尺寸与文件名同步 |
 | D10F | 修复类工具收尾修复 | 已完成 | 本次提交 | 修复类工具（J/S/H/U/K/Y/P/N）与文字落点、局部调整取景统一经 `maskPoint()` 换算裁剪坐标；新增 `repairPaint()` 用 `destination-in` 叠选区 alpha（蚂蚁线路径不能 `clip`）；顺带修复剪贴基座为调整层崩溃、快照默认名重复、贴纸透视勾选状态、形状样式 NaN；单测 116 项全绿；实测见 §12.11 |
 | D20.1 | 面板布局收尾修复 | 已完成 | 本次提交 | 右侧面板被内容撑高、`[hidden]` 被 flex 覆盖、快照区固定占位 → 底部区块不可见且滚不到；`grid-template-rows:minmax(0,1fr)` + 面板 `[hidden]` 兜底 + 快照区可收缩 + `.page-studio` min-height 480；三档窗口实测见 §12.11 |
+| D20.2 | 工具轨收尾修复 | 已完成 | 本次提交 | 工具轨改可滚动（首尾工具不再被裁）、矮窗口工具收紧到 36px、切换工具 `scrollIntoView`；删除悬停组名浮字，组名并入工具 `title`；实测见 §12.11 |
+| D20.3 | 扩图上下文收尾修复 | 已完成 | 本次提交 | 从扩图切走后 `activeTab` 归一为 `ai` 时漏调 `syncTabs()`，导致外补画布面板常驻、AI 面板隐藏；已补并实测见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

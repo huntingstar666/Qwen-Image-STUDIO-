@@ -217,9 +217,15 @@
   padding: 10px 0;
   border-right: 1px solid var(--line-soft);
   background: var(--panel-2);
+  /* 窗口不够高时工具轨自己滚动，否则首尾工具会被裁掉。 */
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
-/* 左栏分组：组间 1px 分隔线，hover 时才显示组标题 */
+/* 左栏分组：组间 1px 分隔线；组名并入工具的原生 title（不在画布上浮字） */
 .studio-tool-group {
   position: relative;
   display: flex;
@@ -235,26 +241,32 @@
   border-top: 1px solid var(--line-soft);
 }
 
-.studio-tool-group-title {
-  position: absolute;
-  top: 10px;
-  left: calc(100% + 8px);
-  z-index: 20;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--panel-3);
-  color: var(--text-2);
-  font-size: 11px;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
-}
+/* 矮窗口把工具收紧一点，尽量一屏放下，减少滚动。 */
+@media (max-height: 820px) {
+  .studio-rail {
+    gap: 2px;
+    padding: 8px 0;
+  }
 
-.studio-tool-group:hover .studio-tool-group-title {
-  opacity: 1;
-  transform: none;
+  .studio-tool {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .studio-tool svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .studio-tool-group {
+    gap: 2px;
+  }
+
+  .studio-tool-group + .studio-tool-group {
+    margin-top: 2px;
+    padding-top: 4px;
+  }
 }
 
 .studio-tool {

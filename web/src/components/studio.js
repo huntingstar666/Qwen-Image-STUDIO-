@@ -1329,12 +1329,11 @@ export function createStudioPage(host) {
   refs.rail.innerHTML = TOOL_GROUPS.map(
     (group) => `
       <div class="studio-tool-group" data-group="${group.id}">
-        <span class="studio-tool-group-title">${group.title}</span>
         ${group.tools
           .map((id) => {
             const item = TOOLS.find((entry) => entry.id === id);
             if (!item) return '';
-            return `<button class="studio-tool${item.id === tool ? ' active' : ''}" type="button" data-tool="${item.id}" title="${item.label}（${item.key}）">
+            return `<button class="studio-tool${item.id === tool ? ' active' : ''}" type="button" data-tool="${item.id}" title="${group.title} · ${item.label}（${item.key}）">
         ${item.icon}
         <span class="studio-tool-key">${item.key}</span>
       </button>`;
@@ -1347,7 +1346,12 @@ export function createStudioPage(host) {
     if (!TOOLS.some((item) => item.id === next)) return;
     if (next !== 'outpaint') {
       outpaint?.deactivate?.();
-      if (activeTab === 'outpaint') activeTab = 'ai';
+      // 从扩图切走时 activeTab 归一为 ai，必须立刻重排分页，
+      // 否则扩图上下文面板不会隐藏、AI 面板一直是 hidden。
+      if (activeTab === 'outpaint') {
+        activeTab = 'ai';
+        syncTabs();
+      }
     }
     refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next));
     refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
@@ -1389,7 +1393,10 @@ export function createStudioPage(host) {
       outpaint?.activate?.();
     }
     for (const button of refs.rail.querySelectorAll('[data-tool]')) {
-      button.classList.toggle('active', button.dataset.tool === tool);
+      const on = button.dataset.tool === tool;
+      button.classList.toggle('active', on);
+      // 工具轨可滚动：快捷键切到视口外的工具时把它带进视野。
+      if (on) button.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     }
     const meta = TOOLS.find((item) => item.id === tool);
     refs.statusTool.textContent = meta ? `${meta.label} · ${meta.hint}` : '';

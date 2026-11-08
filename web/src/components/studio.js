@@ -16,7 +16,7 @@
 import { downloadUrl, fmtCoverage, fmtNum, loadImage, readFileAsDataURL, escapeHtml } from '../utils.js';
 import { api, pollJob } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
-import { confirmDialog } from './modal.js';
+import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
 import { mountAiPanel } from './studio/aiPanel.js';
@@ -24,6 +24,8 @@ import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openUpscaleDialog } from './studio/upscaleDialog.js';
 import { REF_MIME, filesFromDataTransfer, openImportPicker, urlToDataUrl } from './studio/importPicker.js';
 import {
+  clearLastProject,
+  clearProject,
   cleanupProjects,
   createProjectLease,
   estimateStorage,
@@ -352,6 +354,8 @@ export function createStudioPage(host) {
   let restoreChecked = false;
   let restoring = false;
   let pendingRestore = null;
+  /* D22.2：「新建项目 · 本地图片」等选择器返回后再关闭旧工程，避免用户取消选择时误关。 */
+  let pendingNewProject = false;
   /* D17.3：多标签租约、配额告警与持久化申请。 */
   let lease = null;
   let leaseLocked = false;
@@ -362,6 +366,17 @@ export function createStudioPage(host) {
     <div class="page page-studio">
       <div class="studio">
         <div class="studio-bar">
+          <div class="studio-import" data-ref="projWrap">
+            <button class="btn ghost sm studio-proj-btn" type="button" data-ref="projBtn" aria-haspopup="menu" aria-expanded="false" title="项目：新建 / 保存 / 关闭 / 删除">＋</button>
+            <div class="studio-import-menu studio-proj-menu" role="menu" data-ref="projMenu" hidden>
+              <button type="button" role="menuitem" data-proj="new-local">新建项目 · 本地图片</button>
+              <button type="button" role="menuitem" data-proj="new-warehouse">新建项目 · 素材仓库</button>
+              <button type="button" role="menuitem" data-proj="save">立即保存（Ctrl+S）</button>
+              <button type="button" role="menuitem" data-proj="rename">重命名项目</button>
+              <button type="button" role="menuitem" data-proj="close">关闭项目</button>
+              <button type="button" role="menuitem" data-proj="delete">删除当前项目</button>
+            </div>
+          </div>
           <div class="studio-file">
             <span class="studio-dot" data-ref="dot"></span>
             <span class="studio-name" data-ref="fileName">未打开图片</span>
@@ -374,6 +389,7 @@ export function createStudioPage(host) {
               <button type="button" role="menuitem" data-import="local">本地文件</button>
               <button type="button" role="menuitem" data-import="warehouse">素材仓库</button>
               <button type="button" role="menuitem" data-import="history">最近结果</button>
+              <button type="button" role="menuitem" data-import="newmain" hidden>作为新主图（新建项目）</button>
             </div>
           </div>
           <span class="studio-sep"></span>
@@ -810,6 +826,9 @@ export function createStudioPage(host) {
     importWrap: ref('importWrap'),
     openBtn: ref('openBtn'),
     importMenu: ref('importMenu'),
+    projWrap: ref('projWrap'),
+    projBtn: ref('projBtn'),
+    projMenu: ref('projMenu'),
     exportWrap: ref('exportWrap'),
     exportBtn: ref('exportBtn'),
     exportMenu: ref('exportMenu'),
@@ -3713,6 +3732,188 @@ export function createStudioPage(host) {
     saveDirty = true;
   }
 
+  /* ---------------------------------------------------------- 项目生命周期（D22.2） */
+
+  /**
+   * 回到空状态（关闭当前项目）：默认先保存。
+   * 关闭后仍可从「项目历史」重新打开，但同标签刷新不再自动恢复。
+   */
+  async function closeProject({ flush = true } = {}) {
+    if (!doc) return;
+    const closingId = projectId;
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    clearTimeout(idleTimer);
+    idleTimer = 0;
+    clearTimeout(saveRetryTimer);
+    saveRetryTimer = 0;
+    savePending = false;
+    if (flush && !persistDisabled && !leaseLocked && closingId) {
+      // 等在途保存结束，避免同一工程被并发写入一半的状态。
+      const deadline = Date.now() + 8000;
+      while (saving && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+      try {
+        const payload = await collectProject();
+        if (payload) {
+          await saveStudioProject(payload);
+          setSaveState('saved');
+        }
+      } catch {
+        toastWarn('关闭前保存失败，工程可能缺少最后一次修改');
+      }
+    }
+    saveDirty = false;
+    stopLease();
+    // 清掉「上次工程」指针：否则同标签刷新会立刻把刚关闭的工程恢复回来。
+    await clearLastProject().catch(() => {});
+    projectId = '';
+    projectCreatedAt = 0;
+    doc = null;
+    sourceBlob = null;
+    layerBlobs.clear();
+    thumbCache = { doc: null, base: null, url: '' };
+    selection = null;
+    selPath = null;
+    stopAnts();
+    pendingRestore = null;
+    refs.restoreBar.hidden = true;
+    cropRect = null;
+    refs.cropbar.hidden = true;
+    editingLayerMaskId = '';
+    selectedLayerId = null;
+    pendingStickerPoint = null;
+    perspectiveEdit = false;
+    tint = null;
+    tintDirty = true;
+    tintRect = null;
+    adjustPreview = false;
+    resetSegmentHints();
+    setPreview(null);
+    ai?.resetTaskContext?.();
+    ai?.resetResult?.();
+    ai?.refresh?.();
+    refs.empty.hidden = false;
+    refs.dot.classList.remove('is-live');
+    refs.fileName.textContent = '未打开图片';
+    refs.dims.textContent = '';
+    for (const key of ['exportBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = true;
+    refs.statusMask.textContent = '蒙版 0%';
+    refs.maskClear.disabled = true;
+    refs.maskExport.disabled = true;
+    renderSnapshots();
+    updateHistoryUi();
+    updateSelectionUi();
+    updatePatternHint?.();
+    // 先切工具（会重写状态栏），再把空状态文案补回去。
+    setTool('view');
+    refs.statusTool.textContent = '未打开图片 · 支持拖拽 / 粘贴';
+    if (!persistDisabled) setSaveState('idle');
+    scheduleDraw();
+  }
+
+  /**
+   * 新建项目：先打开选择器，用户真正选中图片后再关闭旧工程（自动保存）。
+   * 这样取消选择时不会把当前工程关掉。
+   */
+  function startNewProject(source = 'local') {
+    const asNewProject = Boolean(doc);
+    if (source === 'warehouse') {
+      openMainPicker('warehouse', { asNewProject });
+      return;
+    }
+    pendingNewProject = asNewProject;
+    refs.fileInput.click();
+  }
+
+  async function saveNow() {
+    if (!doc) {
+      toastWarn('还没有打开的项目');
+      return;
+    }
+    if (persistDisabled) {
+      toastWarn('当前浏览器不支持本机保存');
+      return;
+    }
+    if (leaseLocked) {
+      toastWarn('该工程已在其他标签编辑，本标签为只读');
+      return;
+    }
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    clearTimeout(idleTimer);
+    idleTimer = 0;
+    const deadline = Date.now() + 8000;
+    while (saving && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    saveDirty = true;
+    await runSave();
+    if (saveDirty) toastWarn('保存失败，请稍后重试');
+    else toastSuccess('已保存到本机');
+  }
+
+  function renameProject() {
+    if (!doc) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'studio-rename';
+    wrap.innerHTML = `
+      <input class="input" type="text" maxlength="60" aria-label="工程名称" />
+      <div class="studio-note">只改工程名称，不影响图片与编辑内容。</div>`;
+    const input = wrap.querySelector('input');
+    input.value = doc.name || '';
+    openModal({
+      title: '重命名项目',
+      size: 'sm',
+      content: wrap,
+      actions: [
+        { label: '取消', kind: 'ghost' },
+        {
+          label: '保存',
+          kind: 'primary',
+          onClick: () => {
+            const next = input.value.trim();
+            if (!next) {
+              toastWarn('工程名称不能为空');
+              return false;
+            }
+            doc.name = next;
+            refs.fileName.textContent = next;
+            saveDirty = true;
+            flushSave();
+            toastSuccess('已重命名');
+            return true;
+          },
+        },
+      ],
+    });
+    requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+  }
+
+  async function deleteCurrentProject() {
+    if (!doc || !projectId) return;
+    const name = doc.name || '未命名工程';
+    const ok = await confirmDialog({
+      title: '删除当前项目',
+      message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    const id = projectId;
+    await closeProject({ flush: false });
+    try {
+      await clearProject(id);
+      toastSuccess('项目已删除');
+    } catch (err) {
+      toastError(err, '删除项目失败');
+    }
+  }
+
   async function fetchBlob(url) {
     try {
       const response = await fetch(url, { credentials: 'same-origin' });
@@ -5420,11 +5621,44 @@ export function createStudioPage(host) {
     if (activeTab === 'shape') syncShapePane();
   });
 
+  /* ---------------------------------------------------------- 顶栏项目菜单（D22.2） */
+
+  function setProjMenu(open) {
+    refs.projMenu.hidden = !open;
+    refs.projBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  refs.projBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setImportMenu(false);
+    setExportMenu(false);
+    setProjMenu(refs.projMenu.hidden);
+  });
+
+  refs.projMenu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-proj]');
+    if (!item) return;
+    setProjMenu(false);
+    const action = item.dataset.proj;
+    if (action === 'new-local') startNewProject('local');
+    else if (action === 'new-warehouse') startNewProject('warehouse');
+    else if (action === 'save') void saveNow();
+    else if (action === 'rename') renameProject();
+    else if (action === 'close') {
+      void closeProject().then(() => toast('已关闭项目，可随时新建或恢复'));
+    } else if (action === 'delete') {
+      void deleteCurrentProject();
+    }
+  });
+
   /* ---------------------------------------------------------- 顶栏导入菜单 */
 
   function setImportMenu(open) {
     refs.importMenu.hidden = !open;
     refs.openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 只有已有主图时才提供「作为新主图（新建项目）」。
+    const newMain = refs.importMenu.querySelector('[data-import="newmain"]');
+    if (newMain) newMain.hidden = !doc;
   }
 
   function focusImportItem(index) {
@@ -5474,8 +5708,11 @@ export function createStudioPage(host) {
     if (!item) return;
     setImportMenu(false);
     const source = item.dataset.import;
-    if (source === 'local') refs.fileInput.click();
-    else openMainPicker(source);
+    if (source === 'newmain') startNewProject('local');
+    else if (source === 'local') {
+      pendingNewProject = false;
+      refs.fileInput.click();
+    } else openMainPicker(source);
   });
 
   /* ---------------------------------------------------------- 顶栏导出菜单 */
@@ -5555,15 +5792,24 @@ export function createStudioPage(host) {
   function onDocumentClick(event) {
     if (!refs.importMenu.hidden && !refs.importWrap.contains(event.target)) setImportMenu(false);
     if (!refs.exportMenu.hidden && !refs.exportWrap.contains(event.target)) setExportMenu(false);
+    if (!refs.projMenu.hidden && !refs.projWrap.contains(event.target)) setProjMenu(false);
   }
   document.addEventListener('click', onDocumentClick);
 
-  refs.emptyOpen.addEventListener('click', () => refs.fileInput.click());
+  refs.emptyOpen.addEventListener('click', () => {
+    pendingNewProject = false;
+    refs.fileInput.click();
+  });
   refs.emptyWarehouse.addEventListener('click', () => openMainPicker('warehouse'));
+  refs.fileInput.addEventListener('cancel', () => {
+    pendingNewProject = false;
+  });
   refs.fileInput.addEventListener('change', () => {
+    const asNewProject = pendingNewProject;
+    pendingNewProject = false;
     const files = [...(refs.fileInput.files || [])];
     refs.fileInput.value = '';
-    void importLocalFiles(files);
+    void importLocalFiles(files, { asNewProject });
   });
 
   refs.compareAllBtn.addEventListener('click', () => {
@@ -5969,9 +6215,11 @@ export function createStudioPage(host) {
   /* ---------------------------------------------------------- 导入分流（D1.2） */
 
   /** 统一导入入口：有主图时全部转参考图，无主图时第一张开为主图。 */
-  async function importPicked(items) {
+  async function importPicked(items, { asNewProject = false } = {}) {
     const list = Array.isArray(items) ? items.filter((item) => item?.src) : [];
     if (!list.length) return;
+    // 「新建项目」：用户已选中图片，此时才关闭旧工程（会先自动保存）。
+    if (asNewProject && doc) await closeProject();
     if (doc) {
       await ai.addRefItems(list);
       return;
@@ -5981,12 +6229,13 @@ export function createStudioPage(host) {
     if (opened && rest.length) await ai.addRefItems(rest);
   }
 
-  async function importLocalFiles(fileList) {
+  async function importLocalFiles(fileList, { asNewProject = false } = {}) {
     const files = [...(fileList || [])].filter((file) => file.type?.startsWith('image/'));
     if (!files.length) {
       toastWarn('请选择图片文件（PNG / JPG / WebP）');
       return;
     }
+    if (asNewProject && doc) await closeProject();
     if (doc) {
       await ai.addRefFiles(files);
       return;
@@ -5996,14 +6245,14 @@ export function createStudioPage(host) {
     if (doc && rest.length) await ai.addRefFiles(rest);
   }
 
-  function openMainPicker(source) {
+  function openMainPicker(source, { asNewProject = false } = {}) {
     openImportPicker({
       title: '导入图片',
       accept: 'main',
       multiple: false,
       initialSource: source,
       onPick(items) {
-        void importPicked(items);
+        void importPicked(items, { asNewProject });
       },
     });
   }
@@ -6110,6 +6359,12 @@ export function createStudioPage(host) {
       event.preventDefault();
       if (event.shiftKey) refs.redoBtn.click();
       else refs.undoBtn.click();
+      return;
+    }
+    if (mod && event.key.toLowerCase() === 's') {
+      // 立即保存（D22.2）：自动保存之外的手动落盘。
+      event.preventDefault();
+      void saveNow();
       return;
     }
     if (event.code === 'Space') {

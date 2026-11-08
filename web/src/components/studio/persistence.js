@@ -347,6 +347,18 @@ export async function loadLastProject() {
   return loadProject(lastId);
 }
 
+/**
+ * 关闭当前项目时清掉「上次工程」指针（D22.2）：
+ * 否则同标签刷新会立刻把刚关闭的工程恢复回来。
+ */
+export async function clearLastProject() {
+  const db = await openDb();
+  const tx = db.transaction(['meta'], 'readwrite');
+  const done = transactionDone(tx);
+  tx.objectStore('meta').delete('lastProjectId');
+  await done;
+}
+
 export async function clearProject(projectId) {
   if (!projectId) return;
   const db = await openDb();

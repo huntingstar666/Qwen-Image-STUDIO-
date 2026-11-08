@@ -401,6 +401,34 @@
   font-weight: 600;
 }
 
+/* 项目菜单（D22.2）：新建 / 保存 / 重命名 / 关闭 / 删除 */
+.studio-proj-btn {
+  width: 26px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.studio-proj-menu {
+  min-width: 200px;
+}
+
+.studio-proj-menu [data-proj='close'] {
+  margin-top: 4px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+
+.studio-proj-menu [data-proj='delete'] {
+  color: var(--danger, #d9534f);
+}
+
+.studio-rename {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* ------------------------------------------------------------- 画布区 */
 
 .studio-stage {

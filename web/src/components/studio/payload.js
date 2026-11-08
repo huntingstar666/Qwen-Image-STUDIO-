@@ -257,7 +257,6 @@ export function buildEditPayload({
       mode: 'downscale_only',
     };
     payload.zero_shift = { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 };
-    payload.color_guard = { enabled: settings.colorGuard !== false, outside_exact: true, icc: 'srgb' };
     return payload;
   }
 

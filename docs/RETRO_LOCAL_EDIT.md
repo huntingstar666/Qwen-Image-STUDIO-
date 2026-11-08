@@ -414,7 +414,7 @@
 | # | 问题 | 证据 | 处理 | 状态 |
 | --- | --- | --- | --- | --- |
 | P2-1 | `context_factor/context_pixels` 只在 `legacy_crop` 生效，前端从不发 `legacy_crop` | `pipeline.py:1135-1139`；`studio/payload.js:243-244`、`edit.js:2504-2505` | 删除或补 `legacy_crop` 开关 | **已删除**：移除 `legacy_crop` 分支（`crop_region` 仅作为独立原语保留）、两处 payload 的 `context_*`、store 默认值与接口校验/区间表项；新增一条「遗留参数被忽略」测试。 |
-| P2-2 | `color_guard` 后端零引用 | `studio/payload.js:262` | 删除 | 待处理 |
+| P2-2 | `color_guard` 后端零引用 | `studio/payload.js:262` | 删除 | **已删除**：payload 不再下发 `color_guard`（校色开关仍通过 `local.color_match / color_restore` 生效）。 |
 | P2-3 | `quality.sampling.turbo` 是布尔，`jobView.js:59` 按对象读 | `pipeline.py:1442` vs `jobView.js:59` | 统一返回对象 `{enabled, profile}` | **已修复**：`quality.sampling.turbo` 改为 `{enabled, profile}`（内部 `sampling["turbo"]` 仍是布尔，不影响 LoRA 判空逻辑）。 |
 | P2-4 | `maskStats` 抽样漏判小笔触 | `studio/studioDoc.js:344-349`（每 4 像素、`alpha>4`） | 全量或降阈值，按裁剪后尺寸统计 | 待处理 |
 | P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` | 待处理 |

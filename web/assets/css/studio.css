@@ -447,6 +447,7 @@
 }
 
 .studio-canvas-wrap canvas[data-tool="brush"],
+.studio-canvas-wrap canvas[data-tool="spot"],
 .studio-canvas-wrap canvas[data-tool="eraser"] {
   cursor: none;
 }
@@ -572,6 +573,13 @@
 }
 
 .studio-maskbar[hidden] {
+  display: none;
+}
+
+/* 污点修复（D10.1）：复用笔刷参数，但隐藏蒙版专用的选择与按钮 */
+.studio-maskbar.is-heal .studio-maskbar-tool,
+.studio-maskbar.is-heal [data-ref="maskExport"],
+.studio-maskbar.is-heal [data-ref="maskClear"] {
   display: none;
 }
 

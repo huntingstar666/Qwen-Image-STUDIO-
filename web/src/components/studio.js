@@ -48,6 +48,7 @@ import {
 } from './studio/selection.js';
 import { histogram, parseCube } from './studio/color.js';
 import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
+import { healDab } from './studio/heal.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -119,6 +120,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5-3 3-5-5 3-3z"/><path d="M11.5 7.5L4 15l5 5 7.5-7.5"/><path d="M6.5 17.5l-.8 2.2 2.2-.8"/><path d="M18 14.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8.8-1.7z"/></svg>',
   },
   {
+    id: 'spot',
+    label: '污点修复',
+    key: 'J',
+    hint: '在瑕疵上涂抹，自动用周围颜色填补；大小/硬度可调',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.2"/><path d="M11 4.8v2.4"/><path d="M11 14.8v2.4"/><path d="M4.8 11h2.4"/><path d="M14.8 11h2.4"/><path d="M18.5 17.5l2 2"/><path d="M19.2 16.2a1.6 1.6 0 1 1 2.3 2.3"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -146,6 +155,8 @@ const ADJUST_FIELDS = [
 ];
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
+/** 使用笔刷参数的工具（蒙版涂抹 + 污点修复，D10.1） */
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -153,6 +164,7 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
+  { id: 'repair', title: '修复', tools: ['spot'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -944,7 +956,8 @@ export function createStudioPage(host) {
       outpaint?.deactivate?.();
       if (activeTab === 'outpaint') activeTab = 'ai';
     }
-    refs.maskbar.hidden = !MASK_TOOLS.has(next);
+    refs.maskbar.hidden = !(MASK_TOOLS.has(next) || next === 'spot');
+    refs.maskbar.classList.toggle('is-heal', next === 'spot');
     if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
     if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
@@ -1300,7 +1313,7 @@ export function createStudioPage(host) {
     }
 
     // 画笔光标
-    if (cursor && (tool === 'brush' || tool === 'eraser')) {
+    if (cursor && (tool === 'brush' || tool === 'eraser' || tool === 'spot')) {
       const radius = Math.max(3, (brush.size / 2) * view.scale);
       ctx.save();
       ctx.beginPath();
@@ -1787,6 +1800,40 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 污点修复（D10.1）
+   * ============================================================ */
+
+  /** 在文档坐标点画一个修复笔触：取样来自「底图合成」，结果写进修复层。 */
+  function healAt(point) {
+    if (!doc) return;
+    const repair = doc.ensureRepair();
+    const source = doc.renderUnderlay();
+    healDab(repair.getContext('2d'), source, {
+      x: point.x,
+      y: point.y,
+      radius: Math.max(2, brush.size / 2),
+      opacity: brush.opacity,
+      softness: 1 - brush.hardness,
+    });
+    // 修复层画在 underlay 之上，必须让 underlay/base 一起失效才能看到即时结果。
+    doc.invalidateBase();
+  }
+
+  /** 沿拖动路径按笔刷间距连续落笔，避免快速拖动出现断点。 */
+  function healStroke(point) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(2, brush.size * 0.22);
+    if (distance < step) return;
+    const count = Math.floor(distance / step);
+    for (let i = 1; i <= count; i += 1) {
+      const t = (i * step) / distance;
+      healAt({ x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t });
+    }
+    if (drag) drag.last = point;
+  }
+
+  /* ============================================================
    * 指针交互
    * ============================================================ */
 
@@ -1817,6 +1864,12 @@ export function createStudioPage(host) {
         event.shiftKey && event.altKey ? 'intersect' : event.altKey ? 'sub' : event.shiftKey ? 'add' : 'new';
       drag = null;
       wandSelectAt(point, mode);
+      return;
+    }
+    if (tool === 'spot') {
+      drag = { mode: 'spot', last: point };
+      healAt(point);
+      scheduleDraw();
       return;
     }
     if (tool === 'brush' || tool === 'eraser') {
@@ -1866,6 +1919,11 @@ export function createStudioPage(host) {
     const point = clampPoint(toImage(event.clientX, event.clientY, rect));
     if (drag.mode === 'paint') {
       strokeTo(maskPoint(point));
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'spot') {
+      healStroke(point);
       scheduleDraw();
       return;
     }
@@ -1921,6 +1979,10 @@ export function createStudioPage(host) {
       }
       updateHistoryUi();
       updateMaskStatus();
+    } else if (mode === 'spot') {
+      // 整笔修复作为一个撤销步（D10.1）。
+      doc?.snapshot();
+      updateHistoryUi();
     } else if (mode === 'shape' && rect) {
       fillShape(offsetRect(rect));
     } else if (mode === 'lasso' && points?.length >= 3) {
@@ -2168,6 +2230,13 @@ export function createStudioPage(host) {
     } catch {
       maskBlob = null;
     }
+    let repairBlob = null;
+    try {
+      // 污点修复层（D10.1）：PNG 保留透明通道，未修区域不覆盖底图。
+      repairBlob = current.repair ? await canvasToBlob(current.repair, 'image/png') : null;
+    } catch {
+      repairBlob = null;
+    }
 
     const layers = [];
     const keepIds = new Set(layerList.map((layer) => layer.id));
@@ -2224,6 +2293,7 @@ export function createStudioPage(host) {
       tabId: tabId(),
       base: { blob: base, name, width: sourceSize.width, height: sourceSize.height },
       maskBlob,
+      repairBlob,
       refs: aiState?.refs || [],
       layers,
       session: {
@@ -2376,6 +2446,14 @@ export function createStudioPage(host) {
         urls.push(maskUrl);
         const maskImage = await loadImage(maskUrl);
         next.mask.getContext('2d').drawImage(maskImage, 0, 0);
+      }
+      // 污点修复层（D10.1）：透明通道保真，直接贴回同尺寸画布。
+      if (base.repairBlob) {
+        const repairUrl = URL.createObjectURL(base.repairBlob);
+        urls.push(repairUrl);
+        const repairImage = await loadImage(repairUrl);
+        const repair = next.ensureRepair();
+        repair.getContext('2d').drawImage(repairImage, 0, 0, repair.width, repair.height);
       }
 
       // 图层蒙版恢复（D8.2 / D9.3）：叠加层与调整层共用。

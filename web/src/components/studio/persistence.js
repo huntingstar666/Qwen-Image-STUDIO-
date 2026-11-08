@@ -156,6 +156,7 @@ export async function saveStudioProject(project) {
     project.base?.width || 0,
     project.base?.height || 0,
     blobTag(project.maskBlob),
+    blobTag(project.repairBlob),
   ].join('|');
   const baseChanged = baseSignatures.get(projectId) !== baseSignature;
 
@@ -207,6 +208,7 @@ export async function saveStudioProject(project) {
         },
         bitmapBlob: baseBlob,
         maskBlob: project.maskBlob || null,
+        repairBlob: project.repairBlob || null,
         version: SCHEMA_VERSION,
         updatedAt,
       },

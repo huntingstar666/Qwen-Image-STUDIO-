@@ -89,6 +89,8 @@ export class StudioDoc {
     this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
+    /** 污点修复图层（D10.1）：与原图同尺寸，透明处不覆盖底图 */
+    this.repair = null;
     /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
     this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
     this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
@@ -136,6 +138,8 @@ export class StudioDoc {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       adjust: { ...this.adjust },
       mask: cloneCanvas(this.mask),
+      /** 污点修复层（D10.1）：透明 = 未修，像素 = 已修 */
+      repair: this.repair ? cloneCanvas(this.repair) : null,
       layers: this.layers.map((layer) => layer.clone()),
       bytes,
     };
@@ -148,6 +152,7 @@ export class StudioDoc {
     this.transform = { ...state.transform, crop: state.transform.crop ? { ...state.transform.crop } : null };
     this.adjust = { ...state.adjust };
     this.mask = cloneCanvas(state.mask);
+    this.repair = state.repair ? cloneCanvas(state.repair) : null;
     this.layers = (state.layers || []).map((layer) => layer.clone());
     this._base = null;
     this._underlay = null;
@@ -194,6 +199,7 @@ export class StudioDoc {
     this.transform.crop = null;
     this.layers = [];
     this.rotateMaskRight();
+    this.rotateRepairRight();
     this._maskHas = null;
     this.snapshot();
   }
@@ -203,6 +209,7 @@ export class StudioDoc {
     this.transform.crop = null;
     this.layers = [];
     this.rotateMaskLeft();
+    this.rotateRepairLeft();
     this._maskHas = null;
     this.snapshot();
   }
@@ -211,9 +218,11 @@ export class StudioDoc {
     if (axis === 'h') {
       this.transform.flipH = !this.transform.flipH;
       this.flipMask('h');
+      this.flipRepair('h');
     } else {
       this.transform.flipV = !this.transform.flipV;
       this.flipMask('v');
+      this.flipRepair('v');
     }
     this.transform.crop = null;
     this.layers = [];
@@ -245,6 +254,7 @@ export class StudioDoc {
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
     this.layers = [];
+    this.repair = null;
     this._maskHas = null;
     this.snapshot();
   }
@@ -350,6 +360,79 @@ export class StudioDoc {
     }
     ctx.drawImage(source, 0, 0);
     this.mask = next;
+  }
+
+  /* ---------------------------------------------------------- 污点修复层（D10.1） */
+
+  /** 懒创建修复层：与「旋转后、未裁剪」画布同尺寸，透明表示未修复。 */
+  ensureRepair() {
+    const oriented = this.oriented;
+    if (!this.repair || this.repair.width !== oriented.width || this.repair.height !== oriented.height) {
+      const next = makeCanvas(oriented.width, oriented.height);
+      if (this.repair) next.getContext('2d').drawImage(this.repair, 0, 0);
+      this.repair = next;
+    }
+    return this.repair;
+  }
+
+  hasRepair() {
+    return Boolean(this.repair);
+  }
+
+  clearRepair() {
+    this.repair = null;
+    this._base = null;
+    this._underlay = null;
+    this.snapshot();
+  }
+
+  /** 修复内容画进底图合成（在调色/LUT 之后、叠加层之前）。 */
+  _drawRepair(ctx) {
+    if (!this.repair) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(this.repair, 0, 0);
+    ctx.restore();
+  }
+
+  rotateRepairRight() {
+    if (!this.repair) return;
+    const source = this.repair;
+    const next = makeCanvas(source.height, source.width);
+    const ctx = next.getContext('2d');
+    ctx.translate(next.width / 2, next.height / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(source, -source.width / 2, -source.height / 2);
+    this.repair = next;
+  }
+
+  rotateRepairLeft() {
+    if (!this.repair) return;
+    const source = this.repair;
+    const next = makeCanvas(source.height, source.width);
+    const ctx = next.getContext('2d');
+    ctx.translate(next.width / 2, next.height / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(source, -source.width / 2, -source.height / 2);
+    this.repair = next;
+  }
+
+  flipRepair(axis) {
+    if (!this.repair) return;
+    const source = this.repair;
+    const next = makeCanvas(source.width, source.height);
+    const ctx = next.getContext('2d');
+    if (axis === 'h') {
+      ctx.translate(source.width, 0);
+      ctx.scale(-1, 1);
+    } else {
+      ctx.translate(0, source.height);
+      ctx.scale(1, -1);
+    }
+    ctx.drawImage(source, 0, 0);
+    this.repair = next;
   }
 
   /* ---------------------------------------------------------- 叠加层 */
@@ -552,6 +635,7 @@ export class StudioDoc {
     }
 
     this._applyLut(canvas);
+    this._drawRepair(ctx);
     this._underlay = canvas;
     return canvas;
   }
@@ -629,6 +713,19 @@ export class StudioDoc {
       ctx.globalAlpha = Math.min(0.45, Math.abs(adjust.tint) / 100 * 0.45);
       ctx.fillStyle = adjust.tint > 0 ? '#ff4dd2' : '#4dff9a';
       ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+    // 污点修复层（D10.1）：预览按 ratio 缩放，随裁剪偏移。
+    if (this.repair) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(
+        this.repair,
+        -((crop?.x || 0) * ratio),
+        -((crop?.y || 0) * ratio),
+        this.repair.width * ratio,
+        this.repair.height * ratio,
+      );
       ctx.restore();
     }
     if (this.layers.length) {

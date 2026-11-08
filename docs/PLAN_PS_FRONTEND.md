@@ -815,6 +815,16 @@ DOM 结构：
   - 实测（headless Chromium 1440×900，800×600 红/绿底图，调整层曝光 60）：全图时红 `[192,57,43] → [255,86,65]`、绿 `[102,212,115] → [155,255,174]`；线性拖拽后起点侧 `[255,86,65]`、中点 `[218,68,52]`、终点侧回 `[102,212,115]`；径向拖拽后中心 `[255,85,64]`、半径处 `[192,57,43]`、外部回原色，截图可见中心暖色光斑；过渡 0/50/100 三档蒙版重建（统计差异 6168/6173/6175）；画笔在光斑中心点一下即回 `[192,57,43]`（提示「正在涂抹…画笔隐藏效果，橡皮擦恢复」）；「全图」立即恢复全量并提示；撤销可回到渐变。刷新 `?cb=43#studio` 恢复后提示为「当前：画笔涂抹的蒙版」、过渡 50、行扫描呈「渐变环 + 中心手涂孔洞」，即渐变与手涂组合被完整保留。截图 `.screenshots/D9.4-local-adjust-clean-2026-11-08T04-12-37-422Z.png`。
   - 说明：径向目前只支持椭圆（两轴由拖拽向量决定），不做旋转椭圆；「范围蒙版（按颜色/亮度）」仍留在 §13.2 的 P1 清单，本轮不做。
 
+- **D10.1 污点修复（已完成）** —— 纯前端的「环形取样 + 锥形渐变填补」，用于去痘、去灰尘、去孤立小物体：
+  - 新增 `studio/heal.js`：`ringSamples(data, width, height, {x,y,radius,samples,box})` 在半径外一圈按角度取样（每个角度取 `box` 邻域均值，跳过透明像素并沿用上一个有效颜色，越界安全跳过）；`healDab(ctx, source, {x,y,radius,opacity,softness})` 用 `createConicGradient` 把各角度颜色织成补丁，再用径向渐变的 `destination-in` 做柔和边缘（无 `createConicGradient` 时退回环形均值纯色）。
+  - 文档模型：`StudioDoc.repair`（与「旋转后、未裁剪」画布同尺寸的透明修复层），`ensureRepair/hasRepair/clearRepair`；`renderUnderlay()` 在 LUT 之后、叠加层之前 `_drawRepair`，`renderPreviewBase()` 按 ratio + 裁剪偏移缩放贴回，保证缩略图/低分辨率代理与成图一致；`snapshot/restore` 克隆修复层（可撤销）；旋转/翻转/恢复原始图片同步清空或变换修复层。
+  - 工具：左栏新增「修复」组与 `spot`（污点修复，快捷键 J）。复用画笔参数（大小/硬度/不透明度），拖动按 `brush.size * 0.22` 间距连续落笔，整笔只落一次撤销步；笔刷光标与隐藏鼠标指针沿用画笔样式；蒙版浮条进入 `is-heal` 模式，隐藏蒙版工具下拉与「导出/清除蒙版」，只保留参数滑杆。
+  - 取样来自 `renderUnderlay()`（含调色/LUT/已有修复），每次落笔后 `invalidateBase()` 同时失效 `_underlay` 与 `_base`，修复结果即时可见。
+  - 持久化：工程保存新增顶层 `repairBlob`（PNG 保留透明通道），`persistence` 写入 base 记录并纳入签名；恢复时按同尺寸贴回修复层，未修复区域保持透明、不覆盖底图。
+  - 单测：新增 `web/tests/studio/heal.test.mjs` 5 项（纯色环、水平渐变左右差异、透明像素沿用、采样数下限/自定义、越界安全）；`node --test web/tests/studio/heal.test.mjs` → `pass 5 / fail 0`。
+  - 实测（headless Chromium 1440×900，800×600 红色渐变 + 半径 18 深色圆点）：修复前圆点中心 `[59,31,24]`、周边 `[209,75,51]`；选中污点修复点击圆点后中心变为 `[207,73,50]`（与周边差 ≤2，肉眼无缝），撤销回到 `[59,31,24]`、重做再次修复；刷新 `?cb=53#studio` 恢复后仍是 `[207,72,50]`、深色像素计数 0，说明修复层随工程持久化。截图 `.screenshots/D10.1-spot-heal-2026-11-08T04-17-32-284Z.png`。
+  - 已知取舍：当前是「环形颜色外推」而非内容感知修复，纹理/结构边缘（发丝、砖缝）会被抹平；正式的内容感知与仿制图章放在 D10.2，后续可把本工具的 `healDab` 换成 patch-match 取样而不改 UI。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1000,6 +1010,7 @@ DOM 结构：
 | `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + `local/setLocal/clearLocal` + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})`、`normalizeLocal/localStrengthAt/buildLocalMask` | `color` | D9.3 / D9.4（已落地） |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
+| `heal.js` | `ringSamples(data,w,h,opts)` 环形角度取样、`healDab(ctx, source, opts)` 锥形渐变补丁（D10.1 已落地，后续可替换为 patch-match） | 无 | D10.1 |
 | `tools/smudge.js` | 涂抹 | `renderer` | D10 |
 | `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
@@ -1311,7 +1322,7 @@ DOM 结构：
 | D9.2 | 直方图 + LUT | 已完成 | 本次提交 | `color.js` 追加 `histogram/parseCube/sampleCube/applyCube`；`studioDoc` 支持 `adjust.lut` 逐像素查表；调色面板加直方图与 .cube 加载/强度；实测见 §12.11 |
 | D9.3 | 调整图层 | 已完成 | 本次提交 | 新增 `studio/adjustments.js`（`AdjustmentLayer` + `applyAdjustment` + `applyAdjustmentLayer`）；`renderer`/`studioDoc` 合成管线支持调整层；图层显隐眼睛按钮；面板选中调整层后滑杆接管、LUT 禁用；随工程保存 `kind/params/visible`；实测见 §12.11 |
 | D9.4 | 局部调整 | 已完成 | 本次提交 | `adjustments.js` 追加 `normalizeLocal/localStrengthAt/buildLocalMask`；`AdjustmentLayer` 支持 `local` + `setLocal/clearLocal`；调色面板「局部范围」区块（线性/径向/画笔/全图 + 过渡）；画布取景辅助线；随工程保存 `local`；实测见 §12.11 |
-| D10.1 | 污点修复 | 未开始 | — | — |
+| D10.1 | 污点修复 | 已完成 | 本次提交 | 新增 `studio/heal.js`（`ringSamples` + `healDab` 锥形渐变补丁）；`studioDoc.repair` 修复层并入渲染/历史/旋转翻转；`spot` 工具（J）+ 笔刷参数；随工程保存 `repairBlob`；单测 5 项；实测见 §12.11 |
 | D10.2 | 仿制图章 / 修复画笔 | 未开始 | — | — |
 | D10.3 | 涂抹 | 未开始 | — | — |
 | D10.4 | 磨皮 | 未开始 | — | — |

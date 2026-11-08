@@ -1718,6 +1718,70 @@ html[data-theme="dark"] .feed-empty {
   }
 }
 
+/* 任务预设：底部参数条上的圆钮 + 向上展开的浮层 */
+.wb-preset-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.wb-preset-pill {
+  border-color: var(--line);
+}
+
+.wb-preset-anchor.open .wb-preset-pill {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.wb-preset-value {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-preset-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: min(520px, calc(100vw - 46px));
+  /* 固定高度：切换预设时卡片/提示文案变化不再改变面板尺寸，避免面板上下跳 */
+  height: clamp(280px, 62vh, 560px);
+  overflow: auto;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow-float);
+  animation: sizePopIn 140ms var(--ease);
+}
+
+.wb-preset-pop[hidden] {
+  display: none;
+}
+
+.wb-preset-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.wb-preset-pop-head .mono {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
 .size-pop-head {
   display: flex;
   align-items: center;

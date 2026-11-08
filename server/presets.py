@@ -24,7 +24,8 @@ from typing import Any
 #: 3：新增 ``panorama`` 全景预设（整画布采样 + 宽幅画布）。
 #: 4：扩图长边对齐全局 max_side（4096）；原生模式启用整图校色开关。
 #: 5：预设默认值支持全局覆写；新增采样 / 一致性 / LoRA 默认参数与自定义搭配。
-PRESET_VERSION = 5
+#: 6：新增 local.crop_floor（最小裁剪窗，默认 1024，与孤海一致）。
+PRESET_VERSION = 6
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -76,6 +77,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "expand_right": 1.4,
             "crop_min_side": 768,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "expand_pct": 4.0,
             "feather_pct": 5.0,
             "blend_pixels": 24,
@@ -107,6 +109,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "expand_right": 1.4,
             "crop_min_side": 768,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "expand_pct": 4.0,
             "feather_pct": 5.0,
             "blend_pixels": 24,
@@ -138,6 +141,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "expand_right": 1.4,
             "crop_min_side": 1024,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "expand_pct": 3.0,
             "feather_pct": 3.0,
             "blend_pixels": 24,
@@ -200,6 +204,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "fills": False,
             "crop_min_side": 0,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "expand_pct": 0.0,
             "feather_pct": 0.0,
             "blend_pixels": 24,
@@ -227,6 +232,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "fills": False,
             "crop_min_side": 0,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "blend_pixels": 24,
             "dither": True,
             "feather": 32,
@@ -263,6 +269,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "expand_right": 1.4,
             "crop_min_side": 768,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "expand_pct": 4.0,
             "feather_pct": 5.0,
             "blend_pixels": 24,
@@ -296,6 +303,7 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "fills": False,
             "crop_min_side": 0,
             "crop_max_side": 2048,
+            "crop_floor": 1024,
             "blend_pixels": 24,
             "dither": True,
             "feather": 32,
@@ -564,6 +572,7 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
 
     crop_min = integer("local.crop_min_side", 0, 4096, "裁块下限")
     crop_max = integer("local.crop_max_side", 0, 4096, "裁块上限")
+    integer("local.crop_floor", 0, 2048, "最小裁剪窗")
     integer("local.feather", 0, 256, "羽化像素")
     integer("local.mask_expand", 0, 256, "遮罩外扩")
     integer("local.blend_pixels", 0, 256, "过渡带宽度")

@@ -185,6 +185,8 @@ class CropInfo:
     #: 0 表示没有额外缩放，等同于 ``snap_dims(w, h)``。
     model_w: int = 0
     model_h: int = 0
+    #: 触发「最小裁剪窗」时的阈值（0 = 未触发）。窗口小于该值时以遮罩为中心扩到阈值见方。
+    floor: int = 0
 
     def target_size(self) -> tuple[int, int]:
         """模型输入尺寸：有缩放用缩放后的，否则用 32 对齐后的裁切尺寸。"""
@@ -1811,6 +1813,7 @@ def crop_region_factors(
     multiple: int = 32,
     max_side: int = 0,
     min_side: int = 0,
+    min_window: int = 1024,
 ) -> tuple[Image.Image, CropInfo]:
     """按「短边 × 每向独立系数」裁编辑区，允许越界（用边缘众数色填充）。
 
@@ -1851,6 +1854,24 @@ def crop_region_factors(
     left = max(0, min(int(short * (float(expand_left) - 1.0)), x0))
     right = max(0, min(int(short * (float(expand_right) - 1.0)), width - x1))
 
+    # 最小裁剪窗：小遮罩不靠放大，而是以遮罩为中心把窗口扩到 min_window 见方，
+    # 扩出来的是真实周边像素（越界部分由 crop_with_color_fill 用边缘众数色补）。
+    min_window = max(0, int(min_window or 0))
+    floor_hit = 0
+    if min_window:
+        x0e, x1e = x0 - left, x1 + right
+        y0e, y1e = y0 - top, y1 + bottom
+        nw, nh = x1e - x0e, y1e - y0e
+        if nw < min_window or nh < min_window:
+            nw = max(nw, min_window)
+            nh = max(nh, min_window)
+            cx0, cy0 = (x0e + x1e) // 2, (y0e + y1e) // 2
+            x0e, y0e = cx0 - nw // 2, cy0 - nh // 2
+            x1e, y1e = x0e + nw, y0e + nh
+            left, right = x0 - x0e, x1e - x1
+            top, bottom = y0 - y0e, y1e - y1
+            floor_hit = min_window
+
     multiple = max(1, int(multiple))
     bw = _snap_up(x1 - x0 + left + right, multiple)
     bh = _snap_up(y1 - y0 + top + bottom, multiple)
@@ -1874,6 +1895,7 @@ def crop_region_factors(
         x=int(x), y=int(y), w=int(bw), h=int(bh),
         canvas_w=int(width), canvas_h=int(height),
         model_w=int(model_w), model_h=int(model_h),
+        floor=int(floor_hit),
     )
 
 

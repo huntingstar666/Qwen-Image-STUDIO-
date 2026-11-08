@@ -49,7 +49,18 @@ export function qualityItems(job) {
   if (image.width && image.height) items.push({ text: `${fmtNum(image.width)} × ${fmtNum(image.height)}` });
   if (quality.preset) {
     const version = quality.preset_version != null ? ` · v${quality.preset_version}` : '';
-    items.push({ text: `预设 ${quality.preset}${version}`, title: '本次生效的编辑预设' });
+    items.push({
+      text: `预设 ${quality.preset_label || quality.preset}${version}`,
+      title: `本次生效的编辑预设：${quality.preset}`,
+    });
+  }
+  if (quality.sampling) {
+    const s = quality.sampling;
+    const turbo = s.turbo?.profile ? ` · Turbo ${s.turbo.profile}` : s.turbo?.enabled === false ? ' · 无 Turbo' : '';
+    items.push({
+      text: `${fmtNum(s.steps)} 步 · cfg ${fmtNum(s.cfg, 1)} · ${s.sampler}/${s.scheduler}${turbo}`,
+      title: '后端实际使用的采样参数（预设未回传时由预设补全）',
+    });
   }
   const scheme = String(quality.scheme || '').toLowerCase();
   if (scheme) {

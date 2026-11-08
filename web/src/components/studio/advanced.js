@@ -36,6 +36,7 @@ const GROUPS = [
       { key: 'local.fills', label: '填充闭合选区', type: 'switch', fallback: false, hint: '把描边内部一并填满，避免只移除一圈边。元素移除必须开。', showIf: isB, disabled: (ctx) => ctx.task === 'remove' },
       { key: 'local.crop_min_side', label: '裁块下限', type: 'select', fallback: 768, numeric: true, options: [0, 512, 768, 1024, 1536], unit: 'px', hint: '裁块短边至少这么大；扩图档位是 1024。', showIf: isB },
       { key: 'local.crop_max_side', label: '裁块上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072, 4096], unit: 'px', hint: '裁块长边上限；越大越贵，超过 2048 收益递减。', showIf: isB },
+      { key: 'local.crop_floor', label: '最小裁剪窗', type: 'select', fallback: 1024, numeric: true, options: [512, 768, 1024], unit: 'px', hint: '遮罩很小时，以遮罩为中心把裁块扩到至少这么大——补的是真实周边像素，不是放大；默认 1024 与孤海一致。', showIf: isB },
     ],
   },
   {
@@ -218,9 +219,13 @@ function renderField(field, value, ctx) {
  *   getOverrides: () => object,
  *   apply: (overrides: object) => void,
  *   onChange?: () => void,
+ *   omit?: string[],
  * }} options
+ *   omit：不在这里渲染的键（页面别处已有同参数控件时用，避免两处重复配置）。
  */
-export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange } = {}) {
+export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange, omit } = {}) {
+  const omitKeys = new Set(omit || []);
+  const visibleFields = (group) => group.fields.filter((field) => !omitKeys.has(field.key));
   const defaultOpen = new Set(['crop', 'seam']);
 
   function valueOf(field) {
@@ -238,7 +243,7 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
   }
 
   function allKeys(group) {
-    return group.fields.map((field) => field.key);
+    return visibleFields(group).map((field) => field.key);
   }
 
   function render() {
@@ -256,7 +261,7 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
     const keep = opened.size ? opened : defaultOpen;
     host.innerHTML =
       GROUPS.map((group) => {
-        const body = group.fields
+        const body = visibleFields(group)
           .map((field) => renderField(field, valueOf(field), ctx))
           .join('');
         if (!body.trim()) return '';
@@ -297,7 +302,7 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
       const groupReset = host.querySelector(`[data-reset-group="${group.id}"]`);
       if (groupReset) groupReset.hidden = !changed.length;
     }
-    for (const field of GROUPS.flatMap((group) => group.fields)) {
+    for (const field of GROUPS.flatMap((group) => visibleFields(group))) {
       if (field.type === 'readonly') continue;
       const button = host.querySelector(`[data-reset="${field.key}"]`);
       if (button) button.hidden = !modifiedKeys(preset, overrides).includes(field.key);
@@ -332,7 +337,9 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
     onChange?.();
   }
 
-  const fieldByKey = new Map(GROUPS.flatMap((group) => group.fields.map((field) => [field.key, field])));
+  const fieldByKey = new Map(
+    GROUPS.flatMap((group) => visibleFields(group).map((field) => [field.key, field])),
+  );
 
   host.addEventListener('input', (event) => {
     const input = event.target.closest('[data-key]');

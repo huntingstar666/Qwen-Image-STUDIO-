@@ -88,32 +88,6 @@ export function createEditPage(host) {
           <div class="wb-adv-body">
         <section class="panel">
           <div class="panel-head">
-            <div class="panel-title">方案预设 <span class="panel-sub" data-ref="presetNote"></span></div>
-          </div>
-          <div class="panel-body">
-            <div class="ai-presets edit-presets" data-ref="presetCards"></div>
-            <div class="ai-hint" data-ref="presetHint"></div>
-            <div class="ai-custom-pick" data-ref="customPickHost"></div>
-            <label class="ai-field">
-              <span>任务</span>
-              <select class="select" data-ref="taskMode">
-                <option value="auto">跟随预设</option>
-                <option value="edit">通用编辑</option>
-                <option value="inpaint">局部重绘</option>
-                <option value="remove">元素移除</option>
-                <option value="outpaint">扩图</option>
-                <option value="panorama">全景</option>
-              </select>
-            </label>
-            <div class="ai-hint" data-ref="taskNote"></div>
-            <div data-ref="panoramaHost" hidden></div>
-            <div data-ref="guardsHost"></div>
-            <div class="ai-guard-note" data-ref="guardNote" hidden></div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
             <div class="panel-title">尺寸与画布 <span class="panel-sub">零偏移对齐</span></div>
           </div>
           <div class="panel-body">
@@ -143,47 +117,11 @@ export function createEditPage(host) {
 
         <section class="panel">
           <div class="panel-head">
-            <div class="panel-title">局部编辑 <span class="panel-sub">只重绘绿色遮罩区域</span></div>
+            <div class="panel-title">本次保护 <span class="panel-sub">零偏移 / 色彩</span></div>
           </div>
           <div class="panel-body">
-            <label class="switch">
-              <input type="checkbox" data-ref="localEnabled" />
-              <span class="switch-track"></span>
-              <span class="switch-label">开启局部编辑<small>遮罩外逐像素保留原图（零色差）</small></span>
-            </label>
-            <div class="notice warn hidden" data-ref="localDisabledNote">局部编辑已关闭：当前遮罩不会提交，整张图按全局编辑处理。</div>
-            <div class="wb-adv-rows" data-ref="localOptions">
-              <div class="field">
-                <span class="field-label">编辑方案</span>
-                <div class="radio-row">
-                  <label class="radio-pill"><input type="radio" name="edit-scheme" value="a" data-ref="schemeA" />方案 A · 全画布</label>
-                  <label class="radio-pill"><input type="radio" name="edit-scheme" value="b" data-ref="schemeB" />方案 B · 裁切</label>
-                  <label class="radio-pill"><input type="radio" name="edit-scheme" value="native" data-ref="schemeNative" />原生 · 不合成</label>
-                </div>
-                <div class="field-hint">方案 A：整幅画布参与采样，按遮罩合成；方案 B：裁出遮罩区域采样再拼回；原生：整张画布就是模型输出。</div>
-              </div>
-              <div class="grid-2" data-ref="schemeAFields">
-                <label class="field">
-                  <span class="field-label">羽化 <span class="tag-hint" data-ref="featherVal">32 px</span></span>
-                  <input class="range" type="range" min="0" max="128" step="1" data-ref="feather" />
-                </label>
-                <label class="field">
-                  <span class="field-label">外扩 <span class="tag-hint" data-ref="expandVal">0 px</span></span>
-                  <input class="range" type="range" min="0" max="64" step="1" data-ref="expand" />
-                </label>
-              </div>
-              <div class="field-hint" data-ref="schemeNote" hidden></div>
-              <label class="switch">
-                <input type="checkbox" data-ref="colorMatch" />
-                <span class="switch-track"></span>
-                <span class="switch-label">颜色匹配<small>把编辑区颜色统计拉回原图，减少色差</small></span>
-              </label>
-              <label class="field">
-                <span class="field-label">颜色强度 <span class="tag-hint" data-ref="colorStrengthVal">0.60</span></span>
-                <input class="range" type="range" min="0" max="1" step="0.05" data-ref="colorStrength" />
-              </label>
-              <div class="notice info">当前方案不使用的参数会自动隐藏；接缝 / 过渡带的细节在「高级参数」里按方案显示。</div>
-            </div>
+            <div data-ref="guardsHost"></div>
+            <div class="ai-guard-note" data-ref="guardNote" hidden></div>
           </div>
         </section>
 
@@ -375,9 +313,35 @@ export function createEditPage(host) {
               <button class="wb-pill wb-pill-btn" type="button" data-ref="turboPill" title="Turbo 加速">
                 <span class="wb-pill-key">Turbo</span><span data-role="label">加速</span>
               </button>
-              <button class="wb-pill wb-pill-check" type="button" data-ref="localPill" title="只重绘遮罩区域">
-                <span class="wb-check-dot"></span><span>局部编辑</span>
-              </button>
+              <div class="wb-preset-anchor" data-ref="presetAnchor">
+                <button class="wb-pill wb-preset-pill" type="button" data-ref="presetPill" aria-expanded="false" title="任务预设">
+                  <span class="wb-pill-key">预设</span>
+                  <span class="wb-preset-value" data-ref="presetPillValue">局部编辑</span>
+                  <span class="wb-caret">▼</span>
+                </button>
+                <div class="wb-preset-pop" data-ref="presetPop" hidden>
+                  <div class="wb-preset-pop-head">
+                    <span>任务预设</span>
+                    <span class="mono" data-ref="presetNote"></span>
+                  </div>
+                  <div class="ai-presets edit-presets" data-ref="presetCards"></div>
+                  <label class="ai-field">
+                    <span>任务</span>
+                    <select class="select" data-ref="taskMode">
+                      <option value="auto">跟随预设</option>
+                      <option value="edit">通用编辑</option>
+                      <option value="inpaint">局部重绘</option>
+                      <option value="remove">元素移除</option>
+                      <option value="outpaint">扩图</option>
+                      <option value="panorama">全景</option>
+                    </select>
+                  </label>
+                  <div class="ai-hint" data-ref="taskNote"></div>
+                  <div data-ref="panoramaHost" hidden></div>
+                  <div class="ai-hint" data-ref="presetHint"></div>
+                  <div class="ai-custom-pick" data-ref="customPickHost"></div>
+                </div>
+              </div>
               <span class="spacer"></span>
               <span class="wb-kbd"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
               <button class="btn primary lg wb-generate" type="button" data-ref="submit">开始编辑</button>
@@ -412,6 +376,10 @@ export function createEditPage(host) {
     sizePillValue: ref('sizePillValue'),
     sizePop: ref('sizePop'),
     sizePopDims: ref('sizePopDims'),
+    presetAnchor: ref('presetAnchor'),
+    presetPill: ref('presetPill'),
+    presetPillValue: ref('presetPillValue'),
+    presetPop: ref('presetPop'),
     sizeModes: ref('sizeModes'),
     sizeBody: ref('sizeBody'),
     modeRows: ref('modeRows'),
@@ -419,9 +387,6 @@ export function createEditPage(host) {
     padMode: ref('padMode'),
     sizeInfo: ref('sizeInfo'),
     canvasHint: ref('canvasHint'),
-    localEnabled: ref('localEnabled'),
-    localOptions: ref('localOptions'),
-    localDisabledNote: ref('localDisabledNote'),
     presetCards: ref('presetCards'),
     presetNote: ref('presetNote'),
     presetHint: ref('presetHint'),
@@ -432,18 +397,6 @@ export function createEditPage(host) {
     guardsHost: ref('guardsHost'),
     guardNote: ref('guardNote'),
     advancedHost: ref('advancedHost'),
-    schemeA: ref('schemeA'),
-    schemeB: ref('schemeB'),
-    schemeNative: ref('schemeNative'),
-    schemeAFields: ref('schemeAFields'),
-    schemeNote: ref('schemeNote'),
-    feather: ref('feather'),
-    featherVal: ref('featherVal'),
-    expand: ref('expand'),
-    expandVal: ref('expandVal'),
-    colorMatch: ref('colorMatch'),
-    colorStrength: ref('colorStrength'),
-    colorStrengthVal: ref('colorStrengthVal'),
     steps: ref('steps'),
     cfg: ref('cfg'),
     denoise: ref('denoise'),
@@ -480,7 +433,6 @@ export function createEditPage(host) {
     posePill: ref('posePill'),
     poseThumb: ref('poseThumb'),
     poseLabel: ref('poseLabel'),
-    localPill: ref('localPill'),
     statusStrip: ref('statusStrip'),
     feedClear: ref('feedClear'),
     compareBtn: ref('compareBtn'),
@@ -601,11 +553,6 @@ export function createEditPage(host) {
     jobRunner.clearFeed();
     historyRail.clear();
     refs.resultState.textContent = '等待任务';
-  });
-
-  refs.localPill.addEventListener('click', () => {
-    refs.localEnabled.checked = !refs.localEnabled.checked;
-    refs.localEnabled.dispatchEvent(new Event('change', { bubbles: true }));
   });
 
   refs.turboPill.addEventListener('click', () => {
@@ -1020,12 +967,8 @@ export function createEditPage(host) {
               const [item] = images.splice(images.indexOf(image), 1);
               images.unshift(item);
             }
-            edit.localEnabled = true;
-            patchSettings({ edit: { localEnabled: true } });
-            refs.localEnabled.checked = true;
-            syncLocalUi();
             syncImages();
-            toastSuccess(`遮罩已保存（覆盖 ${fmtCoverage(coverage)}），局部编辑已开启`);
+            toastSuccess(`遮罩已保存（覆盖 ${fmtCoverage(coverage)}），提交时按局部重绘执行`);
             return true;
           },
         },
@@ -1586,6 +1529,30 @@ export function createEditPage(host) {
   }
 
   refs.sizePill.addEventListener('click', () => setSizePopOpen(refs.sizePop.hidden));
+
+  /** 任务预设浮层（从底部参数条的「预设」圆钮弹出，向上展开）。 */
+  function onPresetDocDown(event) {
+    if (refs.presetAnchor.contains(event.target)) return;
+    setPresetPopOpen(false);
+  }
+
+  function setPresetPopOpen(open) {
+    refs.presetPop.hidden = !open;
+    refs.presetPill.setAttribute('aria-expanded', String(open));
+    refs.presetAnchor.classList.toggle('open', open);
+    if (open) {
+      // 圆钮靠近右侧，浮层默认向右展开会顶出视口：按可视宽度把左边界夹回来。
+      const rect = refs.presetPill.getBoundingClientRect();
+      const width = Math.min(520, window.innerWidth - 46);
+      const left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
+      refs.presetPop.style.left = `${Math.round(left - rect.left)}px`;
+      document.addEventListener('pointerdown', onPresetDocDown, true);
+    } else {
+      document.removeEventListener('pointerdown', onPresetDocDown, true);
+    }
+  }
+
+  refs.presetPill.addEventListener('click', () => setPresetPopOpen(refs.presetPop.hidden));
   refs.sizeModes.addEventListener('click', (event) => {
     const button = event.target.closest('[data-mode]');
     if (!button) return;
@@ -1603,85 +1570,19 @@ export function createEditPage(host) {
   refs.padMode.value = 'edge';
 
   /* ============================================================
-   * 局部编辑
+   * 任务预设 / 本次保护 / 高级参数（与图片精修共用同一套数据源）
    * ============================================================ */
-  function syncLocalUi() {
-    const enabled = refs.localEnabled.checked;
-    refs.localOptions.classList.toggle('hidden', !enabled);
-    refs.localDisabledNote.classList.toggle('hidden', enabled);
-    refs.localPill?.classList.toggle('active', enabled);
-    updateMaskStatus();
+  /**
+   * 是否提交遮罩：唯一依据是「编辑目标上有没有画遮罩」。
+   * 不再单独放"局部编辑"开关——有遮罩就局部重绘，没遮罩就整图编辑，
+   * 避免开关、预设、任务三处各说一套。
+   */
+  function hasTargetMask() {
+    return Boolean(images[0]?.mask?.dataUrl);
   }
 
-  refs.localEnabled.checked = Boolean(edit.localEnabled);
-  refs.localEnabled.addEventListener('change', () => {
-    edit.localEnabled = refs.localEnabled.checked;
-    patchSettings({ edit: { localEnabled: edit.localEnabled } });
-    syncLocalUi();
-  });
-
-  function setScheme(scheme) {
-    edit.scheme = scheme;
-    refs.schemeA.checked = scheme === 'a';
-    refs.schemeB.checked = scheme === 'b';
-    refs.schemeNative.checked = scheme === 'native';
-    paintSchemePills();
-    syncSchemeVisibility(scheme);
-    patchSettings({ edit: { scheme } });
-    setLocalOverride('local.scheme', scheme);
-  }
-
-  function paintSchemePills() {
-    for (const pill of refs.localOptions.querySelectorAll('.radio-pill')) {
-      const input = pill.querySelector('input');
-      pill.classList.toggle('active', input.checked);
-    }
-  }
-
-  /** 只显示当前方案真正会用到的快捷参数，避免"改了不生效"。 */
-  function syncSchemeVisibility(scheme) {
-    const isA = scheme === 'a';
-    if (refs.schemeAFields) refs.schemeAFields.hidden = !isA;
-    if (!refs.schemeNote) return;
-    refs.schemeNote.hidden = isA;
-    refs.schemeNote.textContent = scheme === 'b'
-      ? '方案 B：接缝扩展 / 羽化 / 过渡带在「高级参数 → 接缝与羽化」里调整。'
-      : scheme === 'native'
-        ? '原生：不裁块、不做遮罩合成；羽化 / 外扩 / 过渡带均不适用，颜色由「颜色匹配」控制。'
-        : '';
-  }
-
-  refs.schemeA.addEventListener('change', () => setScheme('a'));
-  refs.schemeB.addEventListener('change', () => setScheme('b'));
-  refs.schemeNative.addEventListener('change', () => setScheme('native'));
-
-  /** 局部编辑的快捷项直接写覆盖项，生效值 = 预设 + 覆盖（与图片精修同一套规则）。 */
-  function bindPresetRange(input, key, stateKey, labelEl, format) {
-    input.addEventListener('input', () => {
-      const value = Number(input.value);
-      if (labelEl) labelEl.textContent = format(value);
-      if (stateKey) edit[stateKey] = value;
-      setLocalOverride(key, value);
-    });
-  }
-
-  bindPresetRange(refs.feather, 'local.feather', 'feather', refs.featherVal, (v) => `${Math.round(v)} px`);
-  // 注意：store 里的字段叫 maskExpand（不是 expand），绑错会让滑杆值变成 undefined → 显示 NaN px
-  bindPresetRange(refs.expand, 'local.mask_expand', 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`);
-  bindPresetRange(refs.colorStrength, 'local.color_strength', 'colorStrength', refs.colorStrengthVal, (v) => Number(v).toFixed(2));
-
-  refs.colorMatch.addEventListener('change', () => {
-    edit.colorMatch = refs.colorMatch.checked;
-    patchSettings({ edit: { colorMatch: edit.colorMatch } });
-    setLocalOverride('local.color_match', edit.colorMatch);
-  });
-
-  /* ============================================================
-   * 方案预设 / 本次保护 / 高级参数（与图片精修共用同一套数据源）
-   * ============================================================ */
   function localHasMask() {
-    const target = images[0];
-    return Boolean(refs.localEnabled.checked && target?.mask?.dataUrl);
+    return hasTargetMask();
   }
 
   function currentPresetId() {
@@ -1699,16 +1600,6 @@ export function createEditPage(host) {
     return effectiveValue(currentPreset(), edit.overrides || {}, key, fallback);
   }
 
-  function setLocalOverride(key, value) {
-    const preset = currentPreset();
-    if (!preset) return;
-    edit.overrides = withOverride(preset, edit.overrides || {}, key, value);
-    patchSettings({ edit: { overrides: edit.overrides } });
-    renderPresets();
-    // 快捷项变化时高级折叠里的同一字段也要跟着回显
-    advanced.refresh();
-  }
-
   mountGuards(refs.guardsHost, {
     value: edit.protection,
     onChange(next) {
@@ -1721,6 +1612,14 @@ export function createEditPage(host) {
   const advanced = mountAdvanced(refs.advancedHost, {
     getPreset: currentPreset,
     getOverrides: () => edit.overrides || {},
+    // 扩图四边与最大长边在参考图条的「⤢ 扩图」弹窗里设置，高级参数不再重复一份。
+    omit: [
+      'outpaint.top',
+      'outpaint.bottom',
+      'outpaint.left',
+      'outpaint.right',
+      'outpaint.max_side',
+    ],
     apply(next) {
       edit.overrides = next;
       patchSettings({ edit: { overrides: next } });
@@ -1810,8 +1709,13 @@ export function createEditPage(host) {
         </button>`;
       })
       .join('');
-    refs.presetNote.textContent = `v${presetVersion}`;
-    refs.presetHint.textContent = preset?.summary || '';
+    refs.presetNote.textContent = preset
+      ? `${preset.label || preset.id} · v${presetVersion}`
+      : `v${presetVersion}`;
+    refs.presetPillValue.textContent = preset ? (preset.label || preset.id) : '预设';
+    refs.presetHint.textContent = preset
+      ? `${preset.summary || ''}${dirty ? ' · 已覆盖 ' + modifiedKeys(preset, edit.overrides || {}).length + ' 项' : ''}`
+      : '';
     renderCustomPick();
     renderTaskMode();
     syncGuardNote();
@@ -1978,52 +1882,36 @@ export function createEditPage(host) {
     patchSettings({ edit: { overrides: next, presetMigrated: true } });
   }
 
-  /** 快捷项回显预设生效值（不写覆盖项）。 */
+  /**
+   * 回显预设生效值（不写覆盖项）。
+   * 方案 / 羽化 / 外扩 / 颜色这几项已经没有页面快捷控件，统一在「高级参数」里改，
+   * 这里只把状态同步到 store，供旧参数集（不带 preset 的后端）兜底使用。
+   */
   function syncLocalControls() {
     const preset = currentPreset();
     if (!preset) return;
-    const scheme = String(presetValue('local.scheme', preset.params?.local?.scheme || 'a'));
-    edit.scheme = scheme;
-    refs.schemeA.checked = scheme === 'a';
-    refs.schemeB.checked = scheme === 'b';
-    refs.schemeNative.checked = scheme === 'native';
-    paintSchemePills();
-    syncSchemeVisibility(scheme);
-    const feather = Math.round(Number(presetValue('local.feather', 32)));
-    edit.feather = feather;
-    refs.feather.value = String(feather);
-    refs.featherVal.textContent = `${feather} px`;
-    const expand = Math.round(Number(presetValue('local.mask_expand', 0)));
-    edit.maskExpand = expand;
-    refs.expand.value = String(expand);
-    refs.expandVal.textContent = `${expand} px`;
-    const strength = Number(presetValue('local.color_strength', 0.6));
-    edit.colorStrength = strength;
-    refs.colorStrength.value = String(strength);
-    refs.colorStrengthVal.textContent = strength.toFixed(2);
-    const match = Boolean(presetValue('local.color_match', true));
-    edit.colorMatch = match;
-    refs.colorMatch.checked = match;
+    edit.scheme = String(presetValue('local.scheme', preset.params?.local?.scheme || 'a'));
+    edit.feather = Math.round(Number(presetValue('local.feather', 32)));
+    edit.maskExpand = Math.round(Number(presetValue('local.mask_expand', 0)));
+    edit.colorStrength = Number(presetValue('local.color_strength', 0.6));
+    edit.colorMatch = Boolean(presetValue('local.color_match', true));
     patchSettings({
       edit: {
         scheme: edit.scheme,
-        feather,
-        maskExpand: expand,
-        colorStrength: strength,
-        colorMatch: match,
+        feather: edit.feather,
+        maskExpand: edit.maskExpand,
+        colorStrength: edit.colorStrength,
+        colorMatch: edit.colorMatch,
       },
     });
   }
 
   function updateMaskStatus() {
     const target = images[0];
-    const hasMask = Boolean(target?.mask?.dataUrl);
-    if (!refs.localEnabled.checked) {
-      refs.actionHint.textContent = '局部编辑关闭：整图参与编辑';
-    } else if (!hasMask) {
-      refs.actionHint.textContent = '局部编辑已开启：点参考图上的 ✂ 涂抹要重绘的区域';
+    if (!hasTargetMask()) {
+      refs.actionHint.textContent = '未绘制遮罩：本次按整图编辑；点参考图上的 ✂ 涂抹只重绘的区域';
     } else {
-      refs.actionHint.textContent = `局部编辑已开启：遮罩覆盖 ${fmtCoverage(target.mask.coverage || 0)}，遮罩外逐像素保留`;
+      refs.actionHint.textContent = `已提交遮罩：覆盖 ${fmtCoverage(target.mask.coverage || 0)}，遮罩外逐像素保留`;
     }
     // 遮罩有无会影响「需蒙版预设」是否降级，及时刷新预设条与保护提示
     if (presetList.length) renderPresets();
@@ -2350,13 +2238,6 @@ export function createEditPage(host) {
     refs.readyHint.style.color = ready ? 'var(--ok)' : 'var(--warn)';
   }
 
-  refs.schemeA.checked = edit.scheme === 'a';
-  refs.schemeB.checked = edit.scheme === 'b';
-  refs.schemeNative.checked = edit.scheme === 'native';
-  paintSchemePills();
-  syncSchemeVisibility(edit.scheme);
-  refs.localEnabled.checked = Boolean(edit.localEnabled);
-  syncLocalUi();
   renderSelects();
   renderTurbo();
   renderLoras();
@@ -2419,10 +2300,31 @@ export function createEditPage(host) {
     return presetList;
   }
 
+  /** 宽松数值比较：用于判断页面值与预设值是否等价（等价就不必显式回传）。 */
+  function sameNumber(a, b) {
+    const na = Number(a);
+    const nb = Number(b);
+    return Number.isFinite(na) && Number.isFinite(nb) && Math.abs(na - nb) < 1e-9;
+  }
+
+  /** LoRA 列表指纹（名称 + 强度，排序后比较，忽略顺序差异）。 */
+  function loraSignature(list) {
+    return (Array.isArray(list) ? list : [])
+      .map((item) => {
+        const name = String(item?.name || item?.value || '').trim();
+        if (!name) return '';
+        const strength = Number(item?.strength ?? item?.weight ?? 1);
+        return `${name}@${(Number.isFinite(strength) ? strength : 1).toFixed(3)}`;
+      })
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }
+
   function collectPayload(precomputedMask = null) {
     const mode = refs.sizeMode.value;
     const first = images[0];
-    const localEnabled = refs.localEnabled.checked;
+    const localEnabled = hasTargetMask();
     const targetMask = localEnabled ? images[0]?.mask : null;
     const mask = precomputedMask || (targetMask?.dataUrl
       ? {
@@ -2527,6 +2429,8 @@ export function createEditPage(host) {
       payload.preset = presetId;
       const extra = nestOverrides(edit.overrides || {});
       const localExtra = { ...(extra.local || {}) };
+      // 局部编辑开关是页面上的显式选择：必须回传，否则预设里的 local.enabled=true 会把它盖掉
+      localExtra.enabled = localEnabled;
       const protection = normalizeProtection(edit.protection);
       // 保护开关关闭时显式落字段（B2/B3）
       if (!protection.color) {
@@ -2553,13 +2457,48 @@ export function createEditPage(host) {
       if (!consistencyOn) localExtra.consistency = false;
       if (Object.keys(localExtra).length) extra.local = localExtra;
       Object.assign(payload, extra);
+
+      // 预设才是唯一事实源：与预设完全一致的采样 / Turbo / LoRA / 一致性不再显式回传。
+      // 否则后端 merge() 只看到显式值（显式 > 预设），预设等于没生效，
+      // 全局设置里改了预设默认值也不会跟着变。
+      const presetParams = presetMeta?.params || {};
+      const presetSampling = presetParams.sampling || {};
+      const presetTurbo = presetParams.turbo;
+      const turboFromPreset = !edit.turboUser && Boolean(presetTurbo?.enabled);
+      if (turboFromPreset) {
+        // Turbo 开启时采样由档位决定，采样字段和 turbo 本身都不必回传
+        delete payload.turbo;
+        delete payload.steps;
+        delete payload.cfg;
+        delete payload.sampler;
+        delete payload.scheduler;
+        delete payload.denoise;
+      } else {
+        if (presetSampling.steps != null && sameNumber(payload.steps, presetSampling.steps)) delete payload.steps;
+        if (presetSampling.cfg != null && sameNumber(payload.cfg, presetSampling.cfg)) delete payload.cfg;
+        if (presetSampling.denoise != null && sameNumber(payload.denoise, presetSampling.denoise)) delete payload.denoise;
+        if (presetSampling.sampler != null && String(payload.sampler) === String(presetSampling.sampler)) delete payload.sampler;
+        if (presetSampling.scheduler != null && String(payload.scheduler) === String(presetSampling.scheduler)) delete payload.scheduler;
+      }
+      if (presetParams.loras !== undefined
+          && loraSignature(payload.loras) === loraSignature(presetParams.loras)) {
+        delete payload.loras;
+      }
+      const presetCons = presetParams.consistency;
+      if (consistencyOn && presetCons && typeof presetCons === 'object') {
+        const loraMatch = !presetCons.lora
+          || String(presetCons.lora) === String(payload.consistency_lora?.name || '');
+        const strengthMatch = sameNumber(
+          payload.consistency_lora?.strength, Number(presetCons.strength ?? 0.48));
+        if (loraMatch && strengthMatch) delete payload.consistency_lora;
+      }
     } else {
       // 旧参数集：不带 preset 时保持原行为
       payload.local = {
         enabled: localEnabled,
-        scheme: refs.schemeNative.checked ? 'native' : refs.schemeB.checked ? 'b' : 'a',
+        scheme: ['a', 'b', 'auto', 'native'].includes(String(edit.scheme)) ? edit.scheme : 'a',
         feather: Math.round(Number(edit.feather) || 0),
-        color_match: refs.colorMatch.checked,
+        color_match: edit.colorMatch !== false,
         color_strength: Number(edit.colorStrength),
         mask_expand: Math.round(Number(edit.maskExpand) || 0),
         context_factor: Number(edit.contextFactor),
@@ -2630,7 +2569,7 @@ export function createEditPage(host) {
    * ============================================================ */
   function activeChainConfig() {
     if (!images.length) return null;
-    const hasMask = Boolean(refs.localEnabled.checked && images[0]?.mask?.dataUrl);
+    const hasMask = hasTargetMask();
     const wanted = String(edit.preset || defaultPresetId(presetList) || 'mask_edit');
     const resolved = resolvePresetForMask(wanted, hasMask);
     const cfg = chainConfigOf(findPreset(presetList, resolved.id));
@@ -2794,12 +2733,8 @@ export function createEditPage(host) {
       return;
     }
     let maskResult = null;
-    if (refs.localEnabled.checked) {
+    if (hasTargetMask()) {
       const target = images[0];
-      if (!target?.mask?.dataUrl) {
-        toastWarn('局部编辑已开启，但还没有遮罩：点参考图上的 ✂ 涂抹要重绘的区域');
-        return;
-      }
       maskResult = {
         dataURL: target.mask.dataUrl,
         empty: false,
@@ -2828,7 +2763,7 @@ export function createEditPage(host) {
       await ensurePresets();
       // 明确选「元素移除」时必须已有蒙版，否则会提交一次无效任务
       if (String(edit.taskMode || 'auto') === 'remove' && !images[0]?.mask?.dataUrl) {
-        toastWarn('元素移除需要先开启局部编辑并涂抹蒙版');
+        toastWarn('元素移除需要先在参考图上涂抹蒙版（点 ✂ 绘制）');
         return;
       }
       // 连续编辑：记录本次接力的起点原图，成功后自动把结果接为下一轮输入
@@ -2858,7 +2793,7 @@ export function createEditPage(host) {
             scheduler: payload.scheduler,
           },
         },
-        maskDataUrl: refs.localEnabled.checked ? maskOverlay : null,
+        maskDataUrl: hasTargetMask() ? maskOverlay : null,
         onProgress: syncActionProgress,
         onDone: (job) => {
           refs.resultState.textContent = '已完成';
@@ -3135,18 +3070,15 @@ export function createEditPage(host) {
         updateSizeInfo();
         promptEditor.setText(result.prompt);
         edit.prompt = result.prompt;
-        patchSettings({ edit: { prompt: result.prompt, localEnabled: true } });
+        patchSettings({ edit: { prompt: result.prompt } });
         updatePromptCount();
-        edit.localEnabled = true;
-        refs.localEnabled.checked = true;
         // 旧流程产出了新画布 + 遮罩，落回局部编辑预设
         edit.preset = 'mask_edit';
         edit.taskMode = 'auto';
-        patchSettings({ edit: { prompt: result.prompt, localEnabled: true, preset: 'mask_edit', taskMode: 'auto' } });
+        patchSettings({ edit: { prompt: result.prompt, preset: 'mask_edit', taskMode: 'auto' } });
         renderPresets();
         syncLocalControls();
         advanced.refresh();
-        syncLocalUi();
         updateMaskStatus();
         toastSuccess(
           `扩图已准备：新画布 ${width} × ${height}，${result.maskDataUrl ? '已生成新增区域遮罩，可点 ✂ 微调' : '遮罩生成失败，请点 ✂ 手动涂抹'}`,
@@ -3207,12 +3139,6 @@ export function createEditPage(host) {
         edit.prompt = payload.prompt;
         patchSettings({ edit: { prompt: payload.prompt } });
         updatePromptCount();
-      }
-      if (payload.localEnabled != null) {
-        edit.localEnabled = Boolean(payload.localEnabled);
-        refs.localEnabled.checked = edit.localEnabled;
-        patchSettings({ edit: { localEnabled: edit.localEnabled } });
-        syncLocalUi();
       }
       if (payload.taskMode) {
         const mode = String(payload.taskMode);

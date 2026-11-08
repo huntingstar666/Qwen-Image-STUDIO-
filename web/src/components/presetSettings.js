@@ -100,6 +100,7 @@ const GROUPS = [
       { path: 'local.fills', label: '填充闭合选区', type: 'switch' },
       { path: 'local.crop_min_side', label: '裁块下限', type: 'number', min: 0, max: 4096, step: 32 },
       { path: 'local.crop_max_side', label: '裁块上限', type: 'number', min: 0, max: 4096, step: 32 },
+      { path: 'local.crop_floor', label: '最小裁剪窗', type: 'number', min: 0, max: 2048, step: 32 },
     ],
   },
   {

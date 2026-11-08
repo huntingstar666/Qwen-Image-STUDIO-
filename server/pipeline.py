@@ -1156,6 +1156,9 @@ class Pipeline:
                     multiple=int(profile.get("snap") or 32),
                     max_side=int(local.get("crop_max_side") or 2048),
                     min_side=crop_min_side,
+                    # 最小裁剪窗：小遮罩以遮罩为中心扩到至少 crop_floor 见方（默认 1024，与孤海一致），
+                    # 补真实周边像素而不是把小块放大。
+                    min_window=int(local.get("crop_floor", 1024) or 0),
                 )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
@@ -1430,7 +1433,17 @@ class Pipeline:
             "outside_max_abs": outside,
             "size_match": size_match,
             "preset": (preset_info or {}).get("id"),
+            "preset_label": (preset_info or {}).get("label"),
             "preset_version": (preset_info or {}).get("version"),
+            # 真正生效的采样参数：前端可能不回传（由预设决定），这里给结果页一个可核对的口径
+            "sampling": {
+                "steps": sampling["steps"],
+                "cfg": sampling["cfg"],
+                "sampler": sampling["sampler"],
+                "scheduler": sampling["scheduler"],
+                "denoise": sampling["denoise"],
+                "turbo": sampling["turbo"],
+            },
             "canvas": {"w": plan.width, "h": plan.height},
             "source": {"w": src.width, "h": src.height},
             "output": {"w": final.width, "h": final.height},

@@ -13,6 +13,7 @@ import { copyText, escapeHtml, fmtNum } from '../utils.js';
 import { api } from '../api.js';
 import { toast, toastError, toastSuccess } from './toast.js';
 import { openModal, closeModal } from './modal.js';
+import { openLightbox } from './lightbox.js';
 import { favoriteImage } from './favorites.js';
 import { GALLERY_CATEGORIES, GALLERY_ITEMS } from '../data/gallery.js';
 import { goToT2IPage, setT2IHandoff } from '../handoff.js';
@@ -405,6 +406,17 @@ export function createGalleryPage(host) {
       </div>`;
 
     let dialog = null;
+    const openPreview = () => {
+      if (!item.image) {
+        toastWarn('该作品没有可预览的图片');
+        return;
+      }
+      openLightbox(
+        [{ url: item.image, width: width || undefined, height: height || undefined, label: item.title }],
+        0,
+        { title: '作品高清预览', onClose: () => showDetail(item) },
+      );
+    };
     dialog = openModal({
       title: item.title,
       subtitle: `${item.category} · ${item.style}`,
@@ -412,6 +424,12 @@ export function createGalleryPage(host) {
       dialogClass: 'modal-library',
       content,
       actions: [
+        {
+          label: '高清预览',
+          kind: 'ghost',
+          close: false,
+          onClick: openPreview,
+        },
         {
           label: '复制提示词',
           kind: 'ghost',
@@ -461,6 +479,7 @@ export function createGalleryPage(host) {
       if (ok) toastSuccess('提示词已复制');
       else toastError(new Error('剪贴板不可用'), '复制失败');
     });
+    content.querySelector('.gallery-cover-img')?.addEventListener('click', openPreview);
 
     return dialog;
   }

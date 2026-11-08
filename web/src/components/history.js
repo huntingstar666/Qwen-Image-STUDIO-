@@ -13,6 +13,7 @@ import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { clearProject, leaseHeldByOther, listProjects } from './studio/persistence.js';
+import { HISTORY_KINDS, historyKindLabel, visibleHistoryKinds } from '../data/historyKinds.js';
 import {
   copyText,
   downloadUrl,
@@ -23,7 +24,7 @@ import {
   summarizeParams,
 } from '../utils.js';
 
-const LIMIT = 60;
+const LIMIT = 200;
 
 export function createHistoryPage(host) {
   let items = [];
@@ -34,11 +35,7 @@ export function createHistoryPage(host) {
   host.innerHTML = `
     <div class="page page-history">
       <div class="history-toolbar">
-        <div class="chips" data-ref="kindFilter">
-          <button class="chip active" type="button" data-kind="all">全部</button>
-          <button class="chip" type="button" data-kind="t2i">文生图</button>
-          <button class="chip" type="button" data-kind="edit">图像编辑</button>
-        </div>
+        <div class="chips" data-ref="kindFilter"></div>
         <span class="history-summary" data-ref="summary">加载中…</span>
         <span class="spacer"></span>
         <button class="btn ghost sm" type="button" data-ref="refresh">刷新</button>
@@ -53,6 +50,10 @@ export function createHistoryPage(host) {
         </div>
         <div class="history-project-grid" data-ref="projectGrid"></div>
       </div>
+      <div class="history-section-head" data-ref="jobHead">
+        <span class="history-section-title" data-ref="jobTitle">生成与编辑</span>
+        <span class="history-section-count" data-ref="jobCount"></span>
+      </div>
       <div data-ref="grid"></div>
     </div>`;
 
@@ -66,8 +67,33 @@ export function createHistoryPage(host) {
     projectCount: ref('projectCount'),
     projectRefresh: ref('projectRefresh'),
     projectGrid: ref('projectGrid'),
+    projectSection: ref('projectSection'),
+    jobHead: ref('jobHead'),
+    jobTitle: ref('jobTitle'),
+    jobCount: ref('jobCount'),
   };
   let kindFilter = 'all';
+
+  function kindCounts() {
+    const counts = { all: items.length + projects.length };
+    for (const item of items) counts[item.kind] = (counts[item.kind] || 0) + 1;
+    counts.studio = projects.length;
+    return counts;
+  }
+
+  function renderChips() {
+    const counts = kindCounts();
+    const visible = visibleHistoryKinds(counts);
+    if (!visible.some((kind) => kind.id === kindFilter)) kindFilter = 'all';
+    refs.kindFilter.innerHTML = visible
+      .map((kind) => {
+        const count = counts[kind.id] || 0;
+        return `<button class="chip${kind.id === kindFilter ? ' active' : ''}" type="button" data-kind="${kind.id}">${kind.label}${
+          count ? `<small>${count}</small>` : ''
+        }</button>`;
+      })
+      .join('');
+  }
 
   /* ============================================================
    * 精修工程（D22.1 V4）
@@ -100,6 +126,7 @@ export function createHistoryPage(host) {
   }
 
   function renderProjects() {
+    renderChips();
     refs.projectCount.textContent = projects.length ? `${projects.length} 个` : '';
     if (!projects.length) {
       refs.projectGrid.innerHTML = `
@@ -232,8 +259,12 @@ export function createHistoryPage(host) {
     return api.fileUrl(path);
   }
 
+  function kindMeta() {
+    return HISTORY_KINDS.find((kind) => kind.id === kindFilter) || HISTORY_KINDS[0];
+  }
+
   function filteredItems() {
-    if (kindFilter === 'all') return items;
+    if (kindMeta().source !== 'job') return kindFilter === 'all' ? items : [];
     return items.filter((item) => item.kind === kindFilter);
   }
 
@@ -241,17 +272,32 @@ export function createHistoryPage(host) {
    * 列表渲染
    * ============================================================ */
   function render() {
+    renderChips();
+    const meta = kindMeta();
+    const showProjects = meta.source === 'all' || meta.source === 'project';
+    const showJobs = meta.source === 'all' || meta.source === 'job';
+    refs.projectSection.hidden = !showProjects;
+    refs.grid.hidden = !showJobs;
+    refs.jobHead.hidden = !showJobs;
+    refs.jobTitle.textContent = meta.source === 'job' ? meta.label : '生成与编辑';
+
     const list = filteredItems();
-    refs.summary.textContent = loading ? '加载中…' : `共 ${items.length} 条记录${kindFilter === 'all' ? '' : ` · 当前筛选 ${list.length} 条`}`;
+    refs.jobCount.textContent = showJobs && items.length ? `${list.length} 条` : '';
+    const summaryParts = [`共 ${items.length} 条记录`, `精修工程 ${projects.length} 个`];
+    if (meta.source === 'job') summaryParts.push(`当前筛选 ${list.length} 条`);
+    refs.summary.textContent = loading ? '加载中…' : summaryParts.join(' · ');
+
+    if (!showJobs) return;
     if (loading) {
       refs.grid.innerHTML = '<div class="empty"><div class="spinner"></div><div>正在读取历史记录…</div></div>';
       return;
     }
     if (!list.length) {
+      const hint = meta.source === 'job' ? `还没有${meta.label}记录` : '还没有历史记录';
       refs.grid.innerHTML = `
         <div class="panel"><div class="empty">
           <div class="glyph">◫</div>
-          <div>还没有历史记录</div>
+          <div>${hint}</div>
           <div class="field-hint">生成或编辑成功后，结果会自动出现在这里。</div>
         </div></div>`;
       return;
@@ -270,7 +316,7 @@ export function createHistoryPage(host) {
             <div class="history-info">
               <div class="history-title">${escapeHtml(item.prompt || '（无提示词）')}</div>
               <div class="history-meta">
-                <span class="kind-tag">${item.kind === 'edit' ? '编辑' : '文生图'}</span>
+                <span class="kind-tag">${escapeHtml(historyKindLabel(item.kind))}</span>
                 ${statusText ? `<span style="color:var(--warn)">${statusText}</span>` : ''}
                 ${sizeText ? `<span>${sizeText}</span>` : ''}
                 <span>${escapeHtml(fmtTime(item.created_at))}</span>
@@ -377,7 +423,7 @@ export function createHistoryPage(host) {
           image: imageUrl(image.url),
           prompt: item.prompt,
           seed: item.params?.seed ?? null,
-          kind: item.kind === 'edit' ? 'edit' : 't2i',
+          kind: item.kind,
           params: item.params,
           source: 'history',
           sourceRef: String(item.id),
@@ -388,7 +434,7 @@ export function createHistoryPage(host) {
     });
 
     openModal({
-      title: item.kind === 'edit' ? '图像编辑记录' : '文生图记录',
+      title: `${historyKindLabel(item.kind)}记录`,
       subtitle: `#${item.id}`,
       size: 'lg',
       content,
@@ -477,9 +523,6 @@ export function createHistoryPage(host) {
     const button = event.target.closest('[data-kind]');
     if (!button) return;
     kindFilter = button.dataset.kind;
-    for (const chip of refs.kindFilter.querySelectorAll('[data-kind]')) {
-      chip.classList.toggle('active', chip === button);
-    }
     render();
   });
 

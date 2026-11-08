@@ -2194,6 +2194,11 @@ details.fold > .fold-body {
   margin-bottom: 18px;
 }
 
+/* .history-section-head 使用 display:flex，会覆盖 UA 的 [hidden]{display:none}，需显式兜底。 */
+.page-history [hidden] {
+  display: none !important;
+}
+
 .history-section-head {
   display: flex;
   align-items: center;

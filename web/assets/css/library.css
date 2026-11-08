@@ -367,6 +367,7 @@
   border-radius: 8px;
   object-fit: contain;
   box-shadow: var(--shadow);
+  cursor: zoom-in;
 }
 
 .lib-detail-side {

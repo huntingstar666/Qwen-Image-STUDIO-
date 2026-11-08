@@ -9,6 +9,7 @@ import { toastError, toastSuccess, toastWarn } from './toast.js';
 export const KIND_LABELS = {
   t2i: '文生图',
   edit: '图生图',
+  upscale: '高清放大',
   upload: '本地素材',
   studio: '精修',
 };

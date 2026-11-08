@@ -13,6 +13,7 @@
 import { api } from '../api.js';
 import { toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal, closeModal } from './modal.js';
+import { openLightbox } from './lightbox.js';
 import { downloadUrl, escapeHtml, fmtNum, fmtTime, summarizeParams } from '../utils.js';
 import { CATEGORY_PRESETS, KIND_LABELS } from './favorites.js';
 import { goToEditPage, goToStudioPage, goToT2IPage, setStudioHandoff, setT2IHandoff } from '../handoff.js';
@@ -22,6 +23,7 @@ const KIND_FILTERS = [
   { id: 'all', label: '全部' },
   { id: 't2i', label: '文生图' },
   { id: 'edit', label: '图生图' },
+  { id: 'upscale', label: '高清放大' },
   { id: 'studio', label: '精修' },
   { id: 'upload', label: '本地素材' },
 ];
@@ -134,7 +136,7 @@ export function createMaterialsPage(host) {
   }
 
   function renderCounts() {
-    const counts = { all: items.length, t2i: 0, edit: 0, studio: 0, upload: 0 };
+    const counts = { all: items.length, t2i: 0, edit: 0, upscale: 0, studio: 0, upload: 0 };
     for (const item of items) counts[item.kind] = (counts[item.kind] || 0) + 1;
     for (const chip of refs.kindFilter.querySelectorAll('[data-kind]')) {
       const badge = chip.querySelector('[data-count]');
@@ -494,8 +496,8 @@ export function createMaterialsPage(host) {
            <span class="field-label">参考图</span>
            <div class="lib-refs">${item.referenceImages
              .map(
-               (ref) =>
-                 `<a class="lib-ref" href="${escapeHtml(api.fileUrl(ref.url))}" target="_blank" rel="noopener"><img src="${escapeHtml(
+               (ref, index) =>
+                 `<a class="lib-ref" href="${escapeHtml(api.fileUrl(ref.url))}" target="_blank" rel="noopener" data-ref-index="${index}"><img src="${escapeHtml(
                    api.fileUrl(ref.thumbUrl || ref.url),
                  )}" alt="参考图" loading="lazy" /></a>`,
              )
@@ -507,7 +509,7 @@ export function createMaterialsPage(host) {
     content.className = 'lib-detail';
     content.innerHTML = `
       <div class="lib-detail-media">
-        ${image.url ? `<img src="${escapeHtml(api.fileUrl(image.url))}" alt="${escapeHtml(item.title || '素材')}" />` : '<div class="empty"><div>没有可显示的图片</div></div>'}
+        ${image.url ? `<img src="${escapeHtml(api.fileUrl(image.url))}" alt="${escapeHtml(item.title || '素材')}" data-main-preview />` : '<div class="empty"><div>没有可显示的图片</div></div>'}
       </div>
       <div class="lib-detail-side">
         <div class="result-badges">${badges}</div>
@@ -539,6 +541,32 @@ export function createMaterialsPage(host) {
         }
       </div>`;
 
+    const previewList = [];
+    if (image.url) {
+      previewList.push({
+        url: api.fileUrl(image.url),
+        width: image.width || undefined,
+        height: image.height || undefined,
+        filename: image.filename,
+        label: item.title || '素材',
+      });
+    }
+    for (const ref of item.referenceImages || []) {
+      previewList.push({
+        url: api.fileUrl(ref.url),
+        width: ref.width || undefined,
+        height: ref.height || undefined,
+        label: '参考图',
+      });
+    }
+    const openPreview = (startIndex = 0) => {
+      if (!previewList.length) {
+        toastWarn('没有可预览的图片');
+        return;
+      }
+      openLightbox(previewList, startIndex, { title: '素材高清预览', onClose: () => showDetail(item) });
+    };
+
     openModal({
       title: item.title || '素材详情',
       subtitle: KIND_LABELS[item.kind] || '素材',
@@ -546,6 +574,12 @@ export function createMaterialsPage(host) {
       dialogClass: 'modal-library',
       content,
       actions: [
+        {
+          label: '高清预览',
+          kind: 'ghost',
+          close: false,
+          onClick: () => openPreview(0),
+        },
         {
           label: '删除',
           kind: 'danger',
@@ -600,6 +634,14 @@ export function createMaterialsPage(host) {
           onClick: () => sendToT2I(item),
         },
       ],
+    });
+
+    content.querySelector('[data-main-preview]')?.addEventListener('click', () => openPreview(0));
+    content.querySelectorAll('[data-ref-index]').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        openPreview(Number(link.dataset.refIndex) + 1);
+      });
     });
   }
 

@@ -24,7 +24,7 @@ INDEX_PATH = os.path.join(config.STORAGE_DIR, "materials.json")
 MATERIALS_DIR = os.path.join(config.STORAGE_DIR, "materials")
 THUMBS_DIR = os.path.join(MATERIALS_DIR, "thumbs")
 
-KINDS = {"t2i", "edit", "upload", "studio"}
+KINDS = {"t2i", "edit", "upscale", "upload", "studio"}
 SOURCES = {"gallery", "history", "result", "upload", "studio"}
 _EXT_BY_FORMAT = {
     "jpeg": ".jpg",

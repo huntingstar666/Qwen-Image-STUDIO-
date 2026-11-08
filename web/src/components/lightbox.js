@@ -18,9 +18,9 @@ function clampZoom(value) {
 /**
  * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string}>} images
  * @param {number} [startIndex]
- * @param {{title?:string}} [options]
+ * @param {{title?:string, onClose?:Function}} [options]
  */
-export function openLightbox(images, startIndex = 0, { title = '高清大图' } = {}) {
+export function openLightbox(images, startIndex = 0, { title = '高清大图', onClose } = {}) {
   const list = (images || []).filter((item) => item?.url);
   if (!list.length) return null;
 
@@ -49,6 +49,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
       <span class="spacer"></span>
       <button class="lb-tool" type="button" data-ref="zoomOut" title="缩小">−</button>
       <button class="lb-tool" type="button" data-ref="zoomReset" title="还原到适应窗口">适应</button>
+      <button class="lb-tool" type="button" data-ref="zoomActual" title="按原图 1:1 实际像素显示（1）">1:1</button>
       <button class="lb-tool" type="button" data-ref="zoomIn" title="放大">＋</button>
       <span class="lb-zoom mono" data-ref="zoomVal">100%</span>
       <button class="lb-tool" type="button" data-ref="download">下载</button>
@@ -73,6 +74,29 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
     panX = 0;
     panY = 0;
     applyTransform();
+  };
+
+  // 原图实际像素：当前显示宽度是被 max-width/max-height 适应窗口后的尺寸，
+  // 用 naturalWidth / clientWidth 得到 1:1 所需倍率。
+  const actualSizeZoom = () => {
+    const natural = img.naturalWidth || 0;
+    const shown = img.clientWidth || 0;
+    return natural && shown ? clampZoom(natural / shown) : 1;
+  };
+
+  const showActualSize = () => {
+    zoom = actualSizeZoom();
+    panX = 0;
+    panY = 0;
+    applyTransform();
+  };
+
+  const updateInfo = () => {
+    const item = list[index] || {};
+    const width = item.width || img.naturalWidth || 0;
+    const height = item.height || img.naturalHeight || 0;
+    const dims = width && height ? `${fmtNum(width)} × ${fmtNum(height)}` : '';
+    ref('info').textContent = [item.label || `第 ${index + 1} 张`, dims].filter(Boolean).join(' · ');
   };
 
   const renderFilm = () => {
@@ -103,8 +127,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
     counter.textContent = list.length > 1 ? `${index + 1} / ${list.length}` : '';
     ref('prev').style.display = list.length > 1 ? '' : 'none';
     ref('next').style.display = list.length > 1 ? '' : 'none';
-    const dims = item.width && item.height ? `${fmtNum(item.width)} × ${fmtNum(item.height)}` : '';
-    ref('info').textContent = [item.label || `第 ${index + 1} 张`, dims].filter(Boolean).join(' · ');
+    updateInfo();
     film.querySelectorAll('[data-thumb]').forEach((button) => {
       button.classList.toggle('active', Number(button.dataset.thumb) === index);
     });
@@ -126,6 +149,8 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
       applyTransform();
     } else if (event.key === '0') {
       resetView();
+    } else if (event.key === '1') {
+      showActualSize();
     }
   };
   document.addEventListener('keydown', onKey);
@@ -136,7 +161,10 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
     size: 'lg',
     dialogClass: 'lightbox-modal',
     hideFooter: true,
-    onClose: () => document.removeEventListener('keydown', onKey),
+    onClose: () => {
+      document.removeEventListener('keydown', onKey);
+      onClose?.();
+    },
   });
 
   ref('close').addEventListener('click', () => modal.close());
@@ -151,6 +179,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
     applyTransform();
   });
   ref('zoomReset').addEventListener('click', resetView);
+  ref('zoomActual').addEventListener('click', showActualSize);
   ref('download').addEventListener('click', () => {
     const item = list[index];
     downloadUrl(item.url, item.filename || `image-${index + 1}.png`);
@@ -202,6 +231,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图' } 
 
   img.addEventListener('load', () => {
     resetView();
+    updateInfo();
   });
   img.addEventListener('error', () => {
     ref('info').textContent = '图片加载失败，请稍后重试';

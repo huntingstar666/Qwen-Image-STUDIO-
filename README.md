@@ -322,9 +322,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | `ollama_url` | `http://127.0.0.1:11434` | 本地 Ollama |
 | `max_batch` / `max_side` | 4 / 4096 | 资源上限保护 |
 | `turbo_profile` | `turbo8_official` | 默认 Turbo 档位 |
-| `preset_defaults` | `{}` | 全局设置里对内置预设的覆盖；缺失键回落到代码内置出厂值 |
-| `custom_presets` | `[]` | 用户命名的自定义搭配（`{id,name,params}`，不继承任何预设） |
-| `preset_defaults_version` | `5` | 预设参数版本；任务写入 `job.params.preset_version`，便于回放 |
 | `tiled_decode_threshold` | 600000 | 输出像素超过它就直接分块解码（避免全量 OOM 重试） |
 | `png_compress_level` | 1 | 输出 PNG 压缩档位，只影响速度/体积，不影响画质 |
 | `encode_cache_size` | 8 | 文本编码结果缓存条数（同提示词连抽复用），0 = 关闭 |
@@ -380,9 +377,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 |---|---|---|
 | GET | `/api/health` | 引擎 / Ollama / 队列 / 显存 / 空闲时长 |
 | GET | `/api/options` | 模型清单、**模型档案 `model_profiles` / `default_model`**、采样器、比例、Turbo 档位、默认值 |
-| GET | `/api/meta` | 预设摘要（全局默认生效值）+ 自定义搭配摘要 |
-| GET | `/api/presets/config` | 全局预设配置：出厂值 / 生效值 / 自定义搭配 / 已覆盖列表 |
-| POST | `/api/presets/config` | 保存预设默认值、恢复出厂、增删改自定义搭配（含冲突校验） |
 | GET | `/api/styles` | 风格库目录（285 + 493 条） |
 | GET | `/api/styles/angle-prompt` | 视角提示词 |
 | POST | `/api/polish` | 提示词润色（`mode=t2i\|edit`，`image_model=qwen\|moss`，可带 `target_size` / `references` / `images`） |

@@ -1,7 +1,7 @@
 {
   "engine_dir": "engine",
-  "comfy_root": "<COMFY_ROOT>\\ComfyUI-aki-v3.2\\ComfyUI",
-  "model_root": "<COMFY_ROOT>\\ComfyUI-aki-v3.2\\ComfyUI\\models",
+  "comfy_root": "",
+  "model_root": "",
   "model_dirs": {
     "unet": [
       "diffusion_models",
@@ -91,5 +91,63 @@
       "extra_headers": {}
     }
   ],
-  "llm_active": "local-ollama"
+  "llm_active": "local-ollama",
+  "segment": {
+    "dirs": {
+      "sam3": "",
+      "birefnet": ""
+    },
+    "sam3": {
+      "model": "sam3.1_multiplex_fp16.safetensors",
+      "threshold": 0.5,
+      "refine_iterations": 2
+    },
+    "birefnet": {
+      "model": "birefnet.safetensors"
+    },
+    "default_model": "",
+    "max_side": 2048,
+    "max_candidates": 8,
+    "timeout_s": 60,
+    "idle_unload_minutes": 10
+  },
+  "upscale": {
+    "dirs": {
+      "seedvr2": "",
+      "flashvsr": "",
+      "vosr2": ""
+    },
+    "default_engine": "vosr2",
+    "seedvr2": {
+      "dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+      "vae": "ema_vae_fp16.safetensors",
+      "vae_tiled": true,
+      "attention_mode": "sdpa",
+      "offload_device": "cpu"
+    },
+    "flashvsr": {
+      "precision": "bf16",
+      "seed": 6,
+      "color_fix": true,
+      "tile_size": 256,
+      "tile_overlap": 24,
+      "topk_ratio": 2.0,
+      "kv_ratio": 3.0,
+      "local_range": 11
+    },
+    "vosr2": {
+      "model_bundle": "VOSR2",
+      "precision": "auto",
+      "color_alignment": "wavelet",
+      "tile_size": 512,
+      "tile_overlap": 64,
+      "vae_tile_size": 512,
+      "vae_tile_overlap": 64
+    },
+    "defaults": {
+      "scale": 2,
+      "seed": 42
+    },
+    "idle_unload_minutes": 10
+  }
 }

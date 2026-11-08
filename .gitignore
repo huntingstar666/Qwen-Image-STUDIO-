@@ -6,9 +6,10 @@ __pycache__/
 *.pyo
 tests/__pycache__/
 
-# 本地配置（含本机绝对路径）
-# config.json 建议保留可见以便用户修改，但如果你把它改成了私密路径，可取消下一行注释
-# config.json
+# 本地配置（含本机绝对路径与 API Key）
+# config.json 只留在本机；仓库里只提交 config.example.json 模板。
+# 首次使用：复制 config.example.json 为 config.json，或直接启动（缺省走 server/config.py 的 DEFAULTS）。
+config.json
 
 # 移植进来的引擎代码副本（体积 5.4MB；如需纳入版本管理请删除下一行）
 # engine/

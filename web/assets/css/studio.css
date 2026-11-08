@@ -1344,6 +1344,51 @@
   border-radius: 999px;
 }
 
+/* 抠图菜单（D21.1）：选区条在画布底部，菜单向上弹，避免被画布裁掉 */
+.studio-cut-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+  min-width: 176px;
+}
+
+.studio-cut-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.studio-cut-edges {
+  display: flex;
+  gap: 4px;
+}
+
+.studio-cut-edge {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 10.5px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.studio-cut-edge:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.studio-cut-edge.is-active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
 .studio-segmodes {
   display: flex;
   gap: 4px;

@@ -56,6 +56,7 @@ import {
   coverageAlpha,
   wandAlpha,
 } from './studio/selection.js';
+import { CUTOUT_EDGE_ORDER, CUTOUT_EDGE_PRESETS, cutoutRect, prepareCutoutAlpha } from './studio/cutout.js';
 import { histogram, parseCube } from './studio/color.js';
 import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
 import { healDab, cloneDab } from './studio/heal.js';
@@ -412,6 +413,8 @@ export function createStudioPage(host) {
               <button type="button" role="menuitem" data-export="png">导出 PNG</button>
               <button type="button" role="menuitem" data-export="jpg">导出 JPG</button>
               <button type="button" role="menuitem" data-export="mask">导出蒙版</button>
+              <button type="button" role="menuitem" data-export="cutout-png">选区 · 透明 PNG</button>
+              <button type="button" role="menuitem" data-export="cutout-copy">选区 · 复制到剪贴板</button>
               <button type="button" role="menuitem" data-export="copy">复制到剪贴板</button>
               <button type="button" role="menuitem" data-export="favorite">收藏到素材仓库</button>
               <button type="button" role="menuitem" data-export="send">发送到图像编辑 →</button>
@@ -520,6 +523,26 @@ export function createStudioPage(host) {
                 <button class="btn ghost sm" type="button" data-sel-op="contract">收缩</button>
                 <button class="btn ghost sm" type="button" data-sel-op="mask">转为蒙版</button>
                 <button class="btn primary sm" type="button" data-sel-op="remove">AI 消除</button>
+                <div class="studio-import" data-ref="cutWrap">
+                  <button
+                    class="btn ghost sm"
+                    type="button"
+                    data-ref="cutBtn"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    title="把当前选区抠成透明图（不改文档）"
+                  >抠出选区 ▾</button>
+                  <div class="studio-import-menu studio-cut-menu" role="menu" data-ref="cutMenu" hidden>
+                    <div class="studio-cut-head">
+                      <span>边缘</span>
+                      <div class="studio-cut-edges" data-ref="cutEdges"></div>
+                    </div>
+                    <button type="button" role="menuitem" data-cut="png">透明 PNG</button>
+                    <button type="button" role="menuitem" data-cut="copy">复制到剪贴板</button>
+                    <button type="button" role="menuitem" data-cut="layer">新建抠图层</button>
+                    <button type="button" role="menuitem" data-cut="white">白底 JPG</button>
+                  </div>
+                </div>
                 <button class="btn ghost sm" type="button" data-sel-op="clear">清除选区</button>
                 <span class="spacer"></span>
                 <span class="mono" data-ref="selInfo">未选区</span>
@@ -1002,6 +1025,10 @@ export function createStudioPage(host) {
     wandContig: ref('wandContig'),
     selRadius: ref('selRadius'),
     selInfo: ref('selInfo'),
+    cutWrap: ref('cutWrap'),
+    cutBtn: ref('cutBtn'),
+    cutMenu: ref('cutMenu'),
+    cutEdges: ref('cutEdges'),
     segbar: ref('segbar'),
     segModes: ref('segModes'),
     segMulti: ref('segMulti'),
@@ -6011,6 +6038,167 @@ export function createStudioPage(host) {
     }
   }
 
+  /* ---------------------------------------------------------- 抠图（D21.1） */
+
+  let cutoutEdge = 'standard';
+  let cutoutBusy = false;
+
+  function renderCutoutEdges() {
+    if (!refs.cutEdges) return;
+    refs.cutEdges.textContent = '';
+    for (const key of CUTOUT_EDGE_ORDER) {
+      const preset = CUTOUT_EDGE_PRESETS[key];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'studio-cut-edge';
+      button.dataset.edge = key;
+      button.textContent = preset.label;
+      button.title = `收缩 ${preset.contract}px · 羽化 ${preset.feather}px`;
+      button.classList.toggle('is-active', key === cutoutEdge);
+      refs.cutEdges.appendChild(button);
+    }
+  }
+
+  function setCutMenu(open) {
+    if (!refs.cutMenu) return;
+    refs.cutMenu.hidden = !open;
+    refs.cutBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) renderCutoutEdges();
+  }
+
+  function selectionHasArea() {
+    return Boolean(selection?.alpha?.length && coverageAlpha(selection.alpha) > 0);
+  }
+
+  /**
+   * 合成透明底图：`renderBase` → 裁到 `doc.size` → `destination-in` 叠选区 alpha。
+   * 选区与底图尺寸不一致时直接拒绝，不做隐式拉伸。
+   */
+  async function buildCutoutCanvas() {
+    if (!doc) return null;
+    const base = doc.renderBase();
+    if (selection.width !== base.width || selection.height !== base.height) {
+      toastWarn('选区与当前画布尺寸不一致，请重新选择');
+      clearSelection(true);
+      return null;
+    }
+    const rect = cutoutRect(doc.transform.crop, base.width, base.height);
+    const alpha = prepareCutoutAlpha(selection.alpha, selection.width, selection.height, cutoutEdge);
+    const alphaCanvas = alphaToCanvas(alpha, selection.width, selection.height);
+    const canvas = makeCanvas(rect.width, rect.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(base, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(alphaCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    ctx.globalCompositeOperation = 'source-over';
+    return { canvas, rect };
+  }
+
+  async function copyBlob(blob) {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return false;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 抠图四种出口：透明 PNG / 复制 / 抠图层 / 白底 JPG。 */
+  async function runCutout(action) {
+    if (!doc || cutoutBusy) return;
+    if (previewBlocked('抠图')) return;
+    if (!selectionHasArea()) {
+      toastWarn('先用 AI 主体选择或魔棒圈出要保留的主体');
+      return;
+    }
+    cutoutBusy = true;
+    setCutMenu(false);
+    const label = refs.cutBtn.textContent;
+    refs.cutBtn.disabled = true;
+    refs.cutBtn.textContent = '抠图中…';
+    try {
+      flushAdjustPreview();
+      const built = await buildCutoutCanvas();
+      if (!built) return;
+      const { canvas, rect } = built;
+      const name = baseName(doc.name);
+      if (action === 'png') {
+        const blob = await canvasToBlob(canvas, 'image/png');
+        const url = URL.createObjectURL(blob);
+        downloadUrl(url, `${name}-cutout.png`);
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        toastSuccess(`已抠出选区 · ${rect.width} × ${rect.height} · PNG`);
+        return;
+      }
+      if (action === 'copy') {
+        const blob = await canvasToBlob(canvas, 'image/png');
+        if (await copyBlob(blob)) {
+          toastSuccess('已复制透明 PNG 到剪贴板');
+        } else {
+          const url = URL.createObjectURL(blob);
+          downloadUrl(url, `${name}-cutout.png`);
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          toastWarn('剪贴板不可用，已改为下载 PNG');
+        }
+        return;
+      }
+      if (action === 'white') {
+        const out = makeCanvas(rect.width, rect.height);
+        const ctx = out.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        ctx.drawImage(canvas, 0, 0);
+        const blob = await canvasToBlob(out, 'image/jpeg', 0.92);
+        const url = URL.createObjectURL(blob);
+        downloadUrl(url, `${name}-cutout-white.jpg`);
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        toastSuccess(`已导出白底 JPG · ${rect.width} × ${rect.height}`);
+        return;
+      }
+      if (action === 'layer') {
+        if (leaseLocked) {
+          toastWarn('该工程已在其他标签编辑，本标签为只读');
+          return;
+        }
+        const blob = await canvasToBlob(canvas, 'image/png');
+        const file = new File([blob], `${name}-cutout.png`, { type: 'image/png' });
+        const count = (doc.layers || []).filter((layer) => String(layer.name || '').startsWith('抠图')).length + 1;
+        await addOverlayFile(file, {
+          name: `抠图 ${count}`,
+          x: rect.x,
+          y: rect.y,
+          scale: 1,
+          focusSticker: true,
+        });
+        toastSuccess('已建立抠图层（可拖动 / 缩放）');
+      }
+    } catch (err) {
+      toastError(err, '抠图导出失败');
+    } finally {
+      cutoutBusy = false;
+      refs.cutBtn.disabled = false;
+      refs.cutBtn.textContent = label;
+    }
+  }
+
+  refs.cutBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setCutMenu(refs.cutMenu.hidden);
+  });
+
+  refs.cutMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const edge = event.target.closest('[data-edge]');
+    if (edge) {
+      cutoutEdge = edge.dataset.edge;
+      renderCutoutEdges();
+      return;
+    }
+    const item = event.target.closest('[data-cut]');
+    if (item) void runCutout(item.dataset.cut);
+  });
+
   /* ============================================================
    * 事件绑定
    * ============================================================ */
@@ -6158,6 +6346,11 @@ export function createStudioPage(host) {
   function setExportMenu(open) {
     refs.exportMenu.hidden = !open;
     refs.exportBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 抠图两项依赖有效选区，无选区时置灰（D21.1）。
+    const hasSelection = Boolean(selection?.alpha?.length && coverageAlpha(selection.alpha) > 0);
+    for (const button of refs.exportMenu.querySelectorAll('[data-export^="cutout-"]')) {
+      button.disabled = !hasSelection;
+    }
   }
 
   function focusExportItem(index) {
@@ -6172,6 +6365,8 @@ export function createStudioPage(host) {
     if (action === 'png') exportImage('image/png', `${name}-edited.png`);
     else if (action === 'jpg') exportImage('image/jpeg', `${name}-edited.jpg`);
     else if (action === 'copy') copyToClipboard();
+    else if (action === 'cutout-png') void runCutout('png');
+    else if (action === 'cutout-copy') void runCutout('copy');
     else if (action === 'favorite') void collect();
     else if (action === 'send') void sendToEdit();
     else if (action === 'mask') {
@@ -6231,6 +6426,7 @@ export function createStudioPage(host) {
     if (!refs.importMenu.hidden && !refs.importWrap.contains(event.target)) setImportMenu(false);
     if (!refs.exportMenu.hidden && !refs.exportWrap.contains(event.target)) setExportMenu(false);
     if (!refs.projMenu.hidden && !refs.projWrap.contains(event.target)) setProjMenu(false);
+    if (!refs.cutMenu.hidden && !refs.cutWrap.contains(event.target)) setCutMenu(false);
     if (
       !refs.projHistoryPanel.hidden &&
       !refs.projHistoryPanel.contains(event.target) &&

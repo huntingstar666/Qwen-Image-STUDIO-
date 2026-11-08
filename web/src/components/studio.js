@@ -267,6 +267,9 @@ export function createStudioPage(host) {
   let doc = null;
   let thumbCache = { doc: null, base: null, url: '' };
   let tool = 'view';
+  /** 每组上次用过的工具（组按钮显示它，flyout 里也据此高亮）。 */
+  const groupTool = new Map();
+  let openGroupId = '';
   let brush = { size: 64, hardness: 0.7, opacity: 1 };
   let view = { scale: 1, x: 0, y: 0 };
   let showMask = true;
@@ -366,10 +369,10 @@ export function createStudioPage(host) {
               <button type="button" role="menuitem" data-export="mask">导出蒙版</button>
               <button type="button" role="menuitem" data-export="copy">复制到剪贴板</button>
               <button type="button" role="menuitem" data-export="favorite">收藏到素材仓库</button>
+              <button type="button" role="menuitem" data-export="send">发送到图像编辑 →</button>
             </div>
           </div>
           <button class="btn ghost sm" type="button" data-ref="upscaleBtn" disabled title="高清放大当前画面（VOSR2 / SeedVR2 / FlashVSR）">放大</button>
-          <button class="btn primary sm" type="button" data-ref="sendBtn" disabled>送入图像编辑</button>
           <input type="file" accept="image/*" hidden data-ref="fileInput" />
         </div>
 
@@ -780,7 +783,6 @@ export function createStudioPage(host) {
     exportMenu: ref('exportMenu'),
     compareAllBtn: ref('compareAllBtn'),
     upscaleBtn: ref('upscaleBtn'),
-    sendBtn: ref('sendBtn'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
     zoomLabel: ref('zoomLabel'),
@@ -1326,21 +1328,91 @@ export function createStudioPage(host) {
    * 工具与画布
    * ============================================================ */
 
-  refs.rail.innerHTML = TOOL_GROUPS.map(
-    (group) => `
+  /**
+   * 左栏工具轨：按 Photoshop 的方式收成「工具组」。
+   * 单工具组直接点；多工具组点开右侧浮层选具体工具，避免 21 个按钮一列塞不下。
+   */
+  refs.rail.innerHTML = TOOL_GROUPS.map((group) => {
+    const tools = group.tools.map((id) => TOOLS.find((entry) => entry.id === id)).filter(Boolean);
+    if (!tools.length) return '';
+    const primary = tools[0];
+    const multi = tools.length > 1;
+    return `
       <div class="studio-tool-group" data-group="${group.id}">
-        ${group.tools
-          .map((id) => {
-            const item = TOOLS.find((entry) => entry.id === id);
-            if (!item) return '';
-            return `<button class="studio-tool${item.id === tool ? ' active' : ''}" type="button" data-tool="${item.id}" title="${group.title} · ${item.label}（${item.key}）">
-        ${item.icon}
-        <span class="studio-tool-key">${item.key}</span>
-      </button>`;
-          })
-          .join('')}
-      </div>`,
-  ).join('');
+        <button class="studio-tool is-group" type="button" data-group-toggle="${group.id}"
+          title="${escapeHtml(group.title)}${multi ? ' · 点击展开组内工具' : ''}"
+          aria-haspopup="${multi ? 'menu' : 'false'}" aria-expanded="false">
+          <span data-group-glyph>${primary.icon}</span>
+          ${multi ? '<span class="studio-tool-more" aria-hidden="true"></span>' : ''}
+          <span class="studio-tool-key" data-group-key>${primary.key}</span>
+        </button>
+        ${
+          multi
+            ? `<div class="studio-tool-flyout" data-flyout="${group.id}" role="menu" hidden>
+          ${tools
+            .map(
+              (item) => `<button class="studio-tool-item" type="button" role="menuitem" data-tool="${item.id}" title="${escapeHtml(item.label)}（${item.key}）">
+            <span class="studio-tool-item-icon">${item.icon}</span>
+            <span class="studio-tool-item-label">${item.label}</span>
+            <span class="studio-tool-item-key">${item.key}</span>
+          </button>`,
+            )
+            .join('')}
+        </div>`
+            : ''
+        }
+      </div>`;
+  }).join('');
+
+  /** 组按钮/浮层的选中态与图标：组按钮显示该组上次用过的工具。 */
+  function syncRail() {
+    for (const group of TOOL_GROUPS) {
+      const button = refs.rail.querySelector(`[data-group-toggle="${group.id}"]`);
+      if (!button) continue;
+      const current = groupTool.get(group.id) || group.tools[0];
+      const meta = TOOLS.find((item) => item.id === current);
+      button.classList.toggle('active', group.tools.includes(tool));
+      const glyph = button.querySelector('[data-group-glyph]');
+      if (glyph && meta) glyph.innerHTML = meta.icon;
+      const key = button.querySelector('[data-group-key]');
+      if (key && meta) key.textContent = meta.key;
+      const flyout = refs.rail.querySelector(`[data-flyout="${group.id}"]`);
+      if (!flyout) continue;
+      for (const item of flyout.querySelectorAll('[data-tool]')) {
+        item.classList.toggle('active', item.dataset.tool === tool);
+      }
+    }
+  }
+
+  function closeRailFlyout() {
+    if (!openGroupId) return;
+    const flyout = refs.rail.querySelector(`[data-flyout="${openGroupId}"]`);
+    const button = refs.rail.querySelector(`[data-group-toggle="${openGroupId}"]`);
+    if (flyout) {
+      flyout.hidden = true;
+      flyout.removeAttribute('style');
+    }
+    button?.setAttribute('aria-expanded', 'false');
+    openGroupId = '';
+  }
+
+  function openRailFlyout(id) {
+    const flyout = refs.rail.querySelector(`[data-flyout="${id}"]`);
+    const button = refs.rail.querySelector(`[data-group-toggle="${id}"]`);
+    if (!flyout || !button) return;
+    if (openGroupId === id) {
+      closeRailFlyout();
+      return;
+    }
+    closeRailFlyout();
+    const rect = button.getBoundingClientRect();
+    flyout.hidden = false;
+    const height = flyout.offsetHeight;
+    flyout.style.left = `${Math.round(rect.right + 6)}px`;
+    flyout.style.top = `${Math.max(12, Math.round(Math.min(rect.top, window.innerHeight - height - 12)))}px`;
+    button.setAttribute('aria-expanded', 'true');
+    openGroupId = id;
+  }
 
   function setTool(next) {
     if (!TOOLS.some((item) => item.id === next)) return;
@@ -1392,11 +1464,12 @@ export function createStudioPage(host) {
       syncTabs();
       outpaint?.activate?.();
     }
-    for (const button of refs.rail.querySelectorAll('[data-tool]')) {
-      const on = button.dataset.tool === tool;
-      button.classList.toggle('active', on);
-      // 工具轨可滚动：快捷键切到视口外的工具时把它带进视野。
-      if (on) button.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    const group = TOOL_GROUPS.find((item) => item.tools.includes(tool));
+    if (group) groupTool.set(group.id, tool);
+    syncRail();
+    // 快捷键切到视口外的工具组时，把组按钮带进视野。
+    if (group) {
+      refs.rail.querySelector(`[data-group-toggle="${group.id}"]`)?.scrollIntoView?.({ block: 'nearest' });
     }
     const meta = TOOLS.find((item) => item.id === tool);
     refs.statusTool.textContent = meta ? `${meta.label} · ${meta.hint}` : '';
@@ -3976,7 +4049,7 @@ export function createStudioPage(host) {
     refs.dot.classList.add('is-live');
     refs.fileName.textContent = doc.name;
     refs.dims.textContent = '';
-    for (const key of ['exportBtn', 'sendBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = false;
+    for (const key of ['exportBtn', 'compareAllBtn', 'upscaleBtn']) refs[key].disabled = false;
     syncAdjustInputs();
     syncTextPane();
     syncStickerPane();
@@ -4988,9 +5061,36 @@ export function createStudioPage(host) {
    * ============================================================ */
 
   refs.rail.addEventListener('click', (event) => {
+    const groupButton = event.target.closest('[data-group-toggle]');
+    if (groupButton) {
+      const group = TOOL_GROUPS.find((item) => item.id === groupButton.dataset.groupToggle);
+      if (!group) return;
+      if (group.tools.length <= 1) {
+        closeRailFlyout();
+        setTool(group.tools[0]);
+      } else {
+        openRailFlyout(group.id);
+      }
+      return;
+    }
     const button = event.target.closest('[data-tool]');
-    if (button) setTool(button.dataset.tool);
+    if (button) {
+      closeRailFlyout();
+      setTool(button.dataset.tool);
+    }
   });
+
+  // 浮层是 fixed 定位（避免被工具轨的 overflow 裁掉）：点外部 / Esc / 滚动 / 改窗口都收起。
+  document.addEventListener('click', (event) => {
+    if (!openGroupId || !refs.rail.isConnected) return;
+    if (event.target.closest('.studio-tool-group')) return;
+    closeRailFlyout();
+  });
+  window.addEventListener('resize', () => {
+    if (refs.rail.isConnected) closeRailFlyout();
+  });
+  refs.rail.addEventListener('scroll', closeRailFlyout, { passive: true });
+  syncRail();
 
   host.querySelector('.studio-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');
@@ -5082,6 +5182,7 @@ export function createStudioPage(host) {
     else if (action === 'jpg') exportImage('image/jpeg', `${name}-edited.jpg`);
     else if (action === 'copy') copyToClipboard();
     else if (action === 'favorite') void collect();
+    else if (action === 'send') void sendToEdit();
     else if (action === 'mask') {
       const dataUrl = doc.maskPng();
       if (!dataUrl) {
@@ -5149,7 +5250,6 @@ export function createStudioPage(host) {
     void importLocalFiles(files);
   });
 
-  refs.sendBtn.addEventListener('click', sendToEdit);
   refs.compareAllBtn.addEventListener('click', () => {
     void ai?.compareAll?.();
   });
@@ -5690,6 +5790,10 @@ export function createStudioPage(host) {
       return;
     }
     if (key === 'escape') {
+      if (openGroupId) {
+        closeRailFlyout();
+        return;
+      }
       cropRect = null;
       refs.cropbar.hidden = true;
       setTool('view');

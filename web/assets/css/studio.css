@@ -319,6 +319,88 @@
   opacity: 0.7;
 }
 
+/* 工具组：右下角小三角表示「组内还有别的工具」（Photoshop 习惯） */
+.studio-tool-more {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-bottom: 4px solid currentColor;
+  opacity: 0.55;
+}
+
+/* 组内工具浮层：fixed 定位，避免被可滚动的工具轨裁切 */
+.studio-tool-flyout {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 172px;
+  max-height: 72vh;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-card), var(--shadow);
+  overflow-y: auto;
+}
+
+.studio-tool-flyout[hidden] {
+  display: none;
+}
+
+.studio-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-tool-item:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.studio-tool-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.studio-tool-item-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+
+.studio-tool-item-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.studio-tool-item-label {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.studio-tool-item-key {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+}
+
 /* ------------------------------------------------------------- 画布区 */
 
 .studio-stage {

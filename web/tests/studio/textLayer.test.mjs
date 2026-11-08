@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TEXT_DEFAULTS, TEXT_FONTS, TextLayer, textLayerFromProps } from '../../src/components/studio/textLayer.js';
+import { TEXT_DEFAULTS, TEXT_FONTS, TextLayer, arcLayout, textLayerFromProps } from '../../src/components/studio/textLayer.js';
 
 test('TextLayer：默认值与标记位', () => {
   const layer = new TextLayer({});
@@ -40,6 +40,36 @@ test('TextLayer：混合模式与剪贴标记随 clone 保留', () => {
   assert.equal(copy.blend, 'multiply');
   assert.equal(copy.clipped, true);
   assert.equal(new TextLayer({ blend: 'bad-mode' }).blend, 'source-over');
+});
+
+test('arcLayout：0 弯曲时按宽度居中横排', () => {
+  const layout = arcLayout([10, 20, 10], 0);
+  assert.deepEqual(layout.map((item) => Math.round(item.x)), [-15, 0, 15]);
+  assert.ok(layout.every((item) => item.y === 0 && item.angle === 0));
+});
+
+test('arcLayout：正弯曲两端下沉、角度对称', () => {
+  const layout = arcLayout([10, 10, 10, 10, 10], 60);
+  assert.ok(Math.abs(layout[2].y) < 1e-6, '中间字符在基线上');
+  assert.ok(layout[0].y > 0 && layout[4].y > 0, '两端向下沉');
+  assert.ok(Math.abs(layout[0].y - layout[4].y) < 1e-6, '两端对称');
+  assert.ok(layout[0].angle < 0 && layout[4].angle > 0, '角度沿弧线张开');
+  assert.ok(layout.every((item, index) => index === 0 || item.x > layout[index - 1].x), '字符顺序从左到右');
+});
+
+test('arcLayout：负弯曲两端上翘', () => {
+  const layout = arcLayout([12, 12, 12], -50);
+  assert.ok(layout[0].y < 0 && layout[2].y < 0);
+  assert.ok(layout[0].angle > 0 && layout[2].angle < 0);
+});
+
+test('TextLayer：路径文字弯曲度随 clone 与 props 保留', () => {
+  const layer = new TextLayer({ text: '弧线', arc: 70 });
+  assert.equal(layer.arc, 70);
+  const copy = layer.clone({ fresh: true });
+  assert.equal(copy.arc, 70);
+  assert.equal(new TextLayer({ arc: 300 }).arc, 100);
+  assert.equal(textLayerFromProps({ text: 'x', arc: -40 }).arc, -40);
 });
 
 test('TextLayer：多行文本按换行拆分', () => {

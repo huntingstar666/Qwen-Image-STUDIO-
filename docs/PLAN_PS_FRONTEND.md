@@ -923,6 +923,14 @@ DOM 结构：
   - 实测（headless Chromium，已有渐变形状层）：新建两个快照后把形状从 `y=300` 拖到 `y=350`，点击「快照 1」后 `y` 恢复为 `300`，画布回到渐变形状原位置且撤销按钮可用；双击名称改为「基线」成功，删除「快照 2」后列表只剩 1 项；再点撤销回到 `y=350`（证明回跳可撤销），快照仍保留。截图 `.screenshots/D12.3-history-snapshot-2026-11-08T05-37-41-579Z.png`。
   - 说明：快照只保存在本次会话内存中（刷新后清空），暂不做工程持久化与缩略图；需要跨会话保留时建议导出工程或使用系统撤销栈。
 
+- **D13.3 透视变换 / 路径文字（已完成）** —— 贴纸四角透视 + 文字沿弧线排版：
+  - 新增 `studio/perspective.js`：`quadHomography(quad)`（单位正方形 → 四边形，退化面积直接拒绝）、`invert3x3`、`projectPoint`、`pointInQuad`、`quadBounds`、`warpImageToQuad(image, quad, {maxSide})`——按逆单应矩阵逐像素反向采样，双线性取色，返回可直接 `drawImage` 的离屏画布；超大图用 `maxSide` 限制采样尺寸。
+  - 贴纸：`OverlayLayer` 新增 `quad`（四角文档坐标）与 `warpedQuad()` 缓存（四角或蒙版变化才重算）；`bounds/hitTest` 改按四边形；`draw()` 优先画透视结果；`clone` 与工程持久化保留 `quad`。贴纸分页新增「透视变换」：勾选「编辑四角」用当前旋转四角初始化并显示四个圆点，拖动圆点实时改形，「重置透视」恢复常规几何；透视生效期间禁用缩放/旋转/翻转，图层面板的 ± 缩放给出提示。
+  - 文字：新增 `arcLayout(widths, arc)` 纯函数（−100~100，正数向上拱、负数向下弯；中间字符在基线、两端按弧长下沉/上翘并旋转）；`TextLayer.arc` 逐字平移 + 旋转绘制，描边/填充沿用原有样式，`bounds` 给弯曲文本保守包围盒，`clone` 与持久化保留 `arc`；文字分页新增「路径文字 · 弯曲」滑杆。
+  - 单测：新增 `perspective.test.mjs` 7 项（仿射/透视四角映射、逆矩阵回投、奇异矩阵、内外判断、外接矩形、退化输入）；`textLayer.test.mjs` 追加 4 项（0 弯曲横排、正/负弯曲形态与角度、clone/props 保留），工作室全部单测 `pass 115 / fail 0`。
+  - 实测（headless Chromium，800×600）：导入 240×160 贴纸（x=560,y=70），勾选「编辑四角」后把左上角从 `(560,70)` 拖到 `(600,120)`：原左上角 `(570,80)` 回到底色 `[40,60,90]`，新四角内 `(615,130)` 为绿 `[46,204,113]`，右半仍为黄 `[241,196,15]`；「重置透视」后 `quad=null` 恢复；重新设置后刷新，`quad` 与画面完整恢复。文字层 `arc=0` 时白字包围盒约 383×83，`arc=80` 后变为 357×140、两端明显下沉且字符随弧线旋转。截图 `.screenshots/D13.3-perspective-2026-11-08T05-43-57-651Z.png`、`.screenshots/D13.3-path-text-2026-11-08T05-47-04-167Z.png`。
+  - 说明：透视采用反向采样 + 缓存，四角拖动时每帧重算（贴纸尺寸下流畅，超大贴纸会受 `maxSide` 降采样）；路径文字目前是圆弧弯曲，不支持任意贝塞尔路径与基线内缩/外扩参数。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1100,7 +1108,7 @@ DOM 结构：
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
-| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend/clipped`）；`BLEND_MODES`/`BLEND_IDS`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3 / D12.1（已落地） |
+| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend/clipped/quad` + `warpedQuad()`）；`BLEND_MODES`/`BLEND_IDS`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3 / D12.1 / D13.3（已落地） |
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes`、命名快照 `addSnapshot/removeSnapshot/findSnapshot` | 无 | D7 / D12.3（已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer`；剪贴蒙版双离屏 alpha 合成 | `layers/adjustments` | D7（D7.2 已落地，D9.3 / D12.1 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
@@ -1116,13 +1124,14 @@ DOM 结构：
 | `liquify.js` | `pushWeight` / `warpPatch`（反向取样形变，D10.5 已落地） | 无 | D10.5 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊（D11.1 暂内联在 `studio.js`，算法在 `mosaic.js`） | `renderer` | D11.1（已落地） |
 | `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
-| `tools/text.js` | 文字图层创建与编辑（D11.2 暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2（已落地） |
-| `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`（文字图层实体与绘制） | 无 | D11.2 |
+| `tools/text.js` | 文字图层创建与编辑 / 路径文字（暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2 / D13.3（已落地） |
+| `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps` / `arcLayout`（文字图层实体、绘制与路径文字排版） | 无 | D11.2 / D13.3 |
 | `shapeLayer.js` | `ShapeLayer` / `SHAPE_KINDS` / `SHAPE_DEFAULTS` / `SHAPE_STYLE_DEFAULTS` / `normalizeShapeStyle` / `shapeLayerFromProps`（形状图层实体、绘制与图层样式） | 无 | D11.4 / D12.2 |
 | `pattern.js` | `tilePatch` / `patternDab`（图案平铺与柔边盖章） | 无 | D11.4 |
+| `perspective.js` | `quadHomography` / `invert3x3` / `projectPoint` / `pointInQuad` / `quadBounds` / `warpImageToQuad`（四角透视映射与反向采样） | 无 | D13.3 |
 | `tools/shape.js` | 形状创建与样式编辑（D11.4 暂内联在 `studio.js`，图层实体在 `shapeLayer.js`） | `renderer` | D11.4（已落地） |
 | `tools/pattern.js` | 图案图章（D11.4 暂内联在 `studio.js`，算法在 `pattern.js`） | `renderer` | D11.4（已落地） |
-| `tools/sticker.js` | 贴纸导入 / 缩放 / 旋转 / 翻转 / 混合模式（D11.3 暂内联在 `studio.js`，图层实体在 `layers.js`） | `renderer` | D11.3（已落地） |
+| `tools/sticker.js` | 贴纸导入 / 缩放 / 旋转 / 翻转 / 混合模式 / 四角透视（暂内联在 `studio.js`，图层实体在 `layers.js`） | `renderer` | D11.3 / D13.3（已落地） |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
 | `panels/adjust.js` | 调色面板（D9.1~D9.3 暂内联在 `studio.js` 的 `data-pane="adjust"`，未拆文件） | `color/adjustments` | D9（已落地） |
 | `panels/history.js` | 历史记录面板 | `history` | D7/D12 |
@@ -1443,7 +1452,7 @@ DOM 结构：
 | D12.3 | 历史快照 | 已完成 | 本次提交 | `history.js` 新增命名快照（add/remove/find）；`StudioDoc.addSnapshot/restoreSnapshot/renameSnapshot/removeSnapshot`，回跳先入栈可撤销；右侧「历史快照」区块（新建/回跳/双击重命名/删除）；单测 3 项；实测见 §12.11 |
 | D13.1 | AI 主体选择 | 未开始 | — | 待后端 |
 | D13.2 | 内容识别填充 | 未开始 | — | 待后端 |
-| D13.3 | 透视变换 / 路径文字 | 未开始 | — | — |
+| D13.3 | 透视变换 / 路径文字 | 已完成 | 本次提交 | 新增 `studio/perspective.js`（单应矩阵 + 反向采样，`OverlayLayer.quad` 四角透视 + 缓存/持久化 + 画布四角编辑）；`arcLayout` + `TextLayer.arc` 沿弧线逐字排版 + 文字分页弯曲滑杆；单测 11 项；实测见 §12.11 |
 | D14.1 | 全景图入口 | 未开始 | — | 待全景后端 |
 | D15.1 | 高清放大入口 | 已完成 | 本次提交 | 顶栏「放大」→ `upscaleDialog.js`：读取 `api.upscaleModels()` 列出就绪引擎（VOSR2 / SeedVR2 / FlashVSR，默认 VOSR2），倍率 2×/4×，提交当前烘焙主图后按 `pollJob` 显示进度、可取消；结果卡片显示输出尺寸与文件名，可「载入为主图」（新工程，可继续编辑 / 导出）或「与当前主图对比」（走 `ai.compareAll({ extra })`）。实测 512×384 → 1024×768（vosr2 2×），载入后尺寸与文件名同步 |
 

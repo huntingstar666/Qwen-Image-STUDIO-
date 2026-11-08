@@ -34,6 +34,44 @@ export const TEXT_DEFAULTS = {
 let seq = 0;
 let measureCanvas = null;
 
+/**
+ * 路径文字排版（D13.3）：给定每个字符宽度，返回相对基线中心的 {x,y,angle}。
+ * arc -100~100：正数向上拱起（像彩虹），负数向下弯曲；0 为普通横排。
+ * 纯函数，便于单测。
+ * @param {number[]} widths
+ * @param {number} arc
+ * @returns {Array<{x:number,y:number,angle:number}>}
+ */
+export function arcLayout(widths, arc = 0) {
+  const list = Array.isArray(widths) ? widths : [];
+  const total = list.reduce((sum, width) => sum + Math.max(0, Number(width) || 0), 0);
+  const result = [];
+  const curvature = clamp(Number(arc) || 0, -100, 100);
+  if (!curvature) {
+    let offset = -total / 2;
+    for (const width of list) {
+      result.push({ x: offset + width / 2, y: 0, angle: 0 });
+      offset += width;
+    }
+    return result;
+  }
+  const sweep = (Math.PI * 0.9 * curvature) / 100;
+  const radius = Math.max(1, total / Math.abs(sweep));
+  const centerY = sweep > 0 ? radius : -radius;
+  let offset = -total / 2;
+  for (const width of list) {
+    const middle = offset + width / 2;
+    const t = middle / radius;
+    if (sweep > 0) {
+      result.push({ x: Math.sin(t) * radius, y: centerY - Math.cos(t) * radius, angle: t });
+    } else {
+      result.push({ x: Math.sin(t) * radius, y: centerY + Math.cos(t) * radius, angle: -t });
+    }
+    offset += width;
+  }
+  return result;
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -68,6 +106,8 @@ export class TextLayer {
     this.shadowX = Number(text.shadowX) || 0;
     this.shadowY = Number(text.shadowY) || 0;
     this.shadowColor = text.shadowColor || TEXT_DEFAULTS.shadowColor;
+    /** 路径文字弯曲度（D13.3）：正数向上拱起，负数向下弯曲。 */
+    this.arc = clamp(Number(text.arc) || 0, -100, 100);
   }
 
   get kind() {
@@ -95,6 +135,16 @@ export class TextLayer {
     for (const line of lines) width = Math.max(width, ctx.measureText(line || ' ').width);
     const lineHeight = this.fontSize * this.lineHeight;
     const pad = this.strokeWidth + this.shadowBlur;
+    if (this.arc) {
+      // 弯曲时宽度会随弧线收窄/外扩，给一个保守包围盒，保证可点选。
+      const extra = (Math.abs(this.arc) / 100) * this.fontSize * 2.4;
+      return {
+        x: this.x - width / 2 - extra - pad,
+        y: this.y - this.fontSize * 0.9 - extra - pad,
+        width: Math.max(8, width + (extra + pad) * 2),
+        height: Math.max(8, lineHeight * lines.length + extra + pad * 2),
+      };
+    }
     return {
       x: this.x - pad,
       y: this.y - pad,
@@ -127,18 +177,49 @@ export class TextLayer {
       ctx.shadowOffsetX = this.shadowX;
       ctx.shadowOffsetY = this.shadowY;
     }
-    lines.forEach((line, index) => {
-      const y = index * lineHeight;
-      if (this.strokeWidth > 0) {
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = this.strokeWidth;
-        ctx.strokeStyle = this.strokeColor;
-        ctx.strokeText(line, 0, y);
-      }
-      ctx.fillStyle = this.color;
-      ctx.fillText(line, 0, y);
-    });
+    if (this.arc) {
+      this._drawArc(ctx, lines, lineHeight);
+    } else {
+      lines.forEach((line, index) => {
+        const y = index * lineHeight;
+        if (this.strokeWidth > 0) {
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = this.strokeWidth;
+          ctx.strokeStyle = this.strokeColor;
+          ctx.strokeText(line, 0, y);
+        }
+        ctx.fillStyle = this.color;
+        ctx.fillText(line, 0, y);
+      });
+    }
     ctx.restore();
+  }
+
+  /** 沿圆弧逐字排布（D13.3）：每个字符单独平移 + 旋转，描边/填充与横排一致。 */
+  _drawArc(ctx, lines, lineHeight) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((line, index) => {
+      const chars = Array.from(line || ' ');
+      const widths = chars.map((char) => ctx.measureText(char).width);
+      const placements = arcLayout(widths, this.arc);
+      const lineOffset = index * lineHeight;
+      placements.forEach((placement, charIndex) => {
+        ctx.save();
+        ctx.translate(placement.x, lineOffset + placement.y);
+        ctx.rotate(placement.angle);
+        const char = chars[charIndex];
+        if (this.strokeWidth > 0) {
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = this.strokeWidth;
+          ctx.strokeStyle = this.strokeColor;
+          ctx.strokeText(char, 0, 0);
+        }
+        ctx.fillStyle = this.color;
+        ctx.fillText(char, 0, 0);
+        ctx.restore();
+      });
+    });
   }
 
   clone({ fresh = false } = {}) {
@@ -165,6 +246,7 @@ export class TextLayer {
       shadowX: this.shadowX,
       shadowY: this.shadowY,
       shadowColor: this.shadowColor,
+      arc: this.arc,
     });
   }
 

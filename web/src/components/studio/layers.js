@@ -7,6 +7,8 @@
  * 3. 叠加层可拥有自己的蒙版（D8.2），但文档蒙版始终只作用于底图坐标系。
  */
 
+import { quadBounds, pointInQuad, warpImageToQuad } from './perspective.js';
+
 let seq = 0;
 
 /** 贴纸/叠加层可用的混合模式（D11.3），id 直接作为 Canvas globalCompositeOperation。 */
@@ -40,6 +42,7 @@ export class OverlayLayer {
       locked = false,
       visible = true,
       clipped = false,
+      quad = null,
       id = '',
     } = {},
   ) {
@@ -58,6 +61,12 @@ export class OverlayLayer {
     this.blend = BLEND_IDS.has(blend) ? blend : 'source-over';
     /** 剪贴蒙版（D12.1）：只显示在下方图层的非透明区域内。 */
     this.clipped = Boolean(clipped);
+    /**
+     * 透视四角（D13.3）：顺序 (0,0)/(1,0)/(1,1)/(0,1) 的文档坐标；
+     * 为 null 时按 x/y/scale/rotation 常规绘制。
+     */
+    this.quad = Array.isArray(quad) && quad.length === 4 ? quad.map((point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 })) : null;
+    this._warpCache = null;
     /** 锁定后仍参与合成，但画布上不可点选/拖动（D7.3 图层面板）。 */
     this.locked = Boolean(locked);
     /** 显隐（D9.3 图层面板眼睛按钮）；隐藏的图层不参与合成。 */
@@ -88,11 +97,13 @@ export class OverlayLayer {
   }
 
   bounds() {
+    if (this.quad) return quadBounds(this.quad);
     return { x: this.x, y: this.y, width: this.width, height: this.height };
   }
 
   hitTest(px, py) {
     if (this.locked || !this.visible) return false;
+    if (this.quad) return pointInQuad(this.quad, px, py);
     const width = this.width;
     const height = this.height;
     if (width < 1 || height < 1) return false;
@@ -163,8 +174,42 @@ export class OverlayLayer {
     return canvas;
   }
 
+  /** 透视四角版本的位图（带缓存，四角或蒙版变化才重新采样）。 */
+  warpedQuad() {
+    if (!this.quad) return null;
+    const source = this.maskedImage();
+    const signature = this.quad
+      .map((point) => `${Math.round(point.x * 10) / 10},${Math.round(point.y * 10) / 10}`)
+      .join(';');
+    if (this._warpCache && this._warpCache.source === source && this._warpCache.signature === signature) {
+      return this._warpCache.result;
+    }
+    const result = warpImageToQuad(source, this.quad);
+    this._warpCache = { source, signature, result };
+    return result;
+  }
+
   draw(ctx) {
-    if (!this.image || !this.visible || this.opacity <= 0 || this.width < 1 || this.height < 1) return;
+    if (!this.image || !this.visible || this.opacity <= 0) return;
+    if (this.quad) {
+      const warped = this.warpedQuad();
+      if (!warped) return;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
+      ctx.globalCompositeOperation = this.blend || 'source-over';
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(
+        warped.canvas,
+        warped.x,
+        warped.y,
+        warped.canvas.width / (warped.scale || 1),
+        warped.canvas.height / (warped.scale || 1),
+      );
+      ctx.restore();
+      return;
+    }
+    if (this.width < 1 || this.height < 1) return;
     const source = this.maskedImage();
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
@@ -196,6 +241,7 @@ export class OverlayLayer {
       locked: this.locked,
       visible: this.visible,
       clipped: this.clipped,
+      quad: this.quad ? this.quad.map((point) => ({ ...point })) : null,
     });
     if (this.mask) {
       const canvas = document.createElement('canvas');

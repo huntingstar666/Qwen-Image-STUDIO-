@@ -289,6 +289,8 @@ export function createStudioPage(host) {
   const shapeStyle = { ...SHAPE_DEFAULTS, style: normalizeShapeStyle() };
   /* D11.4：图案图章的取样矩形（图像坐标，未裁剪空间）。 */
   let patternRect = null;
+  /* D13.3：透视四角编辑模式（选中贴纸时生效）。 */
+  let perspectiveEdit = false;
   /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
   let selection = null;
   let selPath = null;
@@ -644,6 +646,11 @@ export function createStudioPage(host) {
                   <span class="studio-slider-head"><span>模糊</span><span class="mono" data-ref="textShadowVal">0</span></span>
                   <input type="range" min="0" max="40" step="1" value="0" data-ref="textShadow" />
                 </label>
+                <div class="studio-pane-title">路径文字</div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>弯曲</span><span class="mono" data-ref="textArcVal">0</span></span>
+                  <input type="range" min="-100" max="100" step="1" value="0" data-ref="textArc" />
+                </label>
                 <button class="btn ghost sm studio-block" type="button" data-ref="textDelete">删除文字图层</button>
                 <div class="studio-note">文字图层是非破坏式的：随时能改文案与样式；用「移动叠加图」工具可拖动位置。</div>
               </div>
@@ -673,6 +680,10 @@ export function createStudioPage(host) {
                 <select class="select" data-ref="stickerBlend" aria-label="混合模式">
                   ${BLEND_MODES.map((mode) => `<option value="${mode.id}">${mode.label}</option>`).join('')}
                 </select>
+                <div class="studio-pane-title">透视变换</div>
+                <label class="studio-check"><input type="checkbox" data-ref="stickerPerspective" /><span>编辑四角</span></label>
+                <button class="btn ghost sm studio-block" type="button" data-ref="stickerPerspectiveReset" disabled>重置透视</button>
+                <div class="studio-note" data-ref="stickerPerspectiveHint" hidden>拖动画面上的四个圆点改变透视；关闭「编辑四角」后仍保留透视结果。</div>
                 <button class="btn ghost sm studio-block" type="button" data-ref="stickerDelete">删除贴纸</button>
                 <div class="studio-note">画布上也能操作：拖动贴纸移动，拖四角缩放，拖顶部圆点旋转（按住 Alt 不吸附 15°）；不透明度在图层面板调。</div>
               </div>
@@ -828,6 +839,8 @@ export function createStudioPage(host) {
     textStrokeColor: ref('textStrokeColor'),
     textShadow: ref('textShadow'),
     textShadowVal: ref('textShadowVal'),
+    textArc: ref('textArc'),
+    textArcVal: ref('textArcVal'),
     textDelete: ref('textDelete'),
     stickerEmpty: ref('stickerEmpty'),
     stickerFields: ref('stickerFields'),
@@ -840,6 +853,9 @@ export function createStudioPage(host) {
     stickerFlipH: ref('stickerFlipH'),
     stickerFlipV: ref('stickerFlipV'),
     stickerBlend: ref('stickerBlend'),
+    stickerPerspective: ref('stickerPerspective'),
+    stickerPerspectiveReset: ref('stickerPerspectiveReset'),
+    stickerPerspectiveHint: ref('stickerPerspectiveHint'),
     stickerDelete: ref('stickerDelete'),
     stickerInput: ref('stickerInput'),
     shapeKind: ref('shapeKind'),
@@ -1251,6 +1267,10 @@ export function createStudioPage(host) {
       const layer = doc.findLayer(id);
       // 调整图层与文字/形状图层没有位图尺寸，忽略缩放。
       if (!layer || layer.isAdjustment || layer.isText || layer.isShape) return;
+      if (layer.quad) {
+        toastWarn('透视贴纸请拖动四角调整，或先重置透视');
+        return;
+      }
       doc.scaleOverlay(id, factor);
       doc.commitLayers();
       updateHistoryUi();
@@ -1530,6 +1550,8 @@ export function createStudioPage(host) {
     const knobDoc = toDoc(0, -height / 2 - 26 / Math.max(0.01, view.scale));
     return {
       centerDoc: { x: cx, y: cy },
+      cornersDoc,
+      knobDoc,
       cornersView: cornersDoc.map(toView),
       knobView: toView(knobDoc),
     };
@@ -1556,6 +1578,7 @@ export function createStudioPage(host) {
       (drag?.mode === 'moveLayer' ||
         drag?.mode === 'stickerScale' ||
         drag?.mode === 'stickerRotate' ||
+        drag?.mode === 'perspCorner' ||
         (editingLayerMaskId && drag?.mode === 'paint'));
     const image = adjustPreview
       ? doc.renderPreviewBase()
@@ -1749,7 +1772,33 @@ export function createStudioPage(host) {
     const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
     if ((tool === 'move' || tool === 'sticker' || tool === 'shape') && activeLayer && !activeLayer.isAdjustment) {
       const crop = doc.transform.crop;
-      if (activeLayer.isText || activeLayer.isShape) {
+      const toViewPoint = (point) => ({
+        x: view.x + (point.x - (crop?.x || 0)) * view.scale,
+        y: view.y + (point.y - (crop?.y || 0)) * view.scale,
+      });
+      if (perspectiveEdit && activeLayer.quad && !activeLayer.isText && !activeLayer.isShape) {
+        // 透视四角编辑（D13.3）：画四边形 + 四个可拖圆点。
+        const points = activeLayer.quad.map(toViewPoint);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index) ctx.lineTo(point.x, point.y);
+          else ctx.moveTo(point.x, point.y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        for (const point of points) {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      } else if (activeLayer.isText || activeLayer.isShape) {
         // 文字 / 形状层没有缩放旋转手柄，沿用普通虚线框。
         const box = activeLayer.bounds();
         const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
@@ -2691,9 +2740,22 @@ export function createStudioPage(host) {
       const ix = point.x + (crop?.x || 0);
       const iy = point.y + (crop?.y || 0);
 
-      // 选中贴纸的角手柄 / 旋转圆点优先于普通拖动（D11.3）。
+      // 选中贴纸的角手柄 / 旋转圆点优先于普通拖动（D11.3）；透视编辑时改拖四角（D13.3）。
       const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
-      if (active && !active.isAdjustment && !active.isText) {
+      if (perspectiveEdit && active?.quad && !active.isText && !active.isShape) {
+        const px = event.clientX - dragRect.left;
+        const py = event.clientY - dragRect.top;
+        const nearCorner = (point) => {
+          const vx = view.x + (point.x - (crop?.x || 0)) * view.scale;
+          const vy = view.y + (point.y - (crop?.y || 0)) * view.scale;
+          return Math.hypot(vx - px, vy - py) <= 11;
+        };
+        const index = active.quad.findIndex(nearCorner);
+        if (index >= 0) {
+          drag = { mode: 'perspCorner', layer: active, index };
+          return;
+        }
+      } else if (active && !active.isAdjustment && !active.isText) {
         const handles = stickerHandles(active);
         const px = event.clientX - dragRect.left;
         const py = event.clientY - dragRect.top;
@@ -2873,6 +2935,17 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
+    if (drag.mode === 'perspCorner') {
+      const crop = doc.transform.crop;
+      drag.layer.quad[drag.index] = {
+        x: Math.round((point.x + (crop?.x || 0)) * 10) / 10,
+        y: Math.round((point.y + (crop?.y || 0)) * 10) / 10,
+      };
+      drag.layer._warpCache = null;
+      doc.touchLayers();
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'moveLayer') {
       const layer = drag.layer;
       layer.x = Math.round(drag.originX + (point.x - drag.start.x));
@@ -2979,6 +3052,11 @@ export function createStudioPage(host) {
     } else if (mode === 'patternPaint' || mode === 'pattern-blocked') {
       // 整笔图案图章作为一个撤销步（D11.4）。
       doc?.snapshot();
+      updateHistoryUi();
+    } else if (mode === 'perspCorner') {
+      // 透视四角整段拖动落一步撤销（D13.3）。
+      doc?.commitLayers();
+      syncStickerPane();
       updateHistoryUi();
     } else if (mode === 'stickerScale' || mode === 'stickerRotate') {
       // 贴纸缩放/旋转整段拖动作为一个撤销步（D11.3）。
@@ -3261,6 +3339,7 @@ export function createStudioPage(host) {
           flipV: Boolean(layer.flipV),
           blend: layer.blend || 'source-over',
           clipped: Boolean(layer.clipped),
+          quad: layer.quad ? layer.quad.map((point) => ({ ...point })) : null,
           locked: layer.locked,
           visible: layer.visible !== false,
           hasMask: Boolean(layer.mask),
@@ -3280,6 +3359,7 @@ export function createStudioPage(host) {
                 shadowX: layer.shadowX,
                 shadowY: layer.shadowY,
                 shadowColor: layer.shadowColor,
+                arc: layer.arc,
               }
             : {}),
           ...(layer.isShape
@@ -3571,6 +3651,7 @@ export function createStudioPage(host) {
             flipV: props.flipV,
             blend: props.blend,
             clipped: props.clipped,
+            quad: props.quad,
             locked: props.locked,
             visible: props.visible !== false,
           });
@@ -3776,6 +3857,7 @@ export function createStudioPage(host) {
     editingLayerMaskId = '';
     selectedLayerId = null;
     pendingStickerPoint = null;
+    perspectiveEdit = false;
     tint = null;
     tintDirty = true;
     tintRect = null;
@@ -3982,6 +4064,8 @@ export function createStudioPage(host) {
     refs.textStrokeColor.value = target.strokeColor;
     refs.textShadow.value = String(Math.round(target.shadowBlur));
     refs.textShadowVal.textContent = String(Math.round(target.shadowBlur));
+    refs.textArc.value = String(Math.round(target.arc || 0));
+    refs.textArcVal.textContent = String(Math.round(target.arc || 0));
   }
 
   function bindTextInput(el, apply) {
@@ -4030,6 +4114,10 @@ export function createStudioPage(host) {
   bindTextInput(refs.textShadow, (target) => {
     target.shadowBlur = Number(refs.textShadow.value);
     refs.textShadowVal.textContent = refs.textShadow.value;
+  });
+  bindTextInput(refs.textArc, (target) => {
+    target.arc = Number(refs.textArc.value);
+    refs.textArcVal.textContent = refs.textArc.value;
   });
 
   refs.textDelete.addEventListener('click', () => {
@@ -4080,6 +4168,10 @@ export function createStudioPage(host) {
     const layer = stickerTarget();
     refs.stickerEmpty.hidden = Boolean(layer);
     refs.stickerFields.hidden = !layer;
+    refs.stickerPerspective.checked = Boolean(layer) && perspectiveEdit;
+    refs.stickerPerspective.disabled = !layer;
+    refs.stickerPerspectiveHint.hidden = !(layer && perspectiveEdit);
+    refs.stickerPerspectiveReset.disabled = !layer?.quad;
     if (!layer) return;
     const percent = Math.round(layer.scale * 100);
     refs.stickerScale.value = String(Math.max(5, Math.min(400, percent)));
@@ -4088,6 +4180,12 @@ export function createStudioPage(host) {
     refs.stickerRotate.value = String(deg);
     refs.stickerRotateVal.textContent = `${deg}°`;
     refs.stickerBlend.value = layer.blend || 'source-over';
+    // 透视四角已接管几何，缩放/旋转/翻转暂时禁用。
+    const warped = Boolean(layer.quad);
+    refs.stickerScale.disabled = warped;
+    refs.stickerRotate.disabled = warped;
+    refs.stickerFlipH.disabled = warped;
+    refs.stickerFlipV.disabled = warped;
   }
 
   /** 贴纸参数落一步撤销 + 自动保存。 */
@@ -4144,6 +4242,37 @@ export function createStudioPage(host) {
     commitSticker();
   });
 
+  refs.stickerPerspective.addEventListener('change', () => {
+    const layer = stickerTarget();
+    perspectiveEdit = refs.stickerPerspective.checked;
+    if (perspectiveEdit && layer && !layer.quad) {
+      // 首次进入透视编辑：用当前旋转后的四角初始化，之后拖动圆点即可改形。
+      layer.quad = stickerHandles(layer).cornersDoc.map((point) => ({ ...point }));
+      layer._warpCache = null;
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      scheduleSave();
+      toast('已进入透视编辑：拖动四个圆点改变形状');
+    }
+    syncStickerPane();
+    scheduleDraw();
+  });
+
+  refs.stickerPerspectiveReset.addEventListener('click', () => {
+    const layer = stickerTarget();
+    if (!layer?.quad) return;
+    layer.quad = null;
+    layer._warpCache = null;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncStickerPane();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    toast('已重置透视');
+  });
+
   refs.stickerReset.addEventListener('click', () => {
     const layer = stickerTarget();
     if (!layer || !doc) return;
@@ -4152,6 +4281,8 @@ export function createStudioPage(host) {
     layer.flipH = false;
     layer.flipV = false;
     layer.blend = 'source-over';
+    layer.quad = null;
+    layer._warpCache = null;
     const crop = doc.transform.crop;
     const size = doc.size;
     layer.x = Math.round((size.width - layer.width) / 2 + (crop?.x || 0));

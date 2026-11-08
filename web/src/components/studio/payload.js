@@ -240,8 +240,6 @@ export function buildEditPayload({
       color_restore: settings.colorGuard !== false,
       color_restore_strength: 1.0,
       mask_expand: Math.round(Number(settings.maskExpand ?? 0) || 0),
-      context_factor: 1.5,
-      context_pixels: 96,
       blend_pixels: 24,
       fills: task === 'remove',
       hint: task === 'remove' ? 'green' : 'none',

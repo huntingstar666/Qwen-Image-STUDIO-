@@ -63,8 +63,6 @@ const DEFAULT_EDIT = {
   maskExpand: 0,
   colorMatch: true,
   colorStrength: 0.6,
-  contextFactor: 1.5,
-  contextPixels: 96,
   blendPixels: 24,
   consistencyLora: '',
   steps: 25,

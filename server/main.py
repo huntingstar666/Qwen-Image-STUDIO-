@@ -986,7 +986,7 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
         # 与预设校验共用同一份枚举（raw 是 native 的历史别名）
         if scheme is not None and str(scheme).strip().lower() not in presets.SCHEMES:
             raise ApiError(f"未知 local.scheme：{scheme!r}")
-        for key in ("feather", "mask_expand", "blend_pixels", "context_pixels"):
+        for key in ("feather", "mask_expand", "blend_pixels"):
             if local.get(key) is None:
                 continue
             try:
@@ -996,14 +996,6 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
             lim = presets.limits(f"local.{key}")
             if not lim["min"] <= value <= lim["max"]:
                 raise ApiError(f"local.{key} 必须在 {lim['min']}~{lim['max']}")
-        if local.get("context_factor") is not None:
-            try:
-                factor = float(local["context_factor"])
-            except (TypeError, ValueError):
-                raise ApiError("local.context_factor 必须是数字")
-            lim = presets.limits("local.context_factor")
-            if not lim["min"] <= factor <= lim["max"]:
-                raise ApiError(f"local.context_factor 必须在 {lim['min']}~{lim['max']}")
 
     mask = payload.get("mask")
     if mask is not None and not isinstance(mask, (str, dict)):

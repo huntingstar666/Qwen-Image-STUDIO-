@@ -1192,34 +1192,26 @@ class Pipeline:
             # 默认走孤海 GH_MaskCropV2 的几何：短边 × 每向独立系数（上 1.3 / 其余 1.4），
             # 遮罩内部空洞按需填充；裁切块长边夹到 [crop_min_side, crop_max_side]，
             # 小遮罩也放大到 768，模型才有足够分辨率（孤海节点 8）。
-            if _truthy(local.get("legacy_crop")):
-                crop_img, crop_info = imaging.crop_region(
-                    canvas, mask_canvas,
-                    context_factor=float(local.get("context_factor") or 1.5),
-                    context_pixels=int(local.get("context_pixels") or 96),
-                    multiple=int(profile.get("snap") or 32),
-                )
-            else:
-                # 扩图与编辑的参数分家（决策 37）：裁块下限 1024（孤海扩图档位），
-                # 用户显式传的 local.crop_min_side 仍然优先。
-                default_crop_min = 1024 if task_mode == "outpaint" else 768
-                crop_min_side = int(
-                    local.get("crop_min_side")
-                    if local.get("crop_min_side") is not None else default_crop_min)
-                crop_img, crop_info = imaging.crop_region_factors(
-                    canvas, mask_canvas,
-                    fills=_truthy(local.get("fills", task_mode == "remove")),
-                    expand_top=float(local.get("expand_top") or 1.3),
-                    expand_bottom=float(local.get("expand_bottom") or 1.4),
-                    expand_left=float(local.get("expand_left") or 1.4),
-                    expand_right=float(local.get("expand_right") or 1.4),
-                    multiple=int(profile.get("snap") or 32),
-                    max_side=int(local.get("crop_max_side") or 2048),
-                    min_side=crop_min_side,
-                    # 最小裁剪窗：小遮罩以遮罩为中心扩到至少 crop_floor 见方（默认 1024，与孤海一致），
-                    # 补真实周边像素而不是把小块放大。
-                    min_window=int(local.get("crop_floor", 1024) or 0),
-                )
+            # 扩图与编辑的参数分家（决策 37）：裁块下限 1024（孤海扩图档位），
+            # 用户显式传的 local.crop_min_side 仍然优先。
+            default_crop_min = 1024 if task_mode == "outpaint" else 768
+            crop_min_side = int(
+                local.get("crop_min_side")
+                if local.get("crop_min_side") is not None else default_crop_min)
+            crop_img, crop_info = imaging.crop_region_factors(
+                canvas, mask_canvas,
+                fills=_truthy(local.get("fills", task_mode == "remove")),
+                expand_top=float(local.get("expand_top") or 1.3),
+                expand_bottom=float(local.get("expand_bottom") or 1.4),
+                expand_left=float(local.get("expand_left") or 1.4),
+                expand_right=float(local.get("expand_right") or 1.4),
+                multiple=int(profile.get("snap") or 32),
+                max_side=int(local.get("crop_max_side") or 2048),
+                min_side=crop_min_side,
+                # 最小裁剪窗：小遮罩以遮罩为中心扩到至少 crop_floor 见方（默认 1024，与孤海一致），
+                # 补真实周边像素而不是把小块放大。
+                min_window=int(local.get("crop_floor", 1024) or 0),
+            )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
         else:

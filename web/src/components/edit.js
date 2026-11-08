@@ -2507,8 +2507,6 @@ export function createEditPage(host) {
         color_match: edit.colorMatch !== false,
         color_strength: Number(edit.colorStrength),
         mask_expand: Math.round(Number(edit.maskExpand) || 0),
-        context_factor: Number(edit.contextFactor),
-        context_pixels: Math.round(Number(edit.contextPixels) || 0),
         blend_pixels: Math.round(Number(edit.blendPixels) || 0),
         consistency: consistencyOn,
       };

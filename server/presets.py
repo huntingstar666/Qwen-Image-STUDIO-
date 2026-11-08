@@ -493,8 +493,6 @@ NUMERIC_LIMITS: dict[str, dict[str, Any]] = {
     "local.blend_pixels": {"min": 0, "max": 256, "step": 4},
     "local.feather": {"min": 0, "max": 256, "step": 4},
     "local.mask_expand": {"min": 0, "max": 256, "step": 4},
-    "local.context_pixels": {"min": 0, "max": 1024, "step": 32},
-    "local.context_factor": {"min": 1, "max": 4, "step": 0.1},
     "local.color_strength": {"min": 0, "max": 1, "step": 0.01},
     "local.color_restore_strength": {"min": 0, "max": 1, "step": 0.01},
     "local.crop_min_side": {"min": 0, "max": 4096, "step": 32},

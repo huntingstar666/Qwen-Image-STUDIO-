@@ -205,8 +205,11 @@ def test_rejects_local_numeric_out_of_range():
         main._validate_edit_params({"local": {"feather": -4}})
     with pytest.raises(main.ApiError, match="local.mask_expand"):
         main._validate_edit_params({"local": {"mask_expand": "多"}})
-    with pytest.raises(main.ApiError, match="local.context_factor"):
-        main._validate_edit_params({"local": {"context_factor": 9}})
+
+
+def test_ignores_removed_legacy_context_params():
+    """context_factor / context_pixels 只服务已删除的 legacy_crop，接口不再校验（P2-1）。"""
+    main._validate_edit_params({"local": {"context_factor": 9, "context_pixels": 99999}})
 
 
 def test_rejects_local_keys_from_shared_table():

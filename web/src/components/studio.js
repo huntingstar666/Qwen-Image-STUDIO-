@@ -29,6 +29,7 @@ import {
   clearProject,
   cleanupProjects,
   createProjectLease,
+  deleteStudioVersion,
   estimateStorage,
   leaseHeldByOther,
   listStudioVersions,
@@ -876,6 +877,7 @@ export function createStudioPage(host) {
             <div class="studio-projects-empty" data-ref="projHistoryEmpty" hidden>还没有精修工程</div>
           </div>
         </div>
+        <div class="studio-dock-menu" data-ref="versionMenu" role="menu" hidden></div>
       </div>
     </div>`;
 
@@ -904,6 +906,7 @@ export function createStudioPage(host) {
     projHistoryClose: ref('projHistoryClose'),
     projHistoryList: ref('projHistoryList'),
     projHistoryEmpty: ref('projHistoryEmpty'),
+    versionMenu: ref('versionMenu'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
     zoomLabel: ref('zoomLabel'),
@@ -4242,6 +4245,139 @@ export function createStudioPage(host) {
     { passive: false },
   );
 
+  /* ---------------------------------------------------------- 版本卡右键菜单（D22.1 V3 收尾） */
+
+  let versionMenuId = '';
+
+  function closeVersionMenu() {
+    if (!refs.versionMenu || refs.versionMenu.hidden) return;
+    refs.versionMenu.hidden = true;
+    versionMenuId = '';
+  }
+
+  function openVersionMenu(version, x, y) {
+    const index = versions.findIndex((item) => item.id === version.id);
+    if (index < 0) return;
+    versionMenuId = version.id;
+    const later = versions.length - index - 1;
+    refs.versionMenu.innerHTML = `
+      <button type="button" role="menuitem" data-vact="compare">与当前对比</button>
+      <button type="button" role="menuitem" data-vact="save">另存为 PNG</button>
+      ${version.kind === 'original' ? '' : '<button type="button" role="menuitem" data-vact="delete">删除此版本</button>'}
+      ${
+        later > 0
+          ? `<button type="button" role="menuitem" data-vact="truncate">从此处重新开始（删除之后 ${later} 张）</button>`
+          : ''
+      }`;
+    refs.versionMenu.hidden = false;
+    refs.versionMenu.style.left = '0px';
+    refs.versionMenu.style.top = '0px';
+    const rect = refs.versionMenu.getBoundingClientRect();
+    const left = Math.min(Math.max(8, x), window.innerWidth - rect.width - 8);
+    const top = Math.min(Math.max(8, y), window.innerHeight - rect.height - 8);
+    refs.versionMenu.style.left = `${left}px`;
+    refs.versionMenu.style.top = `${top}px`;
+  }
+
+  async function versionBlobOf(version) {
+    if (version.blob) return version.blob;
+    try {
+      return await loadStudioVersionBlob(version.blobKey || `${projectId}:${version.id}`);
+    } catch {
+      return null;
+    }
+  }
+
+  async function runVersionAction(action) {
+    const version = versions.find((item) => item.id === versionMenuId);
+    closeVersionMenu();
+    if (!version) return;
+    const index = versions.findIndex((item) => item.id === version.id);
+    if (action === 'compare') {
+      const blob = await versionBlobOf(version);
+      if (!blob) {
+        toastWarn('该版本的原图不在本机');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      ai?.compareAll?.({ extra: [{ url, label: version.label }] });
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return;
+    }
+    if (action === 'save') {
+      const blob = await versionBlobOf(version);
+      if (!blob) {
+        toastWarn('该版本的原图不在本机');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      downloadUrl(url, `${baseName(doc?.name || 'studio')}-${version.label}.png`);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      return;
+    }
+    if (action === 'delete') {
+      if (version.kind === 'original' || !projectId) return;
+      const confirmed = await confirmDialog({
+        title: '删除版本',
+        message: `删除「${version.label}」？该版本的原始图会从本机移除，不可恢复。`,
+        confirmText: '删除',
+        danger: true,
+      });
+      if (!confirmed) return;
+      if (version.id === currentVersionId) {
+        const prev = versions[index - 1] || versions.find((item) => item.id !== version.id);
+        if (prev) await switchVersion(prev.id);
+      }
+      try {
+        await deleteStudioVersion(projectId, version.id);
+        versions = versions.filter((item) => item.id !== version.id);
+        renderDock();
+        toastSuccess('版本已删除');
+      } catch (err) {
+        toastError(err, '删除版本失败');
+      }
+      return;
+    }
+    if (action === 'truncate') {
+      const later = versions.slice(index + 1);
+      if (!later.length || !projectId) return;
+      const confirmed = await confirmDialog({
+        title: '从此处重新开始',
+        message: `将删除「${version.label}」之后的 ${later.length} 个版本，不可恢复；当前底图会保留。`,
+        confirmText: '删除',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        for (const item of later) await deleteStudioVersion(projectId, item.id, { force: true });
+        versions = versions.slice(0, index + 1);
+        if (!versions.some((item) => item.id === currentVersionId)) {
+          const last = versions[versions.length - 1];
+          if (last) await switchVersion(last.id);
+        }
+        renderDock();
+        toastSuccess(`已删除之后 ${later.length} 个版本`);
+      } catch (err) {
+        toastError(err, '删除版本失败');
+      }
+    }
+  }
+
+  refs.dockTrack.addEventListener('contextmenu', (event) => {
+    const card = event.target.closest('[data-vid]');
+    if (!card) return;
+    event.preventDefault();
+    const version = versions.find((item) => item.id === card.dataset.vid);
+    if (version) openVersionMenu(version, event.clientX, event.clientY);
+  });
+
+  refs.versionMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const item = event.target.closest('[data-vact]');
+    if (!item) return;
+    void runVersionAction(item.dataset.vact);
+  });
+
   /* ---------------------------------------------------------- 项目历史（D22.1 V4） */
 
   function setProjHistory(open) {
@@ -6442,6 +6578,7 @@ export function createStudioPage(host) {
     if (!refs.exportMenu.hidden && !refs.exportWrap.contains(event.target)) setExportMenu(false);
     if (!refs.projMenu.hidden && !refs.projWrap.contains(event.target)) setProjMenu(false);
     if (!refs.cutMenu.hidden && !refs.cutWrap.contains(event.target)) setCutMenu(false);
+    if (!refs.versionMenu.hidden && !refs.versionMenu.contains(event.target)) closeVersionMenu();
     if (
       !refs.projHistoryPanel.hidden &&
       !refs.projHistoryPanel.contains(event.target) &&
@@ -7000,6 +7137,10 @@ export function createStudioPage(host) {
 
   function onKeyDown(event) {
     if (!isActive()) return;
+    if (event.key === 'Escape' && refs.versionMenu && !refs.versionMenu.hidden) {
+      closeVersionMenu();
+      return;
+    }
     if (isEditableTarget(event.target)) return;
     // 其他标签正在编辑本工程时，键盘编辑快捷键一并禁用。
     if (leaseLocked) return;

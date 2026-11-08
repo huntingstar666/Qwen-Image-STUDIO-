@@ -953,6 +953,14 @@ DOM 结构：
   - 实测（headless Chromium，400×300 三色图）：魔棒点右半蓝区得「选区 50.0%」、`蒙版 0.0%`；点「AI 消除」后选区清空、`蒙版 50.0%`，预设高亮「元素移除」、任务 = `remove`、指令与提交提示同步为元素移除。无控制台报错。
   - 说明：只做「选区 → 蒙版」，不会替用户点提交；需要完全自动生成时再补一次确认弹窗。
 
+- **D20.1 面板布局收尾修复（已完成）** —— 右侧检查器底部内容不可见 / 滚不到：
+  - 根因 1（主因）：`.studio-body` 是 grid 但只声明了列，单行是 `auto`，被右侧面板内容撑到约 990px；面板自身虽有 `overflow-y:auto`，但整个面板已经伸出视口（面板底 811 > 视口 575），滚动条也在视口外，导致「结果 / 编辑历史 / 图层属性 / 历史快照」永远看不到。改为 `grid-template-rows: minmax(0, 1fr)` 并补 `overflow:hidden`，行列都锁在剩余高度。
+  - 根因 2：`.studio-layer-props`（图层属性）与 `.studio-snapshots`（历史快照）自身是 `display:flex`，覆盖了 `[hidden]{display:none}`；未选中图层时「图层属性」仍占 122px。补 `.studio-panel > [hidden]{display:none!important}`，实测该项 122 → 0。
+  - 根因 3：历史快照区块固定占 189px，矮窗口把 AI 面板挤到 16px；给 `.studio-snapshots` 加 `flex:0 1 auto; min-height:0; max-height:34%; overflow-y:auto`，给 `.studio-pane` 加 `min-height:120px`，空间不足时优先保证面板可滚动。
+  - 顺带：`.page-studio` 的 `min-height` 由 560 → 480，避免 575 高的窗口把页面顶出视口（实测页底 572 < 575）。
+  - 实测（headless Chromium）：修复前 1024×575 下 body 440 / 面板 990 / 面板底 811；修复后同一窗口面板 360、AI 面板 191 可滚动（`scrollHeight` 836），滚到底可完整看到「结果 / 编辑历史」，状态栏与历史快照都在视口内；1440×900 下 AI 面板 417 可滚动；941×900（≤980 的堆叠布局）AI 面板按 420 上限滚动，未回归。截图 `.screenshots/before-layout-fix-2026-11-08T06-23-36-865Z.png`、`.screenshots/after-layout-fix-1024x575-2026-11-08T06-24-45-918Z.png`、`.screenshots/after-layout-fix-scrolled-2026-11-08T06-25-22-367Z.png`。
+  - 说明：高度极小时（< 480px 视口）页面仍会出现整页滚动，这是桌面工作台的保底行为；面板内部各区块始终可达。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1478,6 +1486,7 @@ DOM 结构：
 | D14.1 | 全景图入口 | 已完成 | 本次提交 | `payload.js` 新增 `panoramaPlan / PANORAMA_ASPECTS / PANORAMA_MAX_PIXELS`（与后端同算法）；任务下拉加「全景」，输出区新增全景面板（2:1/3:1/4:1/21:9、长边 2048/3072/4096、环绕接缝），覆盖项走 `panorama.*`；单测 7 项；实测见 §12.11 |
 | D15.1 | 高清放大入口 | 已完成 | 本次提交 | 顶栏「放大」→ `upscaleDialog.js`：读取 `api.upscaleModels()` 列出就绪引擎（VOSR2 / SeedVR2 / FlashVSR，默认 VOSR2），倍率 2×/4×，提交当前烘焙主图后按 `pollJob` 显示进度、可取消；结果卡片显示输出尺寸与文件名，可「载入为主图」（新工程，可继续编辑 / 导出）或「与当前主图对比」（走 `ai.compareAll({ extra })`）。实测 512×384 → 1024×768（vosr2 2×），载入后尺寸与文件名同步 |
 | D10F | 修复类工具收尾修复 | 已完成 | 本次提交 | 修复类工具（J/S/H/U/K/Y/P/N）与文字落点、局部调整取景统一经 `maskPoint()` 换算裁剪坐标；新增 `repairPaint()` 用 `destination-in` 叠选区 alpha（蚂蚁线路径不能 `clip`）；顺带修复剪贴基座为调整层崩溃、快照默认名重复、贴纸透视勾选状态、形状样式 NaN；单测 116 项全绿；实测见 §12.11 |
+| D20.1 | 面板布局收尾修复 | 已完成 | 本次提交 | 右侧面板被内容撑高、`[hidden]` 被 flex 覆盖、快照区固定占位 → 底部区块不可见且滚不到；`grid-template-rows:minmax(0,1fr)` + 面板 `[hidden]` 兜底 + 快照区可收缩 + `.page-studio` min-height 480；三档窗口实测见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

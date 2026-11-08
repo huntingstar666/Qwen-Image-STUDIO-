@@ -7,7 +7,7 @@
   --studio-rail-w: 58px;
   --studio-panel-w: 336px;
   height: calc(100vh - var(--topbar-h) - 92px);
-  min-height: 560px;
+  min-height: 480px;
 }
 
 .studio {
@@ -199,8 +199,12 @@
 .studio-body {
   display: grid;
   grid-template-columns: var(--studio-rail-w) minmax(0, 1fr) var(--studio-panel-w);
+  /* 单行固定为剩余高度：否则 auto 行会被右侧面板内容撑高，
+     面板底部（结果/编辑历史/图层属性）会溢出到视口之外且无法滚动到。 */
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* ------------------------------------------------------------- 工具轨 */
@@ -671,10 +675,14 @@
 .studio-snapshots {
   display: flex;
   flex-direction: column;
+  flex: 0 1 auto;
   gap: 8px;
+  min-height: 0;
+  max-height: 34%;
   padding: 10px 12px;
   border-top: 1px solid var(--line-soft);
   background: var(--panel-2);
+  overflow-y: auto;
 }
 
 .studio-snapshots-head {
@@ -859,6 +867,12 @@
   background: var(--panel);
 }
 
+/* 面板里的固定区块（图层属性 / 历史快照）自身是 flex 布局，
+   会覆盖 UA 的 [hidden]{display:none}，必须显式兜底，否则隐藏后仍占高度。 */
+.studio-panel > [hidden] {
+  display: none !important;
+}
+
 .studio-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -893,8 +907,8 @@
 }
 
 .studio-pane {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 120px;
   padding: 8px 16px 16px;
   overflow-y: auto;
 }

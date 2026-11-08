@@ -51,6 +51,7 @@ import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
 import { healDab, cloneDab } from './studio/heal.js';
 import { normalizeVector, smudgeDab, smudgeShift } from './studio/smudge.js';
 import { skinDab } from './studio/skin.js';
+import { warpPatch } from './studio/liquify.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -162,6 +163,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20c4.2 0 7-3 7-7.4C19 8 15.5 4 12 4S5 8 5 12.6C5 17 7.8 20 12 20z"/><path d="M9.2 11.4c.6.5 1.2.5 1.8 0"/><path d="M13 11.4c.6.5 1.2.5 1.8 0"/><path d="M10.2 15c1.1.8 2.5.8 3.6 0"/></svg>',
   },
   {
+    id: 'liquify',
+    label: '液化',
+    key: 'Y',
+    hint: '按住拖动推开像素，做瘦脸/拉长等局部形变',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8c3.5 0 4.5 8 8 8s4.5-8 8-8"/><path d="M9 4.5l-2 2 2 2"/><path d="M15 19.5l2-2-2-2"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -190,11 +199,11 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 /** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin']);
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify']);
 /** 仿制图章 / 修复画笔（D10.2） */
 const CLONE_TOOLS = new Set(['clone', 'healbrush']);
 /** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
-const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin']);
+const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -202,7 +211,7 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
-  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin'] },
+  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -2006,6 +2015,28 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 液化（D10.5）
+   * ============================================================ */
+
+  /**
+   * 每帧都从「本笔开始时的快照」按累计位移取样，保证是形变而不是累积涂抹。
+   */
+  function liquifyAt(point) {
+    if (!doc || !drag?.base) return;
+    const repair = doc.ensureRepair();
+    const ok = warpPatch(repair.getContext('2d'), drag.base, {
+      x: point.x,
+      y: point.y,
+      dx: drag.total.x,
+      dy: drag.total.y,
+      radius: Math.max(3, brush.size / 2),
+      strength: 0.4 + brush.opacity * 0.6,
+    });
+    if (!ok) return;
+    doc.invalidateBase();
+  }
+
+  /* ============================================================
    * 指针交互
    * ============================================================ */
 
@@ -2071,6 +2102,11 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
+    if (tool === 'liquify') {
+      // 记下本笔开始时的底图，后续都从它取样（真正的形变，不会越推越花）。
+      drag = { mode: 'liquify', start: point, last: point, total: { x: 0, y: 0 }, base: doc.renderUnderlay() };
+      return;
+    }
     if (tool === 'spot') {
       drag = { mode: 'spot', last: point };
       healAt(point);
@@ -2134,6 +2170,15 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'clone' || drag.mode === 'clone-blocked') {
       if (drag.mode === 'clone') cloneStroke(point);
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'liquify') {
+      const step = drag.last || point;
+      drag.total.x += point.x - step.x;
+      drag.total.y += point.y - step.y;
+      drag.last = point;
+      liquifyAt(point);
       scheduleDraw();
       return;
     }
@@ -2218,6 +2263,10 @@ export function createStudioPage(host) {
       updateHistoryUi();
     } else if (mode === 'skin') {
       // 整笔磨皮作为一个撤销步（D10.4）。
+      doc?.snapshot();
+      updateHistoryUi();
+    } else if (mode === 'liquify') {
+      // 整笔液化作为一个撤销步（D10.5）。
       doc?.snapshot();
       updateHistoryUi();
     } else if (mode === 'shape' && rect) {

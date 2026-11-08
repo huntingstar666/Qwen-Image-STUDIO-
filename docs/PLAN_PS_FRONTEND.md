@@ -850,6 +850,14 @@ DOM 结构：
   - 实测（headless Chromium，800×600 肤色底 `#d9a07a` + 1200 个 1.4px 深浅斑点，笔刷 160px）：在 `(400,300)` 点一下后 120×120 区域亮度标准差 `2.43 → 1.58`（−35%），均值保持 `217`，说明斑点被柔化而肤色未偏移；撤销可恢复。截图 `.screenshots/D10.4-skin-2026-11-08T04-25-23-215Z.png`。
   - 说明：磨皮只处理小半径细节，痘印/发丝级瑕疵仍建议先用污点修复或修复画笔；参数按「局部平均 + 细节衰减」设计，不追求中性灰高低频分离那种可再合成的图层结构。
 
+- **D10.5 液化（已完成）** —— 以「推」为主的局部形变，做瘦脸、拉长、微调轮廓：
+  - 新增 `studio/liquify.js`：`pushWeight(distance, radius)`（smoothstep 衰减，中心 1 / 边缘 0，纯函数）、`warpPatch(ctx, base, {x,y,dx,dy,radius,strength})`——对笔刷外接方形逐像素按累计位移**反向取样**本笔开始时的快照，再以画布绘制方式写回修复层（笔刷外透明像素不会擦掉已有修复内容）；越界返回 `false`。
+  - 工具：左栏「修复」组新增 `liquify`（液化，Y）；复用笔刷大小/不透明度（不透明度兼作形变强度 `0.4 + opacity*0.6`）。
+  - 交互：按下即记录本笔底图快照（`doc.renderUnderlay()`），拖动时累加 `total` 位移并以它反向取样，所以是真正的形变而不是涂抹式累积；整笔只落一次撤销步。
+  - 单测：新增 `web/tests/studio/liquify.test.mjs` 4 项（中心/边缘/超界、单调递减、非法半径、半半径 ≈0.5），`node --test web/tests/studio/liquify.test.mjs` → `pass 4 / fail 0`。
+  - 实测（headless Chromium，800×600 蓝底 + `(360,260)-(440,340)` 红色方块，笔刷 160px）：从 `(400,300)` 向右拖 60px 后，`x=450` 由蓝 `[31,111,208]` 变为红 `[231,76,60]`，`x=360` 边缘混合为 `[143,91,124]`，`x=560` 仍为蓝，方块整体右移且边缘平滑；撤销 `x=450` 回到蓝、重做恢复红。截图 `.screenshots/D10.5-liquify-2026-11-08T04-26-52-863Z.png`。
+  - 说明：本轮只实现「向前推」一种液化笔刷（重建/膨胀/收缩/左推留给后续）；位移以文档像素为单位，大半径 + 大位移时边缘可能出现轻微拉伸纹理，属正常形变表现。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1039,7 +1047,8 @@ DOM 结构：
 | `tools/smudge.js` | 涂抹（D10.3 暂内联在 `studio.js`，算法在 `smudge.js`） | `renderer` | D10.3（已落地） |
 | `smudge.js` | `normalizeVector` / `smudgeShift` / `smudgeDab`（涂抹位移与柔边贴回） | 无 | D10.3 |
 | `skin.js` | `boxBlur` / `smoothSkin` / `skinDab`（频率分离磨皮，D10.4 已落地） | 无 | D10.4 |
-| `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
+| `tools/liquify.js` | 液化（D10.5 暂内联在 `studio.js`，形变算法在 `liquify.js`） | `renderer` | D10.5（已落地） |
+| `liquify.js` | `pushWeight` / `warpPatch`（反向取样形变，D10.5 已落地） | 无 | D10.5 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
 | `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
 | `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
@@ -1353,7 +1362,7 @@ DOM 结构：
 | D10.2 | 仿制图章 / 修复画笔 | 已完成 | 本次提交 | `heal.js` 追加 `cloneDab/meanRgb/shiftPatch`；`studioDoc.renderSample()` 提供干净取样源；`clone`（S）/`healbrush`（H）工具 + Alt 取样 + 对齐开关 + 锚点/取样标记；实测见 §12.11 |
 | D10.3 | 涂抹 | 已完成 | 本次提交 | 新增 `studio/smudge.js`（`normalizeVector/smudgeShift/smudgeDab`）；`smudge` 工具（U）+ 笔刷参数；写入修复层并整笔一次撤销；单测 5 项；实测见 §12.11 |
 | D10.4 | 磨皮 | 已完成 | 本次提交 | 新增 `studio/skin.js`（`boxBlur/smoothSkin/skinDab` 频率分离）；`skin` 工具（K）+ 笔刷参数（不透明度兼作强度）；单测 6 项；实测见 §12.11 |
-| D10.5 | 液化 | 未开始 | — | — |
+| D10.5 | 液化 | 已完成 | 本次提交 | 新增 `studio/liquify.js`（`pushWeight` + `warpPatch` 反向取样形变）；`liquify` 工具（Y）+ 累计位移；单测 4 项；实测见 §12.11 |
 | D11.1 | 马赛克 / 模糊 | 未开始 | — | — |
 | D11.2 | 文字图层 | 未开始 | — | — |
 | D11.3 | 贴纸 | 未开始 | — | — |

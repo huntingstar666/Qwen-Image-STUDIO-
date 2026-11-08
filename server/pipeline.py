@@ -960,7 +960,9 @@ class Pipeline:
                 warnings.append("未设置外扩比例，扩图已按普通编辑处理")
             else:
                 try:
-                    op_max_side = int(op.get("max_side") or 5120)
+                    # 缺省跟随全局上限：写死 5120 会在 max_side=4096 的机器上
+                    # 「先建大画布、再被上限拒绝」，随机失败（P1-9）。
+                    op_max_side = int(op.get("max_side") or cfg.get("max_side") or 4096)
                 except (TypeError, ValueError) as exc:
                     raise PipelineError(f"outpaint.max_side 必须是整数：{exc}") from exc
                 try:

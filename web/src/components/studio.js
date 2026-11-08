@@ -30,9 +30,12 @@ import {
   cleanupProjects,
   createProjectLease,
   estimateStorage,
+  leaseHeldByOther,
   listStudioVersions,
   loadLastProject,
+  loadProject,
   loadStudioVersionBlob,
+  listProjects,
   newProjectId,
   requestPersistentStorage,
   saveStudioProject,
@@ -827,6 +830,28 @@ export function createStudioPage(host) {
 
         <div class="studio-dock" data-ref="dock" hidden>
           <div class="studio-dock-track" data-ref="dockTrack" role="listbox" aria-label="主图版本链"></div>
+          <div class="studio-dock-side">
+            <button
+              class="studio-dock-spine"
+              type="button"
+              data-ref="projHistoryBtn"
+              aria-expanded="false"
+              title="项目历史：本机的精修工程"
+            >
+              <span class="studio-dock-spine-count mono" data-ref="projHistoryCount">0</span>
+              <span class="studio-dock-spine-label">项目历史</span>
+            </button>
+          </div>
+          <div class="studio-projects" data-ref="projHistoryPanel" hidden>
+            <div class="studio-projects-head">
+              <span class="studio-projects-title">项目历史</span>
+              <span class="studio-projects-meta mono" data-ref="projHistoryMeta"></span>
+              <span class="spacer"></span>
+              <button class="studio-projects-close" type="button" data-ref="projHistoryClose" aria-label="收起">×</button>
+            </div>
+            <div class="studio-projects-list" data-ref="projHistoryList"></div>
+            <div class="studio-projects-empty" data-ref="projHistoryEmpty" hidden>还没有精修工程</div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -849,6 +874,13 @@ export function createStudioPage(host) {
     upscaleBtn: ref('upscaleBtn'),
     dock: ref('dock'),
     dockTrack: ref('dockTrack'),
+    projHistoryBtn: ref('projHistoryBtn'),
+    projHistoryCount: ref('projHistoryCount'),
+    projHistoryPanel: ref('projHistoryPanel'),
+    projHistoryMeta: ref('projHistoryMeta'),
+    projHistoryClose: ref('projHistoryClose'),
+    projHistoryList: ref('projHistoryList'),
+    projHistoryEmpty: ref('projHistoryEmpty'),
     fileInput: ref('fileInput'),
     rail: ref('rail'),
     zoomLabel: ref('zoomLabel'),
@@ -3835,6 +3867,7 @@ export function createStudioPage(host) {
     setTool('view');
     refs.statusTool.textContent = '未打开图片 · 支持拖拽 / 粘贴';
     if (!persistDisabled) setSaveState('idle');
+    void syncProjectCount();
     scheduleDraw();
   }
 
@@ -4167,6 +4200,153 @@ export function createStudioPage(host) {
     { passive: false },
   );
 
+  /* ---------------------------------------------------------- 项目历史（D22.1 V4） */
+
+  function setProjHistory(open) {
+    if (!refs.projHistoryPanel) return;
+    refs.projHistoryPanel.hidden = !open;
+    refs.projHistoryBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    refs.projHistoryBtn.classList.toggle('is-open', open);
+    if (open) void refreshProjectList();
+  }
+
+  async function syncProjectCount() {
+    try {
+      const projects = await listProjects();
+      refs.projHistoryCount.textContent = String(projects.length);
+    } catch {
+      refs.projHistoryCount.textContent = '0';
+    }
+  }
+
+  /** 渲染本机工程列表；正在被其它标签编辑的工程禁止直接打开。 */
+  async function refreshProjectList() {
+    let projects = [];
+    try {
+      projects = await listProjects();
+    } catch {
+      projects = [];
+    }
+    refs.projHistoryCount.textContent = String(projects.length);
+    refs.projHistoryMeta.textContent = `${projects.length} 个项目`;
+    refs.projHistoryEmpty.hidden = projects.length > 0;
+    refs.projHistoryList.textContent = '';
+    if (!projects.length) return;
+    const tab = tabId();
+    for (const project of projects) {
+      const item = document.createElement('div');
+      item.className = 'studio-proj-item';
+      item.dataset.pid = project.id;
+      if (project.id === projectId) item.classList.add('is-current');
+      const locked = project.id !== projectId && leaseHeldByOther(project.id, tab);
+      const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
+      const when = project.updatedAt ? relativeTime(project.updatedAt) : '';
+      item.innerHTML = `
+        <div class="studio-proj-thumb">${
+          project.thumbnail ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />` : '<span>无图</span>'
+        }</div>
+        <div class="studio-proj-info">
+          <div class="studio-proj-name">${escapeHtml(project.name || '未命名工程')}</div>
+          <div class="studio-proj-meta mono">${escapeHtml([size, when].filter(Boolean).join(' · '))}</div>
+        </div>
+        ${project.id === projectId ? '<span class="studio-proj-flag">当前</span>' : ''}
+        ${locked ? '<span class="studio-proj-flag is-lock">编辑中</span>' : ''}
+        <div class="studio-proj-actions">
+          <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>打开</button>
+          <button class="btn ghost sm" type="button" data-act="delete">删除</button>
+        </div>`;
+      refs.projHistoryList.appendChild(item);
+    }
+  }
+
+  /** 读取并清空「从历史记录打开工程」的一次性交接。 */
+  function takePendingProject() {
+    try {
+      const id = sessionStorage.getItem('wb.studio.openProject') || '';
+      if (id) sessionStorage.removeItem('wb.studio.openProject');
+      return id;
+    } catch {
+      return '';
+    }
+  }
+
+  /** 从项目历史打开一个工程：先保存当前工程，再按工程快照恢复。 */
+  async function openProjectById(id) {
+    if (!id) return false;
+    if (id === projectId && doc) {
+      toast('已经是当前项目');
+      return true;
+    }
+    let saved = null;
+    try {
+      saved = await loadProject(id);
+    } catch {
+      saved = null;
+    }
+    if (!saved?.project) {
+      toastWarn('工程不存在或已删除');
+      await syncProjectCount();
+      return false;
+    }
+    const base = (saved.layers || []).find((layer) => layer.id === 'base');
+    if (!base?.bitmapBlob) {
+      toastWarn('工程缺少主图，无法打开');
+      return false;
+    }
+    if (doc) await closeProject({ flush: true });
+    const ok = await applyRestore(saved);
+    if (ok) {
+      // 重新落一次 lastProjectId：关闭旧工程时被清掉，打开新工程后要恢复自动恢复能力。
+      scheduleSave(300);
+      toastSuccess(`已打开「${saved.project.name || '工程'}」`);
+      if (!refs.projHistoryPanel.hidden) await refreshProjectList();
+    }
+    return ok;
+  }
+
+  refs.projHistoryBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setProjHistory(refs.projHistoryPanel.hidden);
+  });
+
+  refs.projHistoryClose.addEventListener('click', () => setProjHistory(false));
+
+  refs.projHistoryList.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-act]');
+    if (!button) return;
+    const item = button.closest('[data-pid]');
+    const id = item?.dataset.pid;
+    if (!id) return;
+    if (button.dataset.act === 'open') {
+      button.disabled = true;
+      const ok = await openProjectById(id);
+      button.disabled = false;
+      if (ok) setProjHistory(false);
+      return;
+    }
+    if (button.dataset.act === 'delete') {
+      const name = item.querySelector('.studio-proj-name')?.textContent || '该工程';
+      const confirmed = await confirmDialog({
+        title: '删除工程',
+        message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
+        confirmText: '删除',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        if (id === projectId) await closeProject({ flush: false });
+        await clearProject(id);
+      } catch (err) {
+        toastError(err, '删除工程失败');
+        return;
+      }
+      toastSuccess('工程已删除');
+      await refreshProjectList();
+    }
+  });
+
+  void syncProjectCount();
+
   async function fetchBlob(url) {
     try {
       const response = await fetch(url, { credentials: 'same-origin' });
@@ -4407,6 +4587,7 @@ export function createStudioPage(host) {
       saveRetryDelay = 0;
       saveWarned = false;
       setSaveState('saved');
+      void syncProjectCount();
       if (!persistRequested) {
         persistRequested = true;
         void requestPersistentStorage();
@@ -6050,6 +6231,13 @@ export function createStudioPage(host) {
     if (!refs.importMenu.hidden && !refs.importWrap.contains(event.target)) setImportMenu(false);
     if (!refs.exportMenu.hidden && !refs.exportWrap.contains(event.target)) setExportMenu(false);
     if (!refs.projMenu.hidden && !refs.projWrap.contains(event.target)) setProjMenu(false);
+    if (
+      !refs.projHistoryPanel.hidden &&
+      !refs.projHistoryPanel.contains(event.target) &&
+      !refs.projHistoryBtn.contains(event.target)
+    ) {
+      setProjHistory(false);
+    }
   }
   document.addEventListener('click', onDocumentClick);
 
@@ -6736,6 +6924,12 @@ export function createStudioPage(host) {
   return {
     onShow() {
       sizeCanvas();
+      // 从「历史记录 · 精修工程」跳转过来时，优先打开指定工程。
+      const pending = takePendingProject();
+      if (pending) {
+        void openProjectById(pending);
+        return;
+      }
       if (doc) {
         requestAnimationFrame(fitView);
         return;

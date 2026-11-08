@@ -11,6 +11,7 @@
 }
 
 .studio {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -341,6 +342,209 @@
 .studio-dock-card:hover + .studio-dock-label,
 .studio-dock-card:focus-visible + .studio-dock-label {
   opacity: 1;
+}
+
+/* 右端「项目历史」书脊 */
+.studio-dock-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  margin-left: 8px;
+  border-left: 1px solid var(--line-soft);
+}
+
+.studio-dock-spine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 72px;
+  padding: 4px 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.studio-dock-spine:hover,
+.studio-dock-spine.is-open {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.studio-dock-spine-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.studio-dock-spine-label {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  font-size: 9.5px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+}
+
+/* 工程列表浮层 */
+.studio-projects {
+  position: absolute;
+  right: 16px;
+  bottom: 100px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 330px;
+  max-height: min(460px, 62vh);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.studio-projects[hidden] {
+  display: none;
+}
+
+.studio-projects-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.studio-projects-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.studio-projects-meta {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.studio-projects-close {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.studio-projects-close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.studio-projects-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.studio-proj-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.studio-proj-item:first-child {
+  border-top: none;
+}
+
+.studio-proj-item.is-current {
+  background: var(--panel-2);
+}
+
+.studio-proj-thumb {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 9px;
+  overflow: hidden;
+}
+
+.studio-proj-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.studio-proj-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.studio-proj-name {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.studio-proj-meta {
+  font-size: 9.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.studio-proj-flag {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--accent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.studio-proj-flag.is-lock {
+  color: var(--warn);
+}
+
+.studio-proj-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+}
+
+.studio-proj-actions .btn {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.studio-projects-empty {
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 @media (prefers-reduced-motion: reduce) {

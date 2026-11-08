@@ -4,13 +4,15 @@
  * 1. GET /api/history?limit=30 拉取生成记录，缩略图网格展示；
  * 2. 点击查看大图 + 参数摘要 + 提示词；
  * 3. 下载、复制提示词、导出工作流 JSON（/api/workflow/{id}.json，失败时中文提示）；
- * 4. 删除单条（后端若未提供单条接口则优雅提示）与清空全部历史。
+ * 4. 删除单条（后端若未提供单条接口则优雅提示）与清空全部历史；
+ * 5. 「精修工程」分组（D22.1 V4）：复用 IndexedDB 的 listProjects()，与工作室底部 Dock 同源。
  */
 
 import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
+import { clearProject, leaseHeldByOther, listProjects } from './studio/persistence.js';
 import {
   copyText,
   downloadUrl,
@@ -27,6 +29,7 @@ export function createHistoryPage(host) {
   let items = [];
   let loading = false;
   let loadedAt = 0;
+  let projects = [];
 
   host.innerHTML = `
     <div class="page page-history">
@@ -41,6 +44,15 @@ export function createHistoryPage(host) {
         <button class="btn ghost sm" type="button" data-ref="refresh">刷新</button>
         <button class="btn danger sm" type="button" data-ref="clearAll">清空全部</button>
       </div>
+      <div class="history-projects" data-ref="projectSection">
+        <div class="history-section-head">
+          <span class="history-section-title">精修工程</span>
+          <span class="history-section-count" data-ref="projectCount"></span>
+          <span class="spacer"></span>
+          <button class="btn ghost sm" type="button" data-ref="projectRefresh">刷新</button>
+        </div>
+        <div class="history-project-grid" data-ref="projectGrid"></div>
+      </div>
       <div data-ref="grid"></div>
     </div>`;
 
@@ -51,8 +63,126 @@ export function createHistoryPage(host) {
     refresh: ref('refresh'),
     clearAll: ref('clearAll'),
     grid: ref('grid'),
+    projectCount: ref('projectCount'),
+    projectRefresh: ref('projectRefresh'),
+    projectGrid: ref('projectGrid'),
   };
   let kindFilter = 'all';
+
+  /* ============================================================
+   * 精修工程（D22.1 V4）
+   * ============================================================ */
+  function currentTabToken() {
+    try {
+      let token = sessionStorage.getItem('wb.studio.tab');
+      if (!token) {
+        token = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        sessionStorage.setItem('wb.studio.tab', token);
+      }
+      return token;
+    } catch {
+      return '';
+    }
+  }
+
+  function openProject(id) {
+    try {
+      sessionStorage.setItem('wb.studio.openProject', id);
+    } catch {
+      toastWarn('无法写入会话存储，请手动打开精修页');
+      return;
+    }
+    if (location.hash === '#studio') {
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      return;
+    }
+    location.hash = '#studio';
+  }
+
+  function renderProjects() {
+    refs.projectCount.textContent = projects.length ? `${projects.length} 个` : '';
+    if (!projects.length) {
+      refs.projectGrid.innerHTML = `
+        <div class="history-project-empty">
+          <span>还没有精修工程</span>
+          <button class="btn ghost sm" type="button" data-proj-act="new">打开「图片精修」新建一个</button>
+        </div>`;
+      return;
+    }
+    const tab = currentTabToken();
+    refs.projectGrid.innerHTML = projects
+      .map((project) => {
+        const locked = leaseHeldByOther(project.id, tab);
+        const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
+        const when = project.updatedAt ? fmtTime(new Date(project.updatedAt).toISOString()) : '';
+        return `
+          <div class="history-project-card" data-pid="${escapeHtml(project.id)}">
+            <div class="history-project-thumb">
+              ${
+                project.thumbnail
+                  ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />`
+                  : '<span class="dim">无预览</span>'
+              }
+            </div>
+            <div class="history-project-info">
+              <div class="history-project-name">${escapeHtml(project.name || '未命名工程')}</div>
+              <div class="history-project-meta mono">${escapeHtml([size, when, locked ? '编辑中' : ''].filter(Boolean).join(' · '))}</div>
+            </div>
+            <div class="history-project-actions">
+              <button class="btn primary sm" type="button" data-proj-act="open"${locked ? ' disabled' : ''}>打开</button>
+              <button class="btn ghost sm" type="button" data-proj-act="delete">删除</button>
+            </div>
+          </div>`;
+      })
+      .join('');
+  }
+
+  async function loadProjects() {
+    try {
+      projects = await listProjects();
+    } catch {
+      projects = [];
+    }
+    renderProjects();
+  }
+
+  refs.projectGrid.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-proj-act]');
+    if (!button) return;
+    const action = button.dataset.projAct;
+    if (action === 'new') {
+      location.hash = '#studio';
+      return;
+    }
+    const card = button.closest('[data-pid]');
+    const id = card?.dataset.pid;
+    if (!id) return;
+    if (action === 'open') {
+      openProject(id);
+      return;
+    }
+    if (action === 'delete') {
+      const name = card.querySelector('.history-project-name')?.textContent || '该工程';
+      const confirmed = await confirmDialog({
+        title: '删除精修工程',
+        message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
+        confirmText: '删除',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await clearProject(id);
+        toastSuccess('工程已删除');
+        await loadProjects();
+      } catch (err) {
+        toastError(err, '删除工程失败');
+      }
+    }
+  });
+
+  refs.projectRefresh.addEventListener('click', () => {
+    void loadProjects();
+  });
 
   /* ============================================================
    * 数据归一化（后端字段可能略有差异，做兼容读取）
@@ -380,6 +510,7 @@ export function createHistoryPage(host) {
 
   return {
     onShow() {
+      void loadProjects();
       load({ force: false });
     },
   };

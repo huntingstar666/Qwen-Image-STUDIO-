@@ -2162,6 +2162,101 @@ details.fold > .fold-body {
   color: var(--muted);
 }
 
+/* 精修工程分组（D22.1 V4） */
+.history-projects {
+  margin-bottom: 18px;
+}
+
+.history-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.history-section-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.history-section-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.history-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.history-project-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.history-project-thumb {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.history-project-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.history-project-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-project-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-project-meta {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-project-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.history-project-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
 .history-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

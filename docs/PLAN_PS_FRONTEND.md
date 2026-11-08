@@ -996,15 +996,17 @@ DOM 结构：
   - 实测（headless Chromium 1024×700，IndexedDB 先清空）：素材仓库开图 `吃我一脚 · 941×1672` → `Ctrl+S` 提示「已保存到本机」→ 重命名 `测试工程A` 并落库 → 关闭项目回空状态（`lastProjectId` 为 `null`、`projects` 仍保留 1 条）→ 刷新不再自动恢复（`restoreBar` 隐藏、空状态可见）→ 新建项目得到第 2 条独立工程、旧工程已保存 → 打开选择器后点「取消」当前工程保持不变 → 开图后 80ms 内立即关闭（并发保存在途）仍正确落盘且 `lastProjectId` 为 `null` → 删除当前项目后 `projects` 只剩 2 条、`layers` 对应减少、回空状态且刷新不恢复 → 本地 `新建项目`（合成 `change` + File）从 `红衣女子与彩绘神怪面具` 切到新工程 `本地新建.png`，旧工程仍在新工程列表中。`node --test web/tests/studio/*.test.mjs` **129 passed**。
   - 说明：项目切换/历史选择面板（`listProjects()` 可视化）留给 D22.1 的 Dock 右端「项目历史」书脊，本轮只保证「能用菜单新建/关闭/删除」，不做跨项目点击切换。
 
-- **D22.1 主图版本 Dock（V1 + V2 已实施）** —— 底部常驻横向抽屉，解决「回不到原始主图 / 历史找不到」：
+- **D22.1 主图版本 Dock（V1 + V2 + V4 已实施）** —— 底部常驻横向抽屉，解决「回不到原始主图 / 历史找不到」：
   - 布局：`.studio` 纵向 flex 增加 `.studio-dock`（96px，`flex:0 0 auto`）在 `.studio-body` 之后，通栏横跨三栏；`.page-studio` 最小高度 480 → 560。Dock 隐藏时不占位，窗口矮时页面整体滚动，画布比例不被挤压。
   - 存储（`persistence.js`）：DB 版本 1 → 2，新增 `studioVersions`（key `${projectId}:${versionId}`，含 kind / label / name / 尺寸 / at / fromId / thumbUrl / meta / blobKey）与 `studioVersionBlobs`（同 key 存原图）；新增 `addStudioVersion / listStudioVersions / loadStudioVersionBlob / deleteStudioVersion / trimStudioVersions / clearStudioVersions`；`clearProject` 一并删除两个 store（按 projectId 前缀范围）；`session` 增加 `currentVersionId`，恢复时回到上次选中的版本。
   - 版本生成：`openFile` / `openUrl` 落 `kind:'original'`（放大结果的「载入为主图」传 `kind:'upscale'`，仍是新工程，沿用 D15.1 语义）；AI「载入为新底图」在 `adoptResult` 落 `kind:'edit'`（扩图任务标签为「扩图 N」，meta 记 task/尺寸）；原始图在导入时即写盘，`sourceBlob` 再被覆盖也能回到原始。
   - 切换：点卡片 → 读版本 Blob → 新建 `StudioDoc`（保留工程名）→ `setDoc` 清蒙版/选区/撤销栈/图层 → 更新 `currentVersionId` → 自动保存；切换不产生新版本、不进撤销栈。
   - 卡片：64×64 圆角 16、`object-fit:cover`；原始卡第一张 + 右侧 1px 分隔线；右上角来源角标（原 / AI / 放大 / 导入）；当前卡 2px `--accent` 描边环；悬停/聚焦 `translateY(-4px) scale(1.08)` 120ms 并浮出名称；`prefers-reduced-motion` 下取消位移只留描边。
   - 交互：卡片区 `overflow-x:auto` + `scroll-snap`，滚轮映射为横向轮播且不切换主图（`Shift` 反向）；`←/→/Home/End` 移动焦点、`Enter` 应用（原生按钮），`role="listbox" + option + aria-selected`；上限 30 张，超出淘汰最旧的非原始版本（原始卡永不淘汰）。
-  - 实测（headless Chromium 1280×800）：素材仓库开图 → Dock 出现 1 张「原始主图」且高亮；注入第 2 个版本并刷新 → 2 张卡、当前指针按 `session.currentVersionId` 回到原始；点「编辑 1」→ 画布尺寸 941×1,672 → 1,100×556、`aria-selected` 与描边同步、提示「已切换到「编辑 1」」；再刷新仍停在编辑 1（指针已持久化）。`trimStudioVersions` 实测 5 张 limit 3 → 保留 [V0(原始),V3,V4]、删除 [V1,V2]，`clearStudioVersions` 后为 0。`node --test web/tests/studio/*.test.mjs` **129 passed**。
-  - 待办（V3/V4）：切换弹跳 220ms、150ms 画布淡入、当前圆点、右键菜单（对比/另存/删除/从此处重开）、右端「项目历史」书脊（`listProjects()`）与全局历史记录页「精修工程」分组。
+  - 项目历史（V4）：Dock 右端书脊（计数 + 竖排「项目历史」）点开浮层，数据取 `listProjects()`，每项显示缩略图 / 工程名 / 尺寸 / 相对时间 / `当前` 徽标，`打开` 走 `loadProject → applyRestore`（先 `closeProject` 保存当前工程，成功后补 `scheduleSave` 恢复 `lastProjectId`），`删除` 二次确认后 `clearProject`；其它标签正在编辑的工程显示「编辑中」并禁用打开（`leaseHeldByOther`）。
+  - 全局「历史记录」页新增「精修工程」分组（同一份 `listProjects()`，同一套打开/删除），`打开` 写 `sessionStorage['wb.studio.openProject']` 后跳 `#studio`，工作室 `onShow` 读取并清空该一次性交接；两端删除结果一致。
+  - 实测（headless Chromium 1280×800）：素材仓库开图 → Dock 出现 1 张「原始主图」且高亮；注入第 2 个版本并刷新 → 2 张卡、当前指针按 `session.currentVersionId` 回到原始；点「编辑 1」→ 画布尺寸 941×1,672 → 1,100×556、`aria-selected` 与描边同步、提示「已切换到「编辑 1」」；再刷新仍停在编辑 1（指针已持久化）。`trimStudioVersions` 实测 5 张 limit 3 → 保留 [V0(原始),V3,V4]、删除 [V1,V2]，`clearStudioVersions` 后为 0。项目历史：书脊计数 1、浮层 1 个项目（`吃我一脚 · 941 × 1,672 · 刚刚`、当前徽标、缩略图）；关闭工程后从 `#history` 的「精修工程」点「打开」→ 回到 `#studio` 并恢复 941×1,672，交接键已清空。`node --test web/tests/studio/*.test.mjs` **129 passed**。
+  - 待办（V3 剩余）：切换弹跳 220ms、150ms 画布淡入、当前圆点、右键菜单（对比 / 另存 / 删除 / 从此处重开）。
 
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
@@ -1536,7 +1538,7 @@ DOM 结构：
 | D20.3 | 扩图上下文收尾修复 | 已完成 | 本次提交 | 从扩图切走后 `activeTab` 归一为 `ai` 时漏调 `syncTabs()`，导致外补画布面板常驻、AI 面板隐藏；已补并实测见 §12.11 |
 | D20.4 | 工具轨分组 + 顶栏去重 | 已完成 | 本次提交 | 左栏 21 个工具收成 6 个工具组（组按钮显示上次使用工具 + 小三角，点击展开 fixed 浮层，点外部/Esc/滚动自动收起）；顶栏去掉与侧栏重复的「送入图像编辑」，改为「导出 → 发送到图像编辑 →」；实测见 §12.11 |
 | D21.1 | 抠图 / 透明导出 | 方案定稿（未实施） | — | 方案见 §19.1~§19.9：选区 alpha → `destination-in` 裁合成结果 → 透明 PNG / 剪贴板 / 抠图层 / 白底 JPG；边缘预设「硬边/标准/发丝」；P0 先做透明 PNG + 复制 |
-| D22.1 | 主图版本抽屉 | V1+V2 已完成（V3/V4 待做） | 本次提交 | 底部通栏 Dock 96px + 64×64 卡片；`studioVersions/studioVersionBlobs`（DB v2）落原始/AI/放大版本，原始卡第一张；点击切换主图、`currentVersionId` 持久化；上限 30 张淘汰最旧非原始版本；滚轮横向轮播 + 键盘；实测见 §12.11。V3：弹跳/淡入/圆点；V4：卡片菜单 + 「项目历史」书脊 |
+| D22.1 | 主图版本抽屉 | V1+V2+V4 已完成（V3 动效待做） | 本次提交 | 底部通栏 Dock 96px + 64×64 卡片；`studioVersions/studioVersionBlobs`（DB v2）落原始/AI/放大版本，原始卡第一张；点击切换主图、`currentVersionId` 持久化；上限 30 张淘汰最旧非原始版本；滚轮横向轮播 + 键盘；右端「项目历史」书脊浮层 + 全局历史页「精修工程」分组（同源 `listProjects()`，打开走 `wb.studio.openProject` 交接）；实测见 §12.11。V3 待做：弹跳/淡入/圆点/右键菜单 |
 | D22.2 | 项目生命周期 | 已完成 | 本次提交 | 顶栏 `＋` 项目菜单（新建本地/素材仓库、立即保存 Ctrl+S、重命名、关闭、删除）+ 导入菜单「作为新主图」；`startNewProject` 改为选中图片后再关旧工程；`closeProject` 改 async（等在途保存 → 补存 → `clearLastProject`）；`saveNow` 等待真实落盘；删除走 `clearProject` 回空状态；实测见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
@@ -2409,7 +2411,7 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 
 ### 19.10 主图版本抽屉：痛点与目标
 
-> 实施状态：**V1 + V2 已实施**（Dock 骨架 + 原始卡 + IndexedDB 版本链 + 点击切换 + 滚轮/键盘），实测见 §12.11「D22.1」；V3/V4 的弹跳动效、右键菜单与「项目历史」书脊仍待做。
+> 实施状态：**V1 + V2 已实施**（Dock 骨架 + 原始卡 + IndexedDB 版本链 + 点击切换 + 滚轮/键盘），V4 的「项目历史」书脊与全局历史页「精修工程」分组也已落地；实测见 §12.11「D22.1」。V3 的切换弹跳、画布淡入、当前圆点与卡片右键菜单仍待做。
 
 现状问题：
 
@@ -2463,6 +2465,8 @@ D17.3 已完成 —— 多标签编辑租约（`localStorage` 心跳 + `Broadcas
 | 右端 | 分隔线后放「项目历史」入口（书脊式），点开右侧同高面板，列出本机**精修工程**并与全局「历史记录」页同源（见 19.13.1） |
 
 #### 19.13.1 Dock 右侧：项目历史入口（工程级，对齐文生图「生成历史」书脊）
+
+> 实施状态：**已实施**。Dock 右端书脊 + 浮层、全局「历史记录」页「精修工程」分组均已接 `listProjects()`；跨页打开用 `sessionStorage['wb.studio.openProject']` 一次性交接。
 
 > 口径纠正：这里要的是**工程级（项目级）历史**，不是 AI 编辑记录（`aiHistory` 是任务级，仍在检查器里）。
 

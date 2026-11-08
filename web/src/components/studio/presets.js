@@ -9,6 +9,13 @@ import { api } from '../../api.js';
 
 let cache = null;
 
+// 全局设置保存预设后，任务页需要重新拉取 /api/meta。
+if (typeof window !== 'undefined') {
+  window.addEventListener('presets:updated', () => {
+    cache = null;
+  });
+}
+
 /** 两个保护开关的默认值：只要在图片精修页编辑，默认都开（用户可关）。 */
 export const PROTECTION_DEFAULTS = { color: true, zeroShift: true };
 
@@ -25,11 +32,18 @@ export function loadPresets() {
   if (!cache) {
     cache = api
       .meta()
-      .then((meta) => ({
-        version: Number(meta?.preset_version) || 1,
-        defaultId: String(meta?.default_preset || ''),
-        list: Array.isArray(meta?.edit_presets) ? meta.edit_presets : [],
-      }))
+      .then((meta) => {
+        const builtins = Array.isArray(meta?.edit_presets) ? meta.edit_presets : [];
+        const customs = (Array.isArray(meta?.custom_presets) ? meta.custom_presets : [])
+          .map((item) => ({ ...item, custom: true }));
+        return {
+          version: Number(meta?.preset_version) || 1,
+          defaultId: String(meta?.default_preset || ''),
+          list: [...builtins, ...customs],
+          builtins,
+          custom: customs,
+        };
+      })
       .catch((err) => {
         cache = null;
         throw err;
@@ -61,6 +75,19 @@ function flatten(params, prefix = '', out = {}) {
     else out[path] = value;
   }
   return out;
+}
+
+/**
+ * 切换预设时清掉"该预设自己定义的键"上的覆盖项，让新预设默认值真正生效。
+ * 预设未定义的键（如 outpaint.top/left）是任务专用输入，继续保留。
+ */
+export function resetDefinedOverrides(preset, overrides) {
+  const defined = new Set(Object.keys(flatten(preset?.params || {})));
+  const next = {};
+  for (const [key, value] of Object.entries(overrides || {})) {
+    if (!defined.has(key)) next[key] = value;
+  }
+  return next;
 }
 
 function sameValue(a, b) {

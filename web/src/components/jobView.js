@@ -102,6 +102,13 @@ export function qualityItems(job) {
   }
   if (quality.color?.skipped) items.push({ text: '校色已跳过' });
   if (align.applied) items.push({ text: '已应用对齐裁回' });
+  // 后端的降级 / 风险提示必须可见（例如"未圈选区域，按整图重绘"）。
+  for (const warning of Array.isArray(quality.warnings) ? quality.warnings : []) {
+    items.push({ text: String(warning), kind: 'warn', title: '后端任务提示' });
+  }
+  if (quality.lora_warning) {
+    items.push({ text: String(quality.lora_warning), kind: 'warn', title: 'LoRA 数量提示' });
+  }
   return items;
 }
 

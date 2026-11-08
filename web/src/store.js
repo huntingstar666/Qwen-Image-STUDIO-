@@ -38,12 +38,18 @@ const DEFAULT_EDIT = {
   // 编辑预设（两页共用，数值由 /api/meta.edit_presets 下发）
   preset: 'mask_edit',
   taskMode: 'auto',
+  // 上一次真正套用默认值的预设；用于区分"页面临时修改"和"切了预设"。
+  appliedPreset: '',
   overrides: {},
   protection: { color: true, zeroShift: true },
   // 旧字段（羽化/外扩/校色…）已迁移到 overrides 的一次性标记
   presetMigrated: false,
+  // 预设参数迁移版本（一致性强度 / 预设默认跟随）
+  presetDefaultsRev: 4,
   consistency: true,
   consistencyStrength: 0.48,
+  // 用户手动改过 Turbo 后不再被预设默认值覆盖（预设切换只影响未手动改过的用户）。
+  turboUser: false,
   sizeMode: 'follow',
   width: 1024,
   height: 1024,
@@ -60,9 +66,7 @@ const DEFAULT_EDIT = {
   contextFactor: 1.5,
   contextPixels: 96,
   blendPixels: 24,
-  consistencyEnabled: false,
   consistencyLora: '',
-  consistencyStrength: 1.0,
   steps: 25,
   cfg: 4.0,
   seed: '',
@@ -107,6 +111,17 @@ function loadSettings() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return structuredClone(DEFAULT_SETTINGS);
     const parsed = JSON.parse(raw);
+    const storedEdit = parsed?.edit && typeof parsed.edit === 'object' ? parsed.edit : {};
+    const edit = { ...DEFAULT_EDIT, ...stripModelChoice(storedEdit) };
+    // v4 预设迁移：一致性强度曾被旧默认值写成 1.0，而预设约定是 0.48。
+    // 只做一次性纠正；用户之后手动调整的强度会正常保留。
+    if (Number(storedEdit.presetDefaultsRev || 0) < 4) {
+      edit.consistency = edit.consistency !== false;
+      edit.consistencyStrength = 0.48;
+      edit.turboUser = false;
+      delete edit.consistencyEnabled;
+      edit.presetDefaultsRev = 4;
+    }
     return {
       ...structuredClone(DEFAULT_SETTINGS),
       ...parsed,
@@ -116,7 +131,7 @@ function loadSettings() {
       accent: ACCENT_MODES.has(parsed?.accent) ? parsed.accent : 'teal',
       sidebarCollapsed: Boolean(parsed?.sidebarCollapsed),
       t2i: { ...structuredClone(DEFAULT_T2I), ...stripModelChoice(parsed?.t2i) },
-      edit: { ...DEFAULT_EDIT, ...stripModelChoice(parsed?.edit) },
+      edit,
       creativePresets: parsed?.creativePresets && typeof parsed.creativePresets === 'object' ? parsed.creativePresets : {},
       imageAngle: { ...DEFAULT_SETTINGS.imageAngle, ...(parsed?.imageAngle || {}) },
     };
@@ -221,7 +236,9 @@ export function patchSettings(patch) {
   if (!patch || typeof patch !== 'object') return;
   for (const [key, value] of Object.entries(patch)) {
     if (key === 't2i' || key === 'edit') {
-      settings[key] = { ...settings[key], ...(value || {}) };
+      // 原地合并：各页面在 mount 时缓存了 settings.t2i / settings.edit 的引用，
+      // 替换成新对象会让它们读到旧值（预设切换 / Turbo 回显都会失灵）。
+      settings[key] = Object.assign(settings[key] || {}, value || {});
       notifySettingsObj(key);
     } else if (key === 'imageAngle') {
       settings.imageAngle = { ...settings.imageAngle, ...(value || {}) };

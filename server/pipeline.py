@@ -315,10 +315,16 @@ def _sampling_plan(params: dict[str, Any], cfg: dict[str, Any],
     """解析采样参数；加速模式下覆盖 steps/cfg/sampler（sigma 表或 LoRA 两种）。"""
     turbo = params.get("turbo") or {}
     accel = profile.get("accelerator") or {}
-    steps = int(params.get("steps") or profile["steps"])
-    cfg_scale = float(params.get("cfg") if params.get("cfg") is not None else profile["cfg"])
-    sampler = str(params.get("sampler") or profile["sampler"])
-    scheduler = str(params.get("scheduler") or profile["scheduler"])
+    # 预设 / 自定义搭配里的 sampling 是默认值；请求显式给了就覆盖它。
+    preset_sampling = params.get("sampling") if isinstance(params.get("sampling"), dict) else {}
+    steps = int(params.get("steps") or preset_sampling.get("steps") or profile["steps"])
+    cfg_value = params.get("cfg")
+    if cfg_value is None:
+        cfg_value = preset_sampling.get("cfg")
+    cfg_scale = float(cfg_value if cfg_value is not None else profile["cfg"])
+    sampler = str(params.get("sampler") or preset_sampling.get("sampler") or profile["sampler"])
+    scheduler = str(params.get("scheduler") or preset_sampling.get("scheduler")
+                    or profile["scheduler"])
     sigmas: list[float] | None = None
     turbo_plan: dict[str, Any] | None = None
     turbo_enabled = _truthy(turbo.get("enabled"))
@@ -362,7 +368,11 @@ def _sampling_plan(params: dict[str, Any], cfg: dict[str, Any],
         "sampler": sampler,
         "scheduler": scheduler,
         "seed": _pick_seed(params.get("seed")),
-        "denoise": float(params.get("denoise") if params.get("denoise") is not None else 1.0),
+        "denoise": float(
+            params.get("denoise")
+            if params.get("denoise") is not None
+            else (preset_sampling.get("denoise", 1.0))
+        ),
         "turbo": turbo_enabled,
         "turbo_plan": turbo_plan,
         "negative_prompt": str(negative),
@@ -1057,19 +1067,43 @@ class Pipeline:
         # 普通编辑默认挂「一致性无偏移」LoRA（与孤海工作流一致），
         # 可用 params.consistency_lora = false 或 local.consistency = false 关掉。
         cons_cfg = params.get("consistency_lora")
+        # 预设 / 自定义搭配里的 consistency 是默认值；请求显式给了 consistency_lora 就优先。
+        if cons_cfg is None:
+            preset_cons = params.get("consistency")
+            if isinstance(preset_cons, dict):
+                if preset_cons.get("enabled") is False:
+                    cons_cfg = False
+                else:
+                    cons_cfg = {
+                        "name": preset_cons.get("lora") or cfg.get("consistency_lora"),
+                        "strength": float(preset_cons.get("strength", 0.48)),
+                    }
+                params = dict(params)
+                params["consistency_lora"] = cons_cfg
         cons_switch = local.get("consistency")
+        # local.consistency=false 是硬关闭：即使 consistency_lora 是对象也不能再挂。
+        if cons_switch is not None and not _truthy(cons_switch):
+            cons_cfg = False
+            params = dict(params)
+            params["consistency_lora"] = False
         cons_enabled = not (
             cons_cfg is False
             or (isinstance(cons_cfg, dict) and cons_cfg.get("enabled") is False)
             or (cons_switch is not None and not _truthy(cons_switch))
         )
-        if not params.get("loras"):
-            if task_mode in ("remove", "outpaint"):
+        # 显式 consistency_lora 已经是"用户指定的那份"，不能再自动补 preset consistency，
+        # 否则同一类 LoRA 会挂两份（0.48 的 GH 版 + 用户选的文件）。
+        has_explicit_consistency = isinstance(cons_cfg, dict) and cons_cfg.get("enabled") is not False
+        current_loras = list(params.get("loras") or [])
+        if task_mode in ("remove", "outpaint"):
+            # 任务 LoRA 是训练约定的一部分：即使用户加了别的 LoRA 也要保证它存在。
+            if not any(str(item.get("preset") or "").strip().lower() == task_mode
+                       for item in current_loras if isinstance(item, dict)):
                 params = dict(params)
-                params["loras"] = [{"preset": task_mode}]
-            elif cons_enabled:
-                params = dict(params)
-                params["loras"] = [{"preset": "consistency"}]
+                params["loras"] = [{"preset": task_mode}, *current_loras]
+        elif not current_loras and cons_enabled and not has_explicit_consistency:
+            params = dict(params)
+            params["loras"] = [{"preset": "consistency"}]
         loras = _build_loras(cfg, params, profile, sampling=sampling)
         _apply_pose_lora(cfg, profile, params, loras, job)
         # 真正挂载的 LoRA 写回 job.params：预设/任务自动挂载的那部分原本只在局部变量里，
@@ -1284,8 +1318,9 @@ class Pipeline:
         if scheme == "native":
             # 原生模式：不裁块、不贴回、不用遮罩；整张画布就是模型输出。
             # 只保留 BlueBox 式整图颜色一致性（可关），几何/预处理仍走零偏移闭环。
+            # color_match 也参与判断：前端「颜色匹配」开关在原生模式下必须同样有效。
             composed = edited
-            if anchor_match:
+            if anchor_match and color_match:
                 composed, color_report = imaging.color_consistency(
                     canvas, composed, strength=anchor_strength)
             else:
@@ -1298,7 +1333,7 @@ class Pipeline:
                 blend_pixels=int(local.get("blend_pixels") or 24),
                 curve="smoothstep",
                 color_match=color_match,
-                color_strength=max(color_strength, 0.7),
+                color_strength=color_strength,
                 anchor_match=anchor_match,
                 anchor_strength=anchor_strength,
                 band_mode=band_mode,

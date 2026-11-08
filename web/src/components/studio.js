@@ -1007,6 +1007,13 @@ export function createStudioPage(host) {
         return '';
       }
     },
+    /** 轻量查询：只回答"有没有图片 / 蒙版"，不走烘焙（AI 面板回显降级预设用）。 */
+    hasImage() {
+      return Boolean(doc);
+    },
+    hasMask() {
+      return Boolean(doc?.hasMask?.());
+    },
     getSource() {
       if (!doc) return null;
       const size = doc.size;
@@ -1316,10 +1323,12 @@ export function createStudioPage(host) {
     },
     getView: () => view,
     onApply() {
-      setTool('view');
       activeTab = 'ai';
       syncTabs();
+      // 先组好 outpaint 的 payload（submit 内部同步完成），再把预设切回进入扩图前的那个。
       ai.submitOutpaint();
+      outpaint.restorePreset?.();
+      setTool('view');
     },
   });
   outpaint.init();
@@ -1418,6 +1427,7 @@ export function createStudioPage(host) {
     if (!TOOLS.some((item) => item.id === next)) return;
     if (next !== 'outpaint') {
       outpaint?.deactivate?.();
+      outpaint?.restorePreset?.();
       // 从扩图切走时 activeTab 归一为 ai，必须立刻重排分页，
       // 否则扩图上下文面板不会隐藏、AI 面板一直是 hidden。
       if (activeTab === 'outpaint') {

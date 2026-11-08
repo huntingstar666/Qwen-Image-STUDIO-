@@ -14,6 +14,7 @@ import {
   effectiveValue,
   findPreset,
   loadPresets,
+  resetDefinedOverrides,
   withOverride,
 } from './presets.js';
 
@@ -25,8 +26,9 @@ const RATIOS = [
   { id: '16:9', label: '16:9', w: 16, h: 9 },
   { id: '9:16', label: '9:16', w: 9, h: 16 },
 ];
-const MAX_PCT = 300;
-const MAX_SIDES = [2048, 3072, 4096, 5120, 6144, 8192];
+// 与后端校验保持一致：单边最多 200%，长边不超过全局 max_side（默认 4096）。
+const MAX_PCT = 200;
+const MAX_SIDES = [2048, 3072, 4096];
 
 function clampPct(value) {
   const n = Number(value);
@@ -55,6 +57,8 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
   let presets = [];
   let active = false;
   let drag = null;
+  // 进入扩图时记住原预设，提交 / 离开工具后恢复，避免后续普通编辑被当成扩图。
+  let previousPreset = '';
 
   panelHost.innerHTML = `
     <div class="op-panel">
@@ -153,7 +157,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     for (const edge of EDGES) {
       if (document.activeElement !== op.inputs[edge]) op.inputs[edge].value = String(value[edge]);
     }
-    const maxSide = Number(effectiveValue(preset(), overrides(), 'outpaint.max_side', 5120)) || 5120;
+    const maxSide = Number(effectiveValue(preset(), overrides(), 'outpaint.max_side', 4096)) || 4096;
     op.maxSide.value = String(maxSide);
 
     const size = getSize();
@@ -351,7 +355,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
   });
 
   op.maxSide.addEventListener('change', () => {
-    const merged = withOverride(preset(), overrides(), 'outpaint.max_side', Number(op.maxSide.value) || 5120);
+    const merged = withOverride(preset(), overrides(), 'outpaint.max_side', Number(op.maxSide.value) || 4096);
     patchSettings({ edit: { overrides: merged } });
     paint();
   });
@@ -364,7 +368,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     }
     const size = getSize();
     const out = outputSize(size, value);
-    const maxSide = Number(effectiveValue(preset(), overrides(), 'outpaint.max_side', 5120)) || 5120;
+    const maxSide = Number(effectiveValue(preset(), overrides(), 'outpaint.max_side', 4096)) || 4096;
     if (out && out.long > maxSide) {
       toastWarn(`输出长边 ${out.long} 超过上限 ${maxSide}，请先下调`);
       return;
@@ -405,13 +409,27 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     },
     /** 进入扩图工具 / 标签：自动套 outpaint 预设并显示幽灵层。 */
     activate() {
-      if (store.state.edit?.preset !== 'outpaint') {
-        patchSettings({ edit: { preset: 'outpaint' } });
-      }
+      const current = String(store.state.edit?.preset || '');
+      const target = findPreset(presets, 'outpaint');
+      if (current !== 'outpaint') previousPreset = current;
+      // 进入扩图 = 选 outpaint 预设：清掉该预设定义键上的旧覆盖。
+      // outpaint.top/left 等预设未定义的键属于任务输入，继续保留。
+      const overrides = store.state.edit?.overrides || {};
+      const nextOverrides = target ? resetDefinedOverrides(target, overrides) : overrides;
+      patchSettings({ edit: { preset: 'outpaint', overrides: nextOverrides } });
       active = true;
       layerHost.hidden = false;
       paint();
       syncGhost();
+    },
+    /** 把预设切回进入扩图前的那一个（只切一次；用户已手动改预设时不动）。 */
+    restorePreset() {
+      const target = previousPreset;
+      previousPreset = '';
+      if (!target) return;
+      if (String(store.state.edit?.preset || '') === 'outpaint') {
+        patchSettings({ edit: { preset: target } });
+      }
     },
     deactivate() {
       active = false;

@@ -764,6 +764,35 @@ def test_generate_edit_consistency_lora_can_be_disabled():
         assert not seen["loras"], f"{extra} 没关掉一致性 LoRA"
 
 
+def test_generate_edit_explicit_consistency_lora_is_not_double_mounted():
+    """显式 consistency_lora 已经是用户指定，不能再自动补 preset consistency。"""
+    src = _noise_image(640, 480, seed=81)
+    seen: dict = {}
+    fake = _FakeEngine()
+    _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "consistency_lora": {"name": "custom-consistency.safetensors", "strength": 0.48},
+    }, fake, on_loras=lambda params, _s: seen.update(loras=params.get("loras")))
+    assert not seen["loras"], "显式 consistency_lora 时不应该再自动挂 preset consistency"
+
+
+def test_generate_edit_task_lora_survives_custom_loras():
+    """remove / outpaint 的任务 LoRA 不能被用户自定义 LoRA 挤掉。"""
+    src = _noise_image(640, 480, seed=83)
+    seen: dict = {}
+    fake = _FakeEngine()
+    _run_edit({
+        "images": [{"data": _src_url(src)}],
+        "mask": imaging.data_url("image/png", _mask_bytes(640, 480, (200, 150, 400, 330))),
+        "task": {"mode": "remove"},
+        "loras": [{"name": "custom-style.safetensors", "strength": 0.6}],
+    }, fake, on_loras=lambda params, _s: seen.update(loras=params.get("loras")))
+
+    names = [item.get("preset") or item.get("name") for item in seen["loras"]]
+    assert names[0] == "remove"
+    assert "custom-style.safetensors" in names
+
+
 def _mid_noise(w: int, h: int, seed: int = 7) -> Image.Image:
     """中段灰阶噪声：±4 级漂移不会撞到 0/255 的截断，便于验证校色精度。"""
     rng = np.random.default_rng(seed)

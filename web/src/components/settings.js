@@ -10,12 +10,15 @@ import { t } from '../i18n.js';
 import { escapeHtml, fmtBytes } from '../utils.js';
 import { toastError, toastSuccess, toastWarn } from './toast.js';
 import { clearAllProjects, estimateStorage, listProjects } from './studio/persistence.js';
+import { mountPresetSettings } from './presetSettings.js';
 
 const SECTIONS = [
   { id: 'appearance', icon: 'palette', label: () => t('settings.nav.appearance') },
   { id: 'models', icon: 'folder', label: () => t('settings.nav.models') },
   { id: 'defaults', icon: 'spark', label: () => t('settings.nav.defaults') },
+  { id: 'presets', icon: 'spark', label: () => '预设与自定义' },
   { id: 'upscale', icon: 'image', label: () => t('settings.nav.upscale') },
+  { id: 'segment', icon: 'subject', label: () => t('settings.nav.segment') },
   { id: 'llm', icon: 'spark', label: () => t('settings.nav.llm') },
   { id: 'runtime', icon: 'gauge', label: () => t('settings.nav.runtime') },
   { id: 'about', icon: 'info', label: () => t('settings.nav.about') },
@@ -32,6 +35,8 @@ const ICONS = {
     '<path d="M4.5 17a8 8 0 1115 0"/><path d="M12 13l3.2-3.6"/><circle cx="12" cy="14" r="1.4"/>',
   image:
     '<rect x="3.5" y="5" width="17" height="14" rx="2.2"/><circle cx="9" cy="10" r="1.4"/><path d="M4.5 17l4.6-4.4 3.2 2.9 2.5-2.2 4.7 4.1"/>',
+  subject:
+    '<circle cx="12" cy="7.6" r="3.1"/><path d="M4.9 20.2c0-3.6 3.2-6.2 7.1-6.2s7.1 2.6 7.1 6.2"/><path d="M17.6 5.2l2.2 1.1 1.1 2.2-1.1 2.2-2.2 1.1"/>',
   info: '<circle cx="12" cy="12" r="8.2"/><path d="M12 11v5.2M12 7.9v.2"/>',
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
 };
@@ -103,6 +108,16 @@ function emptyForm() {
       idle_unload_minutes: 10,
       defaults: { scale: 2 },
     },
+    segment: {
+      dirs: { sam3: '', birefnet: '' },
+      sam3: { model: '', threshold: 0.5, refine_iterations: 2 },
+      birefnet: { model: '' },
+      default_model: '',
+      max_side: 2048,
+      max_candidates: 8,
+      timeout_s: 30,
+      idle_unload_minutes: 10,
+    },
   };
 }
 
@@ -140,6 +155,7 @@ function formFromData(data) {
       vram_reserve: Number(data?.runtime?.vram_reserve) || 0,
     },
     upscale: upscaleFormFromData(data?.upscale),
+    segment: segmentFormFromData(data?.segment),
   };
 }
 
@@ -172,6 +188,29 @@ function upscaleFormFromData(up = {}) {
     default_engine: up.default_engine || 'vosr2',
     idle_unload_minutes: Number(up.idle_unload_minutes ?? 10),
     defaults: { scale: Number(up.defaults?.scale) || 2 },
+  };
+}
+
+function segmentFormFromData(seg = {}) {
+  const dirs = seg.dirs || {};
+  const sam3 = seg.sam3 || {};
+  const birefnet = seg.birefnet || {};
+  return {
+    dirs: {
+      sam3: dirs.sam3 || '',
+      birefnet: dirs.birefnet || '',
+    },
+    sam3: {
+      model: sam3.model || '',
+      threshold: Number(sam3.threshold ?? 0.5),
+      refine_iterations: Number(sam3.refine_iterations ?? 2),
+    },
+    birefnet: { model: birefnet.model || '' },
+    default_model: seg.default_model || '',
+    max_side: Number(seg.max_side) || 2048,
+    max_candidates: Number(seg.max_candidates) || 8,
+    timeout_s: Number(seg.timeout_s) || 30,
+    idle_unload_minutes: Number(seg.idle_unload_minutes ?? 10),
   };
 }
 
@@ -678,6 +717,35 @@ function upscaleEngineRows(engine) {
     ${missing}`;
 }
 
+/** 分割引擎在扫描结果里的一组行：状态 / 目录 / 选中权重 / 缺失项。 */
+function segmentEngineRows(engine) {
+  const chip = engine.ready
+    ? `<span class="set-chip ok">${t('upscale.ready')}</span>`
+    : `<span class="set-chip warn">${t('upscale.notReady')}</span>`;
+  const missing = (engine.missing || []).length
+    ? `<div class="scan-dir-row"><span class="set-mono-note">${t('upscale.missing')}：${escapeHtml((engine.missing || []).join(', '))}</span></div>`
+    : '';
+  const selected = engine.selected
+    ? `<div class="scan-dir-row">
+         <span class="scan-dir-kind">${t('segment.selected')}</span>
+         <span class="scan-dir-paths mono">${escapeHtml(engine.selected)}${
+           engine.selected_size_gb != null ? `（${engine.selected_size_gb} GB）` : ''
+         }</span>
+       </div>`
+    : '';
+  return `
+    <div class="scan-row">
+      <span class="scan-label">${escapeHtml(engine.label || engine.id)}</span>
+      <span class="scan-count">${chip}</span>
+    </div>
+    <div class="scan-dir-row">
+      <span class="scan-dir-kind">${t('upscale.dir')}</span>
+      <span class="scan-dir-paths mono">${escapeHtml(engine.dir || '—')}</span>
+    </div>
+    ${selected}
+    ${missing}`;
+}
+
 function renderScan(scan) {
   if (!scan) return `<p class="set-note">${t('models.scanning')}</p>`;
   const counts = scan.counts || {};
@@ -714,6 +782,12 @@ function renderScan(scan) {
   const upscaleReady = upscaleEngines.filter((engine) => engine.ready).length;
   const upscaleRows = upscaleEngines.map((engine) => upscaleEngineRows(engine)).join('');
 
+  // 主体分割模型同样属于「模型目录」的扫描范围。
+  const segment = scan.segment || state.data?.segment?.scan || {};
+  const segmentEngines = Object.values(segment.engines || {});
+  const segmentReady = segmentEngines.filter((engine) => engine.ready).length;
+  const segmentRows = segmentEngines.map((engine) => segmentEngineRows(engine)).join('');
+
   const dirsList = Object.entries(scan.dirs || {})
     .map(
       ([kind, dirs]) => `
@@ -742,6 +816,19 @@ function renderScan(scan) {
                  </span>
                </div>
                ${upscaleRows}
+             </div>`
+          : ''
+      }
+      ${
+        segmentRows
+          ? `<div class="scan-upscale">
+               <div class="scan-upscale-head">
+                 <span class="scan-label">${t('models.segment')}</span>
+                 <span class="set-chip ${segmentReady === segmentEngines.length ? 'ok' : 'warn'}">
+                   ${t('models.segmentReady', { n: segmentReady, total: segmentEngines.length })}
+                 </span>
+               </div>
+               ${segmentRows}
              </div>`
           : ''
       }
@@ -1296,6 +1383,139 @@ function renderUpscale() {
   `;
 }
 
+function renderSegmentScan() {
+  const scan = state.data?.segment?.scan;
+  if (!scan) return `<p class="set-note">${t('segment.scanning')}</p>`;
+  const engines = Object.values(scan.engines || {});
+  const rows = engines.map((engine) => segmentEngineRows(engine)).join('');
+  return `
+    <div class="scan-summary">
+      <div class="scan-total">
+        <strong>${scan.ready ? t('segment.anyReady') : t('segment.noneReady')}</strong>
+        <button class="set-mini-btn" type="button" data-action="rescan">${t('models.rescan')}</button>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+function renderSegment() {
+  const form = state.form.segment;
+  const scan = state.data?.segment?.scan || {};
+  const engines = scan.engines || {};
+  const sam = engines.sam3 || {};
+  const biref = engines.birefnet || {};
+
+  const selectInput = (field, value, options, fallback = '') => {
+    if (!options.length) return textInput(field, value || fallback, { placeholder: fallback });
+    return `<select class="set-input mono" data-field="${field}">
+      ${options
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.value)}" ${option.value === value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`,
+        )
+        .join('')}
+    </select>`;
+  };
+
+  const fileOptions = (engine) =>
+    (engine.files || []).map((file) => ({
+      value: file.name,
+      label: `${file.name}（${file.size_gb} GB）${file.ready ? '' : ` · ${t('segment.incomplete')}`}`,
+    }));
+
+  const defaultOptions = [
+    { value: '', label: t('segment.defaultAuto') },
+    ...(scan.models || []).map((item) => ({
+      value: item.id,
+      label: `${item.label}${item.ready ? '' : ` · ${t('upscale.notReady')}`}`,
+    })),
+  ];
+
+  const dirsCard =
+    row(
+      t('segment.sam3Dir'),
+      t('segment.dirDesc'),
+      textInput('segment.dirs.sam3', form.dirs.sam3, {
+        placeholder: 'D:\\ComfyUI\\models\\checkpoints',
+      }),
+    ) +
+    row(
+      t('segment.birefnetDir'),
+      t('segment.dirDesc'),
+      textInput('segment.dirs.birefnet', form.dirs.birefnet, {
+        placeholder: 'D:\\ComfyUI\\models\\background_removal',
+      }),
+    );
+
+  const samCard =
+    row(
+      t('segment.sam3Model'),
+      t('segment.sam3ModelDesc'),
+      selectInput('segment.sam3.model', form.sam3.model, fileOptions(sam),
+        'sam3.1_multiplex_fp16.safetensors'),
+    ) +
+    row(
+      t('segment.threshold'),
+      t('segment.thresholdDesc'),
+      textInput('segment.sam3.threshold', form.sam3.threshold, { type: 'number' }),
+    ) +
+    row(
+      t('segment.refine'),
+      t('segment.refineDesc'),
+      textInput('segment.sam3.refine_iterations', form.sam3.refine_iterations, {
+        type: 'number',
+      }),
+    );
+
+  const birefCard = row(
+    t('segment.birefnetModel'),
+    t('segment.birefnetModelDesc'),
+    selectInput('segment.birefnet.model', form.birefnet.model, fileOptions(biref),
+      'birefnet.safetensors'),
+  );
+
+  const defaultsCard =
+    row(
+      t('segment.defaultModel'),
+      t('segment.defaultModelDesc'),
+      selectInput('segment.default_model', form.default_model, defaultOptions),
+    ) +
+    row(
+      t('segment.maxSide'),
+      t('segment.maxSideDesc'),
+      textInput('segment.max_side', form.max_side, { type: 'number' }),
+    ) +
+    row(
+      t('segment.maxCandidates'),
+      t('segment.maxCandidatesDesc'),
+      textInput('segment.max_candidates', form.max_candidates, { type: 'number' }),
+    ) +
+    row(
+      t('segment.timeout'),
+      t('segment.timeoutDesc'),
+      `<div class="set-inline">
+         ${textInput('segment.timeout_s', form.timeout_s, { type: 'number' })}
+         <span class="set-unit">${t('segment.seconds')}</span>
+       </div>`,
+    ) +
+    row(
+      t('segment.idle'),
+      t('segment.idleDesc'),
+      `<div class="set-inline">
+         ${textInput('segment.idle_unload_minutes', form.idle_unload_minutes, { type: 'number' })}
+         <span class="set-unit">${t('runtime.minutes')}</span>
+       </div>`,
+    );
+
+  return `
+    ${group(t('segment.dirs'), dirsCard, t('segment.dirsDesc'))}
+    ${group(t('segment.sam3Title'), samCard, t('segment.sam3Desc'))}
+    ${group(t('segment.birefnetTitle'), birefCard, t('segment.birefnetDesc'))}
+    ${group(t('segment.defaults'), defaultsCard)}
+    ${group(t('segment.scan'), renderSegmentScan(), t('segment.scanDesc'))}
+  `;
+}
+
 function renderAbout() {
   const app = state.data?.app || {};
   const storage = app.storage || {};
@@ -1350,11 +1570,19 @@ async function clearStudioStorage() {
   }
 }
 
+function renderPresetSettings() {
+  return `<div class="set-preset-admin" data-ref="presetAdminHost">
+    <div class="set-loading">正在读取预设配置…</div>
+  </div>`;
+}
+
 const RENDERERS = {
   appearance: renderAppearance,
   models: renderModels,
   defaults: renderDefaults,
+  presets: renderPresetSettings,
   upscale: renderUpscale,
+  segment: renderSegment,
   llm: renderLlm,
   runtime: renderRuntime,
   about: renderAbout,
@@ -1384,6 +1612,10 @@ function render() {
   refs.sub.textContent = t('settings.subtitle');
   refs.close.setAttribute('aria-label', t('settings.close'));
   refs.content.innerHTML = RENDERERS[section.id]();
+  if (section.id === 'presets') {
+    const host = refs.content.querySelector('[data-ref="presetAdminHost"]');
+    mountPresetSettings(host);
+  }
   if (section.id === 'about') void loadStudioStorage();
   renderFooter();
 }
@@ -1495,6 +1727,23 @@ function buildPayload() {
       idle_unload_minutes: Number(state.form.upscale.idle_unload_minutes) || 0,
       defaults: { scale: Number(state.form.upscale.defaults.scale) || 2 },
     },
+    segment: {
+      dirs: {
+        sam3: state.form.segment.dirs.sam3.trim(),
+        birefnet: state.form.segment.dirs.birefnet.trim(),
+      },
+      sam3: {
+        model: state.form.segment.sam3.model,
+        threshold: Number(state.form.segment.sam3.threshold) || 0,
+        refine_iterations: Number(state.form.segment.sam3.refine_iterations) || 0,
+      },
+      birefnet: { model: state.form.segment.birefnet.model },
+      default_model: state.form.segment.default_model,
+      max_side: Number(state.form.segment.max_side) || 2048,
+      max_candidates: Number(state.form.segment.max_candidates) || 8,
+      timeout_s: Number(state.form.segment.timeout_s) || 30,
+      idle_unload_minutes: Number(state.form.segment.idle_unload_minutes) || 0,
+    },
   };
   const slots = collectSlotPatch();
   if (slots) payload.model_defaults = slots;
@@ -1591,12 +1840,16 @@ async function rescan() {
     if (state.data) {
       state.data.scan = scan;
       if (scan.upscale && state.data.upscale) state.data.upscale.scan = scan.upscale;
+      if (scan.segment && state.data.segment) state.data.segment.scan = scan.segment;
     }
     render();
     const engines = Object.values(scan.upscale?.engines || {});
     const readyCount = engines.filter((engine) => engine.ready).length;
     const upscaleText = engines.length ? ` · 放大引擎 ${readyCount}/${engines.length} 可用` : '';
-    toastSuccess(`已重新扫描：${scan.total} 个模型文件${upscaleText}`);
+    const segEngines = Object.values(scan.segment?.engines || {});
+    const segReady = segEngines.filter((engine) => engine.ready).length;
+    const segText = segEngines.length ? ` · 分割模型 ${segReady}/${segEngines.length} 可用` : '';
+    toastSuccess(`已重新扫描：${scan.total} 个模型文件${upscaleText}${segText}`);
   } catch (err) {
     toastError(err, '扫描模型目录失败');
   }

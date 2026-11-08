@@ -211,6 +211,18 @@ def save_editor_snapshot(data: bytes, *, ext: str = "png") -> dict[str, Any]:
     return {"filename": filename, "relpath": relpath, "url": url_for(relpath)}
 
 
+def save_mask(data: bytes, *, prefix: str = "seg", ext: str = "png") -> dict[str, Any]:
+    """保存分割蒙版到 storage/masks，返回可直接访问的 `/files/masks/...` URL。"""
+    ensure_dirs()
+    ext = _norm_ext(ext)
+    filename = f"{new_id('seg-')}_{_sanitize(prefix, 'mask')}{ext}"
+    relpath = f"masks/{filename}"
+    with open(os.path.join(config.STORAGE_DIR, relpath), "wb") as fh:
+        fh.write(data)
+    return {"filename": filename, "relpath": relpath, "url": url_for(relpath),
+            "bytes": len(data)}
+
+
 # --------------------------------------------------------------------------- 统计/清理
 
 

@@ -36,10 +36,11 @@ import {
   modifiedKeys,
   normalizeProtection,
   presetTaskMode,
+  resetDefinedOverrides,
   resolvePresetForMask,
   withOverride,
 } from './studio/presets.js';
-import { nestOverrides } from './studio/payload.js';
+import { nestOverrides, pickConsistencyLora } from './studio/payload.js';
 import { chainConfigOf, imageUrlToDataUrl, meanDeltaE } from './studio/chain.js';
 import { mountGuards } from './studio/guards.js';
 import { mountAdvanced } from './studio/advanced.js';
@@ -68,6 +69,7 @@ export function createEditPage(host) {
   let chainSession = { config: null, round: 0, drift: 0, original: null, lastDataUrl: '' };
   let turboControl = null;
   let loraPicker = null;
+  let loraHostBound = false;
   let turboSnapshot = null; // 开 Turbo 前的 steps/cfg/sampler，关掉时还原
 
   let dragFrom = null;
@@ -91,6 +93,7 @@ export function createEditPage(host) {
           <div class="panel-body">
             <div class="ai-presets edit-presets" data-ref="presetCards"></div>
             <div class="ai-hint" data-ref="presetHint"></div>
+            <div class="ai-custom-pick" data-ref="customPickHost"></div>
             <label class="ai-field">
               <span>任务</span>
               <select class="select" data-ref="taskMode">
@@ -155,10 +158,11 @@ export function createEditPage(host) {
                 <div class="radio-row">
                   <label class="radio-pill"><input type="radio" name="edit-scheme" value="a" data-ref="schemeA" />方案 A · 全画布</label>
                   <label class="radio-pill"><input type="radio" name="edit-scheme" value="b" data-ref="schemeB" />方案 B · 裁切</label>
+                  <label class="radio-pill"><input type="radio" name="edit-scheme" value="native" data-ref="schemeNative" />原生 · 不合成</label>
                 </div>
-                <div class="field-hint">方案 A：整幅画布参与采样，按遮罩合成；方案 B：只裁出遮罩区域采样再拼回，省显存。</div>
+                <div class="field-hint">方案 A：整幅画布参与采样，按遮罩合成；方案 B：裁出遮罩区域采样再拼回；原生：整张画布就是模型输出。</div>
               </div>
-              <div class="grid-2">
+              <div class="grid-2" data-ref="schemeAFields">
                 <label class="field">
                   <span class="field-label">羽化 <span class="tag-hint" data-ref="featherVal">32 px</span></span>
                   <input class="range" type="range" min="0" max="128" step="1" data-ref="feather" />
@@ -168,32 +172,17 @@ export function createEditPage(host) {
                   <input class="range" type="range" min="0" max="64" step="1" data-ref="expand" />
                 </label>
               </div>
+              <div class="field-hint" data-ref="schemeNote" hidden></div>
               <label class="switch">
                 <input type="checkbox" data-ref="colorMatch" />
                 <span class="switch-track"></span>
-                <span class="switch-label">颜色匹配（Reinhard）<small>把编辑区颜色统计拉回原图，减少色差</small></span>
+                <span class="switch-label">颜色匹配<small>把编辑区颜色统计拉回原图，减少色差</small></span>
               </label>
-              <div class="grid-2">
-                <label class="field">
-                  <span class="field-label">颜色强度 <span class="tag-hint" data-ref="colorStrengthVal">0.60</span></span>
-                  <input class="range" type="range" min="0" max="1" step="0.05" data-ref="colorStrength" />
-                </label>
-                <label class="field">
-                  <span class="field-label">上下文倍数 <span class="tag-hint" data-ref="contextFactorVal">1.5×</span></span>
-                  <input class="range" type="range" min="1" max="3" step="0.1" data-ref="contextFactor" />
-                </label>
-              </div>
-              <div class="grid-2">
-                <label class="field">
-                  <span class="field-label">上下文像素</span>
-                  <input class="input mono" type="number" min="0" max="1024" step="8" data-ref="contextPixels" />
-                </label>
-                <label class="field">
-                  <span class="field-label">混合像素</span>
-                  <input class="input mono" type="number" min="0" max="256" step="4" data-ref="blendPixels" />
-                </label>
-              </div>
-              <div class="notice info">羽化与外扩会实时叠加到遮罩编辑器的红色预览；提交的遮罩尺寸 = 第 1 张图尺寸。</div>
+              <label class="field">
+                <span class="field-label">颜色强度 <span class="tag-hint" data-ref="colorStrengthVal">0.60</span></span>
+                <input class="range" type="range" min="0" max="1" step="0.05" data-ref="colorStrength" />
+              </label>
+              <div class="notice info">当前方案不使用的参数会自动隐藏；接缝 / 过渡带的细节在「高级参数」里按方案显示。</div>
             </div>
           </div>
         </section>
@@ -255,8 +244,8 @@ export function createEditPage(host) {
                 <select class="select mono" data-ref="consistencyLora"></select>
               </label>
               <label class="field">
-                <span class="field-label">强度 <span class="tag-hint" data-ref="consistencyStrengthVal">1.00</span></span>
-                <input class="range" type="range" min="0" max="2" step="0.05" data-ref="consistencyStrength" />
+                <span class="field-label">强度 <span class="tag-hint" data-ref="consistencyStrengthVal">0.48</span></span>
+                <input class="range" type="range" min="0" max="2" step="0.01" data-ref="consistencyStrength" />
               </label>
             </div>
           </div>
@@ -436,6 +425,7 @@ export function createEditPage(host) {
     presetCards: ref('presetCards'),
     presetNote: ref('presetNote'),
     presetHint: ref('presetHint'),
+    customPickHost: ref('customPickHost'),
     taskMode: ref('taskMode'),
     taskNote: ref('taskNote'),
     panoramaHost: ref('panoramaHost'),
@@ -444,6 +434,9 @@ export function createEditPage(host) {
     advancedHost: ref('advancedHost'),
     schemeA: ref('schemeA'),
     schemeB: ref('schemeB'),
+    schemeNative: ref('schemeNative'),
+    schemeAFields: ref('schemeAFields'),
+    schemeNote: ref('schemeNote'),
     feather: ref('feather'),
     featherVal: ref('featherVal'),
     expand: ref('expand'),
@@ -451,10 +444,6 @@ export function createEditPage(host) {
     colorMatch: ref('colorMatch'),
     colorStrength: ref('colorStrength'),
     colorStrengthVal: ref('colorStrengthVal'),
-    contextFactor: ref('contextFactor'),
-    contextFactorVal: ref('contextFactorVal'),
-    contextPixels: ref('contextPixels'),
-    blendPixels: ref('blendPixels'),
     steps: ref('steps'),
     cfg: ref('cfg'),
     denoise: ref('denoise'),
@@ -1594,7 +1583,9 @@ export function createEditPage(host) {
     edit.scheme = scheme;
     refs.schemeA.checked = scheme === 'a';
     refs.schemeB.checked = scheme === 'b';
+    refs.schemeNative.checked = scheme === 'native';
     paintSchemePills();
+    syncSchemeVisibility(scheme);
     patchSettings({ edit: { scheme } });
     setLocalOverride('local.scheme', scheme);
   }
@@ -1606,8 +1597,22 @@ export function createEditPage(host) {
     }
   }
 
+  /** 只显示当前方案真正会用到的快捷参数，避免"改了不生效"。 */
+  function syncSchemeVisibility(scheme) {
+    const isA = scheme === 'a';
+    if (refs.schemeAFields) refs.schemeAFields.hidden = !isA;
+    if (!refs.schemeNote) return;
+    refs.schemeNote.hidden = isA;
+    refs.schemeNote.textContent = scheme === 'b'
+      ? '方案 B：接缝扩展 / 羽化 / 过渡带在「高级参数 → 接缝与羽化」里调整。'
+      : scheme === 'native'
+        ? '原生：不裁块、不做遮罩合成；羽化 / 外扩 / 过渡带均不适用，颜色由「颜色匹配」控制。'
+        : '';
+  }
+
   refs.schemeA.addEventListener('change', () => setScheme('a'));
   refs.schemeB.addEventListener('change', () => setScheme('b'));
+  refs.schemeNative.addEventListener('change', () => setScheme('native'));
 
   /** 局部编辑的快捷项直接写覆盖项，生效值 = 预设 + 覆盖（与图片精修同一套规则）。 */
   function bindPresetRange(input, key, stateKey, labelEl, format) {
@@ -1623,22 +1628,11 @@ export function createEditPage(host) {
   // 注意：store 里的字段叫 maskExpand（不是 expand），绑错会让滑杆值变成 undefined → 显示 NaN px
   bindPresetRange(refs.expand, 'local.mask_expand', 'maskExpand', refs.expandVal, (v) => `${Math.round(v)} px`);
   bindPresetRange(refs.colorStrength, 'local.color_strength', 'colorStrength', refs.colorStrengthVal, (v) => Number(v).toFixed(2));
-  bindPresetRange(refs.contextFactor, 'local.context_factor', 'contextFactor', refs.contextFactorVal, (v) => `${Number(v).toFixed(1)}×`);
 
   refs.colorMatch.addEventListener('change', () => {
     edit.colorMatch = refs.colorMatch.checked;
     patchSettings({ edit: { colorMatch: edit.colorMatch } });
     setLocalOverride('local.color_match', edit.colorMatch);
-  });
-  refs.contextPixels.addEventListener('change', () => {
-    edit.contextPixels = Math.max(0, Math.round(Number(refs.contextPixels.value) || 0));
-    patchSettings({ edit: { contextPixels: edit.contextPixels } });
-    setLocalOverride('local.context_pixels', edit.contextPixels);
-  });
-  refs.blendPixels.addEventListener('change', () => {
-    edit.blendPixels = Math.max(0, Math.round(Number(refs.blendPixels.value) || 0));
-    patchSettings({ edit: { blendPixels: edit.blendPixels } });
-    setLocalOverride('local.blend_pixels', edit.blendPixels);
   });
 
   /* ============================================================
@@ -1651,6 +1645,8 @@ export function createEditPage(host) {
 
   function currentPresetId() {
     const wanted = String(edit.preset || defaultPresetId(presetList) || 'mask_edit');
+    // 还没上传图片时不降级：此时"没有蒙版"不代表用户要整图重绘。
+    if (!images.length) return { id: wanted, degraded: false, from: '' };
     return resolvePresetForMask(wanted, localHasMask());
   }
 
@@ -1731,9 +1727,16 @@ export function createEditPage(host) {
     edit.taskMode = refs.taskMode.value;
     // 移除 / 扩图 / 全景有专属提示图约定，显式选任务时同步到对应预设
     if (['remove', 'outpaint', 'panorama'].includes(edit.taskMode)) {
-      if (findPreset(presetList, edit.taskMode)) edit.preset = edit.taskMode;
+      const hit = findPreset(presetList, edit.taskMode);
+      if (hit) {
+        // 等价于选中该预设：套用全局默认，任务下拉回到「跟随预设」。
+        choosePreset(hit);
+        return;
+      }
     }
-    patchSettings({ edit: { taskMode: edit.taskMode, preset: edit.preset } });
+    patchSettings({
+      edit: { taskMode: edit.taskMode, preset: edit.preset, overrides: edit.overrides },
+    });
     renderTaskMode();
     renderPresets();
     syncLocalControls();
@@ -1752,6 +1755,7 @@ export function createEditPage(host) {
     const preset = currentPreset();
     const dirty = preset ? modifiedKeys(preset, edit.overrides || {}).length > 0 : false;
     refs.presetCards.innerHTML = presetList
+      .filter((item) => !item.custom)
       .map((item) => {
         const active = preset ? item.id === preset.id : false;
         return `<button type="button" class="ai-preset${active ? ' active' : ''}" data-preset="${escapeHtml(item.id)}"
@@ -1767,15 +1771,132 @@ export function createEditPage(host) {
       .join('');
     refs.presetNote.textContent = `v${presetVersion}`;
     refs.presetHint.textContent = preset?.summary || '';
+    renderCustomPick();
     renderTaskMode();
     syncGuardNote();
+  }
+
+  /** 任务页的「自定义搭配」入口：一个选择器，不挤占内置预设卡片。 */
+  function renderCustomPick() {
+    const host = refs.customPickHost;
+    if (!host) return;
+    const customs = presetList.filter((item) => item.custom);
+    if (!customs.length) {
+      host.innerHTML = '<div class="ai-hint">自定义搭配：到「设置 → 预设与自定义」创建。</div>';
+      return;
+    }
+    const current = currentPresetId().id;
+    const active = customs.some((item) => item.id === current) ? current : '';
+    host.innerHTML = `<label class="ai-field">
+      <span>自定义搭配</span>
+      <select class="select" data-ref="customPick">
+        <option value="">选择已保存的自定义搭配</option>
+        ${customs
+          .map(
+            (item) =>
+              `<option value="${escapeHtml(item.id)}" ${item.id === active ? 'selected' : ''}>${escapeHtml(item.label || item.id)}</option>`,
+          )
+          .join('')}
+      </select>
+    </label>`;
+  }
+
+  /** 套用预设 / 自定义搭配的完整默认值（切预设时调用，页面临时值随之失效）。 */
+  function applyPresetDefaults(preset) {
+    if (!preset) return;
+    const params = preset.params || {};
+    const sampling = params.sampling || {};
+    const steps = Number(sampling.steps);
+    if (Number.isFinite(steps) && steps > 0) {
+      edit.steps = steps;
+      refs.steps.value = String(steps);
+    }
+    const cfgValue = Number(sampling.cfg);
+    if (Number.isFinite(cfgValue) && cfgValue >= 0) {
+      edit.cfg = cfgValue;
+      refs.cfg.value = String(cfgValue);
+    }
+    if (sampling.sampler && [...refs.sampler.options].some((item) => item.value === sampling.sampler)) {
+      edit.sampler = sampling.sampler;
+      refs.sampler.value = sampling.sampler;
+    }
+    if (sampling.scheduler && [...refs.scheduler.options].some((item) => item.value === sampling.scheduler)) {
+      edit.scheduler = sampling.scheduler;
+      refs.scheduler.value = sampling.scheduler;
+    }
+    const denoise = Number(sampling.denoise);
+    if (Number.isFinite(denoise)) {
+      edit.denoise = denoise;
+      refs.denoise.value = String(denoise);
+    }
+    // Turbo 是预设默认的一部分：切预设时恢复，之后再手动改才算临时覆盖。
+    edit.turboUser = false;
+    applyPresetTurbo(preset);
+    const cons = params.consistency || {};
+    edit.consistency = cons.enabled !== false;
+    const strength = Number(cons.strength);
+    edit.consistencyStrength = Number.isFinite(strength) ? strength : 0.48;
+    edit.consistencyLora = cons.lora ? String(cons.lora) : '';
+    const loras = Array.isArray(params.loras) ? params.loras : [];
+    edit.loras = Object.fromEntries(
+      loras
+        .filter((item) => item && item.name)
+        .map((item) => [String(item.name), Number(item.strength) || 1]),
+    );
+    edit.appliedPreset = preset.id;
+    edit.taskMode = 'auto';
+    patchSettings({
+      edit: {
+        preset: preset.id,
+        taskMode: 'auto',
+        appliedPreset: preset.id,
+        turboUser: false,
+        steps: edit.steps,
+        cfg: edit.cfg,
+        sampler: edit.sampler,
+        scheduler: edit.scheduler,
+        denoise: edit.denoise,
+        consistency: edit.consistency,
+        consistencyStrength: edit.consistencyStrength,
+        consistencyLora: edit.consistencyLora,
+        loras: edit.loras,
+      },
+    });
+    renderConsistency();
+    renderLoras();
+    syncLocalControls();
+    renderCustomPick();
+    renderTaskMode();
+  }
+
+  function choosePreset(preset) {
+    if (!preset) return;
+    edit.preset = preset.id;
+    edit.overrides = resetDefinedOverrides(preset, edit.overrides || {});
+    patchSettings({
+      edit: { preset: preset.id, taskMode: 'auto', overrides: edit.overrides },
+    });
+    applyPresetDefaults(preset);
+    renderPresets();
+    advanced.refresh();
+  }
+
+  if (refs.customPickHost) {
+    refs.customPickHost.addEventListener('change', (event) => {
+      const select = event.target.closest('[data-ref="customPick"]');
+      if (!select || !select.value) return;
+      choosePreset(findPreset(presetList, select.value));
+    });
   }
 
   function syncGuardNote() {
     const protection = normalizeProtection(edit.protection);
     const notes = [];
     const resolved = currentPresetId();
-    if (resolved.degraded) notes.push('当前没有蒙版：局部编辑预设会按整画布执行');
+    if (resolved.degraded) {
+      const from = findPreset(presetList, resolved.from);
+      notes.push(`当前没有蒙版：「${from?.label || resolved.from}」会按整画布执行`);
+    }
     if (!protection.color) notes.push('色彩校准已关闭：输出可能与原图有色差');
     if (!protection.zeroShift) notes.push('零像素偏移已关闭：可能出现 1~31px 位移或亚像素模糊');
     refs.guardNote.hidden = !notes.length;
@@ -1785,16 +1906,7 @@ export function createEditPage(host) {
   refs.presetCards.addEventListener('click', (event) => {
     const button = event.target.closest('[data-preset]');
     if (!button) return;
-    const preset = findPreset(presetList, button.dataset.preset);
-    if (!preset) return;
-    edit.preset = preset.id;
-    // 选预设即回到「跟随预设」，避免任务与预设打架
-    edit.taskMode = 'auto';
-    patchSettings({ edit: { preset: preset.id, taskMode: 'auto' } });
-    syncLocalControls();
-    renderPresets();
-    renderTaskMode();
-    advanced.refresh();
+    choosePreset(findPreset(presetList, button.dataset.preset));
   });
 
   /** 旧字段一次性迁移到覆盖项，避免历史自定义值被预设默认值覆盖。 */
@@ -1808,14 +1920,18 @@ export function createEditPage(host) {
       if (!Number.isFinite(number) || Math.abs(number - Number(fallback)) < 1e-6) return;
       if (!Object.prototype.hasOwnProperty.call(next, key)) next = withOverride(preset, next, key, number);
     };
-    seed('local.feather', edit.feather, 32);
-    seed('local.mask_expand', edit.maskExpand, 0);
+    const scheme = String(effectiveValue(preset, edit.overrides || {}, 'local.scheme', 'a'));
+    // 羽化 / 外扩只在方案 A 的遮罩合成里生效，方案 B 不迁移这两个旧值。
+    if (scheme === 'a') {
+      seed('local.feather', edit.feather, 32);
+      seed('local.mask_expand', edit.maskExpand, 0);
+    }
     seed('local.color_strength', edit.colorStrength, 0.6);
-    seed('local.context_factor', edit.contextFactor, 1.5);
-    seed('local.context_pixels', edit.contextPixels, 96);
     seed('local.blend_pixels', edit.blendPixels, 24);
     if (edit.colorMatch === false) next = withOverride(preset, next, 'local.color_match', false);
-    if (edit.scheme === 'b') next = withOverride(preset, next, 'local.scheme', 'b');
+    if (edit.scheme === 'b' || edit.scheme === 'native') {
+      next = withOverride(preset, next, 'local.scheme', edit.scheme);
+    }
     edit.overrides = next;
     edit.presetMigrated = true;
     patchSettings({ edit: { overrides: next, presetMigrated: true } });
@@ -1826,12 +1942,12 @@ export function createEditPage(host) {
     const preset = currentPreset();
     if (!preset) return;
     const scheme = String(presetValue('local.scheme', preset.params?.local?.scheme || 'a'));
-    if (scheme === 'a' || scheme === 'b') {
-      edit.scheme = scheme;
-      refs.schemeA.checked = scheme === 'a';
-      refs.schemeB.checked = scheme === 'b';
-      paintSchemePills();
-    }
+    edit.scheme = scheme;
+    refs.schemeA.checked = scheme === 'a';
+    refs.schemeB.checked = scheme === 'b';
+    refs.schemeNative.checked = scheme === 'native';
+    paintSchemePills();
+    syncSchemeVisibility(scheme);
     const feather = Math.round(Number(presetValue('local.feather', 32)));
     edit.feather = feather;
     refs.feather.value = String(feather);
@@ -1844,16 +1960,6 @@ export function createEditPage(host) {
     edit.colorStrength = strength;
     refs.colorStrength.value = String(strength);
     refs.colorStrengthVal.textContent = strength.toFixed(2);
-    const factor = Number(presetValue('local.context_factor', 1.5));
-    edit.contextFactor = factor;
-    refs.contextFactor.value = String(factor);
-    refs.contextFactorVal.textContent = `${factor.toFixed(1)}×`;
-    const ctxPixels = Math.round(Number(presetValue('local.context_pixels', 96)));
-    edit.contextPixels = ctxPixels;
-    refs.contextPixels.value = String(ctxPixels);
-    const blend = Math.round(Number(presetValue('local.blend_pixels', 24)));
-    edit.blendPixels = blend;
-    refs.blendPixels.value = String(blend);
     const match = Boolean(presetValue('local.color_match', true));
     edit.colorMatch = match;
     refs.colorMatch.checked = match;
@@ -1863,9 +1969,6 @@ export function createEditPage(host) {
         feather,
         maskExpand: expand,
         colorStrength: strength,
-        contextFactor: factor,
-        contextPixels: ctxPixels,
-        blendPixels: blend,
         colorMatch: match,
       },
     });
@@ -1988,6 +2091,8 @@ export function createEditPage(host) {
         profile: edit.turboProfile || '',
       },
       onChange: (value) => {
+        // 用户手动改过 Turbo 后，切换预设不再覆盖他的选择。
+        edit.turboUser = true;
         // 开 Turbo 时记住原来的采样参数，关掉时还原。
         // 不还原的话会一直停在 8 步 / cfg 1 ——那是 Turbo 专用值，普通采样用会糊。
         if (value.enabled && !turboSnapshot) {
@@ -1999,7 +2104,12 @@ export function createEditPage(host) {
         }
         let restored = null;
         if (!value.enabled) {
-          restored = turboSnapshot || { steps: 25, cfg: 1, sampler: 'euler' };
+          const defaults = store.state.options?.defaults || {};
+          restored = turboSnapshot || {
+            steps: Number(defaults.steps) || 25,
+            cfg: Number(defaults.cfg) || 4,
+            sampler: defaults.sampler || 'euler',
+          };
           turboSnapshot = null;
         }
         edit.turbo = value.enabled;
@@ -2015,13 +2125,15 @@ export function createEditPage(host) {
           }
           patchSettings({
             edit: {
-              turbo: false, turboProfile: value.profile,
+              turbo: false, turboProfile: value.profile, turboUser: true,
               steps: restored.steps, cfg: restored.cfg, sampler: restored.sampler,
             },
           });
           toastSuccess(`已关闭 Turbo，采样参数还原为 ${restored.steps} 步 · CFG ${restored.cfg}`);
         } else {
-          patchSettings({ edit: { turbo: value.enabled, turboProfile: value.profile } });
+          patchSettings({
+            edit: { turbo: value.enabled, turboProfile: value.profile, turboUser: true },
+          });
         }
         applyTurboToFields();
       },
@@ -2076,6 +2188,31 @@ export function createEditPage(host) {
     }
   }
 
+  /**
+   * 预设里的 Turbo 档位是默认值：未手动改过 Turbo 的用户跟随预设，
+   * 手动改过之后由用户的显式选择优先（turboUser=true）。
+   */
+  function applyPresetTurbo(preset) {
+    if (!turboControl || !preset || edit.turboUser) return;
+    const turbo = preset.params?.turbo;
+    if (!turbo) return;
+    const profile = String(turbo.profile || edit.turboProfile || '');
+    // 记住开启 Turbo 前的标准采样参数，用户手动关掉时能原样还原。
+    if (turbo.enabled && !turboControl.getValue().enabled && !turboSnapshot) {
+      turboSnapshot = {
+        steps: Number(refs.steps.value) || 25,
+        cfg: Number(refs.cfg.value) || 4,
+        sampler: refs.sampler.value || 'euler',
+      };
+    }
+    turboControl.setValue({ enabled: Boolean(turbo.enabled), profile });
+    const actual = turboControl.getValue();
+    edit.turbo = Boolean(actual.enabled);
+    edit.turboProfile = actual.profile;
+    patchSettings({ edit: { turbo: edit.turbo, turboProfile: edit.turboProfile } });
+    applyTurboToFields(true);
+  }
+
   function renderLoras() {
     const loras = store.state.options?.models?.lora || [];
     loraPicker = new LoraPicker(refs.loraHost, { loras, initial: edit.loras });
@@ -2083,8 +2220,12 @@ export function createEditPage(host) {
       edit.loras = Object.fromEntries(loraPicker.getValue().map((item) => [item.name, item.strength]));
       patchSettings({ edit: { loras: edit.loras } });
     };
-    loraPicker.host.addEventListener('change', sync);
-    loraPicker.host.addEventListener('input', sync);
+    if (!loraHostBound) {
+      // 宿主元素固定，监听器只绑一次；闭包里的 loraPicker 始终指向最新实例。
+      loraPicker.host.addEventListener('change', sync);
+      loraPicker.host.addEventListener('input', sync);
+      loraHostBound = true;
+    }
   }
 
   function renderModels() {
@@ -2096,7 +2237,12 @@ export function createEditPage(host) {
     const loras = (store.state.options?.models?.lora || []).map((item) =>
       typeof item === 'string' ? { value: item, label: item } : { value: item.value ?? item.name, label: item.label || item.value || item.name },
     );
-    const current = edit.consistencyLora || '';
+    // 默认选后端配置的一致性 LoRA，而不是 LoRA 列表的第一项。
+    const preferred = pickConsistencyLora(
+      store.state.options?.models?.lora || [],
+      store.state.options?.defaults?.consistency_lora,
+    );
+    const current = edit.consistencyLora || preferred;
     refs.consistencyLora.innerHTML = loras.length
       ? loras
           .map(
@@ -2105,21 +2251,27 @@ export function createEditPage(host) {
           )
           .join('')
       : '<option value="">后端未返回 LoRA 列表</option>';
-    if (current && loras.some((lora) => lora.value === current)) refs.consistencyLora.value = current;
-    else if (loras.length) {
+    if (current && loras.some((lora) => lora.value === current)) {
+      refs.consistencyLora.value = current;
+      if (edit.consistencyLora !== current) {
+        edit.consistencyLora = current;
+        patchSettings({ edit: { consistencyLora: current } });
+      }
+    } else if (loras.length) {
       edit.consistencyLora = refs.consistencyLora.value;
       patchSettings({ edit: { consistencyLora: edit.consistencyLora } });
     }
-    refs.consistencyEnabled.checked = Boolean(edit.consistencyEnabled);
+    // 两页共用 `consistency`：预设默认开启时这里也应显示开启。
+    refs.consistencyEnabled.checked = edit.consistency !== false;
     refs.consistencyStrength.value = String(edit.consistencyStrength);
     refs.consistencyStrengthVal.textContent = Number(edit.consistencyStrength).toFixed(2);
     refs.consistencyRows.classList.toggle('hidden', !refs.consistencyEnabled.checked);
   }
 
   refs.consistencyEnabled.addEventListener('change', () => {
-    edit.consistencyEnabled = refs.consistencyEnabled.checked;
-    patchSettings({ edit: { consistencyEnabled: edit.consistencyEnabled } });
-    refs.consistencyRows.classList.toggle('hidden', !edit.consistencyEnabled);
+    edit.consistency = refs.consistencyEnabled.checked;
+    patchSettings({ edit: { consistency: edit.consistency } });
+    refs.consistencyRows.classList.toggle('hidden', !edit.consistency);
   });
   refs.consistencyLora.addEventListener('change', () => {
     edit.consistencyLora = refs.consistencyLora.value;
@@ -2158,9 +2310,11 @@ export function createEditPage(host) {
     refs.readyHint.style.color = ready ? 'var(--ok)' : 'var(--warn)';
   }
 
-  refs.schemeA.checked = edit.scheme !== 'b';
+  refs.schemeA.checked = edit.scheme === 'a';
   refs.schemeB.checked = edit.scheme === 'b';
+  refs.schemeNative.checked = edit.scheme === 'native';
   paintSchemePills();
+  syncSchemeVisibility(edit.scheme);
   refs.localEnabled.checked = Boolean(edit.localEnabled);
   syncLocalUi();
   renderSelects();
@@ -2173,12 +2327,40 @@ export function createEditPage(host) {
   renderHealthHint();
   store.subscribe(() => renderHealthHint());
   on('options:loaded', () => refreshAll());
-  // 预设摘要异步加载：先迁移旧字段，再回显预设生效值
-  ensurePresets().then(() => {
+  /** 预设加载 / 全局设置保存后：同步当前预设与页面默认值。 */
+  function syncPresetState(forceApply = false) {
+    // 预设被删除（例如自定义搭配在全局设置里删掉）时回落到默认预设。
+    if (!findPreset(presetList, edit.preset)) {
+      edit.preset = defaultPresetId(presetList);
+      patchSettings({ edit: { preset: edit.preset } });
+    }
     migrateLegacyOverrides();
-    syncLocalControls();
+    const preset = currentPreset();
+    if (preset && (forceApply || edit.appliedPreset !== preset.id)) {
+      // 切过预设 / 首次加载 / 全局默认刚更新：套用默认值，清掉临时覆盖。
+      edit.overrides = resetDefinedOverrides(preset, edit.overrides || {});
+      patchSettings({ edit: { overrides: edit.overrides } });
+      applyPresetDefaults(preset);
+    } else {
+      // 同一个预设：保留页面临时值，只回显。
+      syncLocalControls();
+      renderConsistency();
+      renderLoras();
+      renderCustomPick();
+      renderTaskMode();
+    }
     renderPresets();
     advanced.refresh();
+  }
+
+  // 预设摘要异步加载：先迁移旧字段，再回显预设生效值
+  ensurePresets().then(() => syncPresetState(false));
+  // 全局设置保存后：重新拉取预设 / 自定义搭配，并强制套用当前预设的新默认值。
+  window.addEventListener('presets:updated', () => {
+    if (!host.isConnected) return;
+    presetList = [];
+    presetVersion = 1;
+    ensurePresets().then(() => syncPresetState(true));
   });
 
   /* ============================================================
@@ -2335,7 +2517,7 @@ export function createEditPage(host) {
       // 旧参数集：不带 preset 时保持原行为
       payload.local = {
         enabled: localEnabled,
-        scheme: refs.schemeB.checked ? 'b' : 'a',
+        scheme: refs.schemeNative.checked ? 'native' : refs.schemeB.checked ? 'b' : 'a',
         feather: Math.round(Number(edit.feather) || 0),
         color_match: refs.colorMatch.checked,
         color_strength: Number(edit.colorStrength),
@@ -2559,7 +2741,7 @@ export function createEditPage(host) {
     });
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(onPayloadBuilt = null) {
     syncActionProgress(null);
     if (refs.submit.disabled) return;
     if (!images.length) {
@@ -2585,6 +2767,15 @@ export function createEditPage(host) {
         height: target.mask.height,
       };
     }
+    // 扩图必须有至少一条外边；否则后端会静默退回普通编辑（且 warning 不再被忽略）。
+    if (activeTaskMode() === 'outpaint') {
+      const edges = ['top', 'bottom', 'left', 'right']
+        .map((key) => Number(presetValue(`outpaint.${key}`, 0)) || 0);
+      if (!edges.some((value) => value > 0)) {
+        toastWarn('扩图需要至少一条外扩边：先点「⤢ 扩图」设置四边百分比');
+        return;
+      }
+    }
     refs.submit.disabled = true;
     refs.submit.innerHTML = '<span class="spin"></span>编辑中…';
     try {
@@ -2606,6 +2797,8 @@ export function createEditPage(host) {
       const payload = collectPayload(maskResult);
       const maskOverlay = payload.__maskOverlay;
       delete payload.__maskOverlay;
+      // 扩图弹窗在 payload 组好后才能把预设切回去，否则会拿旧预设重新采集参数。
+      onPayloadBuilt?.(payload);
       refs.resultState.textContent = '任务进行中';
       await jobRunner.start({
         create: () => api.edit(payload),
@@ -2734,9 +2927,19 @@ export function createEditPage(host) {
         <button class="btn ghost sm" type="button" data-ref="legacyBtn">改用旧流程：先扩画布再涂遮罩（legacy）</button>
       </div>`;
     let panel = null;
-    const previousPreset = edit.preset;
+    const previousPreset = edit.preset || defaultPresetId(presetList);
     const previousTask = edit.taskMode || 'auto';
     let applied = false;
+    const restorePrevious = () => {
+      const prev = findPreset(presetList, previousPreset);
+      if (prev) applyPresetDefaults(prev);
+      edit.taskMode = previousTask;
+      patchSettings({ edit: { preset: previousPreset, taskMode: previousTask } });
+      renderPresets();
+      renderTaskMode();
+      syncLocalControls();
+      advanced.refresh();
+    };
     const modal = openModal({
       title: '扩图 / 外补画布',
       subtitle: '按四边百分比外补，提交时直接走 task=outpaint（灰边延展，遮罩外逐字节保留）',
@@ -2747,14 +2950,7 @@ export function createEditPage(host) {
         panel?.destroy?.();
         panel = null;
         // 取消时回到原预设，避免后续普通编辑被当成扩图提交
-        if (!applied) {
-          edit.preset = previousPreset;
-          edit.taskMode = previousTask;
-          patchSettings({ edit: { preset: previousPreset, taskMode: previousTask } });
-        }
-        renderPresets();
-        syncLocalControls();
-        advanced.refresh();
+        if (!applied) restorePrevious();
       },
     });
     const ref = (name) => content.querySelector(`[data-ref="${name}"]`);
@@ -2769,15 +2965,28 @@ export function createEditPage(host) {
       },
       onApply: () => {
         applied = true;
+        let restored = false;
+        const restore = () => {
+          if (restored) return;
+          restored = true;
+          restorePrevious();
+        };
         modal.close();
-        handleSubmit();
+        // handleSubmit 异步等 vendor，payload 组好后再切回原预设；中途失败则兜底恢复。
+        handleSubmit(restore).finally(restore);
       },
     });
-    panel.init();
-    panel.activate();
-    // 扩图面板接管任务，任务下拉回到「跟随预设」
-    edit.taskMode = 'auto';
-    patchSettings({ edit: { taskMode: 'auto' } });
+    // 等预设加载完再 activate，确保能清掉 outpaint 预设定义键上的旧覆盖。
+    Promise.resolve(panel.init()).then(() => {
+      if (!panel) return; // 弹窗在预设加载完成前已被关闭
+      panel.activate();
+      const opPreset = findPreset(presetList, 'outpaint');
+      if (opPreset) applyPresetDefaults(opPreset);
+      // 扩图面板接管任务，任务下拉回到「跟随预设」
+      edit.taskMode = 'auto';
+      patchSettings({ edit: { taskMode: 'auto' } });
+      renderTaskMode();
+    });
     // 图片尺寸就绪后再对齐幽灵层（否则 getView 拿到 0 宽）
     if (stageImg.complete) requestAnimationFrame(() => panel?.syncGhost());
     else stageImg.addEventListener('load', () => requestAnimationFrame(() => panel?.syncGhost()), { once: true });

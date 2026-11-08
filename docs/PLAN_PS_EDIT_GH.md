@@ -2304,5 +2304,81 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 57. **旧字段永久兼容**（`feather/color_strength/mask_expand/context_*/blend_pixels`），只做映射不删除，避免老 localStorage 失效。
 58. **图生图不引入 PS 工具栏**：只加预设/高级/扩图入口，保持"上传 → 指令 → 出图"的轻量定位。
 
+---
+
+## 16. 全局预设默认值 + 自定义搭配（v5）
+
+### 16.1 产品语义
+
+- **唯一持久化入口**：预设默认值只在「设置 → 预设与自定义」里保存，写进 `config.json`。
+- **任务页修改是临时的**：任务页（图生图 / 图片精修）改 Turbo、采样、一致性、LoRA、方案、羽化等，会一直保留到**下次切换预设**；切换预设时重新加载全局默认值。刷新页面不会清掉临时值。
+- **恢复出厂**：每个内置预设可单独恢复，也支持全部恢复。恢复依据是代码里的 `EDIT_PRESETS`，不是上一次手动保存的值。
+- **自定义搭配**：在全局设置里命名、保存多套；任务页通过「自定义搭配」选择器使用。自定义**不继承任何内置预设**，后端只展开它自己保存的参数，未配置项走后端内置默认。
+- **模板 + 冲突检测**：自定义从模板起步（局部编辑 / 整画布 / 原生 / 元素移除 / 扩图 / 全景），可自由组合；保存前做硬冲突校验，并提供「自动修复冲突」。
+
+### 16.2 存储与 API
+
+`config.json`：
+
+```jsonc
+{
+  "preset_defaults": { "mask_edit": { /* 仅保存被覆盖的完整参数 */ } },
+  "custom_presets": [
+    { "id": "custom:xxxx", "name": "我的搭配", "params": { /* 完整参数 */ } }
+  ],
+  "preset_defaults_version": 5
+}
+```
+
+- `GET /api/meta`：`edit_presets` 下发**全局默认生效后**的预设；`custom_presets` 下发自定义搭配摘要。
+- `GET /api/presets/config`：设置页视图，返回 `factory`（出厂）/ `presets`（生效）/ `custom`（原始 `id/name/params`）/ `overridden` / `max_side`。
+- `POST /api/presets/config`：
+  - `preset_defaults`：按 id **补丁式**保存；值为 `null` 表示恢复该预设出厂值。
+  - `reset_presets: [id...]`：批量恢复出厂。
+  - `custom_presets`：全量替换自定义搭配列表。
+- 保存后服务端立即刷新配置缓存，前端派发 `presets:updated`，已打开的任务页重新拉取并套用新默认值。
+
+### 16.3 参数层
+
+- `PRESET_VERSION = 5`。
+- `_COMMON` 新增三组默认：
+  - `sampling`：`steps/cfg/sampler/scheduler/denoise`
+  - `consistency`：`enabled/lora/strength`（lora 为空 = 跟随系统默认文件）
+  - `loras`：额外 LoRA 列表
+- 管线读取顺序：**请求显式值 > 预设/自定义展开值 > 后端内置默认**。
+  - `_sampling_plan` 支持 `params.sampling` 兜底；Turbo 开启时仍以加速档位为准。
+  - 未显式传 `consistency_lora` 时，从 `params.consistency` 生成；显式 `consistency_lora` 不再重复挂 preset consistency。
+  - remove / outpaint 的任务 LoRA 始终追加，不会被用户自定义 LoRA 挤掉。
+- 任务页切换预设时同步：Turbo、采样、一致性、LoRA、快捷项与高级覆盖项；同一预设刷新页面保留临时值（`appliedPreset` 标记）。
+
+### 16.4 冲突校验（保存前阻断）
+
+硬冲突：
+
+- 元素移除：`local.fills` 必须为 `true`，`local.hint` 必须为 `green_overlay`。
+- 全景：`local.scheme` 必须为 `a`，`local.hint` 必须为 `gray_fill`。
+- 自定义扩图：四边百分比至少一条 > 0。
+- 裁块下限 > 上限、预处理下限 > 上限。
+- 扩图 `max_side` / 全景 `long_side` 超过全局 `max_side`。
+- 采样器 / 调度器 / Turbo 档位不在后端注册表内。
+- 一致性 LoRA 或额外 LoRA 文件不存在。
+
+警告（不阻断）：
+
+- 原生模式 + 元素移除/扩图：边缘无法保证逐字节保留。
+- 一致性关闭但仍有 LoRA 文件名或非默认强度。
+
+### 16.5 代码位置
+
+| 功能 | 文件 |
+|---|---|
+| 出厂预设 / 生效合并 / 自定义存储 / 校验 | `server/presets.py` |
+| 设置页 API | `server/main.py`（`/api/meta`、`/api/presets/config`） |
+| 采样 / 一致性 / LoRA 兜底 | `server/pipeline.py` |
+| 设置页「预设与自定义」 | `web/src/components/presetSettings.js`、`settings.js` |
+| 任务页预设同步 + 自定义选择器 | `web/src/components/edit.js`、`studio/aiPanel.js`、`studio/presets.js` |
+
+测试：`tests/test_edit_presets.py` 覆盖预设覆盖/恢复、自定义不继承、冲突拒绝。
+
 
 

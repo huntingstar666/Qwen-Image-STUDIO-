@@ -74,6 +74,20 @@ export const api = {
     return request('/api/options', { timeout: 30000 });
   },
 
+  /** GET /api/presets/config —— 预设出厂值 / 全局默认值 / 自定义搭配 */
+  presetConfig() {
+    return request('/api/presets/config', { timeout: 15000 });
+  },
+
+  /** POST /api/presets/config —— 保存预设默认值与自定义搭配 */
+  savePresetConfig(payload) {
+    return request('/api/presets/config', {
+      method: 'POST',
+      body: payload || {},
+      timeout: 20000,
+    });
+  },
+
   /** GET /api/styles —— 风格库目录（creative / mj / mjGroups / insertModes） */
   styles() {
     return request('/api/styles', { timeout: 30000 });
@@ -216,6 +230,16 @@ export const api = {
   /** POST /api/image/upscale —— 提交高清放大任务（返回 job_id） */
   upscale(payload) {
     return request('/api/image/upscale', { method: 'POST', body: payload, timeout: 30000 });
+  },
+
+  /** GET /api/image/segment/models —— 主体分割模型清单与就绪状态 */
+  segmentModels() {
+    return request('/api/image/segment/models', { timeout: 20000 });
+  },
+
+  /** POST /api/image/segment —— 主体选择（subject / box / points / text；冷启动较慢给足超时） */
+  segment(payload) {
+    return request('/api/image/segment', { method: 'POST', body: payload, timeout: 180000 });
   },
 
   /** GET /api/image/tagger/models —— WD14 反推模型清单 */

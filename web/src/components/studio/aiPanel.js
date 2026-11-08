@@ -34,6 +34,7 @@ import {
   modifiedKeys,
   normalizeProtection,
   presetTaskMode,
+  resetDefinedOverrides,
   resolvePresetForMask,
   withOverride,
 } from './presets.js';
@@ -128,6 +129,7 @@ export function mountAiPanel(host, ctx) {
             <div class="ai-label">方案预设 <span class="ai-label-note" data-ref="presetNote"></span></div>
             <div class="ai-presets" data-ref="presets"></div>
             <div class="ai-hint" data-ref="presetHint"></div>
+            <div class="ai-custom-pick" data-ref="customPresets"></div>
           </div>
 
           <div class="ai-more-group">
@@ -242,6 +244,7 @@ export function mountAiPanel(host, ctx) {
     presets: ref('presets'),
     presetNote: ref('presetNote'),
     presetHint: ref('presetHint'),
+    customPresets: ref('customPresets'),
     guards: ref('guards'),
     guardNote: ref('guardNote'),
     promptHost: ref('promptHost'),
@@ -312,9 +315,12 @@ export function mountAiPanel(host, ctx) {
     options: null,
     turboProfiles: [],
     turboId: '',
+    // 用户手动选过加速方案后，不再跟随预设默认档位（随项目现场恢复）。
+    turboUser: false,
     presets: [],
     presetVersion: 1,
     presetId: String(editSettings.preset || ''),
+    appliedPreset: '',
     overrides: { ...(editSettings.overrides || {}) },
     protection: normalizeProtection(editSettings.protection),
     consistencyOn: editSettings.consistency !== false,
@@ -482,8 +488,28 @@ export function mountAiPanel(host, ctx) {
     notifyPersist();
   }
 
+  // 连续编辑预设只在「图生图」页有接力状态机；精修面板按等价的单次预设执行。
+  const STUDIO_PRESET_ALIAS = { chain_mask: 'mask_edit', chain_native: 'native' };
+
+  function hasMaskNow() {
+    return Boolean(ctx.hasMask?.());
+  }
+
+  function hasImageNow() {
+    if (typeof ctx.hasImage === 'function') return Boolean(ctx.hasImage());
+    return Boolean(ctx.getMainThumb?.());
+  }
+
+  /** 实际生效的预设：先做连续编辑别名，再按有无蒙版降级（没打开图片时不降级）。 */
+  function currentPresetId() {
+    const raw = String(state.presetId || defaultPresetId(state.presets));
+    const mapped = STUDIO_PRESET_ALIAS[raw] || raw;
+    if (!hasImageNow()) return { id: mapped, degraded: false, from: '' };
+    return resolvePresetForMask(mapped, hasMaskNow());
+  }
+
   function currentPreset() {
-    return findPreset(state.presets, state.presetId);
+    return findPreset(state.presets, currentPresetId().id);
   }
 
   function presetValue(key, fallback) {
@@ -513,10 +539,14 @@ export function mountAiPanel(host, ctx) {
       syncMoreSummary();
       return;
     }
-    const dirty = modifiedKeys(currentPreset(), state.overrides).length > 0;
-    refs.presets.innerHTML = state.presets
+    const resolved = currentPresetId();
+    const preset = findPreset(state.presets, resolved.id);
+    const dirty = modifiedKeys(preset, state.overrides).length > 0;
+    // 连续编辑依赖「图生图」页的接力状态机；自定义搭配走独立选择器。
+    const visible = state.presets.filter((item) => !item.custom && !item.params?.chain);
+    refs.presets.innerHTML = visible
       .map((item) => {
-        const active = item.id === state.presetId;
+        const active = item.id === resolved.id;
         return `<button type="button" class="ai-preset${active ? ' active' : ''}" data-preset="${escapeHtml(item.id)}"
           title="${escapeHtml(item.summary || '')}">
           <span class="ai-preset-head">
@@ -529,15 +559,83 @@ export function mountAiPanel(host, ctx) {
       })
       .join('');
     refs.presetNote.textContent = `v${state.presetVersion}`;
-    refs.presetHint.textContent = currentPreset()?.summary || '';
+    const notes = [preset?.summary || ''];
+    if (resolved.degraded) {
+      const from = findPreset(state.presets, resolved.from);
+      notes.push(`无蒙版：已按「${preset?.label || resolved.id}」执行（来自「${from?.label || resolved.from}」）`);
+    }
+    if (STUDIO_PRESET_ALIAS[state.presetId]) {
+      notes.push('连续编辑预设请在「图生图」页使用');
+    }
+    refs.presetHint.textContent = notes.filter(Boolean).join(' · ');
+    renderCustomPicker();
     syncMoreSummary();
+  }
+
+  /** 任务页的「自定义搭配」选择器。 */
+  function renderCustomPicker() {
+    const host = refs.customPresets;
+    if (!host) return;
+    const customs = state.presets.filter((item) => item.custom);
+    if (!customs.length) {
+      host.innerHTML = '<div class="ai-hint">自定义搭配：到「设置 → 预设与自定义」创建。</div>';
+      return;
+    }
+    const active = customs.some((item) => item.id === state.presetId) ? state.presetId : '';
+    host.innerHTML = `<label class="ai-field">
+      <span>自定义搭配</span>
+      <select class="select" data-ref="customPresetSelect">
+        <option value="">选择已保存的自定义搭配</option>
+        ${customs
+          .map(
+            (item) =>
+              `<option value="${escapeHtml(item.id)}" ${item.id === active ? 'selected' : ''}>${escapeHtml(item.label || item.id)}</option>`,
+          )
+          .join('')}
+      </select>
+    </label>`;
+  }
+
+  /** 套用预设 / 自定义搭配的完整默认值（切预设时调用）。 */
+  function applyPresetDefaults(preset) {
+    if (!preset) return;
+    const params = preset.params || {};
+    state.turboUser = false;
+    applyPresetTurbo();
+    const cons = params.consistency || {};
+    state.consistencyOn = cons.enabled !== false;
+    const strength = Number(cons.strength);
+    state.consistencyStrength = Number.isFinite(strength) ? strength : 0.48;
+    state.consistencyName = cons.lora
+      ? String(cons.lora)
+      : pickConsistencyLora(state.options?.models?.lora || [],
+          state.options?.defaults?.consistency_lora);
+    refs.consistency.checked = state.consistencyOn;
+    refs.strength.disabled = !state.consistencyOn;
+    setStrength(state.consistencyStrength);
+    refs.consistencyName.textContent = state.consistencyName
+      ? state.consistencyName.split(/[\\/]/).pop()
+      : '后端未返回';
+    state.customLoras = (Array.isArray(params.loras) ? params.loras : [])
+      .filter((item) => item && item.name)
+      .slice(0, MAX_LORAS)
+      .map((item) => ({ name: String(item.name), strength: Number(item.strength) || 1 }));
+    renderCustomLoras();
+    state.appliedPreset = preset.id;
+    persistEdit();
+    notifyPersist();
+    syncSamplingInfo();
+    renderMeta();
   }
 
   function selectPreset(id) {
     const preset = findPreset(state.presets, id);
     if (!preset) return;
     state.presetId = id;
-    persistEdit();
+    // 切预设时清掉该预设已定义键上的旧覆盖，确保新预设默认值生效；
+    // outpaint.top/left 这类预设未定义的任务输入继续保留。
+    state.overrides = resetDefinedOverrides(preset, state.overrides);
+    applyPresetDefaults(preset);
     const mode = presetTaskMode(preset);
     if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama') refs.task.value = mode;
     else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
@@ -629,6 +727,21 @@ export function mountAiPanel(host, ctx) {
       if (!findPreset(state.presets, state.presetId)) {
         state.presetId = meta.defaultId || defaultPresetId(state.presets);
       }
+      const preset = findPreset(state.presets, state.presetId);
+      if (preset && state.appliedPreset !== state.presetId) {
+        // 切过预设 / 首次加载：套用全局默认，清掉旧预设定义键上的临时覆盖。
+        state.overrides = resetDefinedOverrides(preset, state.overrides);
+        applyPresetDefaults(preset);
+      } else {
+        // 同一个预设：保留项目里的临时值，只回显。
+        const presetCons = preset?.params?.consistency;
+        if (presetCons?.lora) state.consistencyName = String(presetCons.lora);
+        refs.consistency.checked = state.consistencyOn;
+        refs.strength.disabled = !state.consistencyOn;
+        setStrength(state.consistencyStrength);
+        renderCustomLoras();
+        applyPresetTurbo();
+      }
       renderPresets();
       advanced.refresh();
       renderMeta();
@@ -663,9 +776,17 @@ export function mountAiPanel(host, ctx) {
     const nextPreset = String(edit.preset || state.presetId);
     if (nextPreset !== state.presetId) {
       state.presetId = nextPreset;
-      const mode = presetTaskMode(findPreset(state.presets, nextPreset));
-      if (mode === 'remove' || mode === 'outpaint') refs.task.value = mode;
-      else if (refs.task.value === 'remove' || refs.task.value === 'outpaint') refs.task.value = 'auto';
+      const nextPresetMeta = findPreset(state.presets, nextPreset);
+      if (nextPresetMeta && state.appliedPreset !== nextPreset) {
+        // 另一个页面切了预设：这里也要套用同一份全局默认。
+        state.overrides = resetDefinedOverrides(nextPresetMeta, state.overrides);
+        applyPresetDefaults(nextPresetMeta);
+      } else {
+        applyPresetTurbo();
+      }
+      const mode = presetTaskMode(nextPresetMeta);
+      if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama') refs.task.value = mode;
+      else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
       renderPresets();
       advanced.refresh();
       renderMeta();
@@ -691,6 +812,26 @@ export function mountAiPanel(host, ctx) {
   });
 
   /* ------------------------------------------------------------ 选项 */
+
+  /** 预设的 Turbo 档位是默认值；用户手动选过加速方案后不再覆盖。 */
+  function applyPresetTurbo() {
+    if (state.turboUser) return;
+    const turbo = currentPreset()?.params?.turbo;
+    if (!turbo) return;
+    if (!turbo.enabled) {
+      if (!state.turboId) return;
+      state.turboId = '';
+      syncTurboUi();
+      notifyPersist();
+      return;
+    }
+    const profile = String(turbo.profile || '');
+    if (!profile || !state.turboProfiles.some((item) => item.id === profile)) return;
+    if (state.turboId === profile) return;
+    state.turboId = profile;
+    syncTurboUi();
+    notifyPersist();
+  }
 
   function syncTurboUi() {
     const profiles = state.turboProfiles;
@@ -723,11 +864,12 @@ export function mountAiPanel(host, ctx) {
       };
     }
     const defaults = state.options?.defaults || {};
+    const presetSampling = currentPreset()?.params?.sampling || {};
     return {
-      steps: Number(defaults.steps) || 25,
-      cfg: Number(defaults.cfg) || 4,
-      sampler: defaults.sampler || 'euler',
-      scheduler: defaults.scheduler || 'simple',
+      steps: Number(presetSampling.steps) || Number(defaults.steps) || 25,
+      cfg: presetSampling.cfg != null ? Number(presetSampling.cfg) : (Number(defaults.cfg) || 4),
+      sampler: presetSampling.sampler || defaults.sampler || 'euler',
+      scheduler: presetSampling.scheduler || defaults.scheduler || 'simple',
       turbo: { enabled: false, profile: null },
     };
   }
@@ -748,9 +890,19 @@ export function mountAiPanel(host, ctx) {
       state.turboProfiles = profiles;
       const nine = profiles.find((profile) => Number(profile.steps) === 9);
       const eight = profiles.find((profile) => Number(profile.steps) === 8) || profiles[0];
-      // 图片精修默认走 9 步预设（细节收敛更充分）；后端 defaults.turbo_profile
-      // 是给文生图/图像编辑用的 8 步，这里不跟随它。
-      state.turboId = (nine || eight)?.id || '';
+      // 默认跟随预设的 Turbo 档位；用户手动选过加速方案则沿用其选择。
+      const presetTurbo = currentPreset()?.params?.turbo;
+      const presetProfile = presetTurbo?.enabled ? String(presetTurbo.profile || '') : '';
+      const fallback = (nine || eight)?.id || '';
+      if (state.turboUser) {
+        if (!profiles.some((item) => item.id === state.turboId)) state.turboId = fallback;
+      } else if (presetTurbo && !presetTurbo.enabled) {
+        state.turboId = '';
+      } else {
+        state.turboId = profiles.some((item) => item.id === presetProfile)
+          ? presetProfile
+          : fallback;
+      }
       syncTurboUi();
 
       const ratios = options?.ratios || [];
@@ -767,9 +919,13 @@ export function mountAiPanel(host, ctx) {
             .join('');
 
       const loras = options?.models?.lora || [];
-      const consistency = pickConsistencyLora(loras, options?.defaults?.consistency_lora);
-      state.consistencyName = consistency;
-      refs.consistencyName.textContent = consistency ? consistency.split(/[\\/]/).pop() : '后端未返回';
+      // 预设里指定了一致性 LoRA 时不覆盖；否则用后端默认文件。
+      if (!state.consistencyName) {
+        state.consistencyName = pickConsistencyLora(loras, options?.defaults?.consistency_lora);
+      }
+      refs.consistencyName.textContent = state.consistencyName
+        ? state.consistencyName.split(/[\\/]/).pop()
+        : '后端未返回';
       refs.loraPick.innerHTML =
         '<option value="">选择要叠加的 LoRA</option>' +
         loras
@@ -1083,9 +1239,15 @@ export function mountAiPanel(host, ctx) {
     }
 
     const loraState = collectLoras();
-    const resolved = resolvePresetForMask(state.presetId, source.hasMask);
+    const mappedPreset = STUDIO_PRESET_ALIAS[state.presetId] || state.presetId;
+    const resolved = resolvePresetForMask(mappedPreset, source.hasMask);
     if (resolved.degraded) {
-      toastWarn(`「${resolved.from}」需要蒙版，本次已按「整画布」执行`);
+      const from = findPreset(state.presets, resolved.from);
+      const to = findPreset(state.presets, resolved.id);
+      toastWarn(`「${from?.label || resolved.from}」需要蒙版，本次已按「${to?.label || resolved.id}」执行`);
+    }
+    if (STUDIO_PRESET_ALIAS[state.presetId]) {
+      toastWarn('连续编辑预设请在「图生图」页使用，本次按等价的单次预设执行');
     }
     if (loraState.task === 'outpaint') {
       const edges = ['outpaint.top', 'outpaint.bottom', 'outpaint.left', 'outpaint.right'].map((key) =>
@@ -1433,11 +1595,24 @@ export function mountAiPanel(host, ctx) {
 
   refs.turbo.addEventListener('change', () => {
     state.turboId = refs.turbo.value;
+    state.turboUser = true;
     syncSamplingInfo();
     notifyPersist();
   });
 
+  refs.customPresets.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-ref="customPresetSelect"]');
+    if (!select || !select.value) return;
+    selectPreset(select.value);
+  });
+
   refs.task.addEventListener('change', () => {
+    // 与图生图页一致：显式选移除 / 扩图 / 全景时同步切到对应预设，
+    // 否则扩图会误用编辑档的裁块与接缝参数。
+    const mode = refs.task.value;
+    if (['remove', 'outpaint', 'panorama'].includes(mode) && findPreset(state.presets, mode)) {
+      selectPreset(mode);
+    }
     syncTaskHint();
     syncGuardNote();
     notifyPersist();
@@ -1597,6 +1772,11 @@ export function mountAiPanel(host, ctx) {
       refs.submitHint.textContent = `已圈选 ${(coverage * 100).toFixed(1)}% · 自动识别：${
         TASK_LABELS[task] || task
       }`;
+      // 有没有蒙版会决定预设是否降级，及时刷新卡片与高级参数回显。
+      renderPresets();
+      advanced.refresh();
+      renderMeta();
+      syncGuardNote();
     },
     focusPrompt() {
       promptEditor.focus();
@@ -1624,6 +1804,7 @@ export function mountAiPanel(host, ctx) {
       syncEditorRefs();
       promptEditor.setText(typeof persist.prompt === 'string' ? persist.prompt : '');
       if (persist.presetId) state.presetId = persist.presetId;
+      state.appliedPreset = String(persist.appliedPreset || '');
       state.overrides = { ...(persist.overrides || {}) };
       state.protection = normalizeProtection(persist.protection);
       guards.sync(state.protection);
@@ -1640,7 +1821,9 @@ export function mountAiPanel(host, ctx) {
       if (persist.height) refs.height.value = persist.height;
       if (persist.ratio) refs.ratio.value = persist.ratio;
       state.turboId = persist.turboId || '';
+      state.turboUser = Boolean(persist.turboUser);
       if (state.turboId) refs.turbo.value = state.turboId;
+      if (!state.turboUser) applyPresetTurbo();
       state.resultUrl = persist.resultUrl || '';
       state.previewOn = false;
       state.resultInfo = persist.resultInfo || null;
@@ -1651,6 +1834,13 @@ export function mountAiPanel(host, ctx) {
         refs.adoptHint.hidden = false;
       } else {
         refs.adoptHint.hidden = true;
+      }
+      if (state.presets.length) {
+        const preset = findPreset(state.presets, state.presetId);
+        if (preset && state.appliedPreset !== state.presetId) {
+          state.overrides = resetDefinedOverrides(preset, state.overrides);
+          applyPresetDefaults(preset);
+        }
       }
       syncPrompt();
       syncBusy();
@@ -1684,6 +1874,8 @@ export function mountAiPanel(host, ctx) {
         height: refs.height.value,
         ratio: refs.ratio.value,
         turboId: state.turboId,
+        turboUser: state.turboUser,
+        appliedPreset: state.appliedPreset,
         consistencyOn: state.consistencyOn,
         consistencyStrength: state.consistencyStrength,
         resultUrl: state.resultUrl,
@@ -1726,6 +1918,13 @@ export function mountAiPanel(host, ctx) {
   syncGuardNote();
   loadOptions();
   loadPresetMeta();
+  // 全局设置保存后：重新拉取预设 / 自定义搭配，并套用新的默认值。
+  window.addEventListener('presets:updated', () => {
+    if (!host.isConnected) return;
+    state.appliedPreset = '';
+    state.presets = [];
+    loadPresetMeta();
+  });
 
   return controller;
 }

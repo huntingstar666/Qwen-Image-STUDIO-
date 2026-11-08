@@ -82,7 +82,7 @@ def test_outpaint_preset_splits_crop_and_seam_defaults():
     assert outpaint["task"]["mode"] == "outpaint"
     assert outpaint["local"]["crop_min_side"] == 1024
     assert (outpaint["local"]["expand_pct"], outpaint["local"]["feather_pct"]) == (3.0, 3.0)
-    assert outpaint["outpaint"]["max_side"] == 5120
+    assert outpaint["outpaint"]["max_side"] == 4096
 
 
 def test_panorama_preset_uses_full_canvas_sampling():
@@ -143,7 +143,91 @@ def test_validation_rejects_unknown_preset_and_bad_outpaint_max_side():
     with pytest.raises(main.ApiError, match="outpaint.max_side"):
         main._validate_edit_params({"outpaint": {"max_side": 512}})
     main._validate_edit_params({"preset": "outpaint",
-                               "outpaint": {"left": 10, "max_side": 5120}})
+                               "outpaint": {"left": 10, "max_side": 4096}})
+    with pytest.raises(main.ApiError, match="全局 max_side"):
+        main._validate_edit_params({"preset": "outpaint",
+                                   "outpaint": {"left": 10, "max_side": 5120}})
+
+
+def _temp_config():
+    """把 config 指向临时文件；返回 restore()，避免污染真实 config.json。"""
+    import os
+    import tempfile
+
+    from server import config
+
+    tmp = tempfile.TemporaryDirectory()
+    old_path = config.CONFIG_PATH
+    old_cache = config._cache
+    config.CONFIG_PATH = os.path.join(tmp.name, "config.json")
+    config.reload_config()
+
+    def restore():
+        config.CONFIG_PATH = old_path
+        config._cache = old_cache
+        tmp.cleanup()
+
+    return restore
+
+
+def test_preset_defaults_roundtrip_and_reset():
+    """全局设置保存预设覆盖后，merge 立即使用；reset 后回退出厂。"""
+    restore = _temp_config()
+    try:
+        preset = presets.get_preset("mask_edit")
+        preset["local"]["crop_min_side"] = 1024
+        view = presets.save_preset_config({"preset_defaults": {"mask_edit": preset}})
+        assert view["overridden"] == ["mask_edit"]
+        assert presets.get_preset("mask_edit")["local"]["crop_min_side"] == 1024
+
+        view = presets.save_preset_config({"reset_presets": ["mask_edit"]})
+        assert view["overridden"] == []
+        assert presets.get_preset("mask_edit")["local"]["crop_min_side"] == 768
+    finally:
+        restore()
+
+
+def test_custom_preset_does_not_inherit_builtin():
+    restore = _temp_config()
+    try:
+        params = {
+            "task": {"mode": "edit"},
+            "local": {"enabled": True, "scheme": "native"},
+            "preprocess": {"enabled": True, "max_side": 2048, "min_side": 768,
+                           "multiple": 32, "mode": "downscale_only"},
+            "zero_shift": {"enabled": True},
+            "turbo": {"enabled": False, "profile": "turbo9_ckpt"},
+            "sampling": {"steps": 12, "cfg": 3.5, "sampler": "euler",
+                         "scheduler": "simple", "denoise": 1.0},
+            "consistency": {"enabled": False, "lora": "", "strength": 0.48},
+        }
+        view = presets.save_preset_config({
+            "custom_presets": [{"id": "custom:demo", "name": "我的搭配", "params": params}],
+        })
+        assert view["custom"][0]["id"] == "custom:demo"
+        merged, info = presets.merge({"preset": "custom:demo"})
+        assert info["id"] == "custom:demo"
+        assert merged["local"]["scheme"] == "native"
+        assert "crop_min_side" not in merged["local"]
+        assert merged["sampling"]["steps"] == 12
+    finally:
+        restore()
+
+
+def test_preset_conflicts_are_rejected():
+    restore = _temp_config()
+    try:
+        remove = presets.get_preset("remove")
+        remove["local"]["fills"] = False
+        with pytest.raises(ValueError, match="填充闭合选区"):
+            presets.save_preset_config({"preset_defaults": {"remove": remove}})
+
+        panorama = presets.get_preset("panorama")
+        panorama["local"]["scheme"] = "b"
+        with pytest.raises(ValueError, match="整画布采样"):
+            presets.save_preset_config({"preset_defaults": {"panorama": panorama}})
+    finally:
+        restore()
 
 
 def test_zero_shift_defaults_on_and_can_be_disabled():

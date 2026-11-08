@@ -29,6 +29,10 @@ from . import (
     tagger,
 )
 from . import models as image_models
+from .segmenters import maskops as segment_maskops
+from .segmenters import manager as segment_manager
+from .segmenters import registry as segment_registry
+from .segmenters.errors import SegmentError
 from .upscalers import manager as upscale_manager
 from .upscalers import registry as upscale_registry
 
@@ -106,6 +110,10 @@ def _start_idle_watchdog() -> None:
                 freed = upscale_manager.get_manager().maybe_unload(idle, cfg)
                 if freed:
                     print(f"[idle] 空闲 {idle / 60:.0f} 分钟，已卸载放大模型 {','.join(freed)}", flush=True)
+
+                segment_freed = segment_manager.get_manager().maybe_unload(idle, cfg)
+                if segment_freed:
+                    print(f"[idle] 空闲 {idle / 60:.0f} 分钟，已卸载分割模型 {','.join(segment_freed)}", flush=True)
             except Exception as exc:  # noqa: BLE001 - 看护线程绝不能死
                 print(f"[idle] 看护线程异常（已忽略）：{type(exc).__name__}: {exc}", flush=True)
 
@@ -373,6 +381,14 @@ def _clean_paths(value: Any, *, field: str) -> list[str]:
     return out
 
 
+def _apply_segment_patch(current: dict[str, Any], raw: Any) -> dict[str, Any]:
+    """校验并合并 ``segment`` 设置（目录 / 权重文件名 / 阈值 / 上限）。"""
+    try:
+        return segment_registry.normalize_section(current, raw)
+    except SegmentError as exc:
+        raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+
+
 def _clean_llm_profiles(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """校验并合并 ``llm_profiles``；返回可直接写盘的 patch。
 
@@ -464,6 +480,9 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     scan = config.scan_summary(cfg)
     upscale_scan = upscale_registry.scan_all(cfg)
     scan["upscale"] = upscale_scan
+    segment_status = segment_manager.get_manager().status()
+    segment_scan = segment_registry.scan_all(cfg, loaded=segment_status.get("loaded") or {})
+    scan["segment"] = segment_scan
     active_id = str(cfg.get("llm_active") or "")
     profiles = [
         _public_llm_profile(profile, probe=profile.get("id") == active_id)
@@ -499,6 +518,12 @@ def _settings_view(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "dirs": upscale_registry.resolve_dirs(cfg),
             "scan": upscale_scan,
             "status": upscale_manager.get_manager().status(),
+        },
+        "segment": {
+            **(cfg.get("segment") or {}),
+            "dirs": segment_registry.resolve_dirs(cfg),
+            "scan": segment_scan,
+            "status": segment_status,
         },
         "scan": scan,
         "model_defaults": model_slots.audit(cfg),
@@ -591,7 +616,8 @@ def api_options() -> dict[str, Any]:
             "local_edit_schemes": ["a", "b", "auto", "native"],
             "size_modes": ["follow", "custom", "ratio", "fixed_point"],
             "fits": ["pad", "crop"],
-            "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint"],
+            "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint", "panorama"],
+            "segment_modes": list(segment_registry.MODES),
             "hint_modes": ["none", "green_overlay", "gray_fill"],
             "outpaint_percent": {"min": 0, "max": 200},
             "outpaint_max_side": {"min": 1024, "max": 8192, "default": 5120},
@@ -616,7 +642,23 @@ def api_meta() -> dict[str, Any]:
         "preset_version": presets.PRESET_VERSION,
         "default_preset": presets.default_preset_id(),
         "edit_presets": presets.public_presets(),
+        "custom_presets": presets.public_custom_presets(),
     }
+
+
+@app.get("/api/presets/config")
+def api_presets_config() -> dict[str, Any]:
+    """全局设置：出厂预设 / 生效预设 / 自定义搭配。"""
+    return presets.preset_config_view()
+
+
+@app.post("/api/presets/config")
+def api_presets_config_save(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """保存预设默认值与自定义搭配（含冲突校验）。"""
+    try:
+        return presets.save_preset_config(payload)
+    except ValueError as exc:
+        raise ApiError(str(exc), code="invalid_preset") from exc
 
 
 # --------------------------------------------------------------------------- 提示词与风格
@@ -869,6 +911,9 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 raise ApiError("outpaint.max_side 必须是整数")
             if not 1024 <= max_side <= 8192:
                 raise ApiError("outpaint.max_side 必须在 1024~8192")
+            limit = int(config.load_config().get("max_side") or 8192)
+            if max_side > limit:
+                raise ApiError(f"outpaint.max_side 不能超过全局 max_side（{limit}）")
 
     panorama = payload.get("panorama")
     if panorama is not None:
@@ -885,6 +930,9 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 raise ApiError("panorama.long_side 必须是整数")
             if not 1024 <= long_side <= 4096:
                 raise ApiError("panorama.long_side 必须在 1024~4096")
+            limit = int(config.load_config().get("max_side") or 4096)
+            if long_side > limit:
+                raise ApiError(f"panorama.long_side 不能超过全局 max_side（{limit}）")
         if panorama.get("wrap") is not None and not isinstance(panorama["wrap"], bool):
             raise ApiError("panorama.wrap 必须是布尔值")
         if panorama.get("seam_blend") is not None:
@@ -954,7 +1002,14 @@ def api_job(job_id: str) -> dict[str, Any]:
     job = get_queue().get(job_id)
     if job is None:
         raise ApiError(f"任务不存在：{job_id}", code="not_found", status=404)
-    return job.to_dict()
+    data = job.to_dict()
+    # 分割任务：蒙版列表放在任务对象顶层（见 docs 的异步模式契约）
+    if isinstance(job.meta.get("masks"), list):
+        data["masks"] = job.meta["masks"]
+        data["segment"] = {
+            key: job.meta.get(key) for key in ("model", "mode", "elapsed_ms")
+        }
+    return data
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -1302,6 +1357,225 @@ def api_image_upscale(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return {"ok": True, "job_id": job.id, "status": job.status, "engine": engine}
 
 
+# --------------------------------------------------------------------------- 主体分割（D13.1）
+
+
+def _segment_room_mb() -> int:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free, _total = torch.cuda.mem_get_info()
+            return int(free / (1024 ** 2))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _ensure_segment_room(need_mb: int) -> None:
+    """分割前腾显存：先放大引擎，再生成引擎；生成任务正在跑时直接报忙。"""
+    need = max(1024, int(need_mb or 4000))
+    if _segment_room_mb() >= need:
+        return
+    try:
+        upscale_manager.get_manager().free(unload=True)
+    except Exception:  # noqa: BLE001
+        pass
+    if _segment_room_mb() >= need:
+        return
+    # 队列单 worker：正在跑的若是生成任务，绝不能抽走它的权重；分割任务自身可以继续。
+    stats = get_queue().stats()
+    running_id = stats.get("running_id")
+    running_job = get_queue().get(running_id) if running_id else None
+    if running_job is not None and running_job.kind != "segment":
+        raise SegmentError(
+            "显存不足：生成任务正在运行，请稍后重试或先释放显存",
+            code="model_busy", status=503)
+    engine = getattr(get_pipeline(), "_engine", None)
+    if engine is not None:
+        try:
+            engine.free(unload=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if _segment_room_mb() < need:
+        raise SegmentError("显存不足，请先释放显存后重试",
+                           code="model_busy", status=503)
+
+
+def _segment_int(payload: dict[str, Any], key: str, default: int,
+                 low: int, high: int) -> int:
+    raw = payload.get(key)
+    if raw in (None, ""):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(f"{key} 必须是整数", code="invalid_field") from exc
+    if not low <= value <= high:
+        raise ApiError(f"{key} 必须在 {low}–{high} 之间", code="invalid_field")
+    return value
+
+
+def _parse_segment_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """解码图片 + 校验坐标/模式/模型；返回同步与异步共用的请求对象。"""
+    raw_image = payload.get("image")
+    if raw_image in (None, "", {}):
+        raise ApiError("缺少 image（data URL 或 /files/ 路径）", code="missing_field")
+    try:
+        data = _decode_image_payload(raw_image)
+        image = imaging.decode_image(data, keep_alpha=False)
+    except Exception as exc:  # noqa: BLE001 - 解码失败统一按 invalid_image
+        raise ApiError("图片无法读取或超出尺寸限制", code="invalid_image",
+                       status=400) from exc
+    width, height = image.size
+    try:
+        segment_maskops.check_image_size(width, height)
+    except SegmentError as exc:
+        raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode not in segment_registry.MODES:
+        raise ApiError("mode 只能是 subject / box / points / text",
+                       code="invalid_field")
+    if mode == "box":
+        try:
+            segment_maskops.validate_box(payload.get("box"), width, height)
+        except SegmentError as exc:
+            raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+        box = payload.get("box")
+        points = None
+        text = ""
+    elif mode == "points":
+        try:
+            segment_maskops.validate_points(payload.get("points"), width, height)
+        except SegmentError as exc:
+            raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+        box = None
+        points = payload.get("points")
+        text = ""
+    elif mode == "text":
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise ApiError("请填写要选取的主体描述", code="invalid_field")
+        box = None
+        points = None
+    else:
+        box = None
+        points = None
+        text = ""
+
+    feather = _segment_int(payload, "feather", 0, 0, 32)
+    max_side = _segment_int(payload, "max_side", 0, 0, segment_maskops.MAX_SIDE)
+    model = str(payload.get("model") or "").strip() or None
+    cfg = config.load_config()
+    try:
+        spec = segment_registry.pick_model(cfg, mode, model)
+    except SegmentError as exc:
+        raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+    return {
+        "image": image,
+        "width": width,
+        "height": height,
+        "mode": mode,
+        "box": box,
+        "points": points,
+        "text": text,
+        "multi": bool(payload.get("multi")),
+        "feather": feather,
+        "max_side": max_side,
+        "model": spec["id"],
+        "vram_mb": int(spec["vram_mb"]),
+    }
+
+
+def _execute_segment(req: dict[str, Any], progress=None) -> dict[str, Any]:
+    """执行一次分割：推理 → 存 PNG 蒙版 → 返回契约结构。"""
+    _ensure_segment_room(req["vram_mb"])
+    result = segment_manager.get_manager().segment(
+        req["image"],
+        model=req["model"],
+        mode=req["mode"],
+        box=req["box"],
+        points=req["points"],
+        text=req["text"],
+        multi=req["multi"],
+        max_side=req["max_side"],
+        progress=progress,
+    )
+    masks: list[dict[str, Any]] = []
+    for item in result["masks"]:
+        png = segment_maskops.rasterize(item["mask"], req["feather"])
+        saved = storage.save_mask(png, prefix=req["mode"])
+        masks.append({
+            "url": saved["url"],
+            "width": req["width"],
+            "height": req["height"],
+            "score": item["score"],
+            "box": item["box"],
+            "area": item["area"],
+        })
+    return {
+        "masks": masks,
+        "model": result["model"],
+        "elapsed_ms": result["elapsed_ms"],
+        "meta": {
+            "mode": req["mode"],
+            "feather": req["feather"],
+            "multi": req["multi"],
+            "max_side": req["max_side"],
+            "source": {"width": req["width"], "height": req["height"]},
+        },
+    }
+
+
+@app.get("/api/image/segment/models")
+def api_segment_models() -> dict[str, Any]:
+    """分割模型清单：目录、候选文件、就绪 / 驻留状态与默认模型。"""
+    manager = segment_manager.get_manager()
+    status = manager.status()
+    data = segment_registry.scan_all(loaded=status.get("loaded") or {})
+    data["status"] = status
+    return data
+
+
+@app.post("/api/image/segment")
+def api_image_segment(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """AI 主体选择：subject / box / points / text；``async=true`` 返回 job_id。"""
+    req = _parse_segment_request(payload)
+    if bool(payload.get("async")):
+        def _run(job: jobs.Job) -> None:
+            def _progress(value: float, label: str) -> None:
+                job.set_progress(int(max(0.0, min(1.0, value)) * 1000), 1000, label)
+
+            job.set_progress(50, 1000, "开始分割")
+            result = _execute_segment(req, _progress)
+            job.meta.update({
+                "masks": result["masks"],
+                "model": result["model"],
+                "mode": req["mode"],
+                "elapsed_ms": result["elapsed_ms"],
+            })
+            job.set_progress(1000, 1000, "完成")
+
+        params = {
+            "model": req["model"], "mode": req["mode"], "multi": req["multi"],
+            "feather": req["feather"], "box": req["box"], "points": req["points"],
+            "text": req["text"],
+        }
+        job = get_queue().submit(
+            "segment",
+            _run,
+            prompt=req["text"] or f"主体分割（{req['mode']}）",
+            params=params,
+            meta={"mode": req["mode"], "model": req["model"]},
+        )
+        return {"job_id": job.id}
+    try:
+        return _execute_segment(req)
+    except SegmentError as exc:
+        raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+
+
 # --------------------------------------------------------------------------- 水印 / 动图
 
 #: 视频上传上限（给 GIF 用，不需要更大）
@@ -1556,12 +1830,17 @@ def api_media_gif_split(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @app.post("/api/engine/free")
 def api_engine_free(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """释放显存：unload=False 只清缓存，True 卸载模型（生成引擎 + 放大引擎）。"""
+    """释放显存：unload=False 只清缓存，True 卸载模型（生成引擎 + 放大引擎 + 分割引擎）。"""
     unload = bool(payload.get("unload"))
     freed = []
     try:
         upscale_manager.get_manager().free(unload=unload)
         freed.append("upscale")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        segment_manager.get_manager().free(unload=unload)
+        freed.append("segment")
     except Exception:  # noqa: BLE001
         pass
     pipe = get_pipeline()
@@ -1695,12 +1974,18 @@ def api_settings(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
                 current[key] = raw[key]
         patch["upscale"] = current
 
+    if "segment" in payload:
+        patch["segment"] = _apply_segment_patch(cfg.get("segment") or {},
+                                                payload.get("segment"))
+
     if not patch:
         raise ApiError("没有可修改的设置项", code="missing_field")
 
     updated = config.update_config(patch)
     if "upscale" in patch:
         upscale_manager.get_manager().free(unload=True)
+    if "segment" in patch:
+        segment_manager.get_manager().free(unload=True)
     if any(key in patch for key in ("ollama_url", "ollama_model", "llm_profiles", "llm_active")):
         _LLM_CACHE.clear()
         _LLM_BREAKER.clear()
@@ -1722,6 +2007,8 @@ def api_models_scan() -> dict[str, Any]:
     """按当前配置重新扫描所有模型目录（设置页的「重新扫描」）。"""
     data = config.scan_summary()
     data["upscale"] = upscale_registry.scan_all()
+    status = segment_manager.get_manager().status()
+    data["segment"] = segment_registry.scan_all(loaded=status.get("loaded") or {})
     return data
 
 
@@ -1846,8 +2133,41 @@ def api_ollama_test(payload: dict[str, Any] = Body(default={})) -> dict[str, Any
 
 
 @app.post("/api/engine/warmup")
-def api_engine_warmup() -> dict[str, Any]:
-    """预加载默认模型（首次出图前跑一次，避免请求里等 20~60 秒）。"""
+def api_engine_warmup(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """预加载默认模型（首次出图前跑一次，避免请求里等 20~60 秒）。
+
+    ``{"segment": true}`` 时只预热默认分割模型（供修图工作台的「主体」工具），
+    不加载文生图权重，避免两套权重互相挤显存。
+    """
+    warm_segment = payload.get("segment") if isinstance(payload, dict) else None
+    if warm_segment:
+        cfg = config.load_config()
+        requested = warm_segment if isinstance(warm_segment, str) else None
+        started = time.time()
+        try:
+            # 指定模型时按它支持的第一个模式预热（birefnet 只支持 subject）
+            mode = "box"
+            if requested:
+                spec_hint = next(
+                    (item for item in segment_registry.MODEL_SPECS
+                     if item["id"] == requested), None)
+                if spec_hint:
+                    mode = spec_hint["modes"][0]
+            spec = segment_registry.pick_model(cfg, mode, requested or None)
+            _ensure_segment_room(int(spec["vram_mb"]))
+            engine = segment_manager.get_manager().get(spec, cfg)
+            engine.load()
+        except SegmentError as exc:
+            raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
+        return {
+            "ok": True,
+            "segment": {
+                "model": spec["id"],
+                "load_s": round(time.time() - started, 2),
+                "loaded": segment_manager.get_manager().status().get("loaded"),
+            },
+        }
+
     pipe = get_pipeline()
     engine = pipe.engine
     cfg = config.load_config()

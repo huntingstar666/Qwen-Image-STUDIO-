@@ -15,37 +15,40 @@ import {
 
 const RANGE_MODES = [
   { value: 'downscale_only', label: '仅缩小' },
-  { value: 'range', label: '缩小 + 放大' },
+  { value: 'clamp_range', label: '缩小 + 放大' },
 ];
+
+// showIf 的签名是 (字段当前值, 上下文)，方案判断只关心上下文。
+const isB = (_value, ctx) => ctx.scheme === 'b';
+const isA = (_value, ctx) => ctx.scheme === 'a';
+const notNative = (_value, ctx) => ctx.scheme !== 'native';
 
 const GROUPS = [
   {
     id: 'crop',
-    title: '裁切与上下文',
-    note: '只把遮罩附近送去采样；上下文系数 / 像素决定带多少周边画面。',
+    title: '裁切与上下文（方案 B）',
+    note: '只把遮罩附近送去采样；上下左右扩系数决定带多少周边画面。',
     fields: [
-      { key: 'local.expand_top', label: '上扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.3, unit: '×', hint: '遮罩包围盒向上扩展的倍数（乘遮罩短边）。' },
-      { key: 'local.expand_bottom', label: '下扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向下扩展的倍数。人物/脚部建议更大。' },
-      { key: 'local.expand_left', label: '左扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向左扩展的倍数。' },
-      { key: 'local.expand_right', label: '右扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向右扩展的倍数。' },
-      { key: 'local.fills', label: '填充闭合选区', type: 'switch', fallback: false, hint: '把描边内部一并填满，避免只移除一圈边。元素移除必须开。' },
-      { key: 'local.crop_min_side', label: '裁块下限', type: 'select', fallback: 768, numeric: true, options: [0, 512, 768, 1024, 1536], unit: 'px', hint: '裁块短边至少这么大；扩图档位是 1024。' },
-      { key: 'local.crop_max_side', label: '裁块上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072, 4096], unit: 'px', hint: '裁块长边上限；越大越贵，超过 2048 收益递减。' },
-      { key: 'local.context_factor', label: '上下文系数', type: 'number', min: 0.5, max: 4, step: 0.1, fallback: 1.5, unit: '×', hint: '整画布/固定上下文时的外扩倍数（区域裁剪不生效）。' },
-      { key: 'local.context_pixels', label: '上下文像素', type: 'number', min: 0, max: 512, step: 16, fallback: 96, unit: 'px', hint: '固定外扩像素；不希望裁块太小贴边时调大。' },
+      { key: 'local.expand_top', label: '上扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.3, unit: '×', hint: '遮罩包围盒向上扩展的倍数（乘遮罩短边）。', showIf: isB },
+      { key: 'local.expand_bottom', label: '下扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向下扩展的倍数。人物/脚部建议更大。', showIf: isB },
+      { key: 'local.expand_left', label: '左扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向左扩展的倍数。', showIf: isB },
+      { key: 'local.expand_right', label: '右扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向右扩展的倍数。', showIf: isB },
+      { key: 'local.fills', label: '填充闭合选区', type: 'switch', fallback: false, hint: '把描边内部一并填满，避免只移除一圈边。元素移除必须开。', showIf: isB, disabled: (ctx) => ctx.task === 'remove' },
+      { key: 'local.crop_min_side', label: '裁块下限', type: 'select', fallback: 768, numeric: true, options: [0, 512, 768, 1024, 1536], unit: 'px', hint: '裁块短边至少这么大；扩图档位是 1024。', showIf: isB },
+      { key: 'local.crop_max_side', label: '裁块上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072, 4096], unit: 'px', hint: '裁块长边上限；越大越贵，超过 2048 收益递减。', showIf: isB },
     ],
   },
   {
     id: 'seam',
     title: '接缝与羽化',
-    note: '接缝按遮罩短边百分比扩展，羽化向遮罩内收，绝不向遮罩外扩。',
+    note: '方案 B 用百分比接缝；方案 A 用像素羽化。当前方案不用的参数会自动隐藏。',
     fields: [
-      { key: 'local.expand_pct', label: '接缝扩展', type: 'range', min: 0, max: 20, step: 0.5, fallback: 4, unit: '%', hint: '还原时把写入区向外扩的百分比；0 = 严格按遮罩。' },
-      { key: 'local.feather_pct', label: '接缝羽化', type: 'range', min: 0, max: 30, step: 0.5, fallback: 5, unit: '%', hint: '扩展区的过渡带宽度（占遮罩短边）。' },
-      { key: 'local.feather', label: '羽化像素', type: 'number', min: 0, max: 256, step: 4, fallback: 32, unit: 'px', hint: '合成时遮罩边缘向内羽化的像素数；0 会被当成 32。' },
-      { key: 'local.mask_expand', label: '遮罩外扩', type: 'number', min: 0, max: 256, step: 4, fallback: 0, unit: 'px', hint: '把可写入区域向外扩 N 像素；0 = 严格只改选区。' },
-      { key: 'local.blend_pixels', label: '过渡带宽度', type: 'number', min: 0, max: 128, step: 4, fallback: 24, unit: 'px', hint: '整画布/原生合成的边界过渡带。' },
-      { key: 'local.dither', label: '确定性抖动', type: 'switch', fallback: true, hint: '消除 8bit 舍入造成的色阶断层，幅度 < 1/255，肉眼不可见。' },
+      { key: 'local.expand_pct', label: '接缝扩展', type: 'range', min: 0, max: 20, step: 0.5, fallback: 4, unit: '%', hint: '方案 B：还原时把写入区向外扩的百分比；0 = 严格按遮罩。', showIf: isB },
+      { key: 'local.feather_pct', label: '接缝羽化', type: 'range', min: 0, max: 30, step: 0.5, fallback: 5, unit: '%', hint: '方案 B：扩展区的过渡带宽度（占遮罩短边）。', showIf: isB },
+      { key: 'local.blend_pixels', label: '过渡带宽度', type: 'number', min: 0, max: 128, step: 4, fallback: 24, unit: 'px', hint: '方案 B 贴回裁切结果时的边界过渡带。', showIf: isB },
+      { key: 'local.feather', label: '羽化像素', type: 'number', min: 0, max: 256, step: 4, fallback: 32, unit: 'px', hint: '方案 A：合成时遮罩边缘向内羽化的像素数；0 = 不羽化。', showIf: isA },
+      { key: 'local.mask_expand', label: '遮罩外扩', type: 'number', min: 0, max: 256, step: 4, fallback: 0, unit: 'px', hint: '方案 A：把可写入区域向外扩 N 像素；0 = 严格只改选区。', showIf: isA },
+      { key: 'local.dither', label: '确定性抖动', type: 'switch', fallback: true, hint: '消除 8bit 舍入造成的色阶断层，幅度 < 1/255，肉眼不可见。', showIf: notNative },
     ],
   },
   {
@@ -76,6 +79,7 @@ const GROUPS = [
           { value: 'alpha', label: '仅按 alpha' },
         ],
         hint: '低频增益只修正亮度/色温；仅 alpha 只做透明度混合。',
+        showIf: notNative,
       },
     ],
   },
@@ -84,19 +88,11 @@ const GROUPS = [
     title: '色彩还原',
     note: '只在遮罩内与过渡带生效；遮罩外逐像素取原图，不受任何校色影响。',
     fields: [
-      { key: 'local.color_match', label: '过渡带校色', type: 'switch', fallback: true, hint: '按过渡带估算 gain/offset，消除接缝色差。' },
-      { key: 'local.color_strength', label: '过渡带强度', type: 'range', min: 0, max: 1, step: 0.01, fallback: 0.6, hint: '0 = 不校色；1 = 完全按估算值修正。' },
+      { key: 'local.color_match', label: '颜色匹配（含原生整图校色）', type: 'switch', fallback: true, hint: '方案 A/B：按过渡带估算 gain/offset；原生：整图锚区校色。关闭后不做任何颜色修正。' },
+      { key: 'local.color_strength', label: '过渡带强度', type: 'range', min: 0, max: 1, step: 0.01, fallback: 0.6, hint: '0 = 不校色；1 = 完全按估算值修正。', showIf: notNative },
       { key: 'local.color_restore', label: '区域色彩还原', type: 'switch', fallback: true, hint: '用未变化像素逐通道估算增益，孤海 CropRestore 同款算法。' },
       { key: 'local.color_restore_strength', label: '还原强度', type: 'range', min: 0, max: 1, step: 0.01, fallback: 1, hint: '1 = 完全还原；0 = 只贴图不校色。' },
       { key: 'local.hint', label: '提示图', type: 'readonly', hint: '训练约定：移除=绿色 40% 叠加，扩图=灰边标记，由任务自动决定。' },
-    ],
-  },
-  {
-    id: 'consistency',
-    title: '一致性 LoRA',
-    note: '抑制整体漂移；强度在「采样与 LoRA」区调节。',
-    fields: [
-      { key: 'local.consistency', label: '启用一致性 LoRA', type: 'switch', fallback: true, hint: '关掉后局部改动更自由，但人物/背景更容易变。' },
     ],
   },
   {
@@ -107,7 +103,7 @@ const GROUPS = [
       { key: 'preprocess.enabled', label: '启用预处理', type: 'switch', fallback: true, hint: '关掉后 4K 图更慢，可能爆显存。' },
       { key: 'preprocess.max_side', label: '长边上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072], unit: 'px', hint: '超过就等比缩小；越大越清晰也越慢。' },
       { key: 'preprocess.mode', label: '缩放范围', type: 'select', fallback: 'downscale_only', options: RANGE_MODES, hint: '默认只缩小；「缩小 + 放大」会把小图也拉到长边区间。' },
-      { key: 'preprocess.min_side', label: '长边下限', type: 'number', min: 256, max: 2048, step: 32, fallback: 768, unit: 'px', hint: '仅在「缩小 + 放大」模式生效。', showIf: (value) => value === 'range' },
+      { key: 'preprocess.min_side', label: '长边下限', type: 'number', min: 256, max: 2048, step: 32, fallback: 768, unit: 'px', hint: '仅在「缩小 + 放大」模式生效。', showIf: (value) => value === 'clamp_range' },
       { key: 'preprocess.multiple', label: '对齐倍数', type: 'readonly', hint: '训练约定固定 32，不可改。' },
     ],
   },
@@ -116,11 +112,11 @@ const GROUPS = [
     title: '扩图',
     note: '百分比相对源图宽 / 高计算；至少一条边 > 0 才能提交，32 对齐由后端保证。',
     fields: [
-      { key: 'outpaint.top', label: '上扩', type: 'number', min: 0, max: 300, step: 1, fallback: 0, unit: '%', hint: '向上外补占源图高度的百分比。' },
-      { key: 'outpaint.bottom', label: '下扩', type: 'number', min: 0, max: 300, step: 1, fallback: 0, unit: '%', hint: '向下外补占源图高度的百分比。' },
-      { key: 'outpaint.left', label: '左扩', type: 'number', min: 0, max: 300, step: 1, fallback: 0, unit: '%', hint: '向左外补占源图宽度的百分比。' },
-      { key: 'outpaint.right', label: '右扩', type: 'number', min: 0, max: 300, step: 1, fallback: 0, unit: '%', hint: '向右外补占源图宽度的百分比。' },
-      { key: 'outpaint.max_side', label: '最大输出长边', type: 'select', fallback: 5120, numeric: true, options: [2048, 3072, 4096, 5120, 6144, 8192], unit: 'px', hint: '硬上限 8192，超限后端直接拒绝，不静默夹取。' },
+      { key: 'outpaint.top', label: '上扩', type: 'number', min: 0, max: 200, step: 1, fallback: 0, unit: '%', hint: '向上外补占源图高度的百分比（0~200）。' },
+      { key: 'outpaint.bottom', label: '下扩', type: 'number', min: 0, max: 200, step: 1, fallback: 0, unit: '%', hint: '向下外补占源图高度的百分比（0~200）。' },
+      { key: 'outpaint.left', label: '左扩', type: 'number', min: 0, max: 200, step: 1, fallback: 0, unit: '%', hint: '向左外补占源图宽度的百分比（0~200）。' },
+      { key: 'outpaint.right', label: '右扩', type: 'number', min: 0, max: 200, step: 1, fallback: 0, unit: '%', hint: '向右外补占源图宽度的百分比（0~200）。' },
+      { key: 'outpaint.max_side', label: '最大输出长边', type: 'select', fallback: 4096, numeric: true, options: [2048, 3072, 4096], unit: 'px', hint: '与后端全局 max_side（默认 4096）一致，超限会被拒绝。' },
     ],
   },
 ];
@@ -160,11 +156,12 @@ const HINT_LABELS = {
   green: '绿色 40% 叠加（移除）',
 };
 
-function renderControl(field, value) {
+function renderControl(field, value, disabled = false) {
   const id = formLabel(field.key);
+  const off = disabled ? ' disabled' : '';
   if (field.type === 'switch') {
     return `<label class="adv-check-line" for="${id}">
-      <input type="checkbox" id="${id}" data-key="${field.key}" ${value ? 'checked' : ''} />
+      <input type="checkbox" id="${id}" data-key="${field.key}" ${value ? 'checked' : ''}${off} />
       <span class="adv-name">${escapeHtml(field.label)}</span>
       ${field.unit ? `<span class="adv-unit">${escapeHtml(field.unit)}</span>` : ''}
     </label>`;
@@ -178,14 +175,14 @@ function renderControl(field, value) {
       })
       .join('');
     return `<div class="adv-control">
-      <select class="select" id="${id}" data-key="${field.key}">${options}</select>
+      <select class="select" id="${id}" data-key="${field.key}"${off}>${options}</select>
       ${field.unit ? `<span class="adv-suffix">${escapeHtml(field.unit)}</span>` : ''}
     </div>`;
   }
   if (field.type === 'range') {
     return `<div class="adv-range">
       <input type="range" id="${id}" data-key="${field.key}" min="${field.min}" max="${field.max}"
-        step="${field.step}" value="${value}" />
+        step="${field.step}" value="${value}"${off} />
       <span class="mono adv-range-val" data-val="${field.key}">${escapeHtml(display(field, value))}${escapeHtml(field.unit || '')}</span>
     </div>`;
   }
@@ -194,20 +191,21 @@ function renderControl(field, value) {
   }
   return `<div class="adv-control">
     <input class="input mono" id="${id}" type="number" data-key="${field.key}" min="${field.min}"
-      max="${field.max}" step="${field.step}" value="${value}" />
+      max="${field.max}" step="${field.step}" value="${value}"${off} />
     ${field.unit ? `<span class="adv-suffix">${escapeHtml(field.unit)}</span>` : ''}
   </div>`;
 }
 
-function renderField(field, value) {
-  if (field.showIf && !field.showIf(value)) return '';
+function renderField(field, value, ctx) {
+  if (field.showIf && !field.showIf(value, ctx)) return '';
+  const disabled = Boolean(field.disabled?.(ctx));
   const head =
     field.type === 'switch'
       ? ''
       : `<div class="adv-head"><span class="adv-name">${escapeHtml(field.label)}</span></div>`;
-  return `<div class="adv-row" data-row="${field.key}" title="${escapeHtml(field.hint)}">
+  return `<div class="adv-row${disabled ? ' is-disabled' : ''}" data-row="${field.key}" title="${escapeHtml(field.hint)}">
     ${head}
-    ${renderControl(field, value)}
+    ${renderControl(field, value, disabled)}
     <button class="adv-reset" type="button" data-reset="${field.key}" title="恢复预设值" hidden>↺</button>
     <div class="adv-hint">${escapeHtml(field.hint)}</div>
   </div>`;
@@ -229,6 +227,16 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
     return effectiveValue(getPreset(), getOverrides(), field.key, field.fallback);
   }
 
+  /** 当前生效的合成方案 / 任务，用于只显示真正会生效的参数。 */
+  function contextInfo() {
+    const preset = getPreset();
+    const overrides = getOverrides();
+    return {
+      scheme: String(effectiveValue(preset, overrides, 'local.scheme', 'a')),
+      task: String(effectiveValue(preset, overrides, 'task.mode', 'edit')),
+    };
+  }
+
   function allKeys(group) {
     return group.fields.map((field) => field.key);
   }
@@ -241,6 +249,7 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
       return;
     }
     host.classList.remove('adv-empty');
+    const ctx = contextInfo();
     const opened = new Set(
       [...host.querySelectorAll('details[data-group][open]')].map((node) => node.dataset.group),
     );
@@ -248,8 +257,9 @@ export function mountAdvanced(host, { getPreset, getOverrides, apply, onChange }
     host.innerHTML =
       GROUPS.map((group) => {
         const body = group.fields
-          .map((field) => renderField(field, valueOf(field)))
+          .map((field) => renderField(field, valueOf(field), ctx))
           .join('');
+        if (!body.trim()) return '';
         return `<details class="adv-group" data-group="${group.id}" ${keep.has(group.id) ? 'open' : ''}>
           <summary class="adv-group-head">
             <span class="adv-group-title">${escapeHtml(group.title)}</span>

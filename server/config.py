@@ -23,6 +23,7 @@ UPLOAD_DIR = os.path.join(STORAGE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(STORAGE_DIR, "outputs")
 THUMB_DIR = os.path.join(STORAGE_DIR, "thumbnails")
 EDITOR_DIR = os.path.join(STORAGE_DIR, "editor")
+MASK_DIR = os.path.join(STORAGE_DIR, "masks")
 WEB_DIR = os.path.join(ROOT, "web")
 DATA_DIR = os.path.join(ROOT, "data")
 CONFIG_PATH = os.path.join(ROOT, "config.json")
@@ -188,6 +189,23 @@ DEFAULTS: dict[str, Any] = {
         "threshold": 0.35,
         "character_threshold": 0.85,
     },
+    # AI 主体分割（修图工作台「主体」工具）。目录留空时按 ComfyUI 约定推断：
+    #   sam3      → model_root/checkpoints（SAM 3.1 multiplex，点 / 框 / 文字）
+    #   birefnet  → model_root/background_removal（无提示显著性主体）
+    "segment": {
+        "dirs": {"sam3": "", "birefnet": ""},
+        "sam3": {"model": "sam3.1_multiplex_fp16.safetensors",
+                 "threshold": 0.5, "refine_iterations": 2},
+        "birefnet": {"model": "birefnet.safetensors"},
+        # 空 = 自动：subject 用 BiRefNet，box/points/text 用 SAM3.1
+        "default_model": "",
+        "max_side": 2048,
+        "max_candidates": 8,
+        # 冷启动（首次加载 SAM 3.1 + 文本编码器）实测可达 30~45s，
+        # 默认放宽到 60s；热态仍在 1.5s 内。前端可随时调小。
+        "timeout_s": 60,
+        "idle_unload_minutes": 10,
+    },
 }
 
 #: Turbo 加速预设：用户只选方案，调度 / 加速 LoRA / 底模全部由预设决定。
@@ -337,7 +355,7 @@ _ENV_MAP = {
 
 def ensure_dirs() -> None:
     """创建运行期需要的所有目录。"""
-    for d in (STORAGE_DIR, UPLOAD_DIR, OUTPUT_DIR, THUMB_DIR, EDITOR_DIR):
+    for d in (STORAGE_DIR, UPLOAD_DIR, OUTPUT_DIR, THUMB_DIR, EDITOR_DIR, MASK_DIR):
         os.makedirs(d, exist_ok=True)
 
 

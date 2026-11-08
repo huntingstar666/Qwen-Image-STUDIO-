@@ -27,13 +27,14 @@ import {
   panoramaPlan,
 } from './payload.js';
 import {
+  applyProtection,
   defaultPresetId,
   effectiveValue,
   findPreset,
   loadPresets,
   modifiedKeys,
-  normalizeProtection,
   presetTaskMode,
+  protectionOf,
   resetDefinedOverrides,
   resolvePresetForMask,
   withOverride,
@@ -318,7 +319,6 @@ export function mountAiPanel(host, ctx) {
     presetId: String(editSettings.preset || ''),
     appliedPreset: '',
     overrides: { ...(editSettings.overrides || {}) },
-    protection: normalizeProtection(editSettings.protection),
     consistencyOn: editSettings.consistency !== false,
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
     currentHistoryId: '',
@@ -472,13 +472,12 @@ export function mountAiPanel(host, ctx) {
     onClear: () => void clearHistory(),
   });
 
-  /** 预设 / 覆盖项 / 保护开关 / 一致性强度跨页共享，写回同一份 settings.edit。 */
+  /** 预设 / 覆盖项 / 一致性强度跨页共享，写回同一份 settings.edit。 */
   function persistEdit() {
     patchSettings({
       edit: {
         preset: state.presetId,
         overrides: state.overrides,
-        protection: state.protection,
         consistency: state.consistencyOn,
         consistencyStrength: state.consistencyStrength,
       },
@@ -520,10 +519,14 @@ export function mountAiPanel(host, ctx) {
   });
 
   const guards = mountGuards(refs.guards, {
-    value: state.protection,
+    // 开关值来自预设生效值（唯一事实源），改动写回 overrides
+    value: protectionOf(currentPreset(), state.overrides),
     onChange(next) {
-      state.protection = next;
+      state.overrides = applyProtection(currentPreset(), state.overrides || {}, next);
       persistEdit();
+      renderPresets();
+      advanced.refresh();
+      renderMeta();
     },
   });
 
@@ -620,6 +623,7 @@ export function mountAiPanel(host, ctx) {
       .map((item) => ({ name: String(item.name), strength: Number(item.strength) || 1 }));
     renderCustomLoras();
     state.appliedPreset = preset.id;
+    guards.sync(protectionOf(preset, state.overrides));
     persistEdit();
     notifyPersist();
     syncSamplingInfo();
@@ -740,6 +744,7 @@ export function mountAiPanel(host, ctx) {
         renderCustomLoras();
         applyPresetTurbo();
       }
+      guards.sync(protectionOf(currentPreset(), state.overrides));
       renderPresets();
       advanced.refresh();
       renderMeta();
@@ -756,6 +761,7 @@ export function mountAiPanel(host, ctx) {
     apply(next) {
       state.overrides = next;
       persistEdit();
+      guards.sync(protectionOf(currentPreset(), state.overrides));
       renderPresets();
     },
     onChange: renderMeta,
@@ -768,6 +774,7 @@ export function mountAiPanel(host, ctx) {
     if (JSON.stringify(nextOverrides) !== JSON.stringify(state.overrides)) {
       state.overrides = { ...nextOverrides };
       advanced.refresh();
+      guards.sync(protectionOf(currentPreset(), state.overrides));
       renderPresets();
       renderMeta();
     }
@@ -787,16 +794,9 @@ export function mountAiPanel(host, ctx) {
       else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
       renderPresets();
       advanced.refresh();
+      guards.sync(protectionOf(currentPreset(), state.overrides));
       renderMeta();
       syncGuardNote();
-    }
-    const nextProtection = normalizeProtection(edit.protection);
-    if (
-      nextProtection.color !== state.protection.color ||
-      nextProtection.zeroShift !== state.protection.zeroShift
-    ) {
-      state.protection = nextProtection;
-      guards.sync(nextProtection);
     }
     if (edit.consistency !== undefined && Boolean(edit.consistency) !== state.consistencyOn) {
       state.consistencyOn = Boolean(edit.consistency);
@@ -1287,7 +1287,6 @@ export function mountAiPanel(host, ctx) {
       maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
       preset: resolved.id,
       overrides: state.overrides,
-      protection: state.protection,
       hasMask: source.hasMask,
       coverage: source.coverage || 0,
       taskExplicit: explicitTask,
@@ -1864,8 +1863,7 @@ export function mountAiPanel(host, ctx) {
       if (persist.presetId) state.presetId = persist.presetId;
       state.appliedPreset = String(persist.appliedPreset || '');
       state.overrides = { ...(persist.overrides || {}) };
-      state.protection = normalizeProtection(persist.protection);
-      guards.sync(state.protection);
+      guards.sync(protectionOf(currentPreset(), state.overrides));
       state.consistencyOn = persist.consistencyOn !== false;
       refs.consistency.checked = state.consistencyOn;
       refs.strength.disabled = !state.consistencyOn;
@@ -1924,7 +1922,6 @@ export function mountAiPanel(host, ctx) {
         })),
         presetId: state.presetId,
         overrides: { ...state.overrides },
-        protection: { ...state.protection },
         customLoras: state.customLoras.map((item) => ({ ...item })),
         task: refs.task.value,
         sizeMode: refs.sizeMode.value,

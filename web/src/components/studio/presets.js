@@ -27,6 +27,30 @@ export function normalizeProtection(value) {
   };
 }
 
+/**
+ * 「本次保护」开关的**唯一事实源**：直接由预设生效值推导。
+ *
+ * 以前这两个开关另存一份 ``protection``，导致自定义预设里
+ * ``local.color_match=false`` / ``zero_shift.enabled=false`` 时界面仍显示开启；
+ * 现在只读预设 + 覆盖项，不再有第二套状态。
+ */
+export function protectionOf(preset, overrides) {
+  return {
+    color: effectiveValue(preset, overrides, 'local.color_match', true) !== false
+      && effectiveValue(preset, overrides, 'local.color_restore', true) !== false,
+    zeroShift: effectiveValue(preset, overrides, 'zero_shift.enabled', true) !== false,
+  };
+}
+
+/** 点「本次保护」开关时写回覆盖项（与高级参数同一套 overrides）。 */
+export function applyProtection(preset, overrides, next) {
+  const state = normalizeProtection(next);
+  let out = withOverride(preset, overrides, 'local.color_match', state.color);
+  out = withOverride(preset, out, 'local.color_restore', state.color);
+  out = withOverride(preset, out, 'zero_shift.enabled', state.zeroShift);
+  return out;
+}
+
 /** 拉取并缓存预设摘要；失败时清空缓存，下次再试。 */
 export function loadPresets() {
   if (!cache) {

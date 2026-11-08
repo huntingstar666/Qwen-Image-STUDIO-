@@ -87,11 +87,9 @@ const GROUPS = [
   {
     id: 'color',
     title: '色彩还原',
-    note: '只在遮罩内与过渡带生效；遮罩外逐像素取原图，不受任何校色影响。',
+    note: '只在遮罩内与过渡带生效；遮罩外逐像素取原图。总开关在「本次保护」里（颜色匹配 + 区域还原一起开关）。',
     fields: [
-      { key: 'local.color_match', label: '颜色匹配（含原生整图校色）', type: 'switch', fallback: true, hint: '方案 A/B：按过渡带估算 gain/offset；原生：整图锚区校色。关闭后不做任何颜色修正。' },
       { key: 'local.color_strength', label: '过渡带强度', type: 'range', min: 0, max: 1, step: 0.01, fallback: 0.6, hint: '0 = 不校色；1 = 完全按估算值修正。', showIf: notNative },
-      { key: 'local.color_restore', label: '区域色彩还原', type: 'switch', fallback: true, hint: '用未变化像素逐通道估算增益，孤海 CropRestore 同款算法。' },
       { key: 'local.color_restore_strength', label: '还原强度', type: 'range', min: 0, max: 1, step: 0.01, fallback: 1, hint: '1 = 完全还原；0 = 只贴图不校色。' },
       { key: 'local.hint', label: '提示图', type: 'readonly', hint: '训练约定：移除=绿色 40% 叠加，扩图=灰边标记，由任务自动决定。' },
     ],

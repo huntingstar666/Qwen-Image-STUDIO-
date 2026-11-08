@@ -1,8 +1,9 @@
 /**
  * 「本次保护」两开关（图片精修 / 图生图共用）。
  *
- * 色彩校准与零像素偏移都不属于预设：预设不改变用户的显式选择，
- * 刷新 / 切预设都保持当前状态（默认都开，可关，关闭后结果卡片要如实回显）。
+ * 这两个开关**不是**独立状态：显示值由预设生效值（`local.color_match` /
+ * `local.color_restore` / `zero_shift.enabled`）推导，用户改动写回同一条覆盖项。
+ * 早期版本另存了一份 `protection`，导致自定义预设关掉校色后界面仍显示开启。
  */
 
 import { normalizeProtection } from './presets.js';

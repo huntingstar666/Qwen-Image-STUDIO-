@@ -41,7 +41,6 @@ const DEFAULT_EDIT = {
   // 上一次真正套用默认值的预设；用于区分"页面临时修改"和"切了预设"。
   appliedPreset: '',
   overrides: {},
-  protection: { color: true, zeroShift: true },
   // 旧字段（羽化/外扩/校色…）已迁移到 overrides 的一次性标记
   presetMigrated: false,
   // 预设参数迁移版本（一致性强度 / 预设默认跟随）

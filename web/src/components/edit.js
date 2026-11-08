@@ -29,13 +29,14 @@ import { consumeHandoff } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
 import { escapeHtml, fmtCoverage, fmtNum, loadImage, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
 import {
+  applyProtection,
   defaultPresetId,
   effectiveValue,
   findPreset,
   loadPresets,
   modifiedKeys,
-  normalizeProtection,
   presetTaskMode,
+  protectionOf,
   resetDefinedOverrides,
   resolvePresetForMask,
   withOverride,
@@ -1602,11 +1603,14 @@ export function createEditPage(host) {
     return effectiveValue(currentPreset(), edit.overrides || {}, key, fallback);
   }
 
-  mountGuards(refs.guardsHost, {
-    value: edit.protection,
+  const guards = mountGuards(refs.guardsHost, {
+    // 开关显示值由预设生效值推导（唯一事实源），改动写回 overrides
+    value: protectionOf(currentPreset(), edit.overrides || {}),
     onChange(next) {
-      edit.protection = next;
-      patchSettings({ edit: { protection: next } });
+      edit.overrides = applyProtection(currentPreset(), edit.overrides || {}, next);
+      patchSettings({ edit: { overrides: edit.overrides } });
+      advanced.refresh();
+      renderPresets();
       syncGuardNote();
     },
   });
@@ -1626,7 +1630,9 @@ export function createEditPage(host) {
       edit.overrides = next;
       patchSettings({ edit: { overrides: next } });
       syncLocalControls();
+      guards.sync(protectionOf(currentPreset(), edit.overrides || {}));
       renderPresets();
+      syncGuardNote();
     },
     onChange() {
       renderPresets();
@@ -1812,6 +1818,8 @@ export function createEditPage(host) {
     renderConsistency();
     renderLoras();
     syncLocalControls();
+    guards.sync(protectionOf(preset, edit.overrides || {}));
+    syncGuardNote();
     renderCustomPick();
     renderTaskMode();
   }
@@ -1837,7 +1845,7 @@ export function createEditPage(host) {
   }
 
   function syncGuardNote() {
-    const protection = normalizeProtection(edit.protection);
+    const protection = protectionOf(currentPreset(), edit.overrides || {});
     const notes = [];
     const resolved = currentPresetId();
     if (resolved.degraded) {
@@ -2267,6 +2275,8 @@ export function createEditPage(host) {
     } else {
       // 同一个预设：保留页面临时值，只回显。
       syncLocalControls();
+      guards.sync(protectionOf(currentPreset(), edit.overrides || {}));
+      syncGuardNote();
       renderConsistency();
       renderLoras();
       renderCustomPick();
@@ -2433,15 +2443,8 @@ export function createEditPage(host) {
       const localExtra = { ...(extra.local || {}) };
       // 局部编辑开关是页面上的显式选择：必须回传，否则预设里的 local.enabled=true 会把它盖掉
       localExtra.enabled = localEnabled;
-      const protection = normalizeProtection(edit.protection);
-      // 保护开关关闭时显式落字段（B2/B3）
-      if (!protection.color) {
-        localExtra.color_match = false;
-        localExtra.color_restore = false;
-      }
-      if (!protection.zeroShift) {
-        extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };
-      }
+      // 色彩校准 / 零偏移已经通过 overrides 里的 local.color_match / zero_shift.enabled 下发，
+      // 不再另算一份 protection（两套状态会让界面与预设打架）。
       // 任务训练约定优先于预设文案
       if (taskMode === 'remove') {
         localExtra.fills = true;
@@ -2501,17 +2504,20 @@ export function createEditPage(host) {
         if (loraMatch && strengthMatch) delete payload.consistency_lora;
       }
     } else {
-      // 旧参数集：不带 preset 时保持原行为
+      // 旧参数集：不带 preset 时保持原行为；保护开关仍读同一份覆盖项
+      const guard = protectionOf(null, edit.overrides || {});
       payload.local = {
         enabled: localEnabled,
         scheme: ['a', 'b', 'auto', 'native'].includes(String(edit.scheme)) ? edit.scheme : 'a',
         feather: Math.round(Number(edit.feather) || 0),
-        color_match: edit.colorMatch !== false,
+        color_match: edit.colorMatch !== false && guard.color,
+        color_restore: guard.color,
         color_strength: Number(edit.colorStrength),
         mask_expand: Math.round(Number(edit.maskExpand) || 0),
         blend_pixels: Math.round(Number(edit.blendPixels) || 0),
         consistency: consistencyOn,
       };
+      if (!guard.zeroShift) payload.zero_shift = { enabled: false };
       if (taskMode === 'remove') {
         payload.local.fills = true;
         payload.local.hint = 'green_overlay';

@@ -176,7 +176,6 @@ export function buildEditPayload({
 
   const presetId = String(settings.preset || '').trim();
   const overrides = settings.overrides && typeof settings.overrides === 'object' ? settings.overrides : {};
-  const protection = settings.protection || {};
 
   const loraList = [];
   const taskLora = loras.taskLora || null;
@@ -277,18 +276,12 @@ export function buildEditPayload({
     localExtra.fills = false;
     localExtra.hint = 'gray_fill';
   }
-  // 保护开关只在关闭时显式落字段；默认开由预设提供。
-  if (protection.color === false) {
-    localExtra.color_match = false;
-    localExtra.color_restore = false;
-  }
+  // 色彩校准 / 零偏移已由 overrides（local.color_match / zero_shift.enabled）下发，
+  // 不再单独读 protection，避免与预设两套状态打架。
   // 一致性开关是用户当前选择，开/关都要显式落字段：只在关闭时发 false 的话，
   // 用户重新打开会沿用预设里保存的 false（B1：后端把 null 当"未传"）。
   localExtra.consistency = Boolean(loras.consistency);
   if (Object.keys(localExtra).length) extra.local = localExtra;
-  if (protection.zeroShift === false) {
-    extra.zero_shift = { ...(extra.zero_shift || {}), enabled: false };
-  }
   Object.assign(payload, extra);
   return payload;
 }

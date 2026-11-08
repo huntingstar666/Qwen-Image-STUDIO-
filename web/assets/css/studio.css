@@ -6,8 +6,18 @@
 .page-studio {
   --studio-rail-w: 58px;
   --studio-panel-w: 336px;
-  height: calc(100vh - var(--topbar-h) - 92px);
-  min-height: 560px;
+  /* 工作室铺满视口（D24.1）：清掉 .page 的默认内边距与限宽 */
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  max-width: none;
+  margin: 0;
+}
+
+.page-studio .studio {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .studio {

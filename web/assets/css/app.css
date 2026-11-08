@@ -349,6 +349,33 @@ a:hover {
   padding: 20px 24px 72px;
 }
 
+/* 工作室铺满（D24.1）：去掉限宽与四周内边距，由 flex 精确吃掉顶栏以下空间 */
+.app-main.is-studio {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewport.is-studio {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+}
+
+.viewport.is-studio .page-host {
+  height: 100%;
+}
+
+.viewport.is-studio .page {
+  height: 100%;
+  /* 去掉 page-in 的 4px 位移，避免铺满时闪一下 */
+  animation: none;
+}
+
 .page {
   animation: page-in 0.18s ease-out;
 }

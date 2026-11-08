@@ -548,6 +548,10 @@ function route() {
 
 function showPage(id) {
   const viewport = document.getElementById('viewport');
+  // 工作室铺满整个视口（D24.1）：其余页面保留原有留白与限宽。
+  const isStudio = id === 'studio';
+  viewport.classList.toggle('is-studio', isStudio);
+  document.querySelector('.app-main')?.classList.toggle('is-studio', isStudio);
   const definition = TABS.find((tab) => tab.id === id);
   if (!definition) return;
   if (!pages.has(id)) {

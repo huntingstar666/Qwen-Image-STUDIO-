@@ -118,17 +118,21 @@ _WATERMARK_REMOVE_WORDS = ("移除", "去除", "去掉", "消除", "抹掉", "�
 _WATERMARK_SCOPE_WORDS = ("徽章", "角标", "编号", "badge", "叠加元素", "斜向平铺文字")
 
 
-def augment_watermark_prompt(prompt: str, params: dict[str, Any] | None = None) -> str | None:
+def augment_watermark_prompt(prompt: str, params: dict[str, Any] | None = None,
+                            *, detect: str | None = None) -> str | None:
     """提示词提到“水印”且是移除意图时，补全徽章 / 编号等叠加元素。
 
     返回补全后的提示词；无需补全时返回 ``None``。
     ``task.watermark_scope = "text"``（或顶层 ``watermark_scope``）表示“仅去文字”，
     此时保持原提示词，交给模型只处理文字水印。
+
+    ``detect`` 是关键词判定用的文本（缺省等于 ``prompt``）：前端会把用户原文放在
+    ``meta.rawPrompt``，用它判定可以避免风格/滤镜拼出的字样误触发（P2-7）。
     """
     text = str(prompt or "").strip()
     if not text:
         return None
-    low = text.lower()
+    low = str(detect if detect is not None else text).strip().lower()
     if "水印" not in low and "watermark" not in low:
         return None
     if not any(word in low for word in _WATERMARK_REMOVE_WORDS):
@@ -1257,22 +1261,26 @@ class Pipeline:
 
         _signal_progress(job, 2, total, "文本编码（含参考图）")
         prompt_text = job.prompt or ""
+        # 关键词判定只看**用户原文**：风格/滤镜拼进来的「灰色 / 全景 / 绿色」等字样
+        # 不该让训练指令被跳过（P2-7）。前端会把原文放在 meta.rawPrompt。
+        meta_in = params.get("meta") if isinstance(params.get("meta"), dict) else {}
+        raw_prompt = str(meta_in.get("rawPrompt") or "").strip() or prompt_text
+        probe = raw_prompt.lower()
         # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
         if task_mode == "panorama" and not any(
-                key in prompt_text.lower()
-                for key in ("全景", "panorama", "panoramic", "宽幅")):
+                key in probe for key in ("全景", "panorama", "panoramic", "宽幅")):
             prompt_text = _PANORAMA_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "panorama"
         elif task_mode == "outpaint" and not any(
-                key in prompt_text for key in ("灰色", "灰边", "gray", "grey")):
+                key in probe for key in ("灰色", "灰边", "gray", "grey")):
             prompt_text = _OUTPAINT_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "outpaint"
         elif hint_mode == "green_overlay" and not any(
-                key in prompt_text.lower() for key in ("绿色", "绿区", "green")):
+                key in probe for key in ("绿色", "绿区", "green")):
             prompt_text = _REMOVE_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "remove"
         # 去水印：模型默认只理解“文字水印”，徽章 / 编号需要点名补全。
-        watermark_prompt = augment_watermark_prompt(prompt_text, params)
+        watermark_prompt = augment_watermark_prompt(prompt_text, params, detect=raw_prompt)
         if watermark_prompt:
             prompt_text = watermark_prompt
             job.meta["watermark_prompt"] = True

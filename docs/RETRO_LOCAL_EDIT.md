@@ -419,7 +419,7 @@
 | P2-4 | `maskStats` 抽样漏判小笔触 | `studio/studioDoc.js:344-349`（每 4 像素、`alpha>4`） | 全量或降阈值，按裁剪后尺寸统计 | **已修复**：改为逐像素扫描（`alpha>0` 判有、`>8` 计覆盖率），细笔触不再被判成"未圈选"；调用点都在落笔结束/操作后，不在每帧路径上。 |
 | P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` | **已修复**：结果回显与"载入后另存"后缀改用 `job.quality.task_mode`，降级（remove 无蒙版 / outpaint 无外扩）时不再显示错任务。 |
 | P2-6 | quality/meta 大量字段前端不消费 | `pipeline.py:1429-1495`（hint_mode/task_mode/outpaint/panorama/preprocess/watermark/pose_lora/timings） | 结果卡片按需补显示 | 待处理 |
-| P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt | 待处理 |
+| P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt | **已修复**：新增 `meta.rawPrompt` 判定源，全景/扩图/移除三条训练指令与水印补全都改为看原文；实测风格里带"灰色调全景"不再跳过指令，水印补全仍按原文触发。 |
 | P2-8 | 水印"仅文字"分支 UI 不可达 | `edit.js:617-625` 从不发 `task.watermark_scope`；`pipeline.py:112-114` 有分支 | UI 暴露 scope，或删除分支 | 待处理 |
 | P2-9 | 编辑页润色不传 `imageModel`，MOSS 用户走 qwen PE | `edit.js:626-637` vs `t2i.js:1646` | 补 `imageModel` | 待处理 |
 

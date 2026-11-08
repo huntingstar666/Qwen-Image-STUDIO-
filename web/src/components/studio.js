@@ -378,6 +378,8 @@ export function createStudioPage(host) {
   let versions = [];
   let currentVersionId = '';
   let versionToken = 0;
+  /* D24.2：快门烘焙期间禁用按钮，防重入。 */
+  let versionBusy = false;
   const MAX_VERSIONS = 30;
   /* D17.3：多标签租约、配额告警与持久化申请。 */
   let lease = null;
@@ -877,6 +879,16 @@ export function createStudioPage(host) {
         </div>
 
         <div class="studio-dock" data-ref="dock" hidden>
+          <button
+            class="studio-dock-shutter"
+            type="button"
+            data-ref="dockShutter"
+            title="快门：把当前主图存入版本槽（会烘焙当前图层）"
+            aria-label="快门：把当前主图存入版本槽"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5h3l1.4-2.2a1 1 0 0 1 .85-.47h6.5a1 1 0 0 1 .85.47L17.5 8.5h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.4" r="3.6"/><path d="M18.5 11.2h.01"/></svg>
+            <span>快门</span>
+          </button>
           <div class="studio-dock-track" data-ref="dockTrack" role="listbox" aria-label="主图版本链"></div>
           <div class="studio-dock-side">
             <button
@@ -922,6 +934,7 @@ export function createStudioPage(host) {
     compareAllBtn: ref('compareAllBtn'),
     upscaleBtn: ref('upscaleBtn'),
     dock: ref('dock'),
+    dockShutter: ref('dockShutter'),
     dockTrack: ref('dockTrack'),
     projHistoryBtn: ref('projHistoryBtn'),
     projHistoryCount: ref('projHistoryCount'),
@@ -4037,10 +4050,13 @@ export function createStudioPage(host) {
 
   /* ---------------------------------------------------------- 主图版本 Dock（D22.1） */
 
-  const VERSION_BADGES = { original: '原', edit: 'AI', upscale: '放大', import: '导入' };
+  const VERSION_BADGES = { original: '原', edit: 'AI', upscale: '放大', import: '导入', manual: '快' };
 
   function nextVersionLabel(kind) {
     if (kind === 'original') return '原始主图';
+    if (kind === 'manual') {
+      return `快照 ${versions.filter((item) => item.kind === 'manual').length + 1}`;
+    }
     const count = versions.filter((item) => item.kind !== 'original').length + 1;
     if (kind === 'upscale') return `放大 ${count}`;
     if (kind === 'import') return `导入 ${count}`;
@@ -4107,6 +4123,17 @@ export function createStudioPage(host) {
         card.appendChild(dot);
       }
       item.appendChild(card);
+      if (version.kind !== 'original') {
+        // D24.3：悬停 / 聚焦卡片时左上角出现删除钮（与卡片同级，避免按钮嵌套）。
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'studio-dock-del';
+        del.dataset.vdel = version.id;
+        del.title = '删除此版本';
+        del.setAttribute('aria-label', `删除「${version.label}」`);
+        del.textContent = '×';
+        item.appendChild(del);
+      }
       const label = document.createElement('span');
       label.className = 'studio-dock-label';
       label.textContent = version.label;
@@ -4126,6 +4153,13 @@ export function createStudioPage(host) {
         track.scrollLeft += cardRect.right - trackRect.right + 16;
       }
     }
+    updateShutterState();
+  }
+
+  /** 无文档或快门烘焙中禁用快门按钮。 */
+  function updateShutterState() {
+    if (!refs.dockShutter) return;
+    refs.dockShutter.disabled = !doc || versionBusy;
   }
 
   /**
@@ -4144,8 +4178,8 @@ export function createStudioPage(host) {
       kind,
       label: options.label || nextVersionLabel(kind),
       name: current.name,
-      width: current.sourceSize?.width || current.size.width,
-      height: current.sourceSize?.height || current.size.height,
+      width: options.width ?? current.sourceSize?.width ?? current.size.width,
+      height: options.height ?? current.sourceSize?.height ?? current.size.height,
       at: Math.max(Date.now(), (last?.at || 0) + 1),
       fromId: options.fromId ?? currentVersionId,
       thumbUrl,
@@ -4241,7 +4275,156 @@ export function createStudioPage(host) {
     renderDock();
   }
 
+  /* ---------------------------------------------------------- 版本槽快门（D24.2） */
+
+  const SHUTTER_TIMERS = new Set();
+
+  function fxWait(ms) {
+    return new Promise((resolve) => {
+      const id = setTimeout(() => {
+        SHUTTER_TIMERS.delete(id);
+        resolve();
+      }, ms);
+      SHUTTER_TIMERS.add(id);
+    });
+  }
+
+  function prefersReducedMotion() {
+    return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+  }
+
+  /** 清理快门临时 DOM 与定时器（页面销毁或异常时调用）。 */
+  function clearShutterFx() {
+    for (const id of SHUTTER_TIMERS) clearTimeout(id);
+    SHUTTER_TIMERS.clear();
+    document.querySelectorAll('.studio-shutter, .studio-shutter-fly').forEach((el) => el.remove());
+    refs.dockTrack
+      ?.querySelectorAll('.is-shutter-wait')
+      .forEach((el) => el.classList.remove('is-shutter-wait'));
+  }
+
+  /** 快门帘（上下两片）+ 白闪；只在快门期间存在。 */
+  function buildShutterFx() {
+    const root = document.createElement('div');
+    root.className = 'studio-shutter';
+    root.innerHTML =
+      '<div class="studio-shutter-blade is-top"></div>' +
+      '<div class="studio-shutter-blade is-bottom"></div>' +
+      '<div class="studio-shutter-flash"></div>';
+    document.body.appendChild(root);
+    // 下一帧再合拢，保证过渡从画布外开始。
+    void root.offsetWidth;
+    root.classList.add('is-closed');
+    return { root, flash: root.querySelector('.studio-shutter-flash') };
+  }
+
+  /** 缩略图从画布中心飞入新卡片；找不到卡片就跳过（只做帘幕 + 白闪）。 */
+  async function flyToDock(record, startRect) {
+    const card = refs.dockTrack?.querySelector(`[data-vid="${record.id}"]`);
+    if (!card || !record.thumbUrl || !startRect) return;
+    const end = card.getBoundingClientRect();
+    if (!end.width || !end.height) return;
+    const size = Math.max(56, Math.min(startRect.width, startRect.height) * 0.32);
+    const endSize = Math.min(64, end.width);
+    const fly = document.createElement('img');
+    fly.className = 'studio-shutter-fly';
+    fly.alt = '';
+    fly.src = record.thumbUrl;
+    fly.style.width = `${size}px`;
+    fly.style.height = `${size}px`;
+    fly.style.left = `${startRect.left + startRect.width / 2 - size / 2}px`;
+    fly.style.top = `${startRect.top + startRect.height / 2 - size / 2}px`;
+    document.body.appendChild(fly);
+    card.classList.add('is-shutter-wait');
+    // 强制一次样式计算，保证起点生效后再过渡。
+    void fly.offsetWidth;
+    const dx = end.left + end.width / 2 - (startRect.left + startRect.width / 2);
+    const dy = end.top + end.height / 2 - (startRect.top + startRect.height / 2);
+    fly.style.transform = `translate(${dx}px, ${dy}px) scale(${endSize / size})`;
+    fly.style.opacity = '0.9';
+    await fxWait(420);
+    card.classList.remove('is-shutter-wait');
+    card.classList.add('is-bounce');
+    setTimeout(() => card.classList.remove('is-bounce'), 260);
+    fly.style.opacity = '0';
+    await fxWait(160);
+    fly.remove();
+  }
+
+  /**
+   * 快门：把当前看到的合成主图（烘焙旋转/裁剪/调色/图层）写入版本链。
+   * 只读当前画面并写本机版本，不改文档，所以只读标签也允许。
+   */
+  async function captureSnapshot() {
+    if (!doc || versionBusy) return;
+    if (previewBlocked('快门')) return;
+    const current = doc;
+    const layerCount = current.layers.length;
+    const width = current.size.width;
+    const height = current.size.height;
+    versionBusy = true;
+    updateShutterState();
+    refs.dockShutter.classList.remove('is-press');
+    void refs.dockShutter.offsetWidth;
+    refs.dockShutter.classList.add('is-press');
+
+    const fx = prefersReducedMotion() ? null : buildShutterFx();
+    const startRect = fx ? stageEl.getBoundingClientRect() : null;
+    const bake = current.bakeBlob('image/png');
+    // 提前中止时可能不再 await，先挂一个空 catch 避免未处理的 rejection。
+    bake.catch(() => {});
+
+    try {
+      if (fx) {
+        // 0–120ms 关帘，90ms 起白闪（80ms）；烘焙慢时帘幕保持合拢。
+        await fxWait(90);
+        if (doc !== current) throw new Error('__abort');
+        fx.flash.classList.add('is-on');
+        await fxWait(30);
+      }
+      const blob = await bake;
+      if (!blob || doc !== current) throw new Error('__abort');
+      const recordPromise = recordVersion('manual', blob, {
+        width,
+        height,
+        meta: { task: 'manual', layers: layerCount },
+      });
+      if (fx) {
+        fx.flash.classList.remove('is-on');
+        await fxWait(90);
+        fx.root.classList.remove('is-closed');
+        await fxWait(150);
+      }
+      const record = await recordPromise;
+      if (!record) throw new Error('__abort');
+      if (fx) await flyToDock(record, startRect);
+      toastSuccess(
+        `已保存快照 · ${fmtNum(width)} × ${fmtNum(height)}${
+          layerCount ? `（已烘焙 ${layerCount} 个图层）` : ''
+        }`,
+      );
+    } catch (err) {
+      if (err?.message !== '__abort') toastError(err, '快门失败');
+    } finally {
+      fx?.root.remove();
+      refs.dockShutter.classList.remove('is-press');
+      versionBusy = false;
+      updateShutterState();
+    }
+  }
+
+  refs.dockShutter.addEventListener('click', () => {
+    void captureSnapshot();
+  });
+
   refs.dockTrack.addEventListener('click', (event) => {
+    const del = event.target.closest('[data-vdel]');
+    if (del) {
+      event.stopPropagation();
+      const version = versions.find((item) => item.id === del.dataset.vdel);
+      if (version) void deleteVersion(version);
+      return;
+    }
     const card = event.target.closest('[data-vid]');
     if (!card) return;
     card.classList.remove('is-bounce');
@@ -4321,6 +4504,31 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 删除单个版本（右键菜单与卡片悬停 × 共用）：原始卡受保护，删当前版本先切前一版。 */
+  async function deleteVersion(version) {
+    if (!version || version.kind === 'original' || !projectId) return;
+    const confirmed = await confirmDialog({
+      title: '删除版本',
+      message: `删除「${version.label}」？该版本的原始图会从本机移除，不可恢复。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!confirmed) return;
+    const index = versions.findIndex((item) => item.id === version.id);
+    if (version.id === currentVersionId) {
+      const prev = versions[index - 1] || versions.find((item) => item.id !== version.id);
+      if (prev) await switchVersion(prev.id);
+    }
+    try {
+      await deleteStudioVersion(projectId, version.id);
+      versions = versions.filter((item) => item.id !== version.id);
+      renderDock();
+      toastSuccess('版本已删除');
+    } catch (err) {
+      toastError(err, '删除版本失败');
+    }
+  }
+
   async function runVersionAction(action) {
     const version = versions.find((item) => item.id === versionMenuId);
     closeVersionMenu();
@@ -4349,26 +4557,7 @@ export function createStudioPage(host) {
       return;
     }
     if (action === 'delete') {
-      if (version.kind === 'original' || !projectId) return;
-      const confirmed = await confirmDialog({
-        title: '删除版本',
-        message: `删除「${version.label}」？该版本的原始图会从本机移除，不可恢复。`,
-        confirmText: '删除',
-        danger: true,
-      });
-      if (!confirmed) return;
-      if (version.id === currentVersionId) {
-        const prev = versions[index - 1] || versions.find((item) => item.id !== version.id);
-        if (prev) await switchVersion(prev.id);
-      }
-      try {
-        await deleteStudioVersion(projectId, version.id);
-        versions = versions.filter((item) => item.id !== version.id);
-        renderDock();
-        toastSuccess('版本已删除');
-      } catch (err) {
-        toastError(err, '删除版本失败');
-      }
+      await deleteVersion(version);
       return;
     }
     if (action === 'truncate') {
@@ -7552,6 +7741,8 @@ export function createStudioPage(host) {
       flushSave();
       stopLease();
       stopAnts();
+      clearShutterFx();
+      versionBusy = false;
       selection = null;
       selPath = null;
       editingLayerMaskId = '';

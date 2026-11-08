@@ -236,6 +236,179 @@
   display: none;
 }
 
+/* 快门（D24.2）：Dock 最左，把当前合成主图写入版本槽 */
+.studio-dock-shutter {
+  flex: 0 0 auto;
+  /* 与卡片同底线：track 上内边距 10 + 卡片 64 = 74，快门高 72 → 顶部 2 */
+  align-self: flex-start;
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 52px;
+  height: 72px;
+  margin-right: 12px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-right-color: var(--line);
+  border-radius: 14px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    color 140ms ease-out,
+    border-color 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.studio-dock-shutter svg {
+  width: 21px;
+  height: 21px;
+}
+
+.studio-dock-shutter:hover:not(:disabled),
+.studio-dock-shutter:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+  outline: none;
+}
+
+.studio-dock-shutter:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@keyframes studio-shutter-press {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.studio-dock-shutter.is-press {
+  animation: studio-shutter-press 160ms ease-out;
+}
+
+/* 快门帘 + 白闪（只在快门期间存在） */
+.studio-shutter {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.studio-shutter-blade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: #000;
+  transition: transform 120ms ease-in;
+  will-change: transform;
+}
+
+.studio-shutter-blade.is-top {
+  top: 0;
+  transform: translateY(-101%);
+}
+
+.studio-shutter-blade.is-bottom {
+  bottom: 0;
+  transform: translateY(101%);
+}
+
+.studio-shutter.is-closed .studio-shutter-blade.is-top,
+.studio-shutter.is-closed .studio-shutter-blade.is-bottom {
+  transform: translateY(0);
+}
+
+/* 开帘用 ease-out（移除 is-closed 后生效） */
+.studio-shutter:not(.is-closed) .studio-shutter-blade {
+  transition-timing-function: ease-out;
+}
+
+.studio-shutter-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  transition: opacity 80ms ease-out;
+}
+
+.studio-shutter-flash.is-on {
+  opacity: 0.85;
+}
+
+/* 飞行缩略图：画布中心 → 新版本卡 */
+.studio-shutter-fly {
+  position: fixed;
+  z-index: 96;
+  border-radius: 16px;
+  object-fit: cover;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 35%);
+  pointer-events: none;
+  transform-origin: center;
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease-out;
+  will-change: transform, opacity;
+}
+
+/* 飞行期间新卡片先隐身，落槽后再弹入 */
+.studio-dock-card.is-shutter-wait {
+  opacity: 0;
+}
+
+/* 版本卡悬停删除（D24.3） */
+.studio-dock-del {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease-out,
+    background-color 120ms ease-out;
+}
+
+.studio-dock-item:hover .studio-dock-del,
+.studio-dock-item:focus-within .studio-dock-del,
+.studio-dock-del:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.studio-dock-del:hover,
+.studio-dock-del:focus-visible {
+  background: #d9534f;
+  outline: none;
+}
+
 .studio-dock-track {
   display: flex;
   align-items: flex-start;
@@ -407,7 +580,9 @@
 }
 
 .studio-dock-card:hover + .studio-dock-label,
-.studio-dock-card:focus-visible + .studio-dock-label {
+.studio-dock-card:focus-visible + .studio-dock-label,
+.studio-dock-item:hover .studio-dock-label,
+.studio-dock-item:focus-within .studio-dock-label {
   opacity: 1;
 }
 
@@ -665,6 +840,15 @@
   .studio-dock-dot,
   .studio-canvas-wrap canvas.is-version-fade {
     animation: none;
+  }
+
+  .studio-dock-shutter.is-press,
+  .studio-shutter-blade,
+  .studio-shutter-flash,
+  .studio-shutter-fly,
+  .studio-dock-del {
+    animation: none;
+    transition: none;
   }
 }
 

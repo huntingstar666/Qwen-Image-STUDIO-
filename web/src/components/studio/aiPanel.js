@@ -23,6 +23,8 @@ import {
   pickConsistencyLora,
   pickTaskLora,
   workSize,
+  PANORAMA_ASPECTS,
+  panoramaPlan,
 } from './payload.js';
 import {
   defaultPresetId,
@@ -33,6 +35,7 @@ import {
   normalizeProtection,
   presetTaskMode,
   resolvePresetForMask,
+  withOverride,
 } from './presets.js';
 import { mountGuards } from './guards.js';
 import { mountAdvanced } from './advanced.js';
@@ -61,6 +64,7 @@ const TASK_LABELS = {
   remove: '元素移除',
   replace: '元素替换',
   outpaint: '扩图',
+  panorama: '全景',
 };
 
 function readFile(file) {
@@ -159,6 +163,22 @@ export function mountAiPanel(host, ctx) {
 
             <div class="ai-work mono" data-ref="workInfo"></div>
             <div class="ai-warn" data-ref="workWarn" hidden></div>
+            <div class="ai-pano" data-ref="panoBox" hidden>
+              <div class="ai-label">全景画布 <span class="ai-label-note">参考图向两侧延展</span></div>
+              <div class="ai-row ai-pano-aspects" data-ref="panoAspects"></div>
+              <label class="ai-field">
+                <span>长边上限</span>
+                <select class="select" data-ref="panoLongSide">
+                  <option value="2048">2048</option>
+                  <option value="3072">3072（推荐）</option>
+                  <option value="4096">4096</option>
+                </select>
+              </label>
+              <label class="ai-check"><input type="checkbox" data-ref="panoWrap" /><span>360° 环绕接缝</span>
+                <span class="ai-label-note">实验</span>
+              </label>
+              <div class="ai-work mono" data-ref="panoInfo"></div>
+            </div>
             <div class="ai-row">
               <button class="btn ghost sm" type="button" data-ref="openOutpaint">扩图 / 外补画布 →</button>
             </div>
@@ -250,6 +270,11 @@ export function mountAiPanel(host, ctx) {
     advanced: ref('advanced'),
     workInfo: ref('workInfo'),
     workWarn: ref('workWarn'),
+    panoBox: ref('panoBox'),
+    panoAspects: ref('panoAspects'),
+    panoLongSide: ref('panoLongSide'),
+    panoWrap: ref('panoWrap'),
+    panoInfo: ref('panoInfo'),
     openOutpaint: ref('openOutpaint'),
     turbo: ref('turbo'),
     samplingInfo: ref('samplingInfo'),
@@ -514,8 +539,9 @@ export function mountAiPanel(host, ctx) {
     state.presetId = id;
     persistEdit();
     const mode = presetTaskMode(preset);
-    if (mode === 'remove' || mode === 'outpaint') refs.task.value = mode;
-    else if (refs.task.value === 'remove' || refs.task.value === 'outpaint') refs.task.value = 'auto';
+    if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama') refs.task.value = mode;
+    else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
+    syncTaskHint();
     renderPresets();
     advanced.refresh();
     renderMeta();
@@ -523,12 +549,77 @@ export function mountAiPanel(host, ctx) {
   }
 
   function syncGuardNote() {
-    const outpaint = refs.task.value === 'outpaint';
-    refs.guardNote.hidden = !outpaint;
+    const mode = refs.task.value;
+    const outpaint = mode === 'outpaint';
+    const panorama = mode === 'panorama';
+    refs.guardNote.hidden = !(outpaint || panorama);
     refs.guardNote.textContent = outpaint
       ? '扩图会改变输出尺寸，零像素偏移校验自动关闭；原图区域仍逐字节保留。'
-      : '';
+      : panorama
+        ? '全景会按目标比例扩画布，零像素偏移校验自动关闭；原图区域等比缩放到画布中央。'
+        : '';
+    syncPano();
   }
+
+  /* ------------------------------------------------------------ 全景（D14.1） */
+
+  function panoValue(key, fallback) {
+    return effectiveValue(currentPreset(), state.overrides, key, fallback);
+  }
+
+  function setPano(key, value) {
+    state.overrides = withOverride(currentPreset(), state.overrides, key, value);
+    persistEdit();
+    renderPresets();
+    renderMeta();
+  }
+
+  function syncTaskHint() {
+    const mode = refs.task.value;
+    refs.submitHint.textContent =
+      mode === 'auto'
+        ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
+        : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[mode] || mode}`;
+  }
+
+  function renderPanoAspects(active) {
+    refs.panoAspects.innerHTML = PANORAMA_ASPECTS.map(
+      (aspect) =>
+        `<button type="button" class="btn ${aspect === active ? 'primary' : 'ghost'} sm" data-pano-aspect="${aspect}">${aspect}</button>`,
+    ).join('');
+  }
+
+  /** 全景面板：只在任务切到「全景」时出现，数值写进预设覆盖项。 */
+  function syncPano() {
+    const on = refs.task.value === 'panorama';
+    refs.panoBox.hidden = !on;
+    if (!on) return;
+    const aspect = String(panoValue('panorama.aspect', '2:1'));
+    const longSide = Number(panoValue('panorama.long_side', 3072)) || 3072;
+    renderPanoAspects(aspect);
+    refs.panoLongSide.value = String(longSide);
+    refs.panoWrap.checked = Boolean(panoValue('panorama.wrap', false));
+    const plan = panoramaPlan(mainSize(), { aspect, longSide });
+    const notes = [`${plan.width} × ${plan.height}`, `${plan.megapixels} MP`];
+    if (plan.scale < 1) notes.push(`源图缩到 ${Math.round(plan.scale * 100)}%`);
+    if (plan.overPixels) notes.push('超出 6MP 上限，请降低长边');
+    refs.panoInfo.textContent = notes.join(' · ');
+    refs.panoInfo.classList.toggle('is-warn', plan.overPixels);
+  }
+
+  refs.panoAspects.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-pano-aspect]');
+    if (!button) return;
+    setPano('panorama.aspect', button.dataset.panoAspect);
+  });
+
+  refs.panoLongSide.addEventListener('change', () => {
+    setPano('panorama.long_side', Number(refs.panoLongSide.value) || 3072);
+  });
+
+  refs.panoWrap.addEventListener('change', () => {
+    setPano('panorama.wrap', Boolean(refs.panoWrap.checked));
+  });
 
   async function loadPresetMeta() {
     try {
@@ -724,11 +815,20 @@ export function mountAiPanel(host, ctx) {
     const mode = refs.sizeMode.value;
     refs.customSize.hidden = mode !== 'custom';
     refs.ratioRow.hidden = mode !== 'ratio';
-    const work = workSize(size, {
-      preprocess: presetValue('preprocess.enabled', true) !== false,
-      maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
-    });
-    refs.workInfo.textContent = `工作画布 ${work.width} × ${work.height} · 输出 ${outputSummary()}`;
+    // 全景输出的是「按比例扩出的新画布」，工作画布直接按全景预估展示。
+    const panorama = refs.task.value === 'panorama';
+    const work = panorama
+      ? panoramaPlan(size, {
+          aspect: String(panoValue('panorama.aspect', '2:1')),
+          longSide: Number(panoValue('panorama.long_side', 3072)) || 3072,
+        })
+      : workSize(size, {
+          preprocess: presetValue('preprocess.enabled', true) !== false,
+          maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
+        });
+    refs.workInfo.textContent = panorama
+      ? `全景画布 ${work.width} × ${work.height} · 输出同尺寸`
+      : `工作画布 ${work.width} × ${work.height} · 输出 ${outputSummary()}`;
     const tokens = Math.round((work.width / 32) * (work.height / 32));
     const heavy = tokens > 4096;
     refs.workWarn.hidden = !heavy;
@@ -736,6 +836,7 @@ export function mountAiPanel(host, ctx) {
       ? `采样 token 约 ${tokens}，显存占用偏高：建议开启预处理或圈小一点。`
       : '';
     syncMoreSummary();
+    if (panorama) syncPano();
   }
 
   if (!refs.width.value) refs.width.value = '1024';
@@ -972,7 +1073,7 @@ export function mountAiPanel(host, ctx) {
       toastWarn('请先打开一张主图');
       return;
     }
-    if (!source.hasMask && refs.task.value !== 'outpaint') {
+    if (!source.hasMask && refs.task.value !== 'outpaint' && refs.task.value !== 'panorama') {
       const ok = await confirmDialog({
         title: '没有检测到蒙版',
         message: '将按整图重绘，速度更慢且可能改变画面其他部分。推荐先用套索/椭圆圈出要改的区域。',
@@ -1337,11 +1438,7 @@ export function mountAiPanel(host, ctx) {
   });
 
   refs.task.addEventListener('change', () => {
-    const mode = refs.task.value;
-    refs.submitHint.textContent =
-      mode === 'auto'
-        ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
-        : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[mode] || mode}`;
+    syncTaskHint();
     syncGuardNote();
     notifyPersist();
   });
@@ -1537,13 +1634,7 @@ export function mountAiPanel(host, ctx) {
       state.customLoras = Array.isArray(persist.customLoras)
         ? persist.customLoras.slice(0, MAX_LORAS).map((item) => ({ ...item }))
         : [];
-      if (persist.task) {
-        refs.task.value = persist.task;
-        refs.submitHint.textContent =
-          persist.task === 'auto'
-            ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
-            : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[persist.task] || persist.task}`;
-      }
+      if (persist.task) refs.task.value = persist.task;
       if (persist.sizeMode) refs.sizeMode.value = persist.sizeMode;
       if (persist.width) refs.width.value = persist.width;
       if (persist.height) refs.height.value = persist.height;
@@ -1563,6 +1654,7 @@ export function mountAiPanel(host, ctx) {
       }
       syncPrompt();
       syncBusy();
+      syncTaskHint();
       renderRefs();
       renderPresets();
       advanced.refresh();
@@ -1607,6 +1699,22 @@ export function mountAiPanel(host, ctx) {
       syncGuardNote();
       renderMeta();
       return submit();
+    },
+    /**
+     * 宿主快捷入口（如选区「AI 消除」）：切预设 / 任务并填入指令，
+     * 只做准备、不自动提交，避免用户没确认就消耗一次生成。
+     */
+    prepareTask({ preset = '', task = '', prompt = '' } = {}) {
+      if (preset && findPreset(state.presets, preset)) selectPreset(preset);
+      if (task) {
+        refs.task.value = task;
+        syncTaskHint();
+      }
+      if (prompt) promptEditor.setText(prompt);
+      renderMeta();
+      syncGuardNote();
+      promptEditor.focus();
+      notifyPersist();
     },
   };
 

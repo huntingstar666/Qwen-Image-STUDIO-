@@ -470,6 +470,8 @@ export function createStudioPage(host) {
                 <button class="btn ghost sm" type="button" data-sel-op="feather">羽化</button>
                 <button class="btn ghost sm" type="button" data-sel-op="expand">扩展</button>
                 <button class="btn ghost sm" type="button" data-sel-op="contract">收缩</button>
+                <button class="btn ghost sm" type="button" data-sel-op="mask">转为蒙版</button>
+                <button class="btn primary sm" type="button" data-sel-op="remove">AI 消除</button>
                 <button class="btn ghost sm" type="button" data-sel-op="clear">清除选区</button>
                 <span class="spacer"></span>
                 <span class="mono" data-ref="selInfo">未选区</span>
@@ -2087,6 +2089,55 @@ export function createStudioPage(host) {
       return;
     }
     setSelectionAlpha(next, mask.width, mask.height);
+  }
+
+  /**
+   * 把选区 alpha 并进文档蒙版（D13.2 一键消除的前置）：
+   * AI 提交只认蒙版，选区必须落成蒙版才能让「元素移除」只改选区。
+   */
+  function commitSelectionToMask(armRemove) {
+    if (!doc || !selection) {
+      toastWarn('还没有选区：先用魔棒点选要处理的区域');
+      return;
+    }
+    const mask = maskSize();
+    if (selection.width !== mask.width || selection.height !== mask.height) {
+      toastWarn('选区尺寸与当前图像不一致，请重新选择');
+      clearSelection();
+      return;
+    }
+    const data = new ImageData(selection.width, selection.height);
+    const pixels = data.data;
+    for (let i = 0; i < selection.alpha.length; i += 1) {
+      const at = i * 4;
+      pixels[at] = 255;
+      pixels[at + 1] = 255;
+      pixels[at + 2] = 255;
+      pixels[at + 3] = selection.alpha[i];
+    }
+    const layer = makeCanvas(selection.width, selection.height);
+    layer.getContext('2d').putImageData(data, 0, 0);
+    doc.mask.getContext('2d').drawImage(layer, 0, 0);
+    doc.markMaskChanged(true);
+    tintDirty = true;
+    doc.snapshot();
+    updateHistoryUi();
+    updateMaskStatus();
+    scheduleDraw();
+    scheduleSave();
+    clearSelection();
+    if (!armRemove) {
+      toastSuccess('选区已转为蒙版');
+      return;
+    }
+    activeTab = 'ai';
+    syncTabs();
+    ai?.prepareTask?.({
+      preset: 'remove',
+      task: 'remove',
+      prompt: '移除选区内的内容，并按周围环境自然补全背景。',
+    });
+    toast('已填入「元素移除」指令，点「修改」开始消除');
   }
 
   /* ============================================================
@@ -5364,7 +5415,14 @@ export function createStudioPage(host) {
     selRadius = Math.max(0, Math.min(200, Math.round(Number(refs.selRadius.value) || 0)));
   });
   for (const button of host.querySelectorAll('[data-sel-op]')) {
-    button.addEventListener('click', () => runSelectionOp(button.dataset.selOp));
+    button.addEventListener('click', () => {
+      const op = button.dataset.selOp;
+      if (op === 'mask' || op === 'remove') {
+        commitSelectionToMask(op === 'remove');
+        return;
+      }
+      runSelectionOp(op);
+    });
   }
 
   refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));

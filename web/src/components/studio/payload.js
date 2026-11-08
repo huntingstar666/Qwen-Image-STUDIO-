@@ -48,6 +48,7 @@ export function workSize(size, { preprocess = true, maxSide = MAX_SIDE_DEFAULT, 
 }
 
 const TASK_RULES = [
+  { task: 'panorama', re: /全景|panorama|panoramic|宽幅全景/i },
   { task: 'outpaint', re: /扩图|外扩|延展|向外扩展|补边|outpaint|expand\s*(the\s*)?canvas/i },
   { task: 'remove', re: /移除|去除|去掉|删除|抹掉|消除|清理|remove|erase|delete/i },
   { task: 'replace', re: /替换|换成|改为|改成|置换|replace|swap/i },
@@ -294,4 +295,64 @@ export function resolveScheme(scheme, hasMask, coverage) {
   if (!hasMask) return 'a';
   if (scheme === 'a' || scheme === 'b') return scheme;
   return coverage > 0.02 && coverage < 0.45 ? 'b' : 'a';
+}
+
+/* ============================================================
+ * 全景画布预估（与 server/imaging.panorama_plan 同一套算法）
+ * ============================================================ */
+
+export const PANORAMA_ASPECTS = ['2:1', '3:1', '4:1', '21:9'];
+
+/** 与后端一致的总像素上限：覆盖 3072×1536，拦住 4096×2048。 */
+export const PANORAMA_MAX_PIXELS = 6_000_000;
+
+/**
+ * 按目标比例算全景画布尺寸（只缩不放），用于面板上的实时预估。
+ * 与后端 `imaging.panorama_plan` 保持同一套「最小外扩 → 长边/像素上限」规则。
+ *
+ * @param {{width:number,height:number}} size 源图尺寸
+ * @param {{aspect?:string, longSide?:number, multiple?:number, maxPixels?:number}} [options]
+ * @returns {{width:number,height:number,scale:number,megapixels:number,overPixels:boolean}}
+ */
+export function panoramaPlan(size, { aspect = '2:1', longSide = 3072, multiple = SNAP, maxPixels = PANORAMA_MAX_PIXELS } = {}) {
+  const srcW = Math.max(1, Math.round(Number(size?.width) || 1));
+  const srcH = Math.max(1, Math.round(Number(size?.height) || 1));
+  const [aw, ah] = String(aspect).split(':').map(Number);
+  const ratio = aw > 0 && ah > 0 ? aw / ah : 2;
+  const current = srcW / srcH;
+
+  let naturalW;
+  let naturalH;
+  if (current < ratio) {
+    naturalW = Math.max(srcW, Math.ceil(srcH * ratio));
+    naturalH = srcH;
+  } else if (current > ratio) {
+    naturalW = srcW;
+    naturalH = Math.max(srcH, Math.ceil(srcW / ratio));
+  } else {
+    naturalW = srcW;
+    naturalH = srcH;
+  }
+
+  let width = snapUp(naturalW, multiple);
+  let height = snapUp(naturalH, multiple);
+  const limit = Number(longSide) || 0;
+  let scale = 1;
+  if (limit > 0 && Math.max(width, height) > limit) scale = limit / Math.max(width, height);
+  if (maxPixels > 0 && width * height * scale * scale > maxPixels) {
+    scale = Math.min(scale, Math.sqrt(maxPixels / (width * height)));
+  }
+  if (scale < 1) {
+    // 向下取整到 32 的倍数，确保缩小后不越过长边 / 像素上限。
+    width = Math.max(multiple, Math.floor(Math.round(width * scale) / multiple) * multiple);
+    height = Math.max(multiple, Math.floor(Math.round(height * scale) / multiple) * multiple);
+  }
+  const pixels = width * height;
+  return {
+    width,
+    height,
+    scale: Math.round(scale * 1000) / 1000,
+    megapixels: Math.round((pixels / 1e6) * 100) / 100,
+    overPixels: maxPixels > 0 && pixels > maxPixels,
+  };
 }

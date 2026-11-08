@@ -42,6 +42,9 @@ export const ADJUST_DEFAULTS = {
 const HISTORY_LIMIT = 30;
 const HISTORY_BUDGET = 256 * 1024 * 1024;
 
+/** 图层组 id 序号（与图层 id 一样带时间戳，避免刷新后撞车）。 */
+let groupSeq = 0;
+
 export function makeCanvas(width, height) {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(width));
@@ -114,6 +117,16 @@ export class StudioDoc {
     this._doc.activeId = '';
   }
 
+  /** 图层组（D23.4 L4）：[{ id, name, visible, opacity, blend, collapsed }] */
+  get groups() {
+    if (!Array.isArray(this._doc.groups)) this._doc.groups = [];
+    return this._doc.groups;
+  }
+
+  set groups(next) {
+    this._doc.groups = Array.isArray(next) ? next : [];
+  }
+
   /* ---------------------------------------------------------- 尺寸 */
 
   get sourceSize() {
@@ -145,6 +158,7 @@ export class StudioDoc {
       /** 污点修复层（D10.1）：透明 = 未修，像素 = 已修 */
       repair: this.repair ? cloneCanvas(this.repair) : null,
       layers: this.layers.map((layer) => layer.clone()),
+      groups: this.groups.map((group) => ({ ...group })),
       bytes,
     };
     this._history.push(state);
@@ -158,6 +172,7 @@ export class StudioDoc {
     this.mask = cloneCanvas(state.mask);
     this.repair = state.repair ? cloneCanvas(state.repair) : null;
     this.layers = (state.layers || []).map((layer) => layer.clone());
+    this.groups = (state.groups || []).map((group) => ({ ...group }));
     this._base = null;
     this._underlay = null;
     this._tint = null;
@@ -242,6 +257,7 @@ export class StudioDoc {
     this.transform.rotate = (this.transform.rotate + 90) % 360;
     this.transform.crop = null;
     this.layers = [];
+    this.groups = [];
     this.rotateMaskRight();
     this.rotateRepairRight();
     this._maskHas = null;
@@ -252,6 +268,7 @@ export class StudioDoc {
     this.transform.rotate = (this.transform.rotate + 270) % 360;
     this.transform.crop = null;
     this.layers = [];
+    this.groups = [];
     this.rotateMaskLeft();
     this.rotateRepairLeft();
     this._maskHas = null;
@@ -270,6 +287,7 @@ export class StudioDoc {
     }
     this.transform.crop = null;
     this.layers = [];
+    this.groups = [];
     this._maskHas = null;
     this.snapshot();
   }
@@ -298,6 +316,7 @@ export class StudioDoc {
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
     this.layers = [];
+    this.groups = [];
     this.repair = null;
     this.baseVisible = true;
     this._maskHas = null;
@@ -457,7 +476,7 @@ export class StudioDoc {
       const base = this.renderUnderlay();
       clean = makeCanvas(base.width, base.height);
       // 图层坐标是「旋转后未裁剪」空间，取样时不做裁剪平移。
-      composite(clean.getContext('2d'), base, this.layers, { crop: null });
+      composite(clean.getContext('2d'), base, this.layers, { crop: null, groups: this.groups });
     } finally {
       this.repair = repair;
       this._underlay = underlay;
@@ -618,6 +637,7 @@ export class StudioDoc {
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
     this.layers = [];
+    this.groups = [];
     this.repair = null;
     this.baseVisible = true;
     this._maskHas = null;
@@ -710,6 +730,84 @@ export class StudioDoc {
 
   commitLayers() {
     this.snapshot();
+  }
+
+  /* ---------------------------------------------------------- 图层组（D23.4 L4） */
+
+  findGroup(id) {
+    return this.groups.find((group) => group.id === id) || null;
+  }
+
+  /** 新建空组；入组、排序等由调用方与快照一起完成。 */
+  addGroup({ name = '', id = '' } = {}) {
+    const group = {
+      id: id || `grp-${Date.now().toString(36)}-${(groupSeq += 1)}`,
+      name: name || `组 ${this.groups.length + 1}`,
+      visible: true,
+      opacity: 1,
+      blend: 'source-over',
+      collapsed: false,
+    };
+    this.groups.push(group);
+    return group;
+  }
+
+  removeGroup(id) {
+    const at = this.groups.findIndex((group) => group.id === id);
+    if (at < 0) return false;
+    this.groups.splice(at, 1);
+    for (const layer of this.layers) if (layer.groupId === id) layer.groupId = '';
+    this._base = null;
+    return true;
+  }
+
+  /** 改组参数（显隐 / 不透明度 / 混合 / 折叠 / 改名）；不写历史。 */
+  setGroupProps(id, patch = {}) {
+    const group = this.findGroup(id);
+    if (!group) return false;
+    if (patch.name !== undefined && String(patch.name).trim()) group.name = String(patch.name).trim().slice(0, 60);
+    if (patch.visible !== undefined) group.visible = patch.visible !== false;
+    if (patch.opacity !== undefined) group.opacity = Math.max(0, Math.min(1, Number(patch.opacity) || 0));
+    if (patch.blend !== undefined) group.blend = patch.blend || 'source-over';
+    if (patch.collapsed !== undefined) group.collapsed = Boolean(patch.collapsed);
+    this._base = null;
+    return true;
+  }
+
+  /**
+   * 把一组图层收进新组：组内相对顺序不变，整体挪到最低成员原来的位置，
+   * 保证组员在图层栈里连续（PS 的「从图层建立组」）。
+   */
+  groupLayers(ids, { name = '' } = {}) {
+    const wanted = new Set(ids || []);
+    const picked = this.layers.filter((layer) => wanted.has(layer.id));
+    if (!picked.length) return null;
+    const group = this.addGroup({ name });
+    for (const layer of picked) layer.groupId = group.id;
+    const layers = this.layers;
+    const at = layers.indexOf(picked[0]);
+    for (const layer of picked) {
+      const index = layers.indexOf(layer);
+      if (index >= 0) layers.splice(index, 1);
+    }
+    layers.splice(Math.max(0, Math.min(at, layers.length)), 0, ...picked);
+    this._base = null;
+    return group;
+  }
+
+  /** 解组：成员回到原位（顺序不变），组记录删除。返回解掉的组数。 */
+  ungroup(ids = []) {
+    const targets = new Set();
+    for (const layer of this.layers) {
+      if (!layer.groupId) continue;
+      if (ids.length && !ids.includes(layer.id)) continue;
+      targets.add(layer.groupId);
+    }
+    if (!targets.size) return 0;
+    for (const layer of this.layers) if (targets.has(layer.groupId)) layer.groupId = '';
+    this.groups = this.groups.filter((group) => !targets.has(group.id));
+    this._base = null;
+    return targets.size;
   }
 
   setOverlayOpacity(id, opacity) {
@@ -822,7 +920,7 @@ export class StudioDoc {
     if (this.baseVisible === false) {
       const size = this.size;
       const canvas = makeCanvas(size.width, size.height);
-      drawLayers(canvas.getContext('2d'), this.layers, { crop: this.transform.crop });
+      drawLayers(canvas.getContext('2d'), this.layers, { crop: this.transform.crop, groups: this.groups });
       this._base = canvas;
       return canvas;
     }
@@ -833,7 +931,7 @@ export class StudioDoc {
     }
     const canvas = makeCanvas(underlay.width, underlay.height);
     // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移（见 renderer.js）
-    composite(canvas.getContext('2d'), underlay, this.layers, { crop: this.transform.crop });
+    composite(canvas.getContext('2d'), underlay, this.layers, { crop: this.transform.crop, groups: this.groups });
     this._base = canvas;
     return canvas;
   }

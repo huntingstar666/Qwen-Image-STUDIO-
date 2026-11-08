@@ -263,6 +263,9 @@ export async function saveStudioProject(project) {
       viewport: project.session?.viewport || null,
       activeTool: project.session?.activeTool || '',
       currentVersionId: project.session?.currentVersionId || '',
+      baseVisible: project.session?.baseVisible !== false,
+      // 图层组（D23.4 L4）：组参数；组员关系在每层的 props.groupId 里。
+      groups: Array.isArray(project.session?.groups) ? project.session.groups : [],
       schemaVersion: SCHEMA_VERSION,
     },
     projectId,

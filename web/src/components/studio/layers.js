@@ -11,6 +11,27 @@ import { quadBounds, pointInQuad, warpImageToQuad } from './perspective.js';
 
 let seq = 0;
 
+/** 命中检测用的 1×1 采样画布（复用，避免每次点击都新建）。 */
+let hitCanvas = null;
+let hitCtx = null;
+
+function pixelAlphaAt(source, x, y) {
+  try {
+    if (!hitCanvas) {
+      hitCanvas = document.createElement('canvas');
+      hitCanvas.width = 1;
+      hitCanvas.height = 1;
+      hitCtx = hitCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    hitCtx.clearRect(0, 0, 1, 1);
+    hitCtx.drawImage(source, x, y, 1, 1, 0, 0, 1, 1);
+    return hitCtx.getImageData(0, 0, 1, 1).data[3];
+  } catch {
+    // 取不到像素（跨域 / 未解码）时按不透明处理，退回几何命中。
+    return 255;
+  }
+}
+
 /** 贴纸/叠加层可用的混合模式（D11.3），id 直接作为 Canvas globalCompositeOperation。 */
 export const BLEND_MODES = [
   { id: 'source-over', label: '正常' },
@@ -43,10 +64,14 @@ export class OverlayLayer {
       visible = true,
       clipped = false,
       quad = null,
+      groupId = '',
+      smart = false,
       id = '',
     } = {},
   ) {
-    this.id = id || `ov-${(seq += 1)}`;
+    // 带时间戳：刷新后模块级序号会归零，纯序号会和从本机工程恢复的旧 id 撞车，
+    // 导致两个图层同 id（第二个选不中、保存时互相覆盖丢层）。
+    this.id = id || `ov-${Date.now().toString(36)}-${(seq += 1)}`;
     this.image = image;
     this.name = name;
     this.x = Number(x) || 0;
@@ -71,6 +96,16 @@ export class OverlayLayer {
     this.locked = Boolean(locked);
     /** 显隐（D9.3 图层面板眼睛按钮）；隐藏的图层不参与合成。 */
     this.visible = visible !== false;
+    /** 所属图层组（D23.4 L4）：空串 = 不在组内；组的显隐/不透明度/混合在合成时统一应用。 */
+    this.groupId = String(groupId || '');
+    /**
+     * 智能对象（D23.4 L4 可选）：始终按原始位图绘制，缩放/旋转不烘焙像素；
+     * 面板显示「智能」角标，可「替换内容」或「恢复原始尺寸」。
+     */
+    this.smart = Boolean(smart);
+    /** 智能对象的原始像素尺寸（替换内容后更新，用于「原始尺寸」与信息展示）。 */
+    this.sourceWidth = Number(this.image?.naturalWidth || this.image?.width) || 0;
+    this.sourceHeight = Number(this.image?.naturalHeight || this.image?.height) || 0;
     /**
      * 图层蒙版（D8.2）：尺寸等于图层原图像素，白色 = 显示，黑色 = 隐藏；
      * 只在 draw() 合成时应用，不改变图层几何。
@@ -118,6 +153,41 @@ export class OverlayLayer {
     const lx = dx * cos - dy * sin;
     const ly = dx * sin + dy * cos;
     return Math.abs(lx) <= width / 2 && Math.abs(ly) <= height / 2;
+  }
+
+  /**
+   * 像素级命中：几何命中后再看该点像素的 alpha（D23.7）。
+   *
+   * 抠图层是带大片透明像素的 PNG，若只按外框判定，上层抠图的透明区域会挡住
+   * 下层图层的可见内容，表现为「双击下层没反应」。这里让透明处可以点穿。
+   * 透视层保持几何命中（重采样成本高，且四角通常贴合内容）。
+   */
+  hitTestPixel(px, py) {
+    if (!this.hitTest(px, py)) return false;
+    if (this.quad) return true;
+    const source = this.maskedImage();
+    const nw = source?.naturalWidth || source?.width || 0;
+    const nh = source?.naturalHeight || source?.height || 0;
+    if (!nw || !nh) return false;
+    const width = this.width;
+    const height = this.height;
+    if (width < 1 || height < 1) return false;
+    const scale = Math.max(0.0001, this.scale || 1);
+    const cx = this.x + width / 2;
+    const cy = this.y + height / 2;
+    const rad = (-(this.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = px - cx;
+    const dy = py - cy;
+    const lx = dx * cos - dy * sin;
+    const ly = dx * sin + dy * cos;
+    let ix = Math.floor((lx + width / 2) / scale);
+    let iy = Math.floor((ly + height / 2) / scale);
+    if (this.flipH) ix = nw - 1 - ix;
+    if (this.flipV) iy = nh - 1 - iy;
+    if (ix < 0 || iy < 0 || ix >= nw || iy >= nh) return false;
+    return pixelAlphaAt(source, ix, iy) > 8;
   }
 
   hasMask() {
@@ -214,6 +284,11 @@ export class OverlayLayer {
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
     ctx.globalCompositeOperation = this.blend || 'source-over';
+    // 智能对象放大时用高质量重采样，避免大图放大出现明显锯齿。
+    if (this.smart) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+    }
     if (this.rotation || this.flipH || this.flipV) {
       ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
       if (this.rotation) ctx.rotate((this.rotation * Math.PI) / 180);
@@ -241,6 +316,8 @@ export class OverlayLayer {
       locked: this.locked,
       visible: this.visible,
       clipped: this.clipped,
+      groupId: this.groupId,
+      smart: this.smart,
       quad: this.quad ? this.quad.map((point) => ({ ...point })) : null,
     });
     if (this.mask) {

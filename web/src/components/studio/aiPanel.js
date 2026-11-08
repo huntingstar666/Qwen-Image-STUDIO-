@@ -225,9 +225,10 @@ export function mountAiPanel(host, ctx) {
         <div class="ai-row" data-ref="resultActions" hidden>
           <button class="btn ghost sm" type="button" data-ref="previewBtn">画布预览</button>
           <button class="btn ghost sm" type="button" data-ref="compareBtn">与底图对比</button>
+          <button class="btn ghost sm" type="button" data-ref="asLayerBtn" title="保留主图，把结果落成可单独显隐/移动的图层">作为新图层</button>
           <button class="btn primary sm" type="button" data-ref="adoptBtn">载入为新底图</button>
         </div>
-        <div class="ai-hint" data-ref="adoptHint" hidden>载入后结果图成为新的主图，蒙版与历史会清空，可继续精修或再次扩图。</div>
+        <div class="ai-hint" data-ref="adoptHint" hidden>「载入为新底图」会替换主图并清空蒙版与历史；「作为新图层」保留主图，结果叠成可单独编辑的图层。</div>
         <div class="ai-quality" data-ref="quality" hidden></div>
       </section>
 
@@ -291,6 +292,7 @@ export function mountAiPanel(host, ctx) {
     resultActions: ref('resultActions'),
     previewBtn: ref('previewBtn'),
     compareBtn: ref('compareBtn'),
+    asLayerBtn: ref('asLayerBtn'),
     adoptBtn: ref('adoptBtn'),
     adoptHint: ref('adoptHint'),
     quality: ref('quality'),
@@ -321,6 +323,8 @@ export function mountAiPanel(host, ctx) {
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
     currentHistoryId: '',
     resultEntryId: '',
+    /** 本次提交用的蒙版（输出尺寸）：结果「作为新图层」时并到该层。 */
+    submittedMask: null,
   };
 
   /** 富文本指令框：chip 存储参考图 id，提交时序列化回 `@图N`。 */
@@ -1301,6 +1305,14 @@ export function mountAiPanel(host, ctx) {
 
     state.busy = true;
     state.previewOn = false;
+    // 记下本次提交的蒙版，出图后「作为新图层」时并进图层，只在修改区域显示结果。
+    state.submittedMask = source.hasMask && source.mask
+      ? {
+          dataUrl: source.mask,
+          width: source.maskSize?.width || 0,
+          height: source.maskSize?.height || 0,
+        }
+      : null;
     syncBusy();
     refs.resultActions.hidden = true;
     refs.adoptHint.hidden = true;
@@ -1334,7 +1346,7 @@ export function mountAiPanel(host, ctx) {
           refs.resultActions.hidden = false;
           renderQuality(job);
           if (state.resultInfo.width && state.resultInfo.height) {
-            refs.adoptHint.textContent = `载入后 ${state.resultInfo.width}×${state.resultInfo.height} 成为新底图：蒙版与历史清空，可继续精修或再次扩图。`;
+            refs.adoptHint.textContent = `结果 ${state.resultInfo.width}×${state.resultInfo.height}：可「作为新图层」保留主图叠加，或「载入为新底图」直接替换主图。`;
             refs.adoptHint.hidden = false;
           }
           state.previewOn = true;
@@ -1721,6 +1733,26 @@ export function mountAiPanel(host, ctx) {
     state.previewOn = !state.previewOn;
     refs.previewBtn.textContent = state.previewOn ? '回到主图' : '画布预览';
     ctx.showResult?.(state.previewOn ? state.resultUrl : null);
+  });
+
+  refs.asLayerBtn.addEventListener('click', async () => {
+    if (!state.resultUrl || state.busy) return;
+    refs.asLayerBtn.disabled = true;
+    try {
+      const info = await ctx.addResultAsLayer?.(state.resultUrl, {
+        task: state.resultInfo?.task || refs.task.value,
+        width: state.resultInfo?.width,
+        height: state.resultInfo?.height,
+        mask: state.submittedMask,
+      });
+      // 无论落层是否成功都退回主图视图：否则结果预览会盖住新图层，看起来像没生效。
+      state.previewOn = false;
+      refs.previewBtn.textContent = '画布预览';
+      ctx.showResult?.(null);
+      return info;
+    } finally {
+      refs.asLayerBtn.disabled = false;
+    }
   });
 
   refs.adoptBtn.addEventListener('click', async () => {

@@ -82,8 +82,9 @@ function measureContext() {
 }
 
 export class TextLayer {
-  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, opacity = 1, visible = true, locked = false, blend = 'source-over', clipped = false, ...text } = {}) {
-    this.id = id || `tx-${(seq += 1)}`;
+  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, opacity = 1, visible = true, locked = false, blend = 'source-over', clipped = false, groupId = '', ...text } = {}) {
+    // 带时间戳，避免刷新后序号归零与已恢复图层的 id 冲突。
+    this.id = id || `tx-${Date.now().toString(36)}-${(seq += 1)}`;
     this.name = name;
     this.x = Number(x) || 0;
     this.y = Number(y) || 0;
@@ -94,6 +95,8 @@ export class TextLayer {
     /** 混合模式与剪贴蒙版（D12.1）。 */
     this.blend = BLEND_IDS.has(blend) ? blend : 'source-over';
     this.clipped = Boolean(clipped);
+    /** 所属图层组（D23.4 L4）。 */
+    this.groupId = String(groupId || '');
     this.text = typeof text.text === 'string' ? text.text : TEXT_DEFAULTS.text;
     this.fontFamily = text.fontFamily || TEXT_DEFAULTS.fontFamily;
     this.fontSize = clamp(Number(text.fontSize) || TEXT_DEFAULTS.fontSize, 8, 400);
@@ -234,6 +237,7 @@ export class TextLayer {
       locked: this.locked,
       blend: this.blend,
       clipped: this.clipped,
+      groupId: this.groupId,
       text: this.text,
       fontFamily: this.fontFamily,
       fontSize: this.fontSize,

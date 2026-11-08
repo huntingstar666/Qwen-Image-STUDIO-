@@ -232,8 +232,10 @@ export class AdjustmentLayer {
     visible = true,
     locked = false,
     local = null,
+    groupId = '',
   } = {}) {
-    this.id = id || `adj-${(seq += 1)}`;
+    // 带时间戳，避免刷新后序号归零与已恢复图层的 id 冲突。
+    this.id = id || `adj-${Date.now().toString(36)}-${(seq += 1)}`;
     this.name = name;
     this.params = normalizeAdjustment(params);
     /** 覆盖范围 = 文档「旋转后、未裁剪」尺寸，与 doc.mask 同坐标 */
@@ -247,6 +249,8 @@ export class AdjustmentLayer {
     this.maskVisible = true;
     /** 局部调整描述（D9.4）：线性/径向渐变；画笔涂抹后保留最后几何，便于回显 */
     this.local = normalizeLocal(local || LOCAL_DEFAULT);
+    /** 所属图层组（D23.4 L4）：组内合成时只作用于组内像素。 */
+    this.groupId = String(groupId || '');
   }
 
   get kind() {
@@ -325,6 +329,7 @@ export class AdjustmentLayer {
       visible: this.visible,
       locked: this.locked,
       local: this.local,
+      groupId: this.groupId,
     });
     if (this.mask) {
       const canvas = makeCanvas(this.mask.width, this.mask.height);

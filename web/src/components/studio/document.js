@@ -21,6 +21,8 @@ export function createDocument({ width = 0, height = 0 } = {}) {
     height: Number(height) || 0,
     layers: [],
     activeId: '',
+    /** 图层组（D23.4 L4）：[{ id, name, visible, opacity, blend, collapsed }] */
+    groups: [],
   };
 }
 

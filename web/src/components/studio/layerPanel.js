@@ -48,6 +48,8 @@ export function createLayerColumn(host, ctx) {
       <button type="button" data-lc-act="copy" title="复制图层（Ctrl/Cmd + J）"><span class="glyph">⧉</span><span class="label">复制</span></button>
       <button type="button" data-lc-act="del" title="删除图层（Delete）"><span class="glyph">✕</span><span class="label">删除</span></button>
       <button type="button" data-lc-act="export" title="把选中图层导出为 PNG（画布尺寸）"><span class="glyph">⭳</span><span class="label">导出</span></button>
+      <button type="button" data-lc-act="group" title="把选中图层编成一个组（组可整体显隐 / 调不透明度 / 改混合）"><span class="glyph">▣</span><span class="label">成组</span></button>
+      <button type="button" data-lc-act="ungroup" title="解散选中图层所在的组"><span class="glyph">▢</span><span class="label">解组</span></button>
       <button type="button" data-lc-act="merge" title="合并图层" aria-haspopup="menu" aria-expanded="false"><span class="glyph">⇩</span><span class="label">合并</span></button>
       <div class="studio-merge-menu" data-lc-merge-menu role="menu" hidden>
         <button type="button" role="menuitem" data-lc-merge="selected">合并选中</button>
@@ -118,11 +120,48 @@ export function createLayerColumn(host, ctx) {
 
   const rows = () => ctx.listLayersForPanel?.() || [];
 
+  /** 底部不透明滑杆的目标：选中组时调组不透明度，否则调主选图层。 */
+  function opacityTargetId() {
+    const groupId = ctx.getSelectedGroupId?.() || '';
+    if (groupId) return `group:${groupId}`;
+    return ctx.getSelectedLayerId?.() || '';
+  }
+
   function chip(label, cls = '') {
     return `<span class="studio-layer-chip ${cls}">${label}</span>`;
   }
 
+  /** 图层组行（D23.4 L4）：折叠箭头 + 组名 + 组员数 + 组显隐。 */
+  function groupRowHtml(row) {
+    const groupId = row.group.id;
+    const selected = (ctx.getSelectedGroupId?.() || '') === groupId;
+    const hidden = row.visible === false;
+    const classes = ['studio-layer', 'is-group', selected ? 'is-selected' : '', hidden ? 'is-hidden' : '']
+      .filter(Boolean)
+      .join(' ');
+    const opacity = Math.round((row.opacity ?? 1) * 100);
+    return `
+      <div class="${classes}" data-group="${groupId}" role="option" aria-selected="${selected}">
+        <button class="studio-layer-caret" type="button" data-group-toggle="${groupId}"
+          title="${row.collapsed ? '展开图层组' : '折叠图层组'}" aria-expanded="${row.collapsed ? 'false' : 'true'}">${
+            row.collapsed ? '▸' : '▾'
+          }</button>
+        <span class="studio-layer-info">
+          <button class="studio-layer-name" type="button" data-group-pick="${groupId}"
+            title="单击选中组 · 双击重命名">${escapeHtml(row.name)}</button>
+          <span class="studio-layer-meta">
+            ${chip('组', 'is-kind')}${chip(`${row.count || 0} 层`)}
+            <span class="studio-layer-alpha mono">${opacity}%</span>
+          </span>
+        </span>
+        <button class="studio-layer-icon${hidden ? ' is-off' : ''}" type="button" data-group-visible="${groupId}"
+          title="${hidden ? '显示图层组' : '隐藏图层组'}">${hidden ? '◌' : '◉'}</button>
+        <span class="studio-layer-icon is-static" title="图层组的锁定请对组内图层单个设置">—</span>
+      </div>`;
+  }
+
   function rowHtml(layer) {
+    if (layer.kind === 'group') return groupRowHtml(layer);
     const isBase = layer.kind === 'base';
     const selectedIds = ctx.getSelectedLayerIds?.() || [];
     const primaryId = ctx.getSelectedLayerId?.() || '';
@@ -132,6 +171,7 @@ export function createLayerColumn(host, ctx) {
     const classes = [
       'studio-layer',
       isBase ? 'is-base' : '',
+      layer.indent ? 'is-indent' : '',
       selected ? 'is-selected' : '',
       primary ? 'is-primary' : '',
       hidden ? 'is-hidden' : '',
@@ -148,6 +188,8 @@ export function createLayerColumn(host, ctx) {
     if (layer.isText) chips.push(chip('文字', 'is-kind'));
     if (layer.isShape) chips.push(chip('形状', 'is-kind'));
     if (layer.clipped) chips.push(chip('剪贴', 'is-kind'));
+    // 智能对象（D23.4 L4）：面板角标，缩放不烘焙像素。
+    if (layer.smart) chips.push(chip('智能', 'is-kind'));
     if (!isBase && !layer.isText && !layer.isShape) {
       const maskClass = layer.mask ? (layer.maskVisible ? 'is-on' : 'is-muted') : '';
       const maskTitle = layer.mask
@@ -193,24 +235,51 @@ export function createLayerColumn(host, ctx) {
 
   function render() {
     const list = rows();
-    const count = list.filter((layer) => layer.kind !== 'base').length;
+    const count = list.filter((layer) => layer.kind !== 'base' && layer.kind !== 'group').length;
     refs.count.textContent = String(count);
     refs.spineCount.textContent = String(count);
     refs.list.innerHTML = list.map(rowHtml).join('');
     refs.empty.textContent = list.length ? '从文件或图层库添加图层' : '打开图片后可管理图层';
     refs.empty.hidden = count > 0;
+    const selectedGroupId = ctx.getSelectedGroupId?.() || '';
     const selectedId = ctx.getSelectedLayerId?.() || '';
     const selected = list.find((layer) => layer.id === selectedId && layer.kind !== 'base') || null;
-    const canEdit = Boolean(selected);
-    const hasLayers = list.some((layer) => layer.kind !== 'base');
+    const selectedGroup = selectedGroupId
+      ? list.find((layer) => layer.kind === 'group' && layer.group.id === selectedGroupId) || null
+      : null;
+    // 组选中时只开放「成组 / 解组」，图层级操作（移动/复制/删除/导出）禁用。
+    const canEdit = Boolean(selected) && !selectedGroup;
+    const hasLayers = list.some((layer) => layer.kind !== 'base' && layer.kind !== 'group');
+    const inAnyGroup = Boolean(selectedGroup) || Boolean(selected && ctx.isLayerGrouped?.(selected.id));
+    // 上移/下移到达边界时禁用按钮，避免点了没反应像「坏了」（多选按整组判断）。
+    const selectedIds = (ctx.getSelectedLayerIds?.() || []).filter(Boolean);
+    if (!selectedIds.length && selectedId) selectedIds.push(selectedId);
+    const selectedRows = [];
+    list.forEach((layer, index) => {
+      if (layer.kind !== 'base' && layer.kind !== 'group' && selectedIds.includes(layer.id)) selectedRows.push(index);
+    });
+    const layerRowIndexes = [];
+    list.forEach((layer, index) => {
+      if (layer.kind !== 'base' && layer.kind !== 'group') layerRowIndexes.push(index);
+    });
+    const atTop = selectedRows.length > 0 && Math.min(...selectedRows) === layerRowIndexes[0];
+    const atBottom =
+      selectedRows.length > 0 && Math.max(...selectedRows) === layerRowIndexes[layerRowIndexes.length - 1];
     for (const button of refs.foot.querySelectorAll('[data-lc-act]')) {
+      const act = button.dataset.lcAct;
       // 「合并」菜单里的「合并可见 / 拼合」不需要选中层，只要求有图层。
-      button.disabled = button.dataset.lcAct === 'merge' ? !hasLayers : !canEdit;
+      if (act === 'merge') button.disabled = !hasLayers;
+      else if (act === 'group') button.disabled = !(selected || selectedIds.length);
+      else if (act === 'ungroup') button.disabled = !inAnyGroup;
+      else if (act === 'up' || act === 'top') button.disabled = !canEdit || atTop;
+      else if (act === 'down' || act === 'bottom') button.disabled = !canEdit || atBottom;
+      else button.disabled = !canEdit;
     }
-    refs.alpha.disabled = !canEdit;
+    const alphaTarget = selectedGroup || selected;
+    refs.alpha.disabled = !alphaTarget;
     if (refs.libSave) refs.libSave.disabled = !canEdit;
-    if (selected) {
-      const value = Math.round((selected.opacity ?? 1) * 100);
+    if (alphaTarget) {
+      const value = Math.round((alphaTarget.opacity ?? 1) * 100);
       refs.alpha.value = String(value);
       refs.alphaVal.textContent = `${value}%`;
     }
@@ -282,6 +351,27 @@ export function createLayerColumn(host, ctx) {
       ctx.toggleCollapsed?.();
       return;
     }
+    // 图层组行（D23.4 L4）：折叠 / 选中 / 组显隐。
+    const groupToggle = event.target.closest('[data-group-toggle]');
+    if (groupToggle) {
+      ctx.toggleGroupCollapsed?.(groupToggle.dataset.groupToggle);
+      return;
+    }
+    const groupPick = event.target.closest('[data-group-pick]');
+    if (groupPick) {
+      ctx.selectGroup?.(groupPick.dataset.groupPick);
+      return;
+    }
+    const groupEye = event.target.closest('[data-group-visible]');
+    if (groupEye) {
+      ctx.toggleGroupVisible?.(groupEye.dataset.groupVisible);
+      return;
+    }
+    const groupRow = event.target.closest('[data-group]');
+    if (groupRow && !event.target.closest('button')) {
+      ctx.selectGroup?.(groupRow.dataset.group);
+      return;
+    }
     const pick = event.target.closest('[data-layer-pick]');
     if (pick) {
       if (pick.dataset.layerPick === 'base') ctx.selectNone?.();
@@ -323,6 +413,14 @@ export function createLayerColumn(host, ctx) {
         toggleMergeMenu();
         return;
       }
+      if (action === 'group') {
+        ctx.createGroupFromSelection?.();
+        return;
+      }
+      if (action === 'ungroup') {
+        ctx.ungroupSelection?.();
+        return;
+      }
       const id = ctx.getSelectedLayerId?.();
       if (!id) return;
       if (action === 'up') ctx.moveLayer?.(id, 1);
@@ -344,7 +442,7 @@ export function createLayerColumn(host, ctx) {
   host.addEventListener('input', (event) => {
     const input = event.target.closest('[data-lc-alpha]');
     if (!input) return;
-    const id = ctx.getSelectedLayerId?.();
+    const id = opacityTargetId();
     if (!id) return;
     refs.alphaVal.textContent = `${input.value}%`;
     ctx.setLayerOpacity?.(id, Number(input.value) / 100);
@@ -358,6 +456,40 @@ export function createLayerColumn(host, ctx) {
   /* ---------------------------------------------------------- 双击重命名 */
 
   host.addEventListener('dblclick', (event) => {
+    // 图层组改名（D23.4 L4）。
+    const groupName = event.target.closest('[data-group-pick]');
+    if (groupName) {
+      event.preventDefault();
+      const groupId = groupName.dataset.groupPick;
+      const row = rows().find((item) => item.kind === 'group' && item.group.id === groupId);
+      if (!row) return;
+      const input = document.createElement('input');
+      input.className = 'studio-layer-rename';
+      input.value = row.name;
+      input.maxLength = 60;
+      groupName.replaceWith(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const next = input.value.trim();
+        if (commit && next && next !== row.name) ctx.renameGroup?.(groupId, next);
+        render();
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+      });
+      input.addEventListener('blur', () => finish(true));
+      return;
+    }
     const name = event.target.closest('[data-layer-pick]');
     if (!name) return;
     const layer = rows().find((item) => item.id === name.dataset.layerPick);
@@ -409,7 +541,7 @@ export function createLayerColumn(host, ctx) {
 
   host.addEventListener('dragstart', (event) => {
     const row = event.target.closest?.('[data-layer]');
-    if (!row || row.dataset.layer === 'base' || event.target.closest('input')) {
+    if (!row || row.dataset.layer === 'base' || row.dataset.group || event.target.closest('input')) {
       event.preventDefault();
       return;
     }
@@ -427,8 +559,9 @@ export function createLayerColumn(host, ctx) {
 
   host.addEventListener('dragover', (event) => {
     if (!draggingId) return;
-    const row = event.target.closest?.('[data-layer]');
-    if (!row || row.dataset.layer === draggingId) return;
+    const row = event.target.closest?.('.studio-layer');
+    if (!row) return;
+    if (row.dataset.layer === draggingId) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     clearDrop();
@@ -436,16 +569,28 @@ export function createLayerColumn(host, ctx) {
   });
 
   host.addEventListener('drop', (event) => {
-    const row = event.target.closest?.('[data-layer]');
+    const row = event.target.closest?.('.studio-layer');
     if (!draggingId || !row) return;
     event.preventDefault();
     const id = draggingId;
+    // 拖到组行 = 移入该组（D23.4 L4）。
+    if (row.dataset.group) {
+      const groupId = row.dataset.group;
+      stopDrag();
+      ctx.assignLayerGroup?.(id, groupId);
+      return;
+    }
+    if (!row.dataset.layer) return;
     // 面板顶层在上：落点 = 目标图层在 doc.layers 里的下标；主图行 = 0。
     const to =
       row.dataset.layer === 'base'
         ? 0
         : (ctx.getLayers?.() || []).findIndex((layer) => layer.id === row.dataset.layer);
     stopDrag();
+    // 把组内图层拖到组外 = 移出该组（PS 的同一手势，D23.4 L4）。
+    const sourceGroup = ctx.getLayerGroupId?.(id) || '';
+    const targetGroup = row.dataset.layer === 'base' ? '' : ctx.getLayerGroupId?.(row.dataset.layer) || '';
+    if (sourceGroup && targetGroup !== sourceGroup) ctx.assignLayerGroup?.(id, '');
     if (to < 0) return;
     ctx.moveLayerTo?.(id, to);
   });

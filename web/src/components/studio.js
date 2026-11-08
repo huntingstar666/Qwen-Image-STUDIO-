@@ -98,7 +98,7 @@ const TOOLS = [
     id: 'view',
     label: '抓手',
     key: 'V',
-    hint: '拖动画布；按住空格可随时平移',
+    hint: '拖动画布；点中图层可单独拖动；按住空格随时平移',
     icon:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11"/><path d="M11 10.5V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M14 10.5V6.5a1.5 1.5 0 0 1 3 0V13"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-2a7 7 0 0 1-5.6-2.8L4 14.5a1.6 1.6 0 0 1 2.5-2l1.5 1.8"/></svg>',
   },
@@ -326,6 +326,8 @@ export function createStudioPage(host) {
   let selectedLayerId = null;
   /* D23.2：多选集合；selectedLayerId 继续表示「主选」（最后点击的那层）。 */
   const selectedLayerIds = new Set();
+  /* D23.4 L4：选中的图层组（面板组行的主选）；与 selectedLayerId 互斥。 */
+  let selectedGroupId = '';
   /* D23.1：左侧图层栏（可折叠）+ 主图显隐 + 缩略图缓存。 */
   let layersPanel = null;
   let baseVisible = true;
@@ -411,6 +413,7 @@ export function createStudioPage(host) {
             <div class="studio-import-menu studio-proj-menu" role="menu" data-ref="projMenu" hidden>
               <button type="button" role="menuitem" data-proj="new-local">新建项目 · 本地图片</button>
               <button type="button" role="menuitem" data-proj="new-warehouse">新建项目 · 素材仓库</button>
+              <button type="button" role="menuitem" data-proj="history">历史项目…</button>
               <button type="button" role="menuitem" data-proj="save">立即保存（Ctrl+S）</button>
               <button type="button" role="menuitem" data-proj="rename">重命名项目</button>
               <button type="button" role="menuitem" data-proj="close">关闭项目</button>
@@ -629,10 +632,11 @@ export function createStudioPage(host) {
                   <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="9" width="34" height="30" rx="4"/><path d="M7 31l9-8 7 6 5-4 13 10"/><circle cx="17" cy="18" r="2.4"/></svg>
                 </div>
                 <div class="studio-empty-title">开始精修</div>
-                <div class="studio-empty-hint">打开一张图片，或直接从素材仓库「在图片精修中打开」；支持拖拽与粘贴。</div>
+                <div class="studio-empty-hint">打开一张图片，或从「历史项目」继续上次的工程；也支持素材仓库「在图片精修中打开」、拖拽与粘贴。</div>
                 <div class="studio-empty-actions">
                   <button class="btn primary" type="button" data-ref="emptyOpen">从本地选择</button>
                   <button class="btn ghost" type="button" data-ref="emptyWarehouse">从素材仓库</button>
+                  <button class="btn ghost" type="button" data-ref="emptyHistory">历史项目</button>
                 </div>
               </div>
               <div class="studio-cropbar" data-ref="cropbar" hidden>
@@ -867,7 +871,7 @@ export function createStudioPage(host) {
             </div>
 
             <div class="studio-layer-props" data-ref="layerProps" hidden>
-              <div class="studio-pane-title">图层属性 · <span class="mono" data-ref="layerPropsName"></span></div>
+              <div class="studio-pane-title">图层属性<span data-ref="layerPropsSep" hidden> · </span><span class="mono" data-ref="layerPropsName"></span></div>
               <label class="studio-maskbar-field">
                 <span>混合</span>
                 <select class="select" data-ref="layerBlend" aria-label="图层混合模式">
@@ -875,6 +879,13 @@ export function createStudioPage(host) {
                 </select>
               </label>
               <label class="studio-check"><input type="checkbox" data-ref="layerClipped" /><span>剪贴到下层</span></label>
+              <div class="studio-row studio-smart" data-ref="smartRow" hidden>
+                <label class="studio-check" title="智能对象：始终按原始位图绘制，缩放不烘焙像素">
+                  <input type="checkbox" data-ref="smartToggle" /><span>智能对象</span>
+                </label>
+                <button class="btn ghost sm" type="button" data-ref="smartReplace" title="换一张图，保留位置、缩放、蒙版与混合">替换内容…</button>
+                <button class="btn ghost sm" type="button" data-ref="smartReset" title="把图层恢复到原始像素尺寸（100%）">原始尺寸</button>
+              </div>
               <div class="studio-note" data-ref="layerPropsHint" hidden></div>
             </div>
 
@@ -974,6 +985,7 @@ export function createStudioPage(host) {
     empty: ref('empty'),
     emptyOpen: ref('emptyOpen'),
     emptyWarehouse: ref('emptyWarehouse'),
+    emptyHistory: ref('emptyHistory'),
     cropbar: ref('cropbar'),
     cropInfo: ref('cropInfo'),
     cropApply: ref('cropApply'),
@@ -1069,8 +1081,13 @@ export function createStudioPage(host) {
     patternClear: ref('patternClear'),
     layerProps: ref('layerProps'),
     layerPropsName: ref('layerPropsName'),
+    layerPropsSep: ref('layerPropsSep'),
     layerBlend: ref('layerBlend'),
     layerClipped: ref('layerClipped'),
+    smartRow: ref('smartRow'),
+    smartToggle: ref('smartToggle'),
+    smartReplace: ref('smartReplace'),
+    smartReset: ref('smartReset'),
     layerPropsHint: ref('layerPropsHint'),
     snapshotBox: ref('snapshotBox'),
     snapshotList: ref('snapshotList'),
@@ -1306,11 +1323,56 @@ export function createStudioPage(host) {
     syncLayersPanel();
   }
 
+  /**
+   * 图层排序（支持多选整组）：delta = +1 上移一层 / -1 下移一层。
+   * 整组移动时保持组内相对顺序；已经贴边（无法再移）返回 false。
+   */
+  function shiftLayers(ids, delta) {
+    if (!doc || !ids?.length || !delta) return false;
+    const set = new Set(ids);
+    const layers = doc.layers;
+    let moved = false;
+    if (delta > 0) {
+      // 从上往下扫：选中层上方不是选中层就交换，整组因此整体上移一格。
+      for (let i = layers.length - 2; i >= 0; i -= 1) {
+        if (set.has(layers[i].id) && !set.has(layers[i + 1].id)) {
+          [layers[i], layers[i + 1]] = [layers[i + 1], layers[i]];
+          moved = true;
+        }
+      }
+    } else {
+      for (let i = 1; i < layers.length; i += 1) {
+        if (set.has(layers[i].id) && !set.has(layers[i - 1].id)) {
+          [layers[i], layers[i - 1]] = [layers[i - 1], layers[i]];
+          moved = true;
+        }
+      }
+    }
+    if (!moved) return false;
+    doc.touchLayers();
+    doc.commitLayers();
+    return true;
+  }
+
   function moveLayerEdgeTo(id, edge) {
     if (!doc) return false;
-    const to = edge === 'top' ? doc.layers.length - 1 : 0;
-    const moved = doc.moveOverlay(id, to);
-    if (moved < 0) return false;
+    const ids = actionLayerIds(id);
+    if (!ids.length) return false;
+    const set = new Set(ids);
+    const layers = doc.layers;
+    const picked = layers.filter((layer) => set.has(layer.id));
+    if (!picked.length) return false;
+    const before = layers.map((layer) => layer.id).join('|');
+    for (const layer of picked) {
+      const at = layers.indexOf(layer);
+      if (at >= 0) layers.splice(at, 1);
+    }
+    // 多选置顶/置底时同样保持组内相对顺序。
+    if (edge === 'top') layers.push(...picked);
+    else layers.unshift(...picked);
+    if (layers.map((layer) => layer.id).join('|') === before) return false;
+    doc.touchLayers();
+    doc.commitLayers();
     selectedLayerId = id;
     syncLayerProps();
     updateHistoryUi();
@@ -1329,8 +1391,9 @@ export function createStudioPage(host) {
   }
 
   /** 统一选中入口：普通 / Ctrl(Cmd) 加选 / Shift 连选。 */
-  function selectLayerById(id, { additive = false, range = false } = {}) {
+  function selectLayerById(id, { additive = false, range = false, keepTool = false } = {}) {
     if (!doc || !id) return;
+    selectedGroupId = '';
     if (range && selectedLayerId) {
       const order = panelLayerIds();
       const a = order.indexOf(selectedLayerId);
@@ -1356,7 +1419,8 @@ export function createStudioPage(host) {
     editingLayerMaskId = '';
     const layer = doc.findLayer(id);
     // 调整图层没有几何，选中时保持当前工具（D9.3）。
-    if (!layer?.isAdjustment) setTool('move');
+    // keepTool：抓手工具下点选图层时保留抓手，避免顺手把工具切走。
+    if (!layer?.isAdjustment && !keepTool) setTool('move');
     if (layer?.isText) {
       activeTab = 'text';
       syncTabs();
@@ -1381,11 +1445,22 @@ export function createStudioPage(host) {
     return selectedLayerIds.size > 1 && selectedLayerIds.has(id) ? [...selectedLayerIds] : [id];
   }
 
+  /** 删掉已经没有组员的组记录（删除 / 合并 / 解组后调用）。 */
+  function pruneEmptyGroups() {
+    if (!doc) return;
+    const used = new Set(doc.layers.map((layer) => layer.groupId).filter(Boolean));
+    const next = doc.groups.filter((group) => used.has(group.id));
+    if (next.length === doc.groups.length) return;
+    doc.groups = next;
+    if (selectedGroupId && !doc.findGroup(selectedGroupId)) selectedGroupId = '';
+  }
+
   /** 删除图层（多选时一次快照删完，可一次撤销）。 */
   function removeLayers(ids) {
     if (!doc || !ids?.length) return false;
     const removed = doc.removeOverlays(ids);
     if (!removed) return false;
+    pruneEmptyGroups();
     for (const id of ids) {
       layerBlobs.delete(id);
       if (editingLayerMaskId === id) editingLayerMaskId = '';
@@ -1441,6 +1516,23 @@ export function createStudioPage(host) {
     const ix = imagePoint.x + (crop?.x || 0);
     const iy = imagePoint.y + (crop?.y || 0);
     return active.hitTest(ix, iy) ? 'inside' : null;
+  }
+
+  /**
+   * 画布点选命中（D23.7）：位图层优先按像素 alpha 判定，
+   * 抠图的透明区域可以点穿到下层；文字 / 形状 / 调整层仍按各自几何判定。
+   */
+  function pickLayerAt(ix, iy) {
+    if (!doc) return null;
+    const layers = doc.layers || [];
+    for (let i = layers.length - 1; i >= 0; i -= 1) {
+      const layer = layers[i];
+      // 隐藏的图层组不参与画布点选（组员眼睛按钮仍保留各自状态）。
+      if (layer.groupId && doc.findGroup(layer.groupId)?.visible === false) continue;
+      const hit = layer.hitTestPixel ? layer.hitTestPixel(ix, iy) : layer.hitTest(ix, iy);
+      if (hit) return layer;
+    }
+    return null;
   }
 
   function cursorForHandle(kind) {
@@ -1528,10 +1620,11 @@ export function createStudioPage(host) {
     const c2 = canvas.getContext('2d');
     // 「合并可见」把主图也烤进新层；合并选中/向下合并保持透明底。
     if (mode === 'visible' && baseVisible) c2.drawImage(doc.renderUnderlay(), 0, 0);
-    drawLayers(c2, stack, { crop, skip });
+    drawLayers(c2, stack, { crop, skip, groups: doc.groups });
 
     const removeIds = targets.map((layer) => layer.id);
     const layer = doc.replaceOverlaysWithCanvas(removeIds, canvas, { name });
+    pruneEmptyGroups();
     for (const id of removeIds) {
       layerBlobs.delete(id);
       selectedLayerIds.delete(id);
@@ -1573,7 +1666,7 @@ export function createStudioPage(host) {
     const canvas = makeCanvas(doc.size.width, doc.size.height);
     const c2 = canvas.getContext('2d');
     if (baseVisible) c2.drawImage(doc.renderUnderlay(), 0, 0);
-    drawLayers(c2, doc.layers, { crop });
+    drawLayers(c2, doc.layers, { crop, groups: doc.groups });
     try {
       sourceBlob = await canvasToBlob(canvas, 'image/png');
     } catch {
@@ -1585,6 +1678,7 @@ export function createStudioPage(host) {
     layerBlobs.clear();
     selectedLayerId = null;
     selectedLayerIds.clear();
+    selectedGroupId = '';
     editingLayerMaskId = '';
     baseVisible = true;
     refs.stage.classList.remove('is-base-hidden');
@@ -1910,6 +2004,82 @@ export function createStudioPage(host) {
         return null;
       }
     },
+    /**
+     * D23.4：把 AI 结果落成新的叠加图层（主图与历史都不动）。
+     * 结果图按输出区域对齐；本次有蒙版时并到该层，只在修改区域显示。
+     */
+    async addResultAsLayer(url, meta = {}) {
+      if (!url || !doc) return null;
+      const current = doc;
+      try {
+        const image = await loadImage(url);
+        if (doc !== current) return null;
+        if (imageTooLarge(image, 'AI 结果')) return null;
+        const iw = image.naturalWidth || image.width || 0;
+        const ih = image.naturalHeight || image.height || 0;
+        if (!iw || !ih) return null;
+        const crop = current.transform.crop;
+        const targetW = current.size.width;
+        const targetH = current.size.height;
+        // 结果尺寸通常等于输出尺寸（scale = 1 与主图完全重合）；更大/更小时等比适配并居中。
+        const scale = Math.min(1, targetW / iw, targetH / ih);
+        const x = Math.round((crop?.x || 0) + (targetW - iw * scale) / 2);
+        const y = Math.round((crop?.y || 0) + (targetH - ih * scale) / 2);
+        const used = (current.layers || [])
+          .map((layer) => /^AI 结果\s*(\d+)$/.exec(String(layer.name || '')))
+          .filter(Boolean)
+          .map((match) => Number(match[1]));
+        const count = (used.length ? Math.max(...used) : 0) + 1;
+        // 有本次蒙版时，先把「结果 × 选区」烘成一张带透明 PNG；随后统一走
+        // addOverlayFile（与贴纸导入同一条已验证路径：落盘、选中、重绘都由它处理）。
+        let blob = null;
+        if (meta.mask?.dataUrl) {
+          try {
+            const maskImage = await loadImage(meta.mask.dataUrl);
+            if (doc !== current) return null;
+            const canvas = makeCanvas(iw, ih);
+            const cctx = canvas.getContext('2d');
+            cctx.drawImage(image, 0, 0, iw, ih);
+            cctx.globalCompositeOperation = 'destination-in';
+            cctx.drawImage(maskImage, 0, 0, iw, ih);
+            blob = await canvasToBlob(canvas, 'image/png');
+          } catch (err) {
+            console.warn('[studio] 结果裁切蒙版失败，按整图落层', err);
+            blob = null;
+          }
+        }
+        if (!blob) blob = await fetchBlob(url);
+        if (!blob) {
+          try {
+            blob = await canvasToBlob(image, 'image/png');
+          } catch {
+            blob = null;
+          }
+        }
+        if (!blob) {
+          toastWarn('拿不到结果图，无法作为图层');
+          return null;
+        }
+        const file = new File([blob], `ai-result-${count}.png`, { type: blob.type || 'image/png' });
+        const layer = await addOverlayFile(file, {
+          name: `AI 结果 ${count}`,
+          x,
+          y,
+          scale,
+          focusSticker: true,
+        });
+        if (!layer) return null;
+        toastSuccess(
+          meta.mask?.dataUrl
+            ? '已把结果作为新图层（只在修改区域显示），主图保留'
+            : '已把结果作为新图层，主图保留；可在图层面板调不透明度或显隐对比',
+        );
+        return { id: layer.id, width: Math.round(iw * scale), height: Math.round(ih * scale) };
+      } catch (err) {
+        toastError(err, '结果转为图层失败');
+        return null;
+      }
+    },
     async addOverlay(file, options = {}) {
       return addOverlayFile(file, options);
     },
@@ -1984,13 +2154,11 @@ export function createStudioPage(host) {
       scheduleDraw();
       return copy;
     },
-    /** 图层排序：delta = +1 上移一层 / -1 下移一层。 */
+    /** 图层排序：delta = +1 上移一层 / -1 下移一层；多选时整组移动。 */
     moveLayer(id, delta) {
       if (!doc) return false;
-      const from = doc.layers.findIndex((layer) => layer.id === id);
-      if (from < 0) return false;
-      const moved = doc.moveOverlay(id, from + (Number(delta) || 0));
-      if (moved < 0) return false;
+      const step = Number(delta) || 0;
+      if (!step || !shiftLayers(actionLayerIds(id), step)) return false;
       selectedLayerId = id;
       syncLayerProps();
       updateHistoryUi();
@@ -2063,6 +2231,12 @@ export function createStudioPage(host) {
     },
     setLayerOpacity(id, value) {
       if (!doc) return;
+      // 组行传 'group:<id>'：改的是组不透明度（合成时整组生效）。
+      if (String(id).startsWith('group:')) {
+        doc.setGroupProps(String(id).slice(6), { opacity: Math.max(0, Math.min(1, Number(value) || 0)) });
+        scheduleDraw();
+        return;
+      }
       doc.setOverlayOpacity(id, value);
       scheduleDraw();
     },
@@ -2165,23 +2339,188 @@ export function createStudioPage(host) {
     getBaseVisible() {
       return baseVisible;
     },
-    /** 面板行：顶层在上 + 主图虚拟行（id='base'）置底。 */
+    /**
+     * 面板行：顶层在上 + 主图虚拟行（id='base'）置底。
+     * 图层组（D23.4 L4）：组行插在最高组员上方，组员缩进；组折叠时隐藏组员。
+     */
     listLayersForPanel() {
       if (!doc) return [];
-      return [
-        ...doc.layers.slice().reverse(),
-        {
-          id: 'base',
-          kind: 'base',
-          name: doc.name || '主图',
-          visible: baseVisible,
-          locked: true,
-          opacity: 1,
-        },
-      ];
+      const rows = [];
+      const seenGroups = new Set();
+      for (const layer of doc.layers.slice().reverse()) {
+        const groupId = layer.groupId || '';
+        if (!groupId) {
+          rows.push(layer);
+          continue;
+        }
+        const group = doc.findGroup(groupId);
+        if (!group) {
+          // 组记录已不存在（旧工程/异常数据）：当普通图层显示。
+          rows.push(layer);
+          continue;
+        }
+        if (!seenGroups.has(groupId)) {
+          seenGroups.add(groupId);
+          rows.push({
+            id: `group:${group.id}`,
+            kind: 'group',
+            group,
+            name: group.name,
+            visible: group.visible !== false,
+            locked: false,
+            opacity: group.opacity ?? 1,
+            collapsed: Boolean(group.collapsed),
+            count: doc.layers.filter((item) => item.groupId === groupId).length,
+          });
+        }
+        if (!group.collapsed) {
+          // 用原型继承而不是展开：缩略图要调 layer.maskedImage()，展开会丢方法。
+          rows.push(Object.assign(Object.create(layer), { indent: true }));
+        }
+      }
+      rows.push({
+        id: 'base',
+        kind: 'base',
+        name: doc.name || '主图',
+        visible: baseVisible,
+        locked: true,
+        opacity: 1,
+      });
+      return rows;
+    },
+    getSelectedGroupId() {
+      return selectedGroupId;
+    },
+    /** 选中组行：清空图层选择，右侧「图层属性」改为组参数。 */
+    selectGroup(id) {
+      if (!doc || !doc.findGroup(id)) return;
+      selectedGroupId = id;
+      selectedLayerId = null;
+      selectedLayerIds.clear();
+      editingLayerMaskId = '';
+      syncAdjustInputs();
+      syncStickerPane();
+      syncShapePane();
+      syncLayerProps();
+      syncLayersPanel();
+      scheduleDraw();
+    },
+    toggleGroupCollapsed(id) {
+      const group = doc?.findGroup(id);
+      if (!group) return;
+      doc.setGroupProps(id, { collapsed: !group.collapsed });
+      if (group.collapsed) {
+        // 折叠后组员在面板里不可见，选中态一并清掉，避免「选中了看不见的层」。
+        for (const layer of doc.layers) {
+          if (layer.groupId !== id) continue;
+          selectedLayerIds.delete(layer.id);
+          if (selectedLayerId === layer.id) selectedLayerId = null;
+        }
+        if (selectedLayerId === null) syncLayerProps();
+      }
+      syncLayersPanel();
+      scheduleDraw();
+      scheduleSave();
+    },
+    toggleGroupVisible(id) {
+      const group = doc?.findGroup(id);
+      if (!group) return false;
+      doc.setGroupProps(id, { visible: group.visible === false });
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      syncLayersPanel();
+      scheduleDraw();
+      scheduleSave();
+      return true;
+    },
+    renameGroup(id, name) {
+      if (!doc?.findGroup(id)) return false;
+      if (!doc.setGroupProps(id, { name })) return false;
+      syncLayersPanel();
+      syncLayerProps();
+      scheduleSave();
+      return true;
+    },
+    /** 从当前选中图层建组（≥1 层）；组内顺序不变，可撤销。 */
+    createGroupFromSelection() {
+      if (!doc) return false;
+      const ids = selectedLayerIds.size ? [...selectedLayerIds] : selectedLayerId ? [selectedLayerId] : [];
+      if (!ids.length) {
+        toastWarn('先选中要编组的图层');
+        return false;
+      }
+      const group = doc.groupLayers(ids, { name: `组 ${doc.groups.length + 1}` });
+      if (!group) return false;
+      doc.touchLayers();
+      doc.commitLayers();
+      selectedGroupId = group.id;
+      selectedLayerId = null;
+      selectedLayerIds.clear();
+      syncLayerProps();
+      updateHistoryUi();
+      syncLayersPanel();
+      scheduleDraw();
+      scheduleSave();
+      toastSuccess(`已把 ${ids.length} 个图层编入「${group.name}」`);
+      return true;
+    },
+    /** 解组：选中组/组员时解掉对应组，其余图层不受影响。 */
+    ungroupSelection() {
+      if (!doc) return false;
+      const ids = selectedGroupId
+        ? doc.layers.filter((layer) => layer.groupId === selectedGroupId).map((layer) => layer.id)
+        : selectedLayerIds.size
+          ? [...selectedLayerIds]
+          : selectedLayerId
+            ? [selectedLayerId]
+            : [];
+      const removed = doc.ungroup(ids);
+      if (!removed) {
+        toastWarn('当前选中不在任何图层组里');
+        return false;
+      }
+      doc.touchLayers();
+      doc.commitLayers();
+      selectedGroupId = '';
+      syncLayerProps();
+      updateHistoryUi();
+      syncLayersPanel();
+      scheduleDraw();
+      scheduleSave();
+      toastSuccess('已解散图层组，组员回到原来的层叠位置');
+      return true;
+    },
+    /** 把图层移入 / 移出组（面板拖到组行）。groupId 传空 = 移出。 */
+    assignLayerGroup(layerId, groupId) {
+      if (!doc) return false;
+      const layer = doc.findLayer(layerId);
+      if (!layer) return false;
+      const next = groupId && doc.findGroup(groupId) ? groupId : '';
+      if ((layer.groupId || '') === next) return false;
+      layer.groupId = next;
+      doc.touchLayers();
+      doc.commitLayers();
+      updateHistoryUi();
+      syncLayersPanel();
+      scheduleDraw();
+      scheduleSave();
+      return true;
     },
     getLayerThumb(layer) {
       return layerThumbFor(layer);
+    },
+    /** 该图层是否在某个组里（面板「解组」按钮可用性）。 */
+    isLayerGrouped(id) {
+      return Boolean(doc?.findLayer(id)?.groupId);
+    },
+    /** 图层所属组 id（拖拽出组判定用）。 */
+    getLayerGroupId(id) {
+      return doc?.findLayer(id)?.groupId || '';
+    },
+    /** 拖拽排序用：doc.layers 的原始顺序（0 = 最底层）。 */
+    getLayers() {
+      return doc ? doc.layers : [];
     },
     /* D23.3：合并 / 导出 / 图层库 / 复制粘贴 */
     mergeLayers(mode) {
@@ -2218,6 +2557,7 @@ export function createStudioPage(host) {
       if (!doc) return;
       selectedLayerId = null;
       selectedLayerIds.clear();
+      selectedGroupId = '';
       editingLayerMaskId = '';
       syncAdjustInputs();
       syncTextPane();
@@ -2495,6 +2835,8 @@ export function createStudioPage(host) {
   function fitView() {
     if (!doc) return;
     const rect = stageEl.getBoundingClientRect();
+    // 布局还没就绪（例如切换工程时面板尚未展开）不要把缩放算成 2%，否则恢复后画面会消失。
+    if (rect.width < 8 || rect.height < 8) return;
     const image = doc.renderBase();
     const pad = 56;
     const scale = Math.min(
@@ -2510,6 +2852,17 @@ export function createStudioPage(host) {
     updateZoomLabel();
     scheduleDraw();
     scheduleSave(1500);
+  }
+
+  /** 当前视口里的画面是否还看得见：恢复工程时用来兜底过小/过偏的视口。 */
+  function viewVisible() {
+    if (!doc) return false;
+    const rect = stageEl.getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) return false;
+    if (!(view.scale >= 0.05)) return false;
+    const w = doc.size.width * view.scale;
+    const h = doc.size.height * view.scale;
+    return view.x + w > 8 && view.y + h > 8 && view.x < rect.width - 8 && view.y < rect.height - 8;
   }
 
   function actualSize() {
@@ -2658,7 +3011,7 @@ export function createStudioPage(host) {
       ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
       ctx.scale(view.scale, view.scale);
       // 统一走 renderer，剪贴蒙版与混合模式在拖动预览里同样生效（D12.1）。
-      drawLayers(ctx, doc.layers, { crop });
+      drawLayers(ctx, doc.layers, { crop, groups: doc.groups });
       ctx.restore();
     }
 
@@ -3261,11 +3614,13 @@ export function createStudioPage(host) {
   }
 
   /** 把分割蒙版贴进选区（灰度 PNG，白 = 选中；尺寸与原图一致，这里统一缩到蒙版空间）。 */
-  async function applySegmentMask(mask) {
-    if (!doc || !mask?.url) return;
+  async function applySegmentMask(mask, owner = doc) {
+    if (!doc || doc !== owner || !mask?.url) return;
     const size = maskSize();
     if (!size.width || !size.height) return;
     const image = await loadImage(api.fileUrl(mask.url));
+    // 图片解码期间可能已经切换了工程，旧蒙版不能再落到新文档上。
+    if (doc !== owner) return;
     const canvas = makeCanvas(size.width, size.height);
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
@@ -3295,6 +3650,8 @@ export function createStudioPage(host) {
    */
   async function runSegment(hint = {}) {
     if (!doc || segBusy) return;
+    // 记住发起时的文档：轮询期间切换工程后，旧结果不能再贴到新工程上。
+    const owner = doc;
     const base = doc.renderBase();
     const send = segmentSendSize(base.width, base.height, 2048);
     let image = base;
@@ -3346,11 +3703,12 @@ export function createStudioPage(host) {
       const job = await segJob;
       segJob = null;
       if (!job) return;
+      if (doc !== owner) return;
       if (job.status !== 'done') throw new Error(job.error || '分割失败');
       const masks = sortSegmentMasks(job.meta?.masks || job.masks || []);
       if (!masks.length) throw new Error('没有返回蒙版');
       segCandidates = masks;
-      await applySegmentMask(masks[0]);
+      await applySegmentMask(masks[0], owner);
     } catch (err) {
       failed = err?.message || '分割失败';
       toastError(err, '主体选择失败');
@@ -3929,7 +4287,13 @@ export function createStudioPage(host) {
 
   refs.canvas.addEventListener('pointerdown', (event) => {
     if (!doc) return;
-    refs.canvas.setPointerCapture?.(event.pointerId);
+    // 合成事件 / 触控笔拿不到活动指针时 setPointerCapture 会抛错，
+    // 一旦抛出后面的绘制逻辑全被跳过（手绘工具会「点了没反应」）。
+    try {
+      refs.canvas.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* 捕获失败不影响后续拖拽：pointermove/up 仍绑定在画布上 */
+    }
     dragRect = refs.canvas.getBoundingClientRect();
     const freePoint = toImage(event.clientX, event.clientY, dragRect);
     const point = clampPoint(freePoint);
@@ -3964,7 +4328,28 @@ export function createStudioPage(host) {
       drag = { mode: 'local', type: localEdit, start: at, end: at };
       return;
     }
-    if (event.button === 1 || spaceDown || tool === 'view') {
+    if (event.button === 1 || spaceDown) {
+      if (refs.canvas.style.cursor) refs.canvas.style.cursor = '';
+      drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
+      refs.canvas.classList.add('is-grabbing');
+      return;
+    }
+    if (tool === 'view') {
+      // 抓手工具也支持点选图层：点中图层就选中并单独拖动，点空白才整体平移。
+      const crop = doc.transform.crop;
+      const ix = freePoint.x + (crop?.x || 0);
+      const iy = freePoint.y + (crop?.y || 0);
+      const layer = pickLayerAt(ix, iy);
+      if (layer) {
+        selectLayerById(layer.id, {
+          additive: event.metaKey || event.ctrlKey,
+          range: event.shiftKey,
+          keepTool: true,
+        });
+        drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
+        return;
+      }
+      if (refs.canvas.style.cursor) refs.canvas.style.cursor = '';
       drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
       refs.canvas.classList.add('is-grabbing');
       return;
@@ -4137,7 +4522,7 @@ export function createStudioPage(host) {
         }
       }
 
-      const layer = [...(doc.layers || [])].reverse().find((item) => item.hitTest(ix, iy));
+      const layer = pickLayerAt(ix, iy);
       if (layer) {
         // 画布点选同样支持 Ctrl 加选 / Shift 连选（D23.2）。
         selectLayerById(layer.id, {
@@ -4162,8 +4547,45 @@ export function createStudioPage(host) {
         syncLayersPanel();
         scheduleDraw();
       }
-      drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
-      refs.canvas.classList.add('is-grabbing');
+      // 移动工具下拖主图/空白处只取消选中，不再平移画布：
+      // 以前这里会平移，画面连同所有图层一起移动，看起来像「拖动主图带动了所有图层」。
+      // 需要平移时用抓手工具（V）、空格拖动或鼠标中键。
+      return;
+    }
+  });
+
+  /**
+   * 双击画布切换操作模式（用户提议）：
+   * - 双击图层 → 切到「移动」并选中该层，直接进入拖动/缩放手柄；
+   * - 双击空白 → 切到「抓手」，整张画布拖来拖去。
+   * 只影响抓手/移动两种工具，避免在画笔、文字等工具下误触。
+   */
+  refs.canvas.addEventListener('dblclick', (event) => {
+    if (!doc) return;
+    if (tool !== 'view' && tool !== 'move') return;
+    const rect = refs.canvas.getBoundingClientRect();
+    const at = toImage(event.clientX, event.clientY, rect);
+    const crop = doc.transform.crop;
+    const ix = at.x + (crop?.x || 0);
+    const iy = at.y + (crop?.y || 0);
+    const layer = pickLayerAt(ix, iy);
+    if (layer) {
+      // selectLayerById 内部会切到移动工具并同步右侧属性。
+      selectLayerById(layer.id);
+      toast('已切换到移动工具 · 可拖动 / 缩放该图层');
+      return;
+    }
+    // 命中的是主图（背景）：它不可拖动/缩放，这里给明确反馈，
+    // 否则用户会以为「双击图层没有出现虚线框」是功能坏了。
+    const size = doc.size;
+    const onBase = ix >= 0 && iy >= 0 && ix <= size.width && iy <= size.height;
+    if (onBase) {
+      toast('这是主图（背景），不可拖动；要缩放画面上的人物，请在图层面板选中抠图层');
+      return;
+    }
+    if (tool !== 'view') {
+      setTool('view');
+      toast('已切换到抓手工具 · 拖动整张画布');
     }
   });
 
@@ -4176,6 +4598,16 @@ export function createStudioPage(host) {
         refs.canvas.style.cursor = doc
           ? cursorForHandle(hitLayerHandle(event.clientX, event.clientY, rect))
           : '';
+      } else if (tool === 'view' && doc) {
+        // 抓手工具：悬停在图层上提示「可拖动」，点住即可单独移动该层。
+        const crop = doc.transform.crop;
+        const at = toImage(event.clientX, event.clientY, rect);
+        const over = doc.layers
+          .slice()
+          .reverse()
+          .some((item) => item.hitTest(at.x + (crop?.x || 0), at.y + (crop?.y || 0)));
+        const next = over ? 'move' : '';
+        if (refs.canvas.style.cursor !== next) refs.canvas.style.cursor = next;
       } else if (refs.canvas.style.cursor) {
         refs.canvas.style.cursor = '';
       }
@@ -4663,6 +5095,7 @@ export function createStudioPage(host) {
     refs.cropbar.hidden = true;
     editingLayerMaskId = '';
     selectedLayerId = null;
+    selectedGroupId = '';
     pendingStickerPoint = null;
     perspectiveEdit = false;
     tint = null;
@@ -4683,6 +5116,7 @@ export function createStudioPage(host) {
     refs.maskClear.disabled = true;
     refs.maskExport.disabled = true;
     renderSnapshots();
+    syncLayerProps();
     updateHistoryUi();
     updateSelectionUi();
     updatePatternHint?.();
@@ -5473,6 +5907,102 @@ export function createStudioPage(host) {
     return ok;
   }
 
+  /**
+   * 历史项目弹窗（D22.2 补充）：空页面没有 Dock，Dock 里的「项目历史」在
+   * 没打开工程时整体隐藏，这里给「＋ 项目菜单」和空状态提供同一个入口。
+   */
+  async function openProjectHistoryDialog() {
+    const holder = document.createElement('div');
+    holder.className = 'studio-proj-dialog';
+    const modal = openModal({
+      title: '历史项目',
+      subtitle: '本机保存的精修工程 · 打开后继续编辑',
+      size: 'md',
+      hideFooter: true,
+      content: holder,
+    });
+
+    const render = async () => {
+      let projects = [];
+      try {
+        projects = await listProjects();
+      } catch {
+        projects = [];
+      }
+      if (!holder.isConnected) return;
+      if (!projects.length) {
+        holder.innerHTML =
+          '<div class="studio-projects-empty">还没有精修工程。新建项目并编辑后会自动保存在本机，并出现在这里。</div>';
+        return;
+      }
+      const tab = tabId();
+      holder.innerHTML = `<div class="studio-projects-list">${projects
+        .map((project) => {
+          const locked = project.id !== projectId && leaseHeldByOther(project.id, tab);
+          const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
+          const when = project.updatedAt ? relativeTime(project.updatedAt) : '';
+          return `<div class="studio-proj-item${project.id === projectId ? ' is-current' : ''}" data-pid="${escapeHtml(
+            project.id,
+          )}">
+            <div class="studio-proj-thumb">${
+              project.thumbnail ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />` : '<span>无图</span>'
+            }</div>
+            <div class="studio-proj-info">
+              <div class="studio-proj-name">${escapeHtml(project.name || '未命名工程')}</div>
+              <div class="studio-proj-meta mono">${escapeHtml([size, when].filter(Boolean).join(' · '))}</div>
+            </div>
+            <div class="studio-proj-actions">
+              <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>${
+                locked ? '编辑中' : '打开'
+              }</button>
+              <button class="btn ghost sm" type="button" data-act="delete">删除</button>
+            </div>
+          </div>`;
+        })
+        .join('')}</div>`;
+    };
+
+    holder.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-act]');
+      if (!button) return;
+      const id = button.closest('[data-pid]')?.dataset.pid;
+      if (!id) return;
+      if (button.dataset.act === 'open') {
+        button.disabled = true;
+        const ok = await openProjectById(id);
+        button.disabled = false;
+        if (ok) {
+          modal.close();
+          await syncProjectCount();
+        }
+        return;
+      }
+      if (button.dataset.act === 'delete') {
+        const name = button.closest('[data-pid]')?.querySelector('.studio-proj-name')?.textContent || '该工程';
+        const confirmed = await confirmDialog({
+          title: '删除工程',
+          message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
+          confirmText: '删除',
+          danger: true,
+        });
+        if (!confirmed) return;
+        try {
+          if (id === projectId) await closeProject({ flush: false });
+          await clearProject(id);
+        } catch (err) {
+          toastError(err, '删除工程失败');
+          return;
+        }
+        toastSuccess('工程已删除');
+        await render();
+        await syncProjectCount();
+      }
+    });
+
+    await render();
+    return modal;
+  }
+
   refs.projHistoryBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     setProjHistory(refs.projHistoryPanel.hidden);
@@ -5639,6 +6169,8 @@ export function createStudioPage(host) {
           flipV: Boolean(layer.flipV),
           blend: layer.blend || 'source-over',
           clipped: Boolean(layer.clipped),
+          groupId: layer.groupId || '',
+          smart: Boolean(layer.smart),
           quad: layer.quad ? layer.quad.map((point) => ({ ...point })) : null,
           locked: layer.locked,
           visible: layer.visible !== false,
@@ -5711,6 +6243,8 @@ export function createStudioPage(host) {
         activeTool: tool,
         currentVersionId,
         baseVisible,
+        // 图层组（D23.4 L4）：只存轻量参数，组员关系保存在每层的 props.groupId 里。
+        groups: current.groups.map((group) => ({ ...group })),
       },
     };
   }
@@ -5960,11 +6494,34 @@ export function createStudioPage(host) {
           });
           // 保留原图层 id，后续自动保存仍然增量更新同一批记录。
           layer.id = record.id;
+          // 智能对象（D23.4 L4）：恢复标记与原始像素尺寸。
+          layer.smart = Boolean(props.smart);
+          layer.sourceWidth = layer.naturalWidth || layer.sourceWidth || 0;
+          layer.sourceHeight = layer.naturalHeight || layer.sourceHeight || 0;
           layerBlobs.set(record.id, record.bitmapBlob);
           await restoreLayerMask(layer, props, record.maskBlob);
         } catch {
           missing.push(record.props?.name || record.id);
         }
+      }
+
+      // 图层组（D23.4 L4）：先恢复组参数，再把组员关系贴回各图层。
+      next.groups = (session.groups || [])
+        .filter((group) => group && group.id)
+        .map((group) => ({
+          id: String(group.id),
+          name: String(group.name || '组'),
+          visible: group.visible !== false,
+          opacity: Math.max(0, Math.min(1, Number(group.opacity) || 0)),
+          blend: group.blend || 'source-over',
+          collapsed: Boolean(group.collapsed),
+        }));
+      for (const record of saved.layers || []) {
+        const groupId = record.props?.groupId || '';
+        if (!groupId) continue;
+        const layer = next.findLayer(record.id);
+        // 组记录丢了就当普通图层，避免出现「看不见的组员」。
+        if (layer && next.findGroup(groupId)) layer.groupId = groupId;
       }
 
       next.clearHistory();
@@ -5986,12 +6543,20 @@ export function createStudioPage(host) {
         activeTab = normalizeTab(session.activeTab);
         syncTabs();
       }
-      if (session.viewport && session.viewport.scale > 0) {
-        view = { ...session.viewport };
+      const savedView = session.viewport;
+      if (savedView && Number.isFinite(savedView.scale) && savedView.scale > 0) {
+        view = {
+          scale: savedView.scale,
+          x: Number(savedView.x) || 0,
+          y: Number(savedView.y) || 0,
+        };
         updateZoomLabel();
-      } else {
-        requestAnimationFrame(fitView);
       }
+      // 视口被存成极小缩放或完全偏出画面时（切换工程后「主图不见了」），兜底重新适应。
+      requestAnimationFrame(() => {
+        if (!doc) return;
+        if (!viewVisible()) fitView();
+      });
 
       // 参考图落库时是 Blob，面板内部统一用 dataURL。
       const restoredRefs = [];
@@ -6171,6 +6736,7 @@ export function createStudioPage(host) {
     editingLayerMaskId = '';
     selectedLayerId = null;
     selectedLayerIds.clear();
+    selectedGroupId = '';
     pendingStickerPoint = null;
     perspectiveEdit = false;
     tint = null;
@@ -6855,25 +7421,57 @@ export function createStudioPage(host) {
     return layer && !layer.isAdjustment ? layer : null;
   }
 
+  /** 当前选中的图层组（面板组行）；组参数也走这块「图层属性」。 */
+  function groupPropsTarget() {
+    return doc && selectedGroupId ? doc.findGroup(selectedGroupId) : null;
+  }
+
   function syncLayerProps() {
-    const layer = layerPropsTarget();
-    refs.layerProps.hidden = !layer;
-    if (!layer) return;
-    refs.layerPropsName.textContent = layer.name;
-    refs.layerBlend.value = layer.blend || 'source-over';
-    const index = doc.layers.indexOf(layer);
-    const canClip = index > 0;
+    const group = groupPropsTarget();
+    const layer = group ? null : layerPropsTarget();
+    const target = group || layer;
+    // 有工程时这块始终占位（无选中则禁用）：选中/取消图层不再显示/隐藏整块，
+    // 否则右侧分页高度忽大忽小，切换主图与图层时整块面板会「抖动」。
+    refs.layerProps.hidden = !doc;
+    const canEdit = Boolean(target);
+    refs.layerPropsName.textContent = target ? target.name : '';
+    if (refs.layerPropsSep) refs.layerPropsSep.hidden = !target;
+    refs.layerBlend.value = target?.blend || 'source-over';
+    refs.layerBlend.disabled = !canEdit;
+    refs.layerBlend.title = group ? '整组合成后生效' : '当前图层的混合模式';
+    const index = layer ? doc.layers.indexOf(layer) : -1;
+    const canClip = Boolean(layer) && index > 0;
     refs.layerClipped.disabled = !canClip;
     refs.layerClipped.checked = canClip && Boolean(layer.clipped);
-    refs.layerPropsHint.hidden = canClip;
-    refs.layerPropsHint.textContent = canClip ? '' : '最底层不能剪贴：请先把它移到其他图层之上。';
+    refs.layerClipped.title = group
+      ? '图层组不支持整组剪贴（可对组内单个图层设置）'
+      : canClip
+        ? '只显示在下层不透明区域内'
+        : '最底层不能剪贴：请先把它移到其他图层之上';
+    // 智能对象（D23.4 L4 可选）：只对位图层开放；组 / 调整层 / 文字 / 形状隐藏。
+    const canSmart = Boolean(layer) && !layer.isText && !layer.isShape && !layer.isAdjustment;
+    refs.smartRow.hidden = !canSmart;
+    if (canSmart) {
+      const locked = Boolean(layer.locked);
+      refs.smartToggle.checked = Boolean(layer.smart);
+      refs.smartToggle.disabled = locked;
+      refs.smartReplace.hidden = !layer.smart;
+      refs.smartReset.hidden = !layer.smart;
+      // 锁定图层不允许换内容 / 改尺寸（与拖动、缩放一致）。
+      refs.smartReplace.disabled = locked;
+      refs.smartReset.disabled = locked || Math.abs((layer.scale ?? 1) - 1) < 0.001;
+      refs.smartReset.title = `恢复到原始像素尺寸（${Math.round(layer.sourceWidth || 0)} × ${Math.round(
+        layer.sourceHeight || 0,
+      )}）`;
+    }
+    // 提示行不再改变高度，说明改挂到 checkbox 的 title 上。
+    refs.layerPropsHint.hidden = true;
+    refs.layerPropsHint.textContent = '';
   }
 
   function commitLayerProps() {
-    const layer = layerPropsTarget();
-    if (!layer) return;
-    doc.touchLayers();
-    doc.commitLayers();
+    doc?.touchLayers();
+    doc?.commitLayers();
     syncLayerProps();
     updateHistoryUi();
     scheduleDraw();
@@ -6882,6 +7480,13 @@ export function createStudioPage(host) {
   }
 
   refs.layerBlend.addEventListener('change', () => {
+    const group = groupPropsTarget();
+    if (group) {
+      doc.setGroupProps(group.id, { blend: refs.layerBlend.value });
+      commitLayerProps();
+      syncLayersPanel();
+      return;
+    }
     const layer = layerPropsTarget();
     if (!layer) return;
     layer.blend = refs.layerBlend.value;
@@ -6893,6 +7498,153 @@ export function createStudioPage(host) {
     if (!layer) return;
     layer.clipped = refs.layerClipped.checked;
     commitLayerProps();
+  });
+
+  /* --------------------------------------------------- 智能对象（D23.4 L4 可选） */
+
+  /** 转为 / 取消智能对象：转换时先把原始文件落到 layerBlobs，刷新后仍是原图。 */
+  async function setLayerSmart(id, enabled) {
+    const layer = doc?.findLayer(id);
+    if (!layer || layer.isText || layer.isShape || layer.isAdjustment) return false;
+    if (layer.locked) {
+      toastWarn('图层已锁定：先解锁再改智能对象');
+      return false;
+    }
+    if (enabled) {
+      try {
+        await layerBlobFor(layer);
+      } catch {
+        /* 编码失败也允许转换，只是刷新后退回当前像素 */
+      }
+      layer.smart = true;
+      layer.sourceWidth = layer.naturalWidth || layer.sourceWidth || 0;
+      layer.sourceHeight = layer.naturalHeight || layer.sourceHeight || 0;
+    } else {
+      layer.smart = false;
+    }
+    doc.touchLayers();
+    doc.commitLayers();
+    syncLayerProps();
+    syncLayersPanel();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    toast(
+      enabled
+        ? '已转为智能对象：始终按原始位图绘制，可「原始尺寸」还原或「替换内容」'
+        : '已取消智能对象（像素与缩放不变）',
+    );
+    return true;
+  }
+
+  /** 恢复到 100%（原始像素尺寸），围绕图层中心缩放。 */
+  function resetSmartLayerSize(layer) {
+    if (!layer) return false;
+    if (layer.locked) {
+      toastWarn('图层已锁定：先解锁再改尺寸');
+      return false;
+    }
+    const centerX = layer.x + layer.width / 2;
+    const centerY = layer.y + layer.height / 2;
+    layer.scale = 1;
+    layer.x = Math.round(centerX - layer.width / 2);
+    layer.y = Math.round(centerY - layer.height / 2);
+    doc.touchLayers();
+    doc.commitLayers();
+    syncLayerProps();
+    syncStickerPane();
+    syncLayersPanel();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    toast(`已恢复原始尺寸 ${Math.round(layer.naturalWidth)} × ${Math.round(layer.naturalHeight)}`);
+    return true;
+  }
+
+  /** 替换内容：换图但保留位置、缩放、旋转、蒙版、混合与所属组。 */
+  function replaceSmartLayerContent(layer) {
+    if (!layer) return;
+    if (layer.locked) {
+      toastWarn('图层已锁定：先解锁再替换内容');
+      return;
+    }
+    openImportPicker({
+      title: '替换智能对象内容',
+      accept: 'main',
+      multiple: false,
+      onPick(items) {
+        const item = items?.[0];
+        if (item?.src) void applySmartReplacement(layer.id, item);
+      },
+    });
+  }
+
+  async function applySmartReplacement(id, item) {
+    const current = doc;
+    const layer = current?.findLayer(id);
+    if (!layer || !item?.src) return false;
+    try {
+      const image = await loadImage(item.src);
+      // 加载期间可能切了工程 / 删了图层 / 被锁定
+      if (doc !== current || !current.findLayer(id)) return false;
+      if (layer.locked) {
+        toastWarn('图层已锁定，已取消替换');
+        return false;
+      }
+      if (imageTooLarge(image, '智能对象')) return false;
+      const centerX = layer.x + layer.width / 2;
+      const centerY = layer.y + layer.height / 2;
+      layer.image = image;
+      layer._masked = null;
+      layer._warpCache = null;
+      layer.smart = true;
+      layer.sourceWidth = image.naturalWidth || image.width || 0;
+      layer.sourceHeight = image.naturalHeight || image.height || 0;
+      layer.x = Math.round(centerX - (layer.sourceWidth * layer.scale) / 2);
+      layer.y = Math.round(centerY - (layer.sourceHeight * layer.scale) / 2);
+      try {
+        const blob = await (await fetch(item.src)).blob();
+        if (blob?.size) {
+          layerBlobs.set(id, blob);
+          scheduleSave();
+        }
+      } catch {
+        /* 拿不到字节时下次保存会按当前像素重新编码 */
+      }
+      layerThumbs.clear();
+      doc.touchLayers();
+      doc.commitLayers();
+      syncLayerProps();
+      syncStickerPane();
+      syncLayersPanel();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      toastSuccess('已替换智能对象内容 · 位置、缩放与蒙版保持不变');
+      return true;
+    } catch (err) {
+      toastError(err, '替换内容失败');
+      return false;
+    }
+  }
+
+  refs.smartToggle.addEventListener('change', () => {
+    const layer = layerPropsTarget();
+    if (!layer) {
+      refs.smartToggle.checked = false;
+      return;
+    }
+    void setLayerSmart(layer.id, refs.smartToggle.checked);
+  });
+
+  refs.smartReplace.addEventListener('click', () => {
+    const layer = layerPropsTarget();
+    if (layer?.smart) replaceSmartLayerContent(layer);
+  });
+
+  refs.smartReset.addEventListener('click', () => {
+    const layer = layerPropsTarget();
+    if (layer?.smart) resetSmartLayerSize(layer);
   });
 
   /* --------------------------------------------------- 历史快照（D12.3） */
@@ -7078,7 +7830,7 @@ export function createStudioPage(host) {
     if (lost.length) {
       const ok = await confirmDialog({
         title: label,
-        message: `${label}会清空${lost.join('、')}（可用 Ctrl+Z 撤销），确定继续？`,
+        message: `${label}会清空 ${lost.join('、')}（可用 Ctrl+Z 撤销），确定继续？`,
         confirmText: '继续',
         danger: true,
       });
@@ -7445,7 +8197,12 @@ export function createStudioPage(host) {
         // 抠图层必须用原图尺寸画布，否则坐标会被固定尺寸缩放打乱。
         const blob = await canvasToBlob(raw, 'image/png');
         const file = new File([blob], `${name}-cutout.png`, { type: 'image/png' });
-        const count = (doc.layers || []).filter((layer) => String(layer.name || '').startsWith('抠图')).length + 1;
+        // 编号取已有「抠图 N」的最大值 +1，避免删掉中间某个后重名。
+        const usedNumbers = (doc.layers || [])
+          .map((layer) => /^抠图\s*(\d+)$/.exec(String(layer.name || '')))
+          .filter(Boolean)
+          .map((match) => Number(match[1]));
+        const count = (usedNumbers.length ? Math.max(...usedNumbers) : 0) + 1;
         const layer = await addOverlayFile(file, {
           name: `抠图 ${count}`,
           x: rect.x,
@@ -7652,6 +8409,13 @@ export function createStudioPage(host) {
   function setProjMenu(open) {
     refs.projMenu.hidden = !open;
     refs.projBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) return;
+    // 没打开工程时「保存 / 重命名 / 关闭 / 删除」都无事可做，直接禁用；
+    // 「历史项目」任何时候都能打开。
+    for (const item of refs.projMenu.querySelectorAll('[data-proj]')) {
+      const action = item.dataset.proj;
+      item.disabled = !doc && action !== 'new-local' && action !== 'new-warehouse' && action !== 'history';
+    }
   }
 
   refs.projBtn.addEventListener('click', (event) => {
@@ -7668,6 +8432,7 @@ export function createStudioPage(host) {
     const action = item.dataset.proj;
     if (action === 'new-local') startNewProject('local');
     else if (action === 'new-warehouse') startNewProject('warehouse');
+    else if (action === 'history') void openProjectHistoryDialog();
     else if (action === 'save') void saveNow();
     else if (action === 'rename') renameProject();
     else if (action === 'close') {
@@ -7843,6 +8608,7 @@ export function createStudioPage(host) {
     refs.fileInput.click();
   });
   refs.emptyWarehouse.addEventListener('click', () => openMainPicker('warehouse'));
+  refs.emptyHistory.addEventListener('click', () => void openProjectHistoryDialog());
   refs.fileInput.addEventListener('cancel', () => {
     pendingNewProject = false;
   });
@@ -7877,6 +8643,9 @@ export function createStudioPage(host) {
       tintDirty = true;
       selectedLayerId = null;
       selectedLayerIds.clear();
+      selectedGroupId = '';
+      syncLayerProps();
+      syncLayersPanel();
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
@@ -7891,6 +8660,9 @@ export function createStudioPage(host) {
       tintDirty = true;
       selectedLayerId = null;
       selectedLayerIds.clear();
+      selectedGroupId = '';
+      syncLayerProps();
+      syncLayersPanel();
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
@@ -8544,16 +9316,10 @@ export function createStudioPage(host) {
 
   const resizeObserver = new ResizeObserver(() => {
     sizeCanvas();
-    if (doc && view.scale) {
-      // 窗口变化后如果画面被裁掉，重新适应；否则保持用户当前的缩放。
-      const rect = stageEl.getBoundingClientRect();
-      const image = doc.renderBase();
-      const w = image.width * view.scale;
-      const h = image.height * view.scale;
-      const outside =
-        view.x < -4 || view.y < -4 || view.x + w > rect.width + 4 || view.y + h > rect.height + 4;
-      if (outside) fitView();
-    }
+    if (!doc || !view.scale) return;
+    // 只在画面完全看不见（或尺寸非法）时兜底适应；画面只是被裁掉一部分
+    // （放大后切页签 / 拉窗口）时保留用户的缩放与平移，避免「回来就被打回适应」。
+    if (!viewVisible()) fitView();
   });
   resizeObserver.observe(stageEl);
 
@@ -8588,7 +9354,12 @@ export function createStudioPage(host) {
         return;
       }
       if (doc) {
-        requestAnimationFrame(fitView);
+        // 切走再回来只兜底「画面丢了」的情况；否则保留用户当前的缩放与平移
+        // （旧实现无条件 fitView，切一次页签就把 100% 拉回适应，像被打断操作）。
+        requestAnimationFrame(() => {
+          if (!doc) return;
+          if (!viewVisible()) fitView();
+        });
         return;
       }
       // 有素材仓库交接时优先打开交接图，否则尝试恢复上次未完成的工程。

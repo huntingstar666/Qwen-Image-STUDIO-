@@ -127,7 +127,8 @@ let seq = 0;
 
 export class ShapeLayer {
   constructor(options = {}) {
-    this.id = options.id || `sh-${(seq += 1)}`;
+    // 带时间戳，避免刷新后序号归零与已恢复图层的 id 冲突。
+    this.id = options.id || `sh-${Date.now().toString(36)}-${(seq += 1)}`;
     this.kind = 'shape';
     this.isShape = true;
     this.name = options.name || '形状';
@@ -146,6 +147,8 @@ export class ShapeLayer {
     /** 混合模式与剪贴蒙版（D12.1）。 */
     this.blend = BLEND_IDS.has(options.blend) ? options.blend : 'source-over';
     this.clipped = Boolean(options.clipped);
+    /** 所属图层组（D23.4 L4）。 */
+    this.groupId = String(options.groupId || '');
     /** 图层样式（D12.2）。 */
     this.style = normalizeShapeStyle(options.style);
   }
@@ -374,6 +377,7 @@ export class ShapeLayer {
       visible: this.visible,
       blend: this.blend,
       clipped: this.clipped,
+      groupId: this.groupId,
       style: this.style,
     });
   }

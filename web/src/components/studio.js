@@ -57,7 +57,16 @@ import {
   coverageAlpha,
   wandAlpha,
 } from './studio/selection.js';
-import { CUTOUT_EDGE_ORDER, CUTOUT_EDGE_PRESETS, cutoutRect, prepareCutoutAlpha } from './studio/cutout.js';
+import {
+  CUTOUT_EDGE_ORDER,
+  CUTOUT_EDGE_PRESETS,
+  CUTOUT_SIZES,
+  clampCutoutSide,
+  cutoutRect,
+  decontaminatePixels,
+  fitCutoutRect,
+  prepareCutoutAlpha,
+} from './studio/cutout.js';
 import { histogram, parseCube } from './studio/color.js';
 import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
 import { healDab, cloneDab } from './studio/heal.js';
@@ -537,11 +546,26 @@ export function createStudioPage(host) {
                     <div class="studio-cut-head">
                       <span>边缘</span>
                       <div class="studio-cut-edges" data-ref="cutEdges"></div>
+                      <label class="studio-check studio-cut-decon"><input type="checkbox" data-ref="cutDecon" checked /><span>去色边</span></label>
                     </div>
+                    <div class="studio-cut-head">
+                      <span>尺寸</span>
+                      <select class="select studio-cut-select" data-ref="cutSize" aria-label="输出尺寸"></select>
+                      <input class="studio-cut-num" type="number" min="16" max="8192" data-ref="cutW" hidden />
+                      <span class="studio-cut-times" data-ref="cutTimes" hidden>×</span>
+                      <input class="studio-cut-num" type="number" min="16" max="8192" data-ref="cutH" hidden />
+                    </div>
+                    <div class="studio-cut-head">
+                      <span>选区组</span>
+                      <button class="btn ghost sm" type="button" data-cut-act="save-set">存为选区组</button>
+                    </div>
+                    <div class="studio-cut-sets" data-ref="cutSets" hidden></div>
+                    <div class="studio-cut-sep"></div>
                     <button type="button" role="menuitem" data-cut="png">透明 PNG</button>
                     <button type="button" role="menuitem" data-cut="copy">复制到剪贴板</button>
                     <button type="button" role="menuitem" data-cut="layer">新建抠图层</button>
                     <button type="button" role="menuitem" data-cut="white">白底 JPG</button>
+                    <button type="button" role="menuitem" data-cut="batch" data-ref="cutBatch">批量导出选区（0）</button>
                   </div>
                 </div>
                 <button class="btn ghost sm" type="button" data-sel-op="clear">清除选区</button>
@@ -1032,6 +1056,13 @@ export function createStudioPage(host) {
     cutBtn: ref('cutBtn'),
     cutMenu: ref('cutMenu'),
     cutEdges: ref('cutEdges'),
+    cutDecon: ref('cutDecon'),
+    cutSize: ref('cutSize'),
+    cutW: ref('cutW'),
+    cutH: ref('cutH'),
+    cutTimes: ref('cutTimes'),
+    cutSets: ref('cutSets'),
+    cutBatch: ref('cutBatch'),
     segbar: ref('segbar'),
     segModes: ref('segModes'),
     segMulti: ref('segMulti'),
@@ -3812,6 +3843,7 @@ export function createStudioPage(host) {
     layerBlobs.clear();
     versions = [];
     currentVersionId = '';
+    selectionSets = [];
     renderDock();
     saveDirty = true;
   }
@@ -3859,6 +3891,7 @@ export function createStudioPage(host) {
     layerBlobs.clear();
     versions = [];
     currentVersionId = '';
+    selectionSets = [];
     renderDock();
     thumbCache = { doc: null, base: null, url: '' };
     selection = null;
@@ -5166,6 +5199,8 @@ export function createStudioPage(host) {
   function setDoc(next, options = {}) {
     doc = next;
     if (!options.restore) layerBlobs.clear();
+    // 选区组属于上一张图的坐标空间（P4），换图后作废。
+    selectionSets = [];
     cropRect = null;
     clearSelection(true);
     resetSegmentHints();
@@ -6189,10 +6224,18 @@ export function createStudioPage(host) {
     }
   }
 
-  /* ---------------------------------------------------------- 抠图（D21.1） */
+  /* ---------------------------------------------------------- 抠图（D21.1 / P4） */
+
+  const MAX_SELECTION_SETS = 6;
 
   let cutoutEdge = 'standard';
   let cutoutBusy = false;
+  let cutoutDecon = CUTOUT_EDGE_PRESETS.standard.decontaminate;
+  let cutoutSizeId = 'origin';
+  let cutoutCustomW = 1000;
+  let cutoutCustomH = 1000;
+  /** 选区组（P4）：当前会话保存的多块选区，供批量抠图使用。 */
+  let selectionSets = [];
 
   function renderCutoutEdges() {
     if (!refs.cutEdges) return;
@@ -6210,20 +6253,120 @@ export function createStudioPage(host) {
     }
   }
 
+  function renderCutSize() {
+    const select = refs.cutSize;
+    if (!select) return;
+    if (select.options.length !== CUTOUT_SIZES.length) {
+      select.textContent = '';
+      for (const item of CUTOUT_SIZES) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.label;
+        select.appendChild(option);
+      }
+    }
+    select.value = cutoutSizeId;
+    const custom = cutoutSizeId === 'custom';
+    refs.cutW.hidden = !custom;
+    refs.cutTimes.hidden = !custom;
+    refs.cutH.hidden = !custom;
+    refs.cutW.value = String(cutoutCustomW);
+    refs.cutH.value = String(cutoutCustomH);
+  }
+
+  function renderCutSelectionSets() {
+    const box = refs.cutSets;
+    if (!box) return;
+    box.hidden = !selectionSets.length;
+    box.textContent = '';
+    for (const set of selectionSets) {
+      const chip = document.createElement('span');
+      chip.className = 'studio-cut-set';
+      const load = document.createElement('button');
+      load.type = 'button';
+      load.dataset.load = set.id;
+      load.textContent = set.name;
+      load.title = '载入该选区组';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.dataset.del = set.id;
+      remove.textContent = '×';
+      remove.title = '删除该选区组';
+      chip.append(load, remove);
+      box.appendChild(chip);
+    }
+    if (refs.cutBatch) {
+      const count = selectionSets.length + (selectionHasArea() ? 1 : 0);
+      refs.cutBatch.textContent = `批量导出选区（${count}）`;
+      refs.cutBatch.disabled = count === 0;
+    }
+  }
+
   function setCutMenu(open) {
     if (!refs.cutMenu) return;
     refs.cutMenu.hidden = !open;
     refs.cutBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) renderCutoutEdges();
+    if (!open) return;
+    renderCutoutEdges();
+    renderCutSize();
+    renderCutSelectionSets();
+    refs.cutDecon.checked = cutoutDecon;
   }
 
   function selectionHasArea() {
     return Boolean(selection?.alpha?.length && coverageAlpha(selection.alpha) > 0);
   }
 
+  /** 固定尺寸目标；`origin` 返回 null 表示保持原图尺寸。 */
+  function targetCutoutSize() {
+    if (cutoutSizeId === 'custom') {
+      return { width: clampCutoutSide(cutoutCustomW), height: clampCutoutSide(cutoutCustomH) };
+    }
+    const preset = CUTOUT_SIZES.find((item) => item.id === cutoutSizeId);
+    return preset?.width ? { width: preset.width, height: preset.height } : null;
+  }
+
+  function cutoutSizeTag(target) {
+    return target ? `-${target.width}x${target.height}` : '';
+  }
+
+  /** contain 到固定画布（透明留白），不裁剪。 */
+  function fitCutoutCanvas(canvas) {
+    const target = targetCutoutSize();
+    if (!target || (target.width === canvas.width && target.height === canvas.height)) {
+      return { canvas, target };
+    }
+    const out = makeCanvas(target.width, target.height);
+    const box = fitCutoutRect(canvas.width, canvas.height, target.width, target.height);
+    out.getContext('2d').drawImage(canvas, box.x, box.y, box.width, box.height);
+    return { canvas: out, target };
+  }
+
   /**
-   * 合成透明底图：`renderBase` → 裁到 `doc.size` → `destination-in` 叠选区 alpha。
-   * 选区与底图尺寸不一致时直接拒绝，不做隐式拉伸。
+   * 合成一块透明底图：`renderBase` → 裁到 `doc.size` → `destination-in` 叠选区 alpha
+   * → 可选去色边 → 可选固定尺寸 contain。
+   */
+  function composeCutout(base, rect, alpha, alphaWidth, alphaHeight, { fit = true } = {}) {
+    const prepared = prepareCutoutAlpha(alpha, alphaWidth, alphaHeight, cutoutEdge);
+    const alphaCanvas = alphaToCanvas(prepared, alphaWidth, alphaHeight);
+    const canvas = makeCanvas(rect.width, rect.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(base, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(alphaCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    ctx.globalCompositeOperation = 'source-over';
+    if (cutoutDecon) {
+      const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      decontaminatePixels(image.data, canvas.width, canvas.height, 1);
+      ctx.putImageData(image, 0, 0);
+    }
+    if (!fit) return { canvas, target: null };
+    return fitCutoutCanvas(canvas);
+  }
+
+  /**
+   * 当前选区的抠图结果；`raw` 保持原图尺寸（抠图层需要原坐标），
+   * `canvas` 按固定尺寸预设缩放（导出用）。
    */
   async function buildCutoutCanvas() {
     if (!doc) return null;
@@ -6234,15 +6377,9 @@ export function createStudioPage(host) {
       return null;
     }
     const rect = cutoutRect(doc.transform.crop, base.width, base.height);
-    const alpha = prepareCutoutAlpha(selection.alpha, selection.width, selection.height, cutoutEdge);
-    const alphaCanvas = alphaToCanvas(alpha, selection.width, selection.height);
-    const canvas = makeCanvas(rect.width, rect.height);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(base, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.drawImage(alphaCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
-    ctx.globalCompositeOperation = 'source-over';
-    return { canvas, rect };
+    const raw = composeCutout(base, rect, selection.alpha, selection.width, selection.height, { fit: false });
+    const fitted = fitCutoutCanvas(raw.canvas);
+    return { canvas: fitted.canvas, raw: raw.canvas, rect, target: fitted.target };
   }
 
   async function copyBlob(blob) {
@@ -6255,7 +6392,7 @@ export function createStudioPage(host) {
     }
   }
 
-  /** 抠图四种出口：透明 PNG / 复制 / 抠图层 / 白底 JPG。 */
+  /** 抠图出口：透明 PNG / 复制 / 抠图层 / 白底 JPG（均支持固定尺寸，抠图层除外）。 */
   async function runCutout(action) {
     if (!doc || cutoutBusy) return;
     if (previewBlocked('抠图')) return;
@@ -6272,14 +6409,17 @@ export function createStudioPage(host) {
       flushAdjustPreview();
       const built = await buildCutoutCanvas();
       if (!built) return;
-      const { canvas, rect } = built;
+      const { canvas, raw, rect, target } = built;
       const name = baseName(doc.name);
+      const tag = cutoutSizeTag(target);
+      const width = canvas.width;
+      const height = canvas.height;
       if (action === 'png') {
         const blob = await canvasToBlob(canvas, 'image/png');
         const url = URL.createObjectURL(blob);
-        downloadUrl(url, `${name}-cutout.png`);
+        downloadUrl(url, `${name}${tag}-cutout.png`);
         setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toastSuccess(`已抠出选区 · ${rect.width} × ${rect.height} · PNG`);
+        toastSuccess(`已抠出选区 · ${width} × ${height} · PNG`);
         return;
       }
       if (action === 'copy') {
@@ -6288,23 +6428,23 @@ export function createStudioPage(host) {
           toastSuccess('已复制透明 PNG 到剪贴板');
         } else {
           const url = URL.createObjectURL(blob);
-          downloadUrl(url, `${name}-cutout.png`);
+          downloadUrl(url, `${name}${tag}-cutout.png`);
           setTimeout(() => URL.revokeObjectURL(url), 4000);
           toastWarn('剪贴板不可用，已改为下载 PNG');
         }
         return;
       }
       if (action === 'white') {
-        const out = makeCanvas(rect.width, rect.height);
+        const out = makeCanvas(width, height);
         const ctx = out.getContext('2d');
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, rect.width, rect.height);
+        ctx.fillRect(0, 0, width, height);
         ctx.drawImage(canvas, 0, 0);
         const blob = await canvasToBlob(out, 'image/jpeg', 0.92);
         const url = URL.createObjectURL(blob);
-        downloadUrl(url, `${name}-cutout-white.jpg`);
+        downloadUrl(url, `${name}${tag}-cutout-white.jpg`);
         setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toastSuccess(`已导出白底 JPG · ${rect.width} × ${rect.height}`);
+        toastSuccess(`已导出白底 JPG · ${width} × ${height}`);
         return;
       }
       if (action === 'layer') {
@@ -6312,7 +6452,8 @@ export function createStudioPage(host) {
           toastWarn('该工程已在其他标签编辑，本标签为只读');
           return;
         }
-        const blob = await canvasToBlob(canvas, 'image/png');
+        // 抠图层必须用原图尺寸画布，否则坐标会被固定尺寸缩放打乱。
+        const blob = await canvasToBlob(raw, 'image/png');
         const file = new File([blob], `${name}-cutout.png`, { type: 'image/png' });
         const count = (doc.layers || []).filter((layer) => String(layer.name || '').startsWith('抠图')).length + 1;
         await addOverlayFile(file, {
@@ -6333,6 +6474,74 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 把当前选区存为选区组（P4），上限 6 组。 */
+  function saveSelectionSet() {
+    if (!selectionHasArea()) {
+      toastWarn('先用 AI 主体选择或魔棒圈出要保留的主体');
+      return;
+    }
+    if (selectionSets.length >= MAX_SELECTION_SETS) {
+      toastWarn(`最多保存 ${MAX_SELECTION_SETS} 个选区组`);
+      return;
+    }
+    selectionSets.push({
+      id: `set-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      name: `选区${selectionSets.length + 1}`,
+      alpha: new Uint8ClampedArray(selection.alpha),
+      width: selection.width,
+      height: selection.height,
+    });
+    renderCutSelectionSets();
+    toastSuccess(`已存为 ${selectionSets[selectionSets.length - 1].name}`);
+  }
+
+  /** 批量导出：当前选区 + 所有选区组，各自独立合成后按名称下载。 */
+  async function runCutoutBatch() {
+    if (!doc || cutoutBusy) return;
+    if (previewBlocked('抠图')) return;
+    const groups = [];
+    if (selectionHasArea()) {
+      groups.push({ name: '当前选区', alpha: selection.alpha, width: selection.width, height: selection.height });
+    }
+    for (const set of selectionSets) {
+      groups.push({ name: set.name, alpha: set.alpha, width: set.width, height: set.height });
+    }
+    if (!groups.length) {
+      toastWarn('还没有可导出的选区');
+      return;
+    }
+    cutoutBusy = true;
+    setCutMenu(false);
+    const label = refs.cutBtn.textContent;
+    refs.cutBtn.disabled = true;
+    refs.cutBtn.textContent = '批量导出中…';
+    try {
+      flushAdjustPreview();
+      const base = doc.renderBase();
+      const rect = cutoutRect(doc.transform.crop, base.width, base.height);
+      const name = baseName(doc.name);
+      let done = 0;
+      for (const group of groups) {
+        if (group.width !== base.width || group.height !== base.height) continue;
+        const { canvas, target } = composeCutout(base, rect, group.alpha, group.width, group.height);
+        const blob = await canvasToBlob(canvas, 'image/png');
+        const url = URL.createObjectURL(blob);
+        downloadUrl(url, `${name}-${group.name}${cutoutSizeTag(target)}.png`);
+        setTimeout(() => URL.revokeObjectURL(url), 8000);
+        done += 1;
+        // 连续下载之间留出间隔，避免被浏览器拦截。
+        await new Promise((resolve) => setTimeout(resolve, 220));
+      }
+      toastSuccess(done ? `已批量导出 ${done} 个选区` : '没有尺寸匹配的选区');
+    } catch (err) {
+      toastError(err, '批量导出失败');
+    } finally {
+      cutoutBusy = false;
+      refs.cutBtn.disabled = false;
+      refs.cutBtn.textContent = label;
+    }
+  }
+
   refs.cutBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     setCutMenu(refs.cutMenu.hidden);
@@ -6343,11 +6552,55 @@ export function createStudioPage(host) {
     const edge = event.target.closest('[data-edge]');
     if (edge) {
       cutoutEdge = edge.dataset.edge;
+      cutoutDecon = Boolean(CUTOUT_EDGE_PRESETS[cutoutEdge]?.decontaminate);
       renderCutoutEdges();
+      renderCutSelectionSets();
+      refs.cutDecon.checked = cutoutDecon;
+      return;
+    }
+    const load = event.target.closest('[data-load]');
+    if (load) {
+      const set = selectionSets.find((item) => item.id === load.dataset.load);
+      if (set) {
+        setSelectionAlpha(new Uint8ClampedArray(set.alpha), set.width, set.height);
+        toast(`已载入 ${set.name}`);
+      }
+      return;
+    }
+    const remove = event.target.closest('[data-del]');
+    if (remove) {
+      selectionSets = selectionSets.filter((item) => item.id !== remove.dataset.del);
+      renderCutSelectionSets();
+      return;
+    }
+    const act = event.target.closest('[data-cut-act]');
+    if (act) {
+      if (act.dataset.cutAct === 'save-set') saveSelectionSet();
       return;
     }
     const item = event.target.closest('[data-cut]');
-    if (item) void runCutout(item.dataset.cut);
+    if (!item) return;
+    if (item.dataset.cut === 'batch') void runCutoutBatch();
+    else void runCutout(item.dataset.cut);
+  });
+
+  refs.cutDecon.addEventListener('change', () => {
+    cutoutDecon = Boolean(refs.cutDecon.checked);
+  });
+
+  refs.cutSize.addEventListener('change', () => {
+    cutoutSizeId = refs.cutSize.value;
+    renderCutSize();
+  });
+
+  refs.cutW.addEventListener('change', () => {
+    cutoutCustomW = clampCutoutSide(refs.cutW.value, 1000);
+    refs.cutW.value = String(cutoutCustomW);
+  });
+
+  refs.cutH.addEventListener('change', () => {
+    cutoutCustomH = clampCutoutSide(refs.cutH.value, 1000);
+    refs.cutH.value = String(cutoutCustomH);
   });
 
   /* ============================================================

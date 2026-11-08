@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CUTOUT_EDGE_PRESETS, cutoutRect, prepareCutoutAlpha } from '../../src/components/studio/cutout.js';
+import { CUTOUT_EDGE_PRESETS, CUTOUT_SIZES, clampCutoutSide, cutoutRect, decontaminatePixels, fitCutoutRect, prepareCutoutAlpha } from '../../src/components/studio/cutout.js';
 
 function solidAlpha(width, height, block) {
   const alpha = new Uint8ClampedArray(width * height);
@@ -67,4 +67,58 @@ test('输出矩形：无裁剪时取整图，有裁剪时对齐裁剪左上角',
     width: 640,
     height: 480,
   });
+});
+
+/* ---------------------------------------------------------------- P4 */
+
+test('固定尺寸：提供原图 / 1:1 / 3:4 / 4:3 / 9:16 / 自定义', () => {
+  assert.deepEqual(
+    CUTOUT_SIZES.map((item) => item.id),
+    ['origin', 'square1000', 'portrait1200', 'landscape1600', 'story1080', 'custom'],
+  );
+  const square = CUTOUT_SIZES.find((item) => item.id === 'square1000');
+  assert.deepEqual([square.width, square.height], [1000, 1000]);
+});
+
+test('固定尺寸：非法输入夹到 16~8192', () => {
+  assert.equal(clampCutoutSide(0), 1024);
+  assert.equal(clampCutoutSide('abc'), 1024);
+  assert.equal(clampCutoutSide(8), 16);
+  assert.equal(clampCutoutSide(99999), 8192);
+  assert.equal(clampCutoutSide(640.4), 640);
+});
+
+test('固定尺寸：contain 等比缩放并居中', () => {
+  // 宽图放进正方形：左右留白
+  assert.deepEqual(fitCutoutRect(1600, 800, 1000, 1000), { x: 0, y: 250, width: 1000, height: 500 });
+  // 高图放进正方形：上下留白
+  assert.deepEqual(fitCutoutRect(800, 1600, 1000, 1000), { x: 250, y: 0, width: 500, height: 1000 });
+  // 尺寸一致时铺满
+  assert.deepEqual(fitCutoutRect(800, 600, 800, 600), { x: 0, y: 0, width: 800, height: 600 });
+});
+
+test('去色边：边缘像素取邻近实心像素均值，实心与全透明像素不变', () => {
+  const width = 4;
+  const height = 1;
+  const data = new Uint8ClampedArray([
+    // 实心红
+    255, 0, 0, 255,
+    // 边缘像素（原本被绿背景污染）
+    0, 255, 0, 120,
+    // 全透明
+    0, 0, 0, 0,
+    // 实心红
+    255, 0, 0, 255,
+  ]);
+  decontaminatePixels(data, width, height, 1);
+  assert.deepEqual([...data.slice(0, 4)], [255, 0, 0, 255], '实心像素保持不变');
+  assert.deepEqual([...data.slice(4, 7)], [255, 0, 0], '边缘 RGB 被邻近实心像素替换');
+  assert.equal(data[7], 120, '边缘 alpha 保持不变');
+  assert.deepEqual([...data.slice(8, 12)], [0, 0, 0, 0], '全透明像素保持不变');
+});
+
+test('去色边：附近没有实心像素时不动', () => {
+  const data = new Uint8ClampedArray([10, 20, 30, 100]);
+  decontaminatePixels(data, 1, 1, 1);
+  assert.deepEqual([...data], [10, 20, 30, 100]);
 });

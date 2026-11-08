@@ -1615,6 +1615,24 @@ export function createStudioPage(host) {
     return 4 / Math.max(0.05, view.scale || 1);
   }
 
+  /**
+   * 几何兜底：像素级命中全落空时，按外框取最上层可编辑图层。
+   * 只给「移动叠加图」用：点到抠图的透明留白时仍应选中该层，
+   * 而不是把选中清掉（表现为「点了图层却没有虚线框」）。
+   * 注意：像素级命中优先，所以仍能在有可见像素处点穿到下层。
+   */
+  function pickLayerAtBounds(ix, iy) {
+    if (!doc) return null;
+    const layers = doc.layers || [];
+    for (let i = layers.length - 1; i >= 0; i -= 1) {
+      const layer = layers[i];
+      if (layer.isAdjustment || layer.locked || layer.visible === false) continue;
+      if (layer.groupId && doc.findGroup(layer.groupId)?.visible === false) continue;
+      if (layer.hitTest?.(ix, iy)) return layer;
+    }
+    return null;
+  }
+
   function cursorForHandle(kind) {
     if (kind === 'rotate' || kind === 'persp') return 'grab';
     if (kind === 'inside') return 'move';
@@ -3297,8 +3315,13 @@ export function createStudioPage(host) {
     }
 
     // 选中图层的外框；贴纸额外画缩放角点与旋转手柄（D11.3）
+    // 抓手工具也画框（只画虚线框，不给手柄）：点选后需要看得见「选中了哪层」。
     const activeLayer = selectedLayerId ? doc.findLayer?.(selectedLayerId) : null;
-    if ((tool === 'move' || tool === 'sticker' || tool === 'shape') && activeLayer && !activeLayer.isAdjustment) {
+    if (
+      (tool === 'move' || tool === 'sticker' || tool === 'shape' || tool === 'view') &&
+      activeLayer &&
+      !activeLayer.isAdjustment
+    ) {
       const crop = doc.transform.crop;
       const toViewPoint = (point) => ({
         x: view.x + (point.x - (crop?.x || 0)) * view.scale,
@@ -3326,8 +3349,8 @@ export function createStudioPage(host) {
           ctx.fill();
         }
         ctx.restore();
-      } else if (activeLayer.isText || activeLayer.isShape || activeLayer.locked) {
-        // 文字 / 形状层没有缩放旋转手柄；锁定层只留虚线外框，避免画出拖不动的手柄（D23.10-2）。
+      } else if (activeLayer.isText || activeLayer.isShape || activeLayer.locked || tool === 'view') {
+        // 文字 / 形状层没有缩放旋转手柄；锁定层与抓手工具只留虚线外框（D23.10-2 / D23.11）。
         const box = activeLayer.bounds();
         const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
         const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;
@@ -4615,7 +4638,7 @@ export function createStudioPage(host) {
         }
       }
 
-      const layer = pickLayerAt(ix, iy);
+      const layer = pickLayerAt(ix, iy, { tolerance: pickTolerance() });
       if (layer) {
         // 画布点选同样支持 Ctrl 加选 / Shift 连选（D23.2）。
         selectLayerById(layer.id, {
@@ -4624,6 +4647,19 @@ export function createStudioPage(host) {
         });
         drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
         return;
+      }
+      // 移动叠加图：像素全透明（抠图留白）时按外框兜底选中，
+      // 否则会走下面的「取消选中」分支，表现为点中图层却没有虚线框（D23.11）。
+      if (tool === 'move') {
+        const loose = pickLayerAtBounds(ix, iy);
+        if (loose) {
+          selectLayerById(loose.id, {
+            additive: event.metaKey || event.ctrlKey,
+            range: event.shiftKey,
+          });
+          drag = { mode: 'moveLayer', layer: loose, start: freePoint, originX: loose.x, originY: loose.y };
+          return;
+        }
       }
       if (tool === 'sticker') {
         // 空白处点击：记下落点并打开文件选择，导入的新贴纸以该点居中（D11.3）。
@@ -4872,6 +4908,10 @@ export function createStudioPage(host) {
     const shapeDrag = drag.mode === 'shapeDraw' && drag.end ? { start: { ...drag.start }, end: { ...drag.end }, shape: drag.shape } : null;
     const points = drag.points;
     const localDrag = drag.mode === 'local' ? { type: drag.type, start: drag.start, end: drag.end } : null;
+    // 只是点选图层（没拖动）不落快照，避免每点一次就多一步无意义的撤销。
+    const movedLayer =
+      drag.mode === 'moveLayer' &&
+      (drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
     drag = null;
     if (mode === 'paint') {
       if (editingLayerMaskId) {
@@ -4977,9 +5017,11 @@ export function createStudioPage(host) {
       // 贴纸缩放/旋转整段拖动作为一个撤销步（D11.3）。
       commitSticker();
     } else if (mode === 'moveLayer') {
-      doc?.commitLayers();
-      updateHistoryUi();
-      ai?.refresh?.();
+      if (movedLayer) {
+        doc?.commitLayers();
+        updateHistoryUi();
+        ai?.refresh?.();
+      }
     } else if (mode === 'local') {
       // 拖太短视为误触，不落快照；否则按几何重建蒙版并退出取景。
       const target = adjustmentTarget();

@@ -2208,7 +2208,6 @@ export function createStudioPage(host) {
       const nextLocked = !layers[0].locked;
       for (const layer of layers) {
         layer.locked = nextLocked;
-        if (nextLocked && selectedLayerId === layer.id) selectedLayerId = null;
       }
       doc.commitLayers();
       syncAdjustInputs();
@@ -3248,8 +3247,8 @@ export function createStudioPage(host) {
           ctx.fill();
         }
         ctx.restore();
-      } else if (activeLayer.isText || activeLayer.isShape) {
-        // 文字 / 形状层没有缩放旋转手柄，沿用普通虚线框。
+      } else if (activeLayer.isText || activeLayer.isShape || activeLayer.locked) {
+        // 文字 / 形状层没有缩放旋转手柄；锁定层只留虚线外框，避免画出拖不动的手柄（D23.10-2）。
         const box = activeLayer.bounds();
         const rx = view.x + (box.x - (crop?.x || 0)) * view.scale;
         const ry = view.y + (box.y - (crop?.y || 0)) * view.scale;

@@ -2437,5 +2437,45 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 | 编辑页遮罩回显、交接遮罩覆盖率 | `web/src/components/edit.js`（`probeMaskCoverage`） |
 | PS 面板蒙版 / 选区 / 已圈选文案 | `web/src/components/studio.js`、`studio/aiPanel.js` |
 
+---
+
+## 18. 编辑页提交按钮回归修复（补丁）
+
+### 18.1 现象
+
+点击「开始编辑」必定失败，右上角弹出：
+
+```
+提交失败：onPayloadBuilt is not a function
+```
+
+任务完全发不出去；点几次就弹几次。
+
+### 18.2 根因
+
+`refs.submit.addEventListener('click', handleSubmit)` 把带参数的回调直接当事件监听器：
+
+```js
+async function handleSubmit(onPayloadBuilt = null) { ... onPayloadBuilt?.(payload); ... }
+```
+
+浏览器会把 **MouseEvent** 作为第一个实参传入。默认值只在 `undefined` 时生效，MouseEvent 不是 `undefined`，于是 `onPayloadBuilt?.(payload)` 试图调用一个事件对象，抛出 `TypeError`，被外层 `catch` 统一转成「提交失败」。
+
+### 18.3 修复
+
+```js
+// 绑定
+refs.submit.addEventListener('click', () => handleSubmit());
+
+// 调用点加类型保护，防止事件对象 / 非函数再次混入
+if (typeof onPayloadBuilt === 'function') onPayloadBuilt(payload);
+```
+
+其余调用点本来就正确：`Ctrl/Cmd+Enter` → `handleSubmit()`；扩图弹窗 → `handleSubmit(restore)`。
+
+### 18.4 验证
+
+上传参考图 + 填指令 + 点「开始编辑」：payload 组装完成并进入任务启动阶段，不再出现 `onPayloadBuilt is not a function`（验证时临时拦截 `/api/edit` 请求，避免占用 GPU）。
+
 
 

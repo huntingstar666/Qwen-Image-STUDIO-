@@ -2838,7 +2838,7 @@ export function createEditPage(host) {
       const maskOverlay = payload.__maskOverlay;
       delete payload.__maskOverlay;
       // 扩图弹窗在 payload 组好后才能把预设切回去，否则会拿旧预设重新采集参数。
-      onPayloadBuilt?.(payload);
+      if (typeof onPayloadBuilt === 'function') onPayloadBuilt(payload);
       refs.resultState.textContent = '任务进行中';
       await jobRunner.start({
         create: () => api.edit(payload),
@@ -2884,7 +2884,7 @@ export function createEditPage(host) {
     }
   }
 
-  refs.submit.addEventListener('click', handleSubmit);
+  refs.submit.addEventListener('click', () => handleSubmit());
   // Ctrl/Cmd + Enter 直接开始编辑
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {

@@ -628,6 +628,8 @@ export function createEditPage(host) {
       // 润色同样走 <imageN> 语义映射，LLM 才能分清「编辑目标」和「参考图」
       prompt: promptEditor.getSemantic(),
       mode: 'edit',
+      // 图像编辑目前只有 qwen 支持（服务端会拒绝其它档案），显式传 PE 档案避免默认歧义。
+      imageModel: 'qwen',
       model: store.state.polishModel || null,
       styleHint: stylePicker.styleHint(),
       button: refs.polish,

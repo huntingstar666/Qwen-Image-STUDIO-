@@ -421,7 +421,7 @@
 | P2-6 | quality/meta 大量字段前端不消费 | `pipeline.py:1429-1495`（hint_mode/task_mode/outpaint/panorama/preprocess/watermark/pose_lora/timings） | 结果卡片按需补显示 | **已补显示**：结果徽标新增「任务 / 降级标记 / 绿区·灰边提示 / 已补任务指令 / 已补全去水印范围 / 预处理工作尺寸」；`timings`、`pose_lora` 保留在 quality（调试用，不进徽标）。 |
 | P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt | **已修复**：新增 `meta.rawPrompt` 判定源，全景/扩图/移除三条训练指令与水印补全都改为看原文；实测风格里带"灰色调全景"不再跳过指令，水印补全仍按原文触发。 |
 | P2-8 | 水印"仅文字"分支 UI 不可达 | `edit.js:617-625` 从不发 `task.watermark_scope`；`pipeline.py:112-114` 有分支 | UI 暴露 scope，或删除分支 | **保留后端能力（不加 UI）**：第三方 API 可直接传 `task.watermark_scope=text` 直达该分支；编辑页不再加一个低频开关，避免主界面继续膨胀。 |
-| P2-9 | 编辑页润色不传 `imageModel`，MOSS 用户走 qwen PE | `edit.js:626-637` vs `t2i.js:1646` | 补 `imageModel` | 待处理 |
+| P2-9 | 编辑页润色不传 `imageModel`，MOSS 用户走 qwen PE | `edit.js:626-637` vs `t2i.js:1646` | 补 `imageModel` | **已修复**：编辑页润色显式传 `image_model=qwen`（编辑只支持 qwen 档案，服务端会拒绝其它）。 |
 
 ### 17.4 PS 面板（图片精修）专项结论
 

@@ -22,7 +22,7 @@ export const BLEND_MODES = [
   { id: 'difference', label: '差值' },
 ];
 
-const BLEND_IDS = new Set(BLEND_MODES.map((mode) => mode.id));
+export const BLEND_IDS = new Set(BLEND_MODES.map((mode) => mode.id));
 
 export class OverlayLayer {
   constructor(
@@ -39,6 +39,7 @@ export class OverlayLayer {
       blend = 'source-over',
       locked = false,
       visible = true,
+      clipped = false,
       id = '',
     } = {},
   ) {
@@ -55,6 +56,8 @@ export class OverlayLayer {
     this.flipV = Boolean(flipV);
     /** 混合模式（D11.3），默认正常。 */
     this.blend = BLEND_IDS.has(blend) ? blend : 'source-over';
+    /** 剪贴蒙版（D12.1）：只显示在下方图层的非透明区域内。 */
+    this.clipped = Boolean(clipped);
     /** 锁定后仍参与合成，但画布上不可点选/拖动（D7.3 图层面板）。 */
     this.locked = Boolean(locked);
     /** 显隐（D9.3 图层面板眼睛按钮）；隐藏的图层不参与合成。 */
@@ -192,6 +195,7 @@ export class OverlayLayer {
       blend: this.blend,
       locked: this.locked,
       visible: this.visible,
+      clipped: this.clipped,
     });
     if (this.mask) {
       const canvas = document.createElement('canvas');

@@ -40,6 +40,7 @@ export function createLayerPanel(host, ctx) {
         ${layer.isAdjustment ? '<span class="ai-layer-kind" title="调整图层">调整</span>' : ''}
         ${layer.isText ? '<span class="ai-layer-kind" title="文字图层">文字</span>' : ''}
         ${layer.isShape ? '<span class="ai-layer-kind" title="形状图层">形状</span>' : ''}
+        ${layer.clipped ? '<span class="ai-layer-kind is-clip" title="剪贴蒙版">剪</span>' : ''}
         <button class="ai-layer-name" type="button" data-layer-pick="${layer.id}"
           title="单击选中 · 双击重命名">${escapeHtml(layer.name)}</button>
         ${

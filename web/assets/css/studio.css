@@ -644,6 +644,29 @@
   border-color: color-mix(in srgb, #f6c85f 40%, var(--line-soft));
 }
 
+/* 图层属性：混合模式 + 剪贴蒙版（D12.1） */
+.studio-layer-props {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel-2);
+}
+
+.studio-layer-props .studio-maskbar-field {
+  width: 100%;
+}
+
+.studio-layer-props .select {
+  flex: 1;
+}
+
+.ai-layer-kind.is-clip {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
+}
+
 .studio-maskbar-tool {
   width: 86px;
   height: 28px;

@@ -57,6 +57,7 @@ import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
 import { BLEND_MODES } from './studio/layers.js';
 import { SHAPE_DEFAULTS, SHAPE_KINDS, ShapeLayer } from './studio/shapeLayer.js';
 import { patternDab } from './studio/pattern.js';
+import { drawLayers } from './studio/renderer.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -702,6 +703,18 @@ export function createStudioPage(host) {
               <div class="studio-note" data-ref="shapeHint">当前未选中形状：参数将用于新形状。</div>
             </div>
 
+            <div class="studio-layer-props" data-ref="layerProps" hidden>
+              <div class="studio-pane-title">图层属性 · <span class="mono" data-ref="layerPropsName"></span></div>
+              <label class="studio-maskbar-field">
+                <span>混合</span>
+                <select class="select" data-ref="layerBlend" aria-label="图层混合模式">
+                  ${BLEND_MODES.map((mode) => `<option value="${mode.id}">${mode.label}</option>`).join('')}
+                </select>
+              </label>
+              <label class="studio-check"><input type="checkbox" data-ref="layerClipped" /><span>剪贴到下层</span></label>
+              <div class="studio-note" data-ref="layerPropsHint" hidden></div>
+            </div>
+
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
               <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
@@ -811,6 +824,11 @@ export function createStudioPage(host) {
     patternWrap: ref('patternWrap'),
     patternHint: ref('patternHint'),
     patternClear: ref('patternClear'),
+    layerProps: ref('layerProps'),
+    layerPropsName: ref('layerPropsName'),
+    layerBlend: ref('layerBlend'),
+    layerClipped: ref('layerClipped'),
+    layerPropsHint: ref('layerPropsHint'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -999,6 +1017,7 @@ export function createStudioPage(host) {
       syncTextPane();
       syncStickerPane();
       syncShapePane();
+      syncLayerProps();
       scheduleDraw();
     },
     removeLayer(id) {
@@ -1010,6 +1029,7 @@ export function createStudioPage(host) {
         syncAdjustInputs();
         syncStickerPane();
         syncShapePane();
+        syncLayerProps();
         updateHistoryUi();
         scheduleSave();
         scheduleDraw();
@@ -1026,6 +1046,7 @@ export function createStudioPage(host) {
       syncAdjustInputs();
       syncStickerPane();
       syncShapePane();
+      syncLayerProps();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1039,6 +1060,7 @@ export function createStudioPage(host) {
       const moved = doc.moveOverlay(id, from + (Number(delta) || 0));
       if (moved < 0) return false;
       selectedLayerId = id;
+      syncLayerProps();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1050,6 +1072,7 @@ export function createStudioPage(host) {
       const moved = doc.moveOverlay(id, toIndex);
       if (moved < 0) return false;
       selectedLayerId = id;
+      syncLayerProps();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1076,6 +1099,7 @@ export function createStudioPage(host) {
       if (layer.locked && selectedLayerId === id) selectedLayerId = null;
       doc.commitLayers();
       syncAdjustInputs();
+      syncLayerProps();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1091,6 +1115,7 @@ export function createStudioPage(host) {
       doc.touchLayers();
       doc.commitLayers();
       syncAdjustInputs();
+      syncLayerProps();
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
@@ -1501,7 +1526,8 @@ export function createStudioPage(host) {
       ctx.save();
       ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
       ctx.scale(view.scale, view.scale);
-      for (const layer of doc.layers) layer.draw(ctx);
+      // 统一走 renderer，剪贴蒙版与混合模式在拖动预览里同样生效（D12.1）。
+      drawLayers(ctx, doc.layers, { crop });
       ctx.restore();
     }
 
@@ -2660,6 +2686,7 @@ export function createStudioPage(host) {
           syncTabs();
           syncStickerPane();
         }
+        syncLayerProps();
         drag = { mode: 'moveLayer', layer, start: point, originX: layer.x, originY: layer.y };
         scheduleDraw();
         return;
@@ -3185,6 +3212,7 @@ export function createStudioPage(host) {
           flipH: Boolean(layer.flipH),
           flipV: Boolean(layer.flipV),
           blend: layer.blend || 'source-over',
+          clipped: Boolean(layer.clipped),
           locked: layer.locked,
           visible: layer.visible !== false,
           hasMask: Boolean(layer.mask),
@@ -3458,6 +3486,8 @@ export function createStudioPage(host) {
               strokeWidth: props.shapeStrokeWidth,
               radius: props.radius,
               opacity: props.opacity,
+              blend: props.blend,
+              clipped: props.clipped,
             },
             {
               name: props.name,
@@ -3490,6 +3520,7 @@ export function createStudioPage(host) {
             flipH: props.flipH,
             flipV: props.flipV,
             blend: props.blend,
+            clipped: props.clipped,
             locked: props.locked,
             visible: props.visible !== false,
           });
@@ -3709,6 +3740,7 @@ export function createStudioPage(host) {
     syncTextPane();
     syncStickerPane();
     syncShapePane();
+    syncLayerProps();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -4231,6 +4263,56 @@ export function createStudioPage(host) {
     scheduleDraw();
     toast('已清除图案取样');
   });
+
+  /* --------------------------------------------------- 图层属性：混合模式 + 剪贴蒙版（D12.1） */
+
+  /** 当前可设置混合/剪贴的图层（调整层暂不支持）。 */
+  function layerPropsTarget() {
+    if (!doc || !selectedLayerId) return null;
+    const layer = doc.findLayer(selectedLayerId);
+    return layer && !layer.isAdjustment ? layer : null;
+  }
+
+  function syncLayerProps() {
+    const layer = layerPropsTarget();
+    refs.layerProps.hidden = !layer;
+    if (!layer) return;
+    refs.layerPropsName.textContent = layer.name;
+    refs.layerBlend.value = layer.blend || 'source-over';
+    const index = doc.layers.indexOf(layer);
+    const canClip = index > 0;
+    refs.layerClipped.disabled = !canClip;
+    refs.layerClipped.checked = canClip && Boolean(layer.clipped);
+    refs.layerPropsHint.hidden = canClip;
+    refs.layerPropsHint.textContent = canClip ? '' : '最底层不能剪贴：请先把它移到其他图层之上。';
+  }
+
+  function commitLayerProps() {
+    const layer = layerPropsTarget();
+    if (!layer) return;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncLayerProps();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    ai?.refresh?.();
+  }
+
+  refs.layerBlend.addEventListener('change', () => {
+    const layer = layerPropsTarget();
+    if (!layer) return;
+    layer.blend = refs.layerBlend.value;
+    commitLayerProps();
+  });
+
+  refs.layerClipped.addEventListener('change', () => {
+    const layer = layerPropsTarget();
+    if (!layer) return;
+    layer.clipped = refs.layerClipped.checked;
+    commitLayerProps();
+  });
+
   /* --------------------------------------------------- 直方图（D9.2） */
 
   let histAt = 0;

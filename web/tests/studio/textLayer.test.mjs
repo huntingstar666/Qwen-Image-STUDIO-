@@ -32,6 +32,16 @@ test('TextLayer：clone 保持内容且互不影响', () => {
   assert.equal(source.text, '你好');
 });
 
+test('TextLayer：混合模式与剪贴标记随 clone 保留', () => {
+  const source = new TextLayer({ text: '混合', blend: 'multiply', clipped: true });
+  assert.equal(source.blend, 'multiply');
+  assert.equal(source.clipped, true);
+  const copy = source.clone({ fresh: true });
+  assert.equal(copy.blend, 'multiply');
+  assert.equal(copy.clipped, true);
+  assert.equal(new TextLayer({ blend: 'bad-mode' }).blend, 'source-over');
+});
+
 test('TextLayer：多行文本按换行拆分', () => {
   const layer = new TextLayer({ text: '一\n二\n三' });
   assert.deepEqual(layer.lines(), ['一', '二', '三']);

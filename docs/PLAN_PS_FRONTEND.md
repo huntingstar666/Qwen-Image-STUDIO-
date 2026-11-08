@@ -896,6 +896,16 @@ DOM 结构：
   - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`）：拖出 `(100,100)-(300,250)` 得到「形状 1」200×150、填充 `#ff3b30`，中心像素 `[255,59,48]`、外部仍为底色。改填充 `#2ecc71`、描边 6、白色、圆角 20 后中心 `[46,204,113]`、左边框 `[255,255,255]`、圆角处为抗锯齿混色 `[91,106,129]`。切换类型后同一层变为椭圆（中心绿、角落底色）；再建箭头 170×100、描边 8 后杆中部与箭头尖端均为白色。刷新后 3 个形状的几何与样式完整恢复。图案图章 Alt 拖框 100×60 取样（覆盖椭圆绿色区域），提示「图案 100 × 60」；在 `(600,450)` 涂抹后该处变为 `[46,204,113]`、笔刷外仍为底色，刷新后图案仍保留。截图 `.screenshots/D11.4-shapes-pattern-2026-11-08T05-11-36-210Z.png`。
   - 说明：形状层暂不支持旋转/透视与虚线描边；图案图章与修复类一样写入修复层（非破坏、可撤销），不做独立图案层。
 
+- **D12.1 混合模式 + 剪贴蒙版（已完成）** —— 图层级混合与「只显示在下方图层内」：
+  - 混合模式：`BLEND_MODES`（9 种）扩展为叠加层、文字层、形状层共用；`TextLayer.draw` / `ShapeLayer.draw` 写入 `globalCompositeOperation`，`OverlayLayer` 沿用；调整图层暂不参与混合（按像素整体改色，语义不同）。
+  - 剪贴蒙版：图层新增 `clipped` 标记；`renderer.drawLayers()` 改为逐层绘制，命中剪贴层时取**最近的未剪贴下层**作为 alpha 基座——先用离屏画布渲染基座 alpha，再把剪贴层画到另一块离屏画布并 `destination-in`，最后整块贴回目标。离屏画布按目标像素尺寸复用，4K 下也只分配两块。
+  - 拖动预览：`studio.draw()` 的实时图层捷径改为复用 `drawLayers()`，拖拽过程中混合与剪贴立即生效，不再只对静态帧生效。
+  - UI：右侧面板底部新增「图层属性」区块（选中非调整层时出现）：混合模式下拉 + 「剪贴到下层」勾选；最底层禁用剪贴并给出提示；图层条显示「剪」徽标。
+  - 持久化：所有图层保存 `blend` 与 `clipped`（文字层随 props、形状层显式还原、叠加层随 options），恢复后徽标、面板与画面一致。
+  - 单测：`shapeLayer.test.mjs` 与 `textLayer.test.mjs` 各追加 1 项（混合/剪贴默认值、非法模式回退、clone 保留），四份图层相关测试合计 `pass 23 / fail 0`。
+  - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`，已有椭圆/矩形/箭头三层）：选中矩形层设「正片叠底」后，矩形内像素由 `[255,59,48]` 变为 `[40,14,17]`（与逐通道相乘理论值一致），底色不变。把矩形移到椭圆上方并勾选「剪贴到下层」后：两者重叠处仍为红 `[255,59,48]`，矩形超出椭圆的区域回到底色 `[40,60,90]`，椭圆自身区域保持绿 `[46,204,113]`；图层条出现「剪」徽标。刷新后 `x=65,y=60,clipped=true` 与画面结果完整恢复。截图 `.screenshots/D12.1-blend-clip-2026-11-08T05-15-57-077Z.png`。
+  - 说明：剪贴基座是「下方第一个未剪贴图层」，暂不支持成组剪贴到组；混合模式暂不作用于调整图层与修复层。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1073,9 +1083,9 @@ DOM 结构：
 | `importPicker.js` | `openImportPicker(opts)`、`filesFromDataTransfer(dt)`、`readImageFile(file)`、`urlToDataUrl(url)`、`REF_MIME` | `api.js` | D1/D2 |
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
-| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend`）；`BLEND_MODES`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3（已落地） |
+| `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend/clipped`）；`BLEND_MODES`/`BLEND_IDS`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3 / D12.1（已落地） |
 | `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
-| `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer` | `layers/adjustments` | D7（D7.2 已落地，D9.3 扩展） |
+| `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer`；剪贴蒙版双离屏 alpha 合成 | `layers/adjustments` | D7（D7.2 已落地，D9.3 / D12.1 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
 | `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + `local/setLocal/clearLocal` + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})`、`normalizeLocal/localStrengthAt/buildLocalMask` | `color` | D9.3 / D9.4（已落地） |
@@ -1411,7 +1421,7 @@ DOM 结构：
 | D11.2 | 文字图层 | 已完成 | 本次提交 | 新增 `studio/textLayer.js`（`TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`）；`StudioDoc.addTextLayer` + 工程持久化 `kind:'text'`；左栏 `text` 工具（T）+ 右侧「文字」分页（文案/字体/字重/字号/颜色/描边/投影/删除）；移动拖动、整页撤销、刷新恢复；单测 6 项；实测见 §12.11 |
 | D11.3 | 贴纸 | 已完成 | 本次提交 | `layers.js` 追加 `BLEND_MODES` / `flipH/flipV/blend` / 旋转命中；`addOverlayFile` 支持落点与切页；`sticker` 工具（G）+ 右侧「贴纸」分页（导入/缩放/旋转/翻转/混合模式/删除）；画布四角缩放 + 旋转圆点（15° 吸附）；工程持久化翻转与混合；单测 5 项；实测见 §12.11 |
 | D11.4 | 形状与图案图章 | 已完成 | 本次提交 | 新增 `studio/shapeLayer.js`（矩形/椭圆/直线/箭头，填充/描边/圆角，`kind:'shape'` 持久化）与 `studio/pattern.js`（`tilePatch` + `patternDab`）；`shape` 工具（D）+ 右侧「形状」分页；`pattern` 工具（N）+ Alt 拖框取样 + 浮条提示/清除；`renderSample()` 纳入叠加层/文字/形状；单测 10 项；实测见 §12.11 |
-| D12.1 | 混合模式 + 剪贴蒙版 | 未开始 | — | — |
+| D12.1 | 混合模式 + 剪贴蒙版 | 已完成 | 本次提交 | `BLEND_MODES` 扩展到叠加/文字/形状层；图层新增 `blend/clipped` 并持久化；`renderer.drawLayers()` 用双离屏画布做 alpha 剪贴（取最近未剪贴下层）；右侧「图层属性」区块 + 「剪」徽标；拖动预览复用同一渲染路径；实测见 §12.11 |
 | D12.2 | 图层样式 | 未开始 | — | — |
 | D12.3 | 历史快照 | 未开始 | — | — |
 | D13.1 | AI 主体选择 | 未开始 | — | 待后端 |

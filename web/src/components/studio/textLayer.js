@@ -5,6 +5,8 @@
  * 因此改字号/颜色/描边/投影都是零成本，导出与预览也走同一段代码。
  */
 
+import { BLEND_IDS } from './layers.js';
+
 export const TEXT_FONTS = [
   { id: 'system-ui', label: '系统默认' },
   { id: '"Microsoft YaHei", sans-serif', label: '微软雅黑' },
@@ -42,7 +44,7 @@ function measureContext() {
 }
 
 export class TextLayer {
-  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, opacity = 1, visible = true, locked = false, ...text } = {}) {
+  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, opacity = 1, visible = true, locked = false, blend = 'source-over', clipped = false, ...text } = {}) {
     this.id = id || `tx-${(seq += 1)}`;
     this.name = name;
     this.x = Number(x) || 0;
@@ -51,6 +53,9 @@ export class TextLayer {
     this.opacity = clamp(Number(opacity) ?? 1, 0, 1);
     this.visible = visible !== false;
     this.locked = Boolean(locked);
+    /** 混合模式与剪贴蒙版（D12.1）。 */
+    this.blend = BLEND_IDS.has(blend) ? blend : 'source-over';
+    this.clipped = Boolean(clipped);
     this.text = typeof text.text === 'string' ? text.text : TEXT_DEFAULTS.text;
     this.fontFamily = text.fontFamily || TEXT_DEFAULTS.fontFamily;
     this.fontSize = clamp(Number(text.fontSize) || TEXT_DEFAULTS.fontSize, 8, 400);
@@ -110,6 +115,7 @@ export class TextLayer {
     const lineHeight = this.fontSize * this.lineHeight;
     ctx.save();
     ctx.globalAlpha = this.opacity;
+    ctx.globalCompositeOperation = this.blend || 'source-over';
     ctx.translate(this.x, this.y);
     if (this.rotation) ctx.rotate((this.rotation * Math.PI) / 180);
     ctx.font = this.font;
@@ -145,6 +151,8 @@ export class TextLayer {
       opacity: this.opacity,
       visible: this.visible,
       locked: this.locked,
+      blend: this.blend,
+      clipped: this.clipped,
       text: this.text,
       fontFamily: this.fontFamily,
       fontSize: this.fontSize,

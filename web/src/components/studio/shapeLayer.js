@@ -7,6 +7,8 @@
  * 允许为负，bounds/hitTest 内部按绝对值处理。
  */
 
+import { BLEND_IDS } from './layers.js';
+
 export const SHAPE_KINDS = [
   { id: 'rect', label: '矩形' },
   { id: 'ellipse', label: '椭圆' },
@@ -78,6 +80,9 @@ export class ShapeLayer {
     this.opacity = clamp(options.opacity ?? 1, 0, 1);
     this.locked = Boolean(options.locked);
     this.visible = options.visible !== false;
+    /** 混合模式与剪贴蒙版（D12.1）。 */
+    this.blend = BLEND_IDS.has(options.blend) ? options.blend : 'source-over';
+    this.clipped = Boolean(options.clipped);
   }
 
   get isOpenPath() {
@@ -126,6 +131,7 @@ export class ShapeLayer {
     if (Math.abs(this.width) < 0.5 && Math.abs(this.height) < 0.5) return;
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
+    ctx.globalCompositeOperation = this.blend || 'source-over';
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
@@ -207,6 +213,8 @@ export class ShapeLayer {
       opacity: this.opacity,
       locked: this.locked,
       visible: this.visible,
+      blend: this.blend,
+      clipped: this.clipped,
     });
   }
 

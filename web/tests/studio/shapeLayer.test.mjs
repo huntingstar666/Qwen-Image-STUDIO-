@@ -111,6 +111,16 @@ test('ShapeLayer：draw 写入填充/描边，箭头画三角', () => {
   assert.ok(arrowCalls.some((call) => call[0] === 'fill' && call[1] === '#ff0000'));
 });
 
+test('ShapeLayer：混合模式与剪贴标记随 clone 保留', () => {
+  const source = new ShapeLayer({ shape: 'rect', width: 20, height: 20, blend: 'screen', clipped: true });
+  assert.equal(source.blend, 'screen');
+  assert.equal(source.clipped, true);
+  const copy = source.clone({ fresh: true });
+  assert.equal(copy.blend, 'screen');
+  assert.equal(copy.clipped, true);
+  assert.equal(new ShapeLayer({ blend: 'bad-mode' }).blend, 'source-over');
+});
+
 test('ShapeLayer：clone 独立，props 还原保留样式与几何', () => {
   const source = new ShapeLayer({ shape: 'arrow', x: 5, y: 6, width: 70, height: 20, fill: '#00ff00', strokeWidth: 8, radius: 12 });
   const copy = source.clone({ fresh: true });

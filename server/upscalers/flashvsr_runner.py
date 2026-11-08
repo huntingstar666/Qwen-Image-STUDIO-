@@ -185,16 +185,17 @@ class FlashVSREngine:
 
     @staticmethod
     def _feather(height: int, width: int, overlap: int):
+        """分块羽化权重，形状与 ``frame.unsqueeze(0)`` 对齐：``[1, 1, H, W]``。"""
         torch = _torch()
-        mask = torch.ones(1, height, width, 1, dtype=torch.float32)
+        mask = torch.ones(1, 1, height, width, dtype=torch.float32)
         fade = min(overlap, height // 2, width // 2)
         if fade <= 0:
             return mask
         ramp = torch.linspace(1.0 / (fade + 1), 1.0, fade)
-        mask[:, :, :fade] *= ramp.view(1, 1, -1, 1)
-        mask[:, :, -fade:] *= ramp.flip(0).view(1, 1, -1, 1)
-        mask[:, :fade] *= ramp.view(1, -1, 1, 1)
-        mask[:, -fade:] *= ramp.flip(0).view(1, -1, 1, 1)
+        mask[:, :, :, :fade] *= ramp.view(1, 1, 1, -1)
+        mask[:, :, :, -fade:] *= ramp.flip(0).view(1, 1, 1, -1)
+        mask[:, :, :fade, :] *= ramp.view(1, 1, -1, 1)
+        mask[:, :, -fade:, :] *= ramp.flip(0).view(1, 1, -1, 1)
         return mask
 
     def _run_once(
@@ -258,8 +259,9 @@ class FlashVSREngine:
             progress_bar_cmd=_iter,
         )
         del lq
-        # output: (C, F, H, W) in [-1, 1]; every frame is the same still.
-        frame = output[:, 0].float().add_(1.0).div_(2.0).clamp_(0.0, 1.0)
+        # output: (C, F, H, W) in [-1, 1]；挪回 CPU 再与 CPU 画布/羽化权重混合，
+        # 避免 CUDA 张量与 CPU 蒙版设备不一致，同时及时释放每块的显存。
+        frame = output[:, 0].float().add_(1.0).div_(2.0).clamp_(0.0, 1.0).cpu()
         del output
         return frame
 

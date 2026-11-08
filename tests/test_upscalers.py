@@ -113,3 +113,48 @@ def test_defaults_section_exists():
     up = config.DEFAULTS.get("upscale") or {}
     assert up.get("default_engine") == "vosr2"
     assert up.get("defaults", {}).get("scale") == 2
+
+
+def test_flashvsr_feather_mask_matches_chw_frame():
+    """分块羽化权重必须能与 (1,3,H,W) 帧广播（回归：曾多一个尾维导致 3 vs 512）。"""
+    import torch
+
+    from server.upscalers.flashvsr_runner import FlashVSREngine
+
+    mask = FlashVSREngine._feather(64, 48, 8)
+    assert tuple(mask.shape) == (1, 1, 64, 48)
+    frame = torch.zeros(3, 64, 48)
+    blended = frame.unsqueeze(0) * mask
+    assert tuple(blended.shape) == (1, 3, 64, 48)
+    assert float(mask[0, 0, 32, 24]) == 1.0
+    assert float(mask[0, 0, 0, 0]) < 0.5
+
+    flat = FlashVSREngine._feather(16, 16, 0)
+    assert tuple(flat.shape) == (1, 1, 16, 16)
+    assert float(flat.min()) == 1.0
+
+
+def test_flashvsr_tiled_blend_covers_canvas():
+    """分块路径整图跑通：所有像素都被至少一个分块覆盖（无黑洞）。"""
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from server.upscalers.flashvsr_runner import FlashVSREngine
+
+    class FakeFlashVSR(FlashVSREngine):
+        def load(self):
+            class Pipe:
+                def __call__(self, **kwargs):
+                    return torch.ones(3, 25, kwargs["height"], kwargs["width"])
+
+            self._pipe = Pipe()
+            self._torch_dtype = torch.float32
+            self._device = torch.device("cpu")
+
+    engine = FakeFlashVSR(Path("unused"), precision="bf16")
+    source = Image.new("RGB", (800, 448), (32, 64, 128))
+    out = engine.upscale(source, scale=2, tile_size=256, tile_overlap=24)
+    assert out.size == (1600, 896)
+    array = np.asarray(out)
+    assert int(array.min()) == 255

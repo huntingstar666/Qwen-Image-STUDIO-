@@ -1013,6 +1013,53 @@ export function createStudioPage(host) {
    * AI 面板（右栏「AI 修改」）
    * ============================================================ */
 
+  /**
+   * 提交用蒙版：文档蒙版 ∪ 选区（P1-2）。
+   * AI 只认 mask，选区没手动转蒙版就等于没圈选；这里在提交时合并，
+   * 但**不写回文档**——不替用户改画布，也不污染撤销栈。
+   */
+  function submissionMask() {
+    const empty = { dataUrl: null, size: { width: 0, height: 0 }, coverage: 0, has: false };
+    if (!doc) return empty;
+    const mask = doc.mask;
+    const stats = doc.maskStats();
+    const sel = selection;
+    const canMerge = Boolean(sel)
+      && sel.width === mask.width
+      && sel.height === mask.height
+      && selectionHasPixels(sel.alpha);
+    if (!canMerge) {
+      return {
+        dataUrl: stats.has ? doc.maskPng() : null,
+        size: doc.maskSize,
+        coverage: stats.has ? stats.coverage : 0,
+        has: stats.has,
+      };
+    }
+    const layer = makeCanvas(mask.width, mask.height);
+    const lctx = layer.getContext('2d');
+    lctx.drawImage(mask, 0, 0);
+    lctx.drawImage(sel.canvas, 0, 0);
+    const crop = doc.transform.crop;
+    let out = layer;
+    if (crop) {
+      out = makeCanvas(crop.width, crop.height);
+      out.getContext('2d').drawImage(layer, -(crop.x || 0), -(crop.y || 0));
+    }
+    const data = out.getContext('2d').getImageData(0, 0, out.width, out.height).data;
+    let hit = 0;
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] > 8) hit += 1;
+    }
+    const total = out.width * out.height;
+    return {
+      dataUrl: out.toDataURL('image/png'),
+      size: { width: out.width, height: out.height },
+      coverage: total ? hit / total : 0,
+      has: hit > 0,
+    };
+  }
+
   const ai = mountAiPanel(refs.aiPane, {
     /** AI 面板里的指令 / 参考图 / 参数变化后，合并到同一条自动保存。 */
     onPersistChange() {
@@ -1053,19 +1100,21 @@ export function createStudioPage(host) {
       return Boolean(doc);
     },
     hasMask() {
-      return Boolean(doc?.hasMask?.());
+      // 选区在提交时也会并入蒙版，所以面板判断"有没有圈选"要把选区算上。
+      return Boolean(doc?.hasMask?.())
+        || Boolean(selection && selectionHasPixels(selection.alpha));
     },
     getSource() {
       if (!doc) return null;
       const size = doc.size;
-      const stats = doc.maskStats();
       flushAdjustPreview();
+      const submission = submissionMask();
       return {
         main: { data: doc.bake('image/png'), name: doc.name, width: size.width, height: size.height },
-        mask: stats.has ? doc.maskPng() : null,
-        maskSize: doc.maskSize,
-        coverage: stats.has ? stats.coverage : 0,
-        hasMask: stats.has,
+        mask: submission.dataUrl,
+        maskSize: submission.size,
+        coverage: submission.coverage,
+        hasMask: submission.has,
       };
     },
     /** 当前主图（含调色/变换/叠加层，不含 AI 结果预览），用于图片对比。 */
@@ -2129,6 +2178,8 @@ export function createStudioPage(host) {
     const coverage = has ? coverageAlpha(selection.alpha) : 0;
     refs.selbar.hidden = !(has || WAND_TOOLS.has(tool));
     refs.selInfo.textContent = has ? `选区 ${fmtCoverage(coverage)}` : '未选区';
+    // 选区不必先转蒙版：提交时会自动并入（P1-2）。
+    refs.selInfo.title = has ? '提交时会自动并入蒙版，无需先转蒙版' : '';
   }
 
   function ensureAnts() {

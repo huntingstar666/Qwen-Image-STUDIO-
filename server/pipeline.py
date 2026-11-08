@@ -83,6 +83,41 @@ _PANORAMA_INSTRUCTION = (
     "左右两侧自然衔接，不要出现重复的人物、建筑或纹理。"
 )
 
+#: 任务档位：扩图 / 全景的训练约定（裁块下限、接缝百分比、灰提示）。
+#: 前端切任务时会同时改这些键；第三方只传 task.mode 时必须由后端补齐，
+#: 否则预设是编辑档（768 / 4% / 5%）就会盖住任务档位（P1-4）。
+_TASK_LOCAL_DEFAULTS: dict[str, dict[str, Any]] = {
+    "outpaint": {
+        "crop_min_side": 1024,
+        "expand_pct": 3.0,
+        "feather_pct": 3.0,
+        "hint": "gray_fill",
+        "fills": False,
+    },
+    "panorama": {
+        "crop_min_side": 0,
+        "expand_pct": 0.0,
+        "feather_pct": 0.0,
+        "hint": "gray_fill",
+        "fills": False,
+    },
+}
+
+
+def _task_local_overrides(local: dict[str, Any], requested: Any,
+                          task_mode: str) -> dict[str, Any]:
+    """按任务补齐执行档位；``requested`` 里显式给过的键保持不变。"""
+    defaults = _TASK_LOCAL_DEFAULTS.get(task_mode)
+    if not defaults:
+        return local
+    explicit = requested if isinstance(requested, dict) else {}
+    merged = dict(local or {})
+    for key, value in defaults.items():
+        if key not in explicit:
+            merged[key] = value
+    return merged
+
+
 #: 去水印补全：模型默认只把“水印”理解成文字，徽章 / 编号需要点名（见测试 11a~11d）。
 _WATERMARK_INSTRUCTION = (
     "同时移除画面中所有叠加的水印元素，包括斜向平铺文字、角标徽章/logo、编号/日期，"
@@ -940,6 +975,11 @@ class Pipeline:
                 raise PipelineError(f"全景参数不可用：{exc}") from exc
             op_canvas = imaging.panorama_canvas(src, pano_plan)
             op_info = pano_plan.to_outpaint_info()
+
+        # 任务档位归一：预设是编辑档而任务被切到扩图/全景时，不能让编辑档位
+        # （768 / 4% / 5%）盖住任务训练约定；请求显式给过的键仍然优先。
+        local = _task_local_overrides(local, job.params.get("local"), task_mode)
+        params = {**params, "local": local}
 
         if task_mode in ("outpaint", "panorama"):
             # 扩图/全景输出的是"更大的画布"，零偏移语义不适用（尺寸本就要变）。

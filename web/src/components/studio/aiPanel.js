@@ -1338,7 +1338,9 @@ export function mountAiPanel(host, ctx) {
             return;
           }
           state.resultUrl = url;
-          state.resultInfo = { width: image.width, height: image.height, task: loraState.task };
+          // 回显后端**实际执行**的任务：remove 无蒙版、outpaint 无外扩时会被降级成 edit。
+          const actualTask = String(job?.quality?.task_mode || loraState.task || 'edit');
+          state.resultInfo = { width: image.width, height: image.height, task: actualTask };
           refs.resultActions.hidden = false;
           renderQuality(job);
           if (state.resultInfo.width && state.resultInfo.height) {

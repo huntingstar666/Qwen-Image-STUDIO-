@@ -417,7 +417,7 @@
 | P2-2 | `color_guard` 后端零引用 | `studio/payload.js:262` | 删除 | **已删除**：payload 不再下发 `color_guard`（校色开关仍通过 `local.color_match / color_restore` 生效）。 |
 | P2-3 | `quality.sampling.turbo` 是布尔，`jobView.js:59` 按对象读 | `pipeline.py:1442` vs `jobView.js:59` | 统一返回对象 `{enabled, profile}` | **已修复**：`quality.sampling.turbo` 改为 `{enabled, profile}`（内部 `sampling["turbo"]` 仍是布尔，不影响 LoRA 判空逻辑）。 |
 | P2-4 | `maskStats` 抽样漏判小笔触 | `studio/studioDoc.js:344-349`（每 4 像素、`alpha>4`） | 全量或降阈值，按裁剪后尺寸统计 | **已修复**：改为逐像素扫描（`alpha>0` 判有、`>8` 计覆盖率），细笔触不再被判成"未圈选"；调用点都在落笔结束/操作后，不在每帧路径上。 |
-| P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` | 待处理 |
+| P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` | **已修复**：结果回显与"载入后另存"后缀改用 `job.quality.task_mode`，降级（remove 无蒙版 / outpaint 无外扩）时不再显示错任务。 |
 | P2-6 | quality/meta 大量字段前端不消费 | `pipeline.py:1429-1495`（hint_mode/task_mode/outpaint/panorama/preprocess/watermark/pose_lora/timings） | 结果卡片按需补显示 | 待处理 |
 | P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt | 待处理 |
 | P2-8 | 水印"仅文字"分支 UI 不可达 | `edit.js:617-625` 从不发 `task.watermark_scope`；`pipeline.py:112-114` 有分支 | UI 暴露 scope，或删除分支 | 待处理 |

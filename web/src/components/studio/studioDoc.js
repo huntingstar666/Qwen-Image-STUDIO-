@@ -338,13 +338,13 @@ export class StudioDoc {
     const { width, height } = this.mask;
     if (!width || !height) return { has: false, coverage: 0 };
     const data = this.mask.getContext('2d').getImageData(0, 0, width, height).data;
+    // 必须逐像素扫：抽样（每 4 像素）会漏掉细笔触，让"画了却提示未圈选"（P2-4）。
     let hit = 0;
-    let total = 0;
     let has = false;
-    for (let i = 3; i < data.length; i += 4 * 4) {
-      total += 1;
+    const total = width * height;
+    for (let i = 3; i < data.length; i += 4) {
       const alpha = data[i];
-      if (alpha > 4) has = true;
+      if (alpha > 0) has = true;
       if (alpha > 8) hit += 1;
     }
     return { has, coverage: total ? hit / total : 0 };

@@ -382,26 +382,43 @@ Content-Type: application/json
 
 ## 5. 后端交付清单
 
+> 状态更新：2026-11-08 已全部落地（`POST /api/image/inpaint` 除外，仍为可选项）。
+
 ### P0（阻塞 D13.1）
 
-- [ ] `GET /api/image/segment/models`
-- [ ] `POST /api/image/segment`（同步；`subject` / `box` / `points` 三种模式）
-- [ ] 蒙版输出规范：与输入同尺寸、灰度、白=选中
-- [ ] 错误码：`invalid_image / invalid_box / invalid_points / no_subject / model_not_ready / segmentation_timeout / segmentation_failed`
-- [ ] 支持 `POST /api/engine/free` 卸载分割模型
-- [ ] 自测用例通过（见 2.4 验收标准）
+- [x] `GET /api/image/segment/models`
+- [x] `POST /api/image/segment`（同步；`subject` / `box` / `points` 三种模式）
+- [x] 蒙版输出规范：与输入同尺寸、灰度、白=选中
+- [x] 错误码：`invalid_image / invalid_box / invalid_points / no_subject / model_not_ready / segmentation_timeout / segmentation_failed`（另补 `model_busy / invalid_model / invalid_mode`）
+- [x] 支持 `POST /api/engine/free` 卸载分割模型
+- [x] 自测用例通过（见 2.4 验收标准）
 
 ### P1（可选）
 
-- [ ] `mode="text"`（Grounded-SAM）
-- [ ] `async: true` 返回 `{job_id}`，任务对象带 `masks`
-- [ ] `GET /api/options` 的 `task_modes` 增加 `"panorama"`
+- [x] `mode="text"`（实际用本机 SAM 3.1 multiplex，未部署 Grounded-SAM）
+- [x] `async: true` 返回 `{job_id}`，任务对象带 `masks`
+- [x] `GET /api/options` 的 `task_modes` 增加 `"panorama"`
 - [ ] `POST /api/image/inpaint`（本地补全，非必需）
 
 ### 不需要开发
 
 - D13.2 内容识别填充：前端直接复用 `/api/edit` + `task.mode="remove"`
 - D14.1 全景入口：前端直接复用 `/api/edit` + `task.mode="panorama"`
+
+### 实现落地说明（2026-11-08）
+
+| 项 | 落地结果 |
+| --- | --- |
+| 模型 | `sam3.1-multiplex`（`model_root/checkpoints/sam3.1_multiplex_fp16.safetensors`，点/框/文字）；`birefnet`（`model_root/background_removal/birefnet.safetensors`，无提示主体） |
+| 未使用 | `models/sams/sam_vit_b_01ec64.pth` 文件不完整（zip 中央目录缺失，无法加载），未接入 |
+| 目录推断 | `segment.dirs` 留空时自动使用 `model_root/checkpoints` 与 `model_root/background_removal`，兼容 ComfyUI 目录 |
+| 蒙版 | `storage/masks/seg-*.png`，`/files/masks/...`；灰度、原图尺寸、白=选中；框选模式框外强制为 0 |
+| 异步 | `kind="segment"`，`GET /api/jobs/{id}` 顶层新增 `masks`（另有 `segment:{model,mode,elapsed_ms}`） |
+| 预热/卸载 | `POST /api/engine/warmup {"segment": true}`；`POST /api/engine/free {"unload": true}` 会卸载分割引擎 |
+| 显存 | 同一时刻只驻留一个分割引擎；显存不足先让出放大/生成引擎，生成任务运行中返回 `503 model_busy` |
+| 超时 | 默认 `segment.timeout_s = 60`（实测冷启动 30~45s，热态 <1.5s），设置页可调 |
+| 设置界面 | 新增「主体分割」分区：目录、权重下拉、阈值、细化次数、默认模型、长边、候选数、超时、空闲卸载；模型目录扫描页同步展示就绪状态 |
+| 自测 | `tests/test_segmenters.py` 15 项；全量 `511 passed`，仅 `test_tagger` 因本机已装 moat 模型而失败（与本次无关） |
 
 ---
 
@@ -457,6 +474,14 @@ curl -s http://127.0.0.1:8700/api/edit \
 ---
 
 ## 7. 待确认问题
+
+> 2026-11-08 已确认（本期落地口径）：
+> 1. 不自动下载权重，直接复用本机 ComfyUI 模型目录；目录可显式配置，也可留空自动推断。
+> 2. 与生成模型共用一张 GPU：同一时刻只驻留一个分割引擎；显存不够时先让出放大/生成引擎，
+>    生成任务运行中直接返回 `503 model_busy`（异步模式下由队列串行）。
+> 3. `mode="text"` 纳入本期，用本机 SAM 3.1 multiplex 实现；Grounded-SAM 未部署。
+> 4. 蒙版统一返回 `/files/masks/...` URL（同步/异步一致）。
+> 5. 不做按图片哈希的结果缓存。
 
 1. SAM 2.1 / BiRefNet 的权重来源与许可证（HuggingFace / 官方 checkpoint）由谁负责下载与落盘？
 2. 分割模型与文生图/编辑模型是否共享同一张 GPU？并发策略是排队还是直接返回 `503 model_busy`？

@@ -43,7 +43,8 @@
 │  ├─ align.py             align-color  几何/颜色算法核（Precise-Align 移植，无 torch）
 │  ├─ ollama.py            prompt-style Ollama HTTP 客户端
 │  ├─ prompt_polish.py     prompt-style 提示词润色（官方 PE 规则）
-│  └─ styles.py            prompt-style image-style-kit 目录加载 + 提示词合成（Python 侧）
+│  ├─ styles.py            prompt-style image-style-kit 目录加载 + 提示词合成（Python 侧）
+│  └─ segmenters\          segment-ai  主体分割（maskops / registry / engines / manager）
 ├─ web\
 │  ├─ index.html           frontend
 │  ├─ assets\css\*.css     frontend
@@ -54,7 +55,7 @@
 ├─ tests\                  各模块自己的测试文件
 ├─ scripts\                Lead + native-engine
 ├─ comfy_workflows\        （可选交付，暂缓）
-└─ storage\                运行时产物（uploads/outputs/thumbnails/editor）
+└─ storage\                运行时产物（uploads/outputs/thumbnails/editor/masks）
 ```
 
 ## 2. 后端模块契约
@@ -200,6 +201,31 @@ class NativeEngine:
     def free(self, *, unload=False) -> None
 ```
 
+### 2.6 `server/segmenters/`（主体分割，D13.1）
+
+```python
+class SegmentError(RuntimeError): ...          # .code / .status 直接映射到 HTTP 错误体
+
+# registry.py
+def resolve_dirs(cfg=None) -> dict             # {"sam3": str, "birefnet": str}
+def scan_all(cfg=None, loaded=None) -> dict    # /api/image/segment/models 的数据源
+def pick_model(cfg, mode, requested=None) -> dict
+def normalize_section(current, raw) -> dict    # 设置页 segment 段校验（纯函数）
+
+# manager.py
+class SegmentManager:
+    def segment(self, image, *, model=None, mode="subject", box=None, points=None,
+                text="", multi=False, max_side=0, progress=None) -> dict
+        # {"model","mode","masks":[{"mask","score","box","area"}],"elapsed_ms"}
+    def status(self) -> dict                   # {"loaded":{model_id:bool},"last_used":ts}
+    def free(self, *, unload=True) -> None
+```
+
+- 引擎：**SAM 3.1 multiplex**（`box` / `points` / `text`，单个 checkpoint 内含文字编码器）
+  与 **BiRefNet**（`subject`，无提示显著性主体）。
+- 蒙版：与原图**同宽同高**的灰度 PNG（白=选中），落在 `storage/masks/`，URL 走 `/files/masks/...`。
+- 显存：同一时刻只驻留一个分割引擎；不够时先让出放大/生成引擎；生成任务运行中返回 `model_busy`。
+
 ## 3. HTTP API 契约（Lead 实现，前端按此调用）
 
 基址 `http://127.0.0.1:8700`。错误统一 `{"error":{"code":str,"message":str}}` + 4xx/5xx。
@@ -251,10 +277,34 @@ POST /api/edit (图像编辑)
    "consistency_lora":{"name":str,"strength":float}|null,
    "meta":{...}}
   -> {"job_id":str}
+GET  /api/image/segment/models
+  -> {"models":[{"id","label","kind":"subject"|"prompt","modes":[...],
+                 "ready":bool,"loaded":bool,"vram_mb":int,"file":str,
+                 "size_gb":float,"missing":[str]}],
+      "default":str,"engines":{...},"dirs":{...},"ready":bool,"status":{...}}
+POST /api/image/segment
+  {"image":dataURL|"/files/...","model":str|null,
+   "mode":"subject"|"box"|"points"|"text",
+   "box":{"x","y","width","height"}|null,     # mode=box 必填（原图像素坐标）
+   "points":[{"x","y","label"}],              # mode=points 必填；label=1 前景 / 0 背景
+   "text":"",                                 # mode=text 必填
+   "multi":bool,"feather":0..32,"max_side":int,"async":bool}
+  -> 同步 {"masks":[{"url","width","height","score","box","area"}],
+           "model":str,"elapsed_ms":int,
+           "meta":{"mode","feather","multi","max_side","source":{...}}}
+  -> "async":true {"job_id":str}（任务对象顶层带 masks；kind="segment"）
+  错误码：invalid_image / invalid_box / invalid_points / no_subject / not_implemented /
+          model_not_ready / model_busy / segmentation_timeout / segmentation_failed
+POST /api/engine/warmup {"segment":true|model_id}
+  -> 只预热分割模型（不加载生成权重），冷启动建议先调用
+POST /api/engine/free {"unload":true}
+  -> 同时卸载生成 / 放大 / 分割引擎
 GET  /api/jobs/{job_id}
-  -> {"id","kind":"t2i"|"edit","status":"queued"|"running"|"done"|"error"|"canceled",
+  -> {"id","kind":"t2i"|"edit"|"upscale"|"segment",
+      "status":"queued"|"running"|"done"|"error"|"canceled",
       "progress":{"value":int,"max":int,"label":str},
       "images":[{"url","width","height","filename"}],
+      "masks":[{"url","width","height","score","box","area"}]?,   # kind=segment 时
       "align":{"canvas":{"w","h"},"plan":{...},"applied":bool}|null,
       "quality":{"outside_max_abs":int|null,"size_match":bool}|null,
       "error":str|null,"prompt":str,"params":{...},"meta":{...},
@@ -263,7 +313,7 @@ POST /api/jobs/{job_id}/cancel -> {"ok":true}
 GET  /api/history?limit=30 -> {"items":[...]}
 DELETE /api/history -> {"ok":true}
 POST /api/upload  multipart(file) -> {"id","url","width","height","has_alpha"}
-GET  /files/{path} -> 静态文件（storage 下只读；含 uploads/outputs/thumbnails）
+GET  /files/{path} -> 静态文件（storage 下只读；含 uploads/outputs/thumbnails/editor/masks）
 GET  / -> web/index.html，其余 /src/... /assets/... /vendor/... 静态托管
 ```
 

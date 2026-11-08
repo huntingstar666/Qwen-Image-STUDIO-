@@ -80,6 +80,14 @@ scripts\port_engine.ps1      # 把 comfy/ + node_helpers.py 复制到 engine/
 依赖方向严格单向：`main → pipeline → (imaging/align, backends.native, prompt_polish/styles) → engine`。
 `align.py` / `imaging.py` 不 import torch；`engine/` 不知道上层存在。
 
+另有两条**按需加载的旁路引擎池**，由 `main.py` 直接调用、不经过 pipeline：
+
+- `server/upscalers/`：SeedVR2 / FlashVSR / VOSR2 高清放大；
+- `server/segmenters/`：SAM 3.1（点/框/文字）与 BiRefNet（显著性主体）。
+
+两者都遵循同一约束：同一时刻只驻留一个引擎的权重；显存不够时先让出生成引擎，
+生成任务运行中则返回 `503 model_busy`，空闲时由 `idle_unload_minutes` 自动卸载。
+
 ## 4. 请求生命周期
 
 ### 文生图

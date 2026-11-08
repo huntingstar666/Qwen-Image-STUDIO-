@@ -13,7 +13,7 @@
  * 文档模型见 studioDoc.js：原图不变，所有操作是状态，渲染与导出共用一条管线。
  */
 
-import { downloadUrl, fmtNum, readFileAsDataURL } from '../utils.js';
+import { downloadUrl, fmtNum, readFileAsDataURL, escapeHtml } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
@@ -736,6 +736,15 @@ export function createStudioPage(host) {
               <div class="studio-note" data-ref="layerPropsHint" hidden></div>
             </div>
 
+            <div class="studio-snapshots" data-ref="snapshotBox" hidden>
+              <div class="studio-snapshots-head">
+                <span class="studio-pane-title">历史快照</span>
+                <button class="btn ghost sm" type="button" data-ref="snapshotAdd">＋ 新建</button>
+              </div>
+              <div class="studio-snapshot-list" data-ref="snapshotList"></div>
+              <div class="studio-note">快照保存在本次会话内；点击名称回跳，双击重命名。</div>
+            </div>
+
             <div class="studio-panel-foot">
               <span>空格拖动 · 滚轮缩放 · Ctrl+Z 撤销</span>
               <span class="studio-save" data-ref="saveState">自动保存 · 本机</span>
@@ -865,6 +874,9 @@ export function createStudioPage(host) {
     layerBlend: ref('layerBlend'),
     layerClipped: ref('layerClipped'),
     layerPropsHint: ref('layerPropsHint'),
+    snapshotBox: ref('snapshotBox'),
+    snapshotList: ref('snapshotList'),
+    snapshotAdd: ref('snapshotAdd'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -3779,6 +3791,7 @@ export function createStudioPage(host) {
     syncStickerPane();
     syncShapePane();
     syncLayerProps();
+    renderSnapshots();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
@@ -4433,6 +4446,104 @@ export function createStudioPage(host) {
     if (!layer) return;
     layer.clipped = refs.layerClipped.checked;
     commitLayerProps();
+  });
+
+  /* --------------------------------------------------- 历史快照（D12.3） */
+
+  function renderSnapshots() {
+    refs.snapshotBox.hidden = !doc;
+    if (!doc) {
+      refs.snapshotList.innerHTML = '';
+      return;
+    }
+    const list = doc.snapshots || [];
+    if (!list.length) {
+      refs.snapshotList.innerHTML = '<div class="studio-note">还没有快照。新建一个可随时回跳。</div>';
+      return;
+    }
+    refs.snapshotList.innerHTML = list
+      .map(
+        (item) => `
+        <div class="studio-snapshot" data-snap="${item.id}">
+          <button class="studio-snapshot-name" type="button" data-snap-jump="${item.id}" title="回跳到该快照（可撤销）">${escapeHtml(item.name)}</button>
+          <button class="studio-snapshot-del" type="button" data-snap-del="${item.id}" title="删除快照">×</button>
+        </div>`,
+      )
+      .join('');
+  }
+
+  /** 回跳后同步所有面板与画布状态。 */
+  function afterSnapshotJump(name) {
+    selectedLayerId = null;
+    editingLayerMaskId = '';
+    syncAdjustInputs();
+    syncTextPane();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    updateHistoryUi();
+    updateMaskStatus();
+    scheduleDraw();
+    scheduleSave();
+    renderSnapshots();
+    ai?.refresh?.();
+    toastSuccess(`已回到快照「${name}」`);
+  }
+
+  refs.snapshotAdd.addEventListener('click', () => {
+    if (!doc) return;
+    const item = doc.addSnapshot(`快照 ${doc.snapshots.length + 1}`);
+    if (!item) return;
+    renderSnapshots();
+    toast(`已创建快照「${item.name}」`);
+  });
+
+  refs.snapshotList.addEventListener('click', (event) => {
+    const jump = event.target.closest('[data-snap-jump]');
+    if (jump) {
+      const item = doc?.snapshots.find((entry) => entry.id === jump.dataset.snapJump);
+      if (item && doc.restoreSnapshot(item.id)) afterSnapshotJump(item.name);
+      return;
+    }
+    const del = event.target.closest('[data-snap-del]');
+    if (del) {
+      doc?.removeSnapshot(del.dataset.snapDel);
+      renderSnapshots();
+      toast('已删除快照');
+    }
+  });
+
+  refs.snapshotList.addEventListener('dblclick', (event) => {
+    const button = event.target.closest('[data-snap-jump]');
+    if (!button || !doc) return;
+    const item = doc.snapshots.find((entry) => entry.id === button.dataset.snapJump);
+    if (!item) return;
+    event.preventDefault();
+    const input = document.createElement('input');
+    input.className = 'studio-snapshot-rename';
+    input.value = item.name;
+    input.maxLength = 60;
+    button.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      const next = input.value.trim();
+      if (commit && next) doc.renameSnapshot(item.id, next);
+      renderSnapshots();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener('blur', () => finish(true));
   });
 
   /* --------------------------------------------------- 直方图（D9.2） */

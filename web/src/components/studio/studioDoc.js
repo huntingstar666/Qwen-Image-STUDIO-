@@ -194,6 +194,41 @@ export class StudioDoc {
     this._history.clear();
   }
 
+  /** 命名快照列表（D12.3），元素为 {id, name, state, at}。 */
+  get snapshots() {
+    return this._history.snapshots;
+  }
+
+  /** 把当前状态另存为命名快照（不占撤销步数）。 */
+  addSnapshot(name = '') {
+    const past = this._history.past;
+    const state = past[past.length - 1];
+    if (!state) return null;
+    return this._history.addSnapshot(state, name);
+  }
+
+  /** 回跳到命名快照：先把当前状态入栈，所以回跳本身也能撤销。 */
+  restoreSnapshot(id) {
+    const item = this._history.findSnapshot(id);
+    if (!item) return false;
+    this.snapshot();
+    this.restore(item.state);
+    return true;
+  }
+
+  renameSnapshot(id, name) {
+    const item = this._history.findSnapshot(id);
+    if (!item) return false;
+    const next = String(name || '').trim();
+    if (!next) return false;
+    item.name = next.slice(0, 60);
+    return true;
+  }
+
+  removeSnapshot(id) {
+    return this._history.removeSnapshot(id);
+  }
+
   /* ---------------------------------------------------------- 变换 */
 
   rotateRight() {

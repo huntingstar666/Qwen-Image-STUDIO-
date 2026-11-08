@@ -914,6 +914,15 @@ DOM 结构：
   - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`，200×200 红色形状）：外阴影（模糊 20、距离 10、角度 135°）启用后形状左下方 `[33,50,75]`、更远处为底色，形状内部不变；外发光（金色、模糊 18）在边缘外 2px 为 `[89,93,90]`，约 20px 外衰减回底色；渐变叠加（`#ff3b30 → #7aa2ff`、90°）后形状顶部 `[250,62,54]`、中部 `[187,110,152]`、底部 `[125,159,250]`；颜色叠加（黑、40%）后中心由 `[255,59,48]` 变为 `[153,35,28]`。刷新后样式开关、面板状态与像素结果完整恢复。截图 `.screenshots/D12.2-layer-style-2026-11-08T05-35-19-942Z.png`。
   - 说明：本轮图层样式只作用于形状层；文字层继续使用自身的描边/投影字段，贴纸仍用不透明度与混合模式。暂不支持内阴影、描边独立于形状描边、渐变角度 UI（默认 90°，可通过工程数据调整）。
 
+- **D12.3 历史快照（已完成）** —— 命名快照与一键回跳：
+  - `history.js` 在撤销栈之外新增命名快照：`addSnapshot(state, name)`（`id: snap-N`、默认名「快照 N」）、`removeSnapshot(id)`、`findSnapshot(id)`；快照引用状态对象，不增加撤销步数，历史被裁剪或清空后仍可回跳。
+  - `StudioDoc` 暴露 `snapshots`、`addSnapshot(name)`、`restoreSnapshot(id)`、`renameSnapshot(id, name)`、`removeSnapshot(id)`；回跳时先把当前状态入栈再恢复，所以「回跳」本身也能撤销。
+  - UI：右侧面板底部新增「历史快照」区块（随文档显示）：新建按钮、快照列表（点击名称回跳、双击重命名、× 删除），空状态与剩余数量提示。
+  - 回跳后统一同步：清空图层选择、失效蒙版涂抹态、刷新调色/文字/贴纸/形状/图层属性面板、历史按钮、画布与自动保存。
+  - 单测：新增 `web/tests/studio/history.test.mjs` 3 项（命名/查找/删除、默认名与不占撤销步数、清空历史后快照仍可回跳），`node --test web/tests/studio/history.test.mjs` → `pass 3 / fail 0`。
+  - 实测（headless Chromium，已有渐变形状层）：新建两个快照后把形状从 `y=300` 拖到 `y=350`，点击「快照 1」后 `y` 恢复为 `300`，画布回到渐变形状原位置且撤销按钮可用；双击名称改为「基线」成功，删除「快照 2」后列表只剩 1 项；再点撤销回到 `y=350`（证明回跳可撤销），快照仍保留。截图 `.screenshots/D12.3-history-snapshot-2026-11-08T05-37-41-579Z.png`。
+  - 说明：快照只保存在本次会话内存中（刷新后清空），暂不做工程持久化与缩略图；需要跨会话保留时建议导出工程或使用系统撤销栈。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1092,7 +1101,7 @@ DOM 结构：
 | `promptEditor.js` | `createPromptEditor(host, opts)` → `getText/setText/syncRefs/insertMention/focus/clear` | 无 | D3 |
 | `document.js` | `createDocument()`、`addLayer/removeLayer/moveLayer/cloneLayer`（`docToJSON/fromJSON` 待 D7.3） | 无 | D7（D7.1 已落地） |
 | `layers.js` | `OverlayLayer`（几何 + `visible` + `mask/maskVisible` + `maskedImage()` + `flipH/flipV/blend/clipped`）；`BLEND_MODES`/`BLEND_IDS`；`createLayer(type, props)`、`composite(doc, opts)` | `renderer` | D7 / D8.2 / D9.3 / D11.3 / D12.1（已落地） |
-| `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes` | 无 | D7（D7.4 已落地） |
+| `history.js` | `createHistory({limit, budget})` → `push/undo/redo/clear`、`canUndo/canRedo/bytes`、命名快照 `addSnapshot/removeSnapshot/findSnapshot` | 无 | D7 / D12.3（已落地） |
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer`；剪贴蒙版双离屏 alpha 合成 | `layers/adjustments` | D7（D7.2 已落地，D9.3 / D12.1 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
@@ -1431,7 +1440,7 @@ DOM 结构：
 | D11.4 | 形状与图案图章 | 已完成 | 本次提交 | 新增 `studio/shapeLayer.js`（矩形/椭圆/直线/箭头，填充/描边/圆角，`kind:'shape'` 持久化）与 `studio/pattern.js`（`tilePatch` + `patternDab`）；`shape` 工具（D）+ 右侧「形状」分页；`pattern` 工具（N）+ Alt 拖框取样 + 浮条提示/清除；`renderSample()` 纳入叠加层/文字/形状；单测 10 项；实测见 §12.11 |
 | D12.1 | 混合模式 + 剪贴蒙版 | 已完成 | 本次提交 | `BLEND_MODES` 扩展到叠加/文字/形状层；图层新增 `blend/clipped` 并持久化；`renderer.drawLayers()` 用双离屏画布做 alpha 剪贴（取最近未剪贴下层）；右侧「图层属性」区块 + 「剪」徽标；拖动预览复用同一渲染路径；实测见 §12.11 |
 | D12.2 | 图层样式 | 已完成 | 本次提交 | `shapeLayer.js` 新增 `SHAPE_STYLE_DEFAULTS/normalizeShapeStyle` 与 `style`（外阴影/外发光/渐变叠加/颜色叠加）；剪影 + 反向 shadowOffset 实现阴影/发光，渐变与颜色叠加画在主体之上；形状分页新增样式区块并持久化；单测 24 项；实测见 §12.11 |
-| D12.3 | 历史快照 | 未开始 | — | — |
+| D12.3 | 历史快照 | 已完成 | 本次提交 | `history.js` 新增命名快照（add/remove/find）；`StudioDoc.addSnapshot/restoreSnapshot/renameSnapshot/removeSnapshot`，回跳先入栈可撤销；右侧「历史快照」区块（新建/回跳/双击重命名/删除）；单测 3 项；实测见 §12.11 |
 | D13.1 | AI 主体选择 | 未开始 | — | 待后端 |
 | D13.2 | 内容识别填充 | 未开始 | — | 待后端 |
 | D13.3 | 透视变换 / 路径文字 | 未开始 | — | — |

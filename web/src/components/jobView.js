@@ -66,6 +66,35 @@ export function qualityItems(job) {
   if (scheme) {
     items.push({ text: `方案 ${SCHEME_LABEL[scheme] || scheme}`, title: '实际执行的局部编辑方案' });
   }
+  const TASK_LABEL = { edit: '编辑', remove: '移除', outpaint: '扩图', panorama: '全景' };
+  if (quality.task_mode) {
+    const requested = String(quality.task_requested || '');
+    const degraded = requested && requested !== quality.task_mode;
+    items.push({
+      text: `任务 ${TASK_LABEL[quality.task_mode] || quality.task_mode}${degraded ? '（已降级）' : ''}`,
+      kind: degraded ? 'warn' : '',
+      title: degraded ? `请求 ${requested}，实际按 ${quality.task_mode} 执行` : '后端实际执行的任务',
+    });
+  }
+  if (quality.hint_mode && quality.hint_mode !== 'none') {
+    items.push({
+      text: quality.hint_mode === 'green_overlay' ? '绿区提示' : '灰边提示',
+      title: '本次随参考图送出的提示图类型',
+    });
+  }
+  if (quality.prompt_augmented) {
+    items.push({ text: '已补任务指令', kind: 'info', title: `后端补写了 ${quality.prompt_augmented} 的训练指令` });
+  }
+  if (quality.watermark_prompt) {
+    items.push({ text: '已补全去水印范围', kind: 'info', title: '提示词提到水印，已补全为文字 + 徽章 + 编号' });
+  }
+  const prep = quality.preprocess;
+  if (prep?.applied && prep.work?.w && prep.work?.h) {
+    items.push({
+      text: `预处理 ${fmtNum(prep.work.w)} × ${fmtNum(prep.work.h)}`,
+      title: `大图先缩到工作尺寸再还原（缩放 ${fmtNum(prep.scale, 3)}）`,
+    });
+  }
   const zeroShift = quality.zero_shift;
   if (zeroShift && zeroShift.enabled != null) {
     items.push(

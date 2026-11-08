@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ringSamples } from '../../src/components/studio/heal.js';
+import { meanRgb, ringSamples, shiftPatch } from '../../src/components/studio/heal.js';
 
 function makeImage(width, height, fill) {
   const data = new Uint8ClampedArray(width * height * 4);
@@ -62,4 +62,40 @@ test('ringSamples：越界采样被安全跳过，不产生 NaN', () => {
   for (const color of colors) {
     assert.ok(Number.isFinite(color.r) && Number.isFinite(color.g) && Number.isFinite(color.b));
   }
+});
+
+/* ------------------------------------------------- 仿制 / 修复画笔（D10.2） */
+
+test('meanRgb：忽略透明像素并计算均值', () => {
+  const data = Uint8ClampedArray.from([
+    100, 50, 20, 255,
+    200, 150, 60, 255,
+    0, 0, 0, 0,
+  ]);
+  const mean = meanRgb(data);
+  assert.equal(Math.round(mean.r), 150);
+  assert.equal(Math.round(mean.g), 100);
+  assert.equal(Math.round(mean.b), 40);
+});
+
+test('meanRgb：全透明返回 null', () => {
+  assert.equal(meanRgb(Uint8ClampedArray.from([0, 0, 0, 0])), null);
+});
+
+test('shiftPatch：整体偏移并夹在 0~255，跳过透明像素', () => {
+  const data = Uint8ClampedArray.from([
+    250, 10, 100, 255,
+    0, 0, 0, 0,
+  ]);
+  shiftPatch(data, { r: 40, g: -30, b: 0 });
+  assert.deepEqual([...data], [255, 0, 100, 255, 0, 0, 0, 0]);
+});
+
+test('shiftPatch：strength 控制偏移比例', () => {
+  const data = Uint8ClampedArray.from([100, 100, 100, 255]);
+  shiftPatch(data, { r: 40, g: 40, b: 40 }, 0.5);
+  assert.deepEqual([...data], [120, 120, 120, 255]);
+  const untouched = Uint8ClampedArray.from([100, 100, 100, 255]);
+  shiftPatch(untouched, { r: 40, g: 40, b: 40 }, 0);
+  assert.deepEqual([...untouched], [100, 100, 100, 255]);
 });

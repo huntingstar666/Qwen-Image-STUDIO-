@@ -48,7 +48,7 @@ import {
 } from './studio/selection.js';
 import { histogram, parseCube } from './studio/color.js';
 import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
-import { healDab } from './studio/heal.js';
+import { healDab, cloneDab } from './studio/heal.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -128,6 +128,22 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.2"/><path d="M11 4.8v2.4"/><path d="M11 14.8v2.4"/><path d="M4.8 11h2.4"/><path d="M14.8 11h2.4"/><path d="M18.5 17.5l2 2"/><path d="M19.2 16.2a1.6 1.6 0 1 1 2.3 2.3"/></svg>',
   },
   {
+    id: 'clone',
+    label: '仿制图章',
+    key: 'S',
+    hint: 'Alt 点击取样，再涂抹复制；可切换对齐/非对齐',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h8"/><path d="M10 20v-4.2L7.4 13a2 2 0 0 1-.4-1.2V7.5A1.5 1.5 0 0 1 8.5 6h7A1.5 1.5 0 0 1 17 7.5v4.3a2 2 0 0 1-.4 1.2L14 15.8V20"/><path d="M12 6V3.5"/><path d="M10.5 3.5h3"/></svg>',
+  },
+  {
+    id: 'healbrush',
+    label: '修复画笔',
+    key: 'H',
+    hint: 'Alt 点击取样，再涂抹：复制纹理并匹配目标色度',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5-8.5 8.5-5-5 8.5-8.5z"/><path d="M6 13l-2 5 5-2"/><path d="M18 17.5l.7 1.5 1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7.7-1.5z"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -155,8 +171,12 @@ const ADJUST_FIELDS = [
 ];
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
-/** 使用笔刷参数的工具（蒙版涂抹 + 污点修复，D10.1） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot']);
+/** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush']);
+/** 仿制图章 / 修复画笔（D10.2） */
+const CLONE_TOOLS = new Set(['clone', 'healbrush']);
+/** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
+const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -164,7 +184,7 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
-  { id: 'repair', title: '修复', tools: ['spot'] },
+  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -200,6 +220,9 @@ export function createStudioPage(host) {
   let editingLayerMaskId = '';
   /* D9.4 局部调整：正在画布上拉取的渐变类型（null = 未进入取景模式） */
   let localEdit = null;
+  /* D10.2 仿制取样：锚点（文档坐标）与对齐偏移 */
+  let cloneAnchor = null;
+  let cloneOffset = null;
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
   /* D5.3：拖动期间复用的画布矩形，避免 pointermove 触发同步布局。 */
@@ -329,6 +352,9 @@ export function createStudioPage(host) {
                   <span>不透明度</span>
                   <input type="range" min="5" max="100" step="1" value="100" data-brush="opacity" />
                   <span class="mono" data-value="opacity">100%</span>
+                </label>
+                <label class="studio-check studio-maskbar-align" data-ref="cloneAlignWrap" hidden>
+                  <input type="checkbox" data-ref="cloneAligned" checked /><span>对齐取样</span>
                 </label>
                 <span class="spacer"></span>
                 <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
@@ -559,6 +585,8 @@ export function createStudioPage(host) {
     lutStrength: ref('lutStrength'),
     lutStrengthVal: ref('lutStrengthVal'),
     maskbar: ref('maskbar'),
+    cloneAlignWrap: ref('cloneAlignWrap'),
+    cloneAligned: ref('cloneAligned'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -956,8 +984,9 @@ export function createStudioPage(host) {
       outpaint?.deactivate?.();
       if (activeTab === 'outpaint') activeTab = 'ai';
     }
-    refs.maskbar.hidden = !(MASK_TOOLS.has(next) || next === 'spot');
-    refs.maskbar.classList.toggle('is-heal', next === 'spot');
+    refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next));
+    refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
+    if (refs.cloneAlignWrap) refs.cloneAlignWrap.hidden = !CLONE_TOOLS.has(next);
     if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
     if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
@@ -1312,8 +1341,38 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 仿制取样锚点 + 当前取样位置（D10.2）
+    if (cloneAnchor && CLONE_TOOLS.has(tool)) {
+      const crop = doc.transform.crop;
+      const toView = (p) => ({
+        x: view.x + (p.x - (crop?.x || 0)) * view.scale,
+        y: view.y + (p.y - (crop?.y || 0)) * view.scale,
+      });
+      const anchor = toView(cloneAnchor);
+      const source = drag?.mode === 'clone' && drag.last ? toView({
+        x: drag.last.x - drag.offset.x,
+        y: drag.last.y - drag.offset.y,
+      }) : null;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([4, 3]);
+      for (const point of [anchor, source].filter(Boolean)) {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, Math.max(3, (brush.size / 2) * view.scale), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(point.x - 5, point.y);
+        ctx.lineTo(point.x + 5, point.y);
+        ctx.moveTo(point.x, point.y - 5);
+        ctx.lineTo(point.x, point.y + 5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // 画笔光标
-    if (cursor && (tool === 'brush' || tool === 'eraser' || tool === 'spot')) {
+    if (cursor && (tool === 'brush' || tool === 'eraser' || tool === 'spot' || CLONE_TOOLS.has(tool))) {
       const radius = Math.max(3, (brush.size / 2) * view.scale);
       ctx.save();
       ctx.beginPath();
@@ -1834,6 +1893,45 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 仿制图章 / 修复画笔（D10.2）
+   * ============================================================ */
+
+  function cloneAt(point) {
+    if (!doc || !drag || drag.mode !== 'clone') return;
+    const repair = doc.ensureRepair();
+    if (!drag.sample) drag.sample = doc.renderSample();
+    const ok = cloneDab(repair.getContext('2d'), drag.sample, {
+      x: point.x,
+      y: point.y,
+      sx: point.x - drag.offset.x,
+      sy: point.y - drag.offset.y,
+      radius: Math.max(2, brush.size / 2),
+      opacity: brush.opacity,
+      softness: 1 - brush.hardness,
+      blend: tool === 'healbrush' ? 'heal' : 'clone',
+    });
+    if (!ok) {
+      toastWarn('取样区域超出画面，请重新 Alt 点击取样');
+      drag.mode = 'clone-blocked';
+      return;
+    }
+    doc.invalidateBase();
+  }
+
+  function cloneStroke(point) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(2, brush.size * 0.22);
+    if (distance < step) return;
+    const count = Math.floor(distance / step);
+    for (let i = 1; i <= count; i += 1) {
+      const t = (i * step) / distance;
+      cloneAt({ x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t });
+    }
+    if (drag) drag.last = point;
+  }
+
+  /* ============================================================
    * 指针交互
    * ============================================================ */
 
@@ -1864,6 +1962,29 @@ export function createStudioPage(host) {
         event.shiftKey && event.altKey ? 'intersect' : event.altKey ? 'sub' : event.shiftKey ? 'add' : 'new';
       drag = null;
       wandSelectAt(point, mode);
+      return;
+    }
+    if (CLONE_TOOLS.has(tool)) {
+      if (event.altKey) {
+        // Alt + 点击 = 取样（对齐模式下会清空旧偏移）。
+        cloneAnchor = { x: point.x, y: point.y };
+        cloneOffset = null;
+        toast(`已取样：${Math.round(point.x)}, ${Math.round(point.y)}`);
+        scheduleDraw();
+        return;
+      }
+      if (!cloneAnchor) {
+        toastWarn('按住 Alt 点击画面取样，再涂抹复制');
+        return;
+      }
+      const relative = { x: point.x - cloneAnchor.x, y: point.y - cloneAnchor.y };
+      // 对齐：整段会话沿用第一次落笔的相对偏移；非对齐：每笔重新对齐取样点。
+      const useAligned = refs.cloneAligned?.checked !== false;
+      if (useAligned && !cloneOffset) cloneOffset = relative;
+      const offset = useAligned ? cloneOffset || relative : relative;
+      drag = { mode: 'clone', last: point, offset, sample: doc.renderSample() };
+      cloneAt(point);
+      scheduleDraw();
       return;
     }
     if (tool === 'spot') {
@@ -1927,6 +2048,11 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
+    if (drag.mode === 'clone' || drag.mode === 'clone-blocked') {
+      if (drag.mode === 'clone') cloneStroke(point);
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'crop') {
       drag.rect = normalizeRect(drag.start, point);
       syncCropOverlay(drag.rect);
@@ -1981,6 +2107,10 @@ export function createStudioPage(host) {
       updateMaskStatus();
     } else if (mode === 'spot') {
       // 整笔修复作为一个撤销步（D10.1）。
+      doc?.snapshot();
+      updateHistoryUi();
+    } else if (mode === 'clone' || mode === 'clone-blocked') {
+      // 整笔仿制/修复作为一个撤销步（D10.2）。
       doc?.snapshot();
       updateHistoryUi();
     } else if (mode === 'shape' && rect) {

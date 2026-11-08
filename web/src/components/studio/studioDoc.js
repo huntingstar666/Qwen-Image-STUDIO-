@@ -397,6 +397,25 @@ export class StudioDoc {
     ctx.restore();
   }
 
+  /**
+   * 不含修复层的「干净底图」，供仿制图章/修复画笔取样（D10.2）。
+   * 每次调用都完整重合成一次，但只在落笔开始时调用，不参与逐帧渲染。
+   */
+  renderSample() {
+    const repair = this.repair;
+    const underlay = this._underlay;
+    this.repair = null;
+    this._underlay = null;
+    let clean;
+    try {
+      clean = cloneCanvas(this.renderUnderlay());
+    } finally {
+      this.repair = repair;
+      this._underlay = underlay;
+    }
+    return clean;
+  }
+
   rotateRepairRight() {
     if (!this.repair) return;
     const source = this.repair;

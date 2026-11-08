@@ -127,3 +127,107 @@ export function healDab(ctx, source, { x, y, radius, opacity = 1, softness = 0.5
   ctx.drawImage(scratchCanvas, Math.round(x - pad), Math.round(y - pad));
   ctx.restore();
 }
+
+/** RGBA 像素平均色（忽略近透明像素）；空数据返回 null。 */
+export function meanRgb(data) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 8) continue;
+    r += data[i];
+    g += data[i + 1];
+    b += data[i + 2];
+    n += 1;
+  }
+  if (!n) return null;
+  return { r: r / n, g: g / n, b: b / n };
+}
+
+/** 给补丁整体加上颜色偏移（修复画笔用），原地修改并夹在 0~255。 */
+export function shiftPatch(data, delta, strength = 1) {
+  if (!delta) return data;
+  const amount = clamp(Number(strength) || 0, 0, 1);
+  if (amount <= 0) return data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 8) continue;
+    data[i] = clamp(data[i] + delta.r * amount, 0, 255);
+    data[i + 1] = clamp(data[i + 1] + delta.g * amount, 0, 255);
+    data[i + 2] = clamp(data[i + 2] + delta.b * amount, 0, 255);
+  }
+  return data;
+}
+
+/**
+ * 仿制图章 / 修复画笔（D10.2）：从 (sx,sy) 复制圆形补丁到 (x,y)。
+ * - `blend='clone'`：原样复制（仿制图章）；
+ * - `blend='heal'`：把补丁整体平移到目标区域的色度再贴（修复画笔，接缝更自然）。
+ * @param {CanvasRenderingContext2D} ctx 目标（修复层）
+ * @param {CanvasImageSource} source 取样来源
+ * @param {{x:number,y:number,sx:number,sy:number,radius:number,opacity?:number,softness?:number,blend?:'clone'|'heal'}} options
+ */
+export function cloneDab(ctx, source, { x, y, sx, sy, radius, opacity = 1, softness = 0.5, blend = 'clone' } = {}) {
+  if (!ctx || !source) return false;
+  const r = Math.max(1, Number(radius) || 1);
+  const pad = Math.ceil(r * 1.4);
+  const size = pad * 2;
+  const readX = Math.round(sx - pad);
+  const readY = Math.round(sy - pad);
+  if (
+    readX < 0 ||
+    readY < 0 ||
+    readX + size > source.width ||
+    readY + size > source.height
+  ) {
+    return false;
+  }
+  let probe;
+  try {
+    probe = source.getContext('2d');
+  } catch {
+    return false;
+  }
+  const patchData = probe.getImageData(readX, readY, size, size);
+  if (blend === 'heal') {
+    let destMean = null;
+    try {
+      const dest = probe.getImageData(Math.round(x - pad), Math.round(y - pad), size, size);
+      destMean = meanRgb(dest.data);
+    } catch {
+      destMean = null;
+    }
+    const srcMean = meanRgb(patchData.data);
+    if (destMean && srcMean) {
+      shiftPatch(patchData.data, {
+        r: destMean.r - srcMean.r,
+        g: destMean.g - srcMean.g,
+        b: destMean.b - srcMean.b,
+      });
+    }
+  }
+
+  const scratchCanvas = document.createElement('canvas');
+  scratchCanvas.width = size;
+  scratchCanvas.height = size;
+  const sctx = scratchCanvas.getContext('2d');
+  sctx.putImageData(patchData, 0, 0);
+
+  const center = size / 2;
+  const edge = clamp(1 - clamp(softness, 0, 1) * 0.7, 0.25, 1);
+  const mask = sctx.createRadialGradient(center, center, 0, center, center, size / 2);
+  mask.addColorStop(0, 'rgba(255,255,255,1)');
+  mask.addColorStop(edge, 'rgba(255,255,255,1)');
+  mask.addColorStop(1, 'rgba(255,255,255,0)');
+  sctx.globalCompositeOperation = 'destination-in';
+  sctx.fillStyle = mask;
+  sctx.fillRect(0, 0, size, size);
+  sctx.globalCompositeOperation = 'source-over';
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = clamp(Number(opacity) || 0, 0, 1);
+  ctx.drawImage(scratchCanvas, Math.round(x - pad), Math.round(y - pad));
+  ctx.restore();
+  return true;
+}

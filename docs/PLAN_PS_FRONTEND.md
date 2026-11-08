@@ -825,6 +825,15 @@ DOM 结构：
   - 实测（headless Chromium 1440×900，800×600 红色渐变 + 半径 18 深色圆点）：修复前圆点中心 `[59,31,24]`、周边 `[209,75,51]`；选中污点修复点击圆点后中心变为 `[207,73,50]`（与周边差 ≤2，肉眼无缝），撤销回到 `[59,31,24]`、重做再次修复；刷新 `?cb=53#studio` 恢复后仍是 `[207,72,50]`、深色像素计数 0，说明修复层随工程持久化。截图 `.screenshots/D10.1-spot-heal-2026-11-08T04-17-32-284Z.png`。
   - 已知取舍：当前是「环形颜色外推」而非内容感知修复，纹理/结构边缘（发丝、砖缝）会被抹平；正式的内容感知与仿制图章放在 D10.2，后续可把本工具的 `healDab` 换成 patch-match 取样而不改 UI。
 
+- **D10.2 仿制图章 / 修复画笔（已完成）** —— Alt 取样 + 对齐/非对齐涂抹，结果写入 D10.1 的修复层：
+  - `studio/heal.js` 追加：`meanRgb(data)`（忽略透明像素求均值）、`shiftPatch(data, delta, strength)`（补丁整体色偏，夹取 0~255）、`cloneDab(ctx, source, {x,y,sx,sy,radius,opacity,softness,blend})`——从 `(sx,sy)` 取方形补丁，`blend='clone'` 原样贴回（仿制图章），`blend='heal'` 先算目标窗口与源窗口的均值差再 `shiftPatch`（修复画笔：保留纹理、匹配目标色度），最后用径向渐变做柔和边缘；取样越界返回 `false`，由 UI 提示重新取样。
+  - `StudioDoc.renderSample()`：临时摘掉修复层重合成一份「干净底图」用于取样，避免反复涂抹把已修像素当成源；只在每笔开始时调用一次。
+  - 工具：左栏「修复」组新增 `clone`（仿制图章，S）与 `healbrush`（修复画笔，H）；复用画笔大小/硬度/不透明度，浮条新增「对齐取样」开关（仅这两种工具显示）。
+  - 交互：Alt + 点击设置取样锚点并清空旧偏移（toast 回显坐标）；未取样直接涂抹时提示「按住 Alt 点击画面取样」；对齐开启时整段会话沿用第一次落笔的相对偏移，关闭后每笔重新对齐取样点；画布上用白色虚线圆 + 十字同时标出锚点与当前取样位置；拖动按 `brush.size * 0.22` 间距连续落笔，整笔只落一次撤销步。
+  - 单测：`heal.test.mjs` 追加 4 项（均值忽略透明、全透明返回 null、色偏夹取并跳过透明、strength 比例）；`node --test web/tests/studio/heal.test.mjs` → `pass 9 / fail 0`。
+  - 实测（headless Chromium，800×600：左半 16px 黑白棋盘、右半纯蓝 `#0000ff`，笔刷 24px）：Alt 在 `(24,24)` 取样（toast「已取样：24, 24」），点 `(600,450)` 后该点 `[0,0,255] → [255,255,255]`，`(600,470)` 仍为蓝，说明只复制了笔刷范围内的棋盘格；切修复画笔在 `(16,16)` 取样因窗口越界被拒（不绘制），改在 `(40,40)` 取样后点 `(600,540)` 得中心 `[119,119,255]`、上下相邻 `[0,0,135]`、`(620,540)` 仍纯蓝——纹理被完整复制且整体压到目标蓝色域；对齐校验：开启时第一笔 `(700,200)` 建立偏移后再点 `(700,40)` 源点越界不绘制（保持 `[0,0,255]`），关闭后重新取样同点立即绘出 `[255,255,255]`。刷新 `?cb=62#studio` 恢复后右半仍有 163 个白色采样点（棋盘补丁持久化）。截图 `.screenshots/D10.2-clone-heal-2026-11-08T04-20-56-031Z.png`。
+  - 说明：修复画笔用的是「均值平移」，对亮度差异明显的区域有效，形状差异大时仍需手动选源；真正的内容感知补全属 P2 规划，不在本轮。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1009,8 +1018,8 @@ DOM 结构：
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
 | `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + `local/setLocal/clearLocal` + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})`、`normalizeLocal/localStrengthAt/buildLocalMask` | `color` | D9.3 / D9.4（已落地） |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
-| `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
-| `heal.js` | `ringSamples(data,w,h,opts)` 环形角度取样、`healDab(ctx, source, opts)` 锥形渐变补丁（D10.1 已落地，后续可替换为 patch-match） | 无 | D10.1 |
+| `tools/clone.js` | 仿制图章 / 修复画笔（D10.2 暂内联在 `studio.js`，取样与补丁算法在 `heal.js`） | `renderer` | D10.2（已落地） |
+| `heal.js` | `ringSamples` / `healDab`（污点修复）、`meanRgb` / `shiftPatch` / `cloneDab`（仿制与修复画笔） | 无 | D10.1 / D10.2 |
 | `tools/smudge.js` | 涂抹 | `renderer` | D10 |
 | `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
@@ -1323,7 +1332,7 @@ DOM 结构：
 | D9.3 | 调整图层 | 已完成 | 本次提交 | 新增 `studio/adjustments.js`（`AdjustmentLayer` + `applyAdjustment` + `applyAdjustmentLayer`）；`renderer`/`studioDoc` 合成管线支持调整层；图层显隐眼睛按钮；面板选中调整层后滑杆接管、LUT 禁用；随工程保存 `kind/params/visible`；实测见 §12.11 |
 | D9.4 | 局部调整 | 已完成 | 本次提交 | `adjustments.js` 追加 `normalizeLocal/localStrengthAt/buildLocalMask`；`AdjustmentLayer` 支持 `local` + `setLocal/clearLocal`；调色面板「局部范围」区块（线性/径向/画笔/全图 + 过渡）；画布取景辅助线；随工程保存 `local`；实测见 §12.11 |
 | D10.1 | 污点修复 | 已完成 | 本次提交 | 新增 `studio/heal.js`（`ringSamples` + `healDab` 锥形渐变补丁）；`studioDoc.repair` 修复层并入渲染/历史/旋转翻转；`spot` 工具（J）+ 笔刷参数；随工程保存 `repairBlob`；单测 5 项；实测见 §12.11 |
-| D10.2 | 仿制图章 / 修复画笔 | 未开始 | — | — |
+| D10.2 | 仿制图章 / 修复画笔 | 已完成 | 本次提交 | `heal.js` 追加 `cloneDab/meanRgb/shiftPatch`；`studioDoc.renderSample()` 提供干净取样源；`clone`（S）/`healbrush`（H）工具 + Alt 取样 + 对齐开关 + 锚点/取样标记；实测见 §12.11 |
 | D10.3 | 涂抹 | 未开始 | — | — |
 | D10.4 | 磨皮 | 未开始 | — | — |
 | D10.5 | 液化 | 未开始 | — | — |

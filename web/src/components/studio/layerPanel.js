@@ -290,11 +290,16 @@ export function createLayerColumn(host, ctx) {
     host.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
-  /** 供 F2 调用：打开该行的名称输入框。 */
+  /** 供 F2 调用：打开该行（图层或组）的名称输入框。 */
   function beginRename(id) {
     const name = host.querySelector(`[data-layer-pick="${id}"]`);
-    if (!name) return false;
-    name.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    if (name) {
+      name.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return true;
+    }
+    const groupName = host.querySelector(`[data-group-pick="${id}"]`);
+    if (!groupName) return false;
+    groupName.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     return true;
   }
 

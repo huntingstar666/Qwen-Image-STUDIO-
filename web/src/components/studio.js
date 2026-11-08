@@ -1484,6 +1484,38 @@ export function createStudioPage(host) {
     return true;
   }
 
+  /** D23.10-3：删除图层组及组员（二次确认；一次撤销可恢复）。 */
+  async function deleteGroupWithMembers(groupId) {
+    if (!doc) return false;
+    const group = doc.findGroup(groupId);
+    if (!group) return false;
+    const ids = doc.layers.filter((layer) => layer.groupId === groupId).map((layer) => layer.id);
+    const ok = await confirmDialog({
+      title: ids.length ? '删除图层组' : '删除空组',
+      message: ids.length
+        ? `将删除「${escapeHtml(group.name)}」和组内 ${ids.length} 个图层，可用 Ctrl+Z 撤销。`
+        : `将删除空组「${escapeHtml(group.name)}」。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return false;
+    selectedGroupId = '';
+    if (ids.length) {
+      removeLayers(ids);
+      toastSuccess(`已删除「${group.name}」及 ${ids.length} 个图层`);
+      return true;
+    }
+    doc.removeGroup(groupId);
+    doc.touchLayers();
+    doc.commitLayers();
+    syncLayerProps();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    toastSuccess('已删除空组');
+    return true;
+  }
+
   /**
    * 手柄命中（视口坐标）：旋转圆点 / 四角 / 图层内部。
    * 与 pointerdown 共用同一套几何，只是这里用于鼠标光标。
@@ -2445,8 +2477,10 @@ export function createStudioPage(host) {
     renameGroup(id, name) {
       if (!doc?.findGroup(id)) return false;
       if (!doc.setGroupProps(id, { name })) return false;
+      doc.commitLayers();
       syncLayersPanel();
       syncLayerProps();
+      updateHistoryUi();
       scheduleSave();
       return true;
     },
@@ -9256,6 +9290,19 @@ export function createStudioPage(host) {
       return;
     }
     if (mod) return;
+    // D23.10-3：组行快捷键（组选中时没有主选图层，需单独处理）。
+    if (doc && selectedGroupId) {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        void deleteGroupWithMembers(selectedGroupId);
+        return;
+      }
+      if (event.key === 'F2') {
+        event.preventDefault();
+        layersPanel?.beginRename(selectedGroupId);
+        return;
+      }
+    }
     // D23.2：删除 / 重命名（仅有主选时生效）。
     if (doc && selectedLayerId) {
       if (event.key === 'Delete' || event.key === 'Backspace') {

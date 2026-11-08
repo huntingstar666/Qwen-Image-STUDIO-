@@ -1266,7 +1266,16 @@ export function mountAiPanel(host, ctx) {
     if (STUDIO_PRESET_ALIAS[state.presetId]) {
       toastWarn('连续编辑预设请在「图生图」页使用，本次按等价的单次预设执行');
     }
-    if (loraState.task === 'outpaint') {
+    // 任务：手动选过就以手动为准；停留在「自动」时跟随预设。
+    // 若把 auto 猜出来的任务当显式值发出去，presets.merge 会认为任务与预设不一致，
+    // 把元素移除/全景预设的绿区、填洞与 Remove LoRA 全部复位（P0-3）。
+    const explicitTask = String(refs.task.value || 'auto') !== 'auto';
+    const task = explicitTask ? loraState.task : presetTaskMode(findPreset(state.presets, resolved.id));
+    if (task !== loraState.task) {
+      loraState.task = task;
+      loraState.taskLora = pickTaskLora(state.options?.models?.lora || [], task);
+    }
+    if (task === 'outpaint') {
       const edges = ['outpaint.top', 'outpaint.bottom', 'outpaint.left', 'outpaint.right'].map((key) =>
         Number(presetValue(key, 0)) || 0,
       );
@@ -1287,6 +1296,7 @@ export function mountAiPanel(host, ctx) {
       protection: state.protection,
       hasMask: source.hasMask,
       coverage: source.coverage || 0,
+      taskExplicit: explicitTask,
     };
     const payload = buildEditPayload({
       main: source.main,
@@ -1296,7 +1306,7 @@ export function mountAiPanel(host, ctx) {
       settings,
       loras: loraState,
       sampling: sampling(),
-      task: loraState.task,
+      task,
     });
 
     state.busy = true;

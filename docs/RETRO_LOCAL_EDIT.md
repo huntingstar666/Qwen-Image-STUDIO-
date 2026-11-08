@@ -388,7 +388,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-1 | 一致性 LoRA 关掉后无法重新开启 | `web/src/components/edit.js:2457`、`studio/payload.js:284` 只在关闭时发 `local.consistency=false`；`pipeline.py:1085` 把它当硬关闭；`presetSettings.js:611` 保存时写 false | UI 勾选「开启」无效，模型输出与预期相反 | 开启时也显式发 `local.consistency=true`；保存预设时同步 `consistency.enabled` | 关→开→提交，payload 有 `local.consistency=true`；结果 `quality.loras` 不再为空 | **已修复**：两个入口都改为开/关恒发 `local.consistency`；预设 `consistency.enabled=false` 时不再删 `consistency_lora`（否则后端按预设关掉）。快照：ON=`{"consistency":true}` + `consistency_lora` 对象，OFF=`false`+`false`。 |
 | P0-2 | 图片精修页润色必然失败 | `studio/aiPanel.js:1165` 读 `result.prompt`，接口返回 `rewritten_prompt`（`prompt_polish.py:258/479`）；参考图按 `label/role` 传（`aiPanel.js:1160`），服务端只读 `name/description`（`prompt_polish.py:180`）；未传 `images/pose` | PS 面板润色永远提示"没有返回内容" | 改读 `rewritten_prompt`；按 `name/description` 传参考图；补 `images/pose` | 在 PS 面板点润色，弹窗出现改写文本；参考图数量与页面一致 | **已修复**：改读 `rewritten_prompt`；`references` 改 `name/description/size`；补 `images`（主图烘焙 + 前 5 张参考图，与服务端解码上限一致）。实测 `/api/polish` 返回键为 `rewritten_prompt,wh_ratio,...`（无 `prompt`），改写文本正常。PS 面板无姿态概念，未传 `pose`。 |
-| P0-3 | PS 面板的预设任务被显式任务覆盖 | `studio/payload.js:218` 恒发 `task:{mode}`（用 `detectTask` 结果）；`presets.py:798-817` 显式任务≠预设任务时复位 hint/fills | 选「元素移除/全景」但任务框显示"自动"时，绿区/填洞/Remove LoRA 全失效 | 预设模式下**未手动改过任务就不发 task**；或提交前按预设对齐 | 选元素移除提交，payload 的 task 与预设一致；`quality.hint_mode=green_overlay` | 待修 |
+| P0-3 | PS 面板的预设任务被显式任务覆盖 | `studio/payload.js:218` 恒发 `task:{mode}`（用 `detectTask` 结果）；`presets.py:798-817` 显式任务≠预设任务时复位 hint/fills | 选「元素移除/全景」但任务框显示"自动"时，绿区/填洞/Remove LoRA 全失效 | 预设模式下**未手动改过任务就不发 task**；或提交前按预设对齐 | 选元素移除提交，payload 的 task 与预设一致；`quality.hint_mode=green_overlay` | **已修复**：PS 面板任务框停在「自动」时不发 `task`（`settings.taskExplicit=false`），任务与 LoRA 一律跟随已解析预设（含无蒙版降级）；手动选过任务才显式发送。合并验证：新 payload → `task.mode=remove / hint=green_overlay / fills=true`；旧 payload（auto 猜成 edit）→ `hint=none / fills=false`，即原 bug。 |
 
 ### 17.2 P1 一致性（同一参数两套口径 / 语义丢失）
 
@@ -429,7 +429,7 @@
 
 ### 17.5 实施顺序（在 13 章基础上插入）
 
-1. **S0 阻断修复**：P0-1 / P0-2 / P0-3。只改前端字段与判断，不动管线；每条附 payload 快照。
+1. **S0 阻断修复**：P0-1 / P0-2 / P0-3。只改前端字段与判断，不动管线；每条附 payload 快照。（**已完成**：三条均已修复并附快照/接口实测）
 2. **S1 语义一致**：P1-2 / P1-3 / P1-4 / P1-5 / P1-6 / P1-7。
 3. **S2 参数统一**：P1-8 / P1-9 / P2-3；建立"参数常量单源"模块，前后端测试共用断言。
 4. **S3 局部编辑整改**：按第 13 章阶段 0 → 1 → 2 → 4。

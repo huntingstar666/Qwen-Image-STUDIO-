@@ -1503,7 +1503,11 @@ class Pipeline:
                 "sampler": sampling["sampler"],
                 "scheduler": sampling["scheduler"],
                 "denoise": sampling["denoise"],
-                "turbo": sampling["turbo"],
+                # 统一成对象：结果页按 s.turbo.enabled / s.turbo.profile 读（P2-3）
+                "turbo": {
+                    "enabled": bool(sampling["turbo"]),
+                    "profile": str((params.get("turbo") or {}).get("profile") or ""),
+                },
             },
             "canvas": {"w": plan.width, "h": plan.height},
             "source": {"w": src.width, "h": src.height},

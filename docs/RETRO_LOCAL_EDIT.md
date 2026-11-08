@@ -406,17 +406,17 @@
 
 ### 17.3 P2 死参数与显示
 
-| # | 问题 | 证据 | 处理 |
-| --- | --- | --- | --- |
-| P2-1 | `context_factor/context_pixels` 只在 `legacy_crop` 生效，前端从不发 `legacy_crop` | `pipeline.py:1135-1139`；`studio/payload.js:243-244`、`edit.js:2504-2505` | 删除或补 `legacy_crop` 开关 |
-| P2-2 | `color_guard` 后端零引用 | `studio/payload.js:262` | 删除 |
-| P2-3 | `quality.sampling.turbo` 是布尔，`jobView.js:59` 按对象读 | `pipeline.py:1442` vs `jobView.js:59` | 统一返回对象 `{enabled, profile}` |
-| P2-4 | `maskStats` 抽样漏判小笔触 | `studio/studioDoc.js:344-349`（每 4 像素、`alpha>4`） | 全量或降阈值，按裁剪后尺寸统计 |
-| P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` |
-| P2-6 | quality/meta 大量字段前端不消费 | `pipeline.py:1429-1495`（hint_mode/task_mode/outpaint/panorama/preprocess/watermark/pose_lora/timings） | 结果卡片按需补显示 |
-| P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt |
-| P2-8 | 水印"仅文字"分支 UI 不可达 | `edit.js:617-625` 从不发 `task.watermark_scope`；`pipeline.py:112-114` 有分支 | UI 暴露 scope，或删除分支 |
-| P2-9 | 编辑页润色不传 `imageModel`，MOSS 用户走 qwen PE | `edit.js:626-637` vs `t2i.js:1646` | 补 `imageModel` |
+| # | 问题 | 证据 | 处理 | 状态 |
+| --- | --- | --- | --- | --- |
+| P2-1 | `context_factor/context_pixels` 只在 `legacy_crop` 生效，前端从不发 `legacy_crop` | `pipeline.py:1135-1139`；`studio/payload.js:243-244`、`edit.js:2504-2505` | 删除或补 `legacy_crop` 开关 | 待处理 |
+| P2-2 | `color_guard` 后端零引用 | `studio/payload.js:262` | 删除 | 待处理 |
+| P2-3 | `quality.sampling.turbo` 是布尔，`jobView.js:59` 按对象读 | `pipeline.py:1442` vs `jobView.js:59` | 统一返回对象 `{enabled, profile}` | **已修复**：`quality.sampling.turbo` 改为 `{enabled, profile}`（内部 `sampling["turbo"]` 仍是布尔，不影响 LoRA 判空逻辑）。 |
+| P2-4 | `maskStats` 抽样漏判小笔触 | `studio/studioDoc.js:344-349`（每 4 像素、`alpha>4`） | 全量或降阈值，按裁剪后尺寸统计 | 待处理 |
+| P2-5 | 结果 task 回显用请求值而非实际值 | `aiPanel.js:1314/1707`、`studio.js:1090` | 改用 `quality.task_mode` | 待处理 |
+| P2-6 | quality/meta 大量字段前端不消费 | `pipeline.py:1429-1495`（hint_mode/task_mode/outpaint/panorama/preprocess/watermark/pose_lora/timings） | 结果卡片按需补显示 | 待处理 |
+| P2-7 | 风格文本先拼 prompt 再做任务关键词判定 | `edit.js:2358` → `pipeline.py:1206-1218`；风格含"灰色/全景"会跳过训练指令 | 关键词判定用**原始指令**，不用合成后的 prompt | 待处理 |
+| P2-8 | 水印"仅文字"分支 UI 不可达 | `edit.js:617-625` 从不发 `task.watermark_scope`；`pipeline.py:112-114` 有分支 | UI 暴露 scope，或删除分支 | 待处理 |
+| P2-9 | 编辑页润色不传 `imageModel`，MOSS 用户走 qwen PE | `edit.js:626-637` vs `t2i.js:1646` | 补 `imageModel` | 待处理 |
 
 ### 17.4 PS 面板（图片精修）专项结论
 

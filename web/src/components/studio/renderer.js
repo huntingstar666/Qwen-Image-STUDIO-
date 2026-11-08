@@ -48,9 +48,11 @@ function drawClippedLayer(ctx, layer, base, crop, scratch, ensure) {
  * 按 `layers[0] → 末尾` 的顺序绘制叠加层（末尾在最上层）。
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array<{ draw: (ctx: CanvasRenderingContext2D) => void }>} layers
- * @param {{ crop?: {x:number,y:number}|null }} [options] 图层坐标按「旋转后未裁剪」空间记录，裁剪时平移抵消
+ * @param {{ crop?: {x:number,y:number}|null, skip?: Set<string>|null }} [options]
+ *   crop: 图层坐标按「旋转后未裁剪」空间记录，裁剪时平移抵消；
+ *   skip: 仍然参与剪贴蒙版的 alpha 基座计算，但不绘制（D23.3 合并选中用）。
  */
-export function drawLayers(ctx, layers, { crop = null } = {}) {
+export function drawLayers(ctx, layers, { crop = null, skip = null } = {}) {
   if (!ctx || !layers?.length) return;
   const scratch = { mask: null, paint: null };
   const ensure = (key) => {
@@ -64,6 +66,7 @@ export function drawLayers(ctx, layers, { crop = null } = {}) {
   };
 
   layers.forEach((layer, index) => {
+    if (skip?.has?.(layer.id)) return;
     // 调整层（D9.3）作用于已合成的下层内容，必须在画布坐标里处理，先归零变换。
     if (layer.isAdjustment) {
       ctx.save();

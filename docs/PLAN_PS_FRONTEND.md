@@ -1077,6 +1077,17 @@ DOM 结构：
   - 取图：`fetchBlob(url)` 拿字节；跨域失败时用远程地址作缩略图（卡片可见/可对比），切换时再尝试 `fetchBlob` 补取；后端没给尺寸时用图片实际像素补宽高。
   - 实测：`node --test` 139 passed；快门等既有写入点不受影响。
 
+- **D23.3 图层系统 L3：合并 / 单层导出 / 图层库 / 跨工程（已完成）**：
+  - 合并：`renderer.drawLayers` 新增 `skip` 选项（仍参与剪贴 alpha 基座但不绘制）；`StudioDoc` 新增 `addOverlayFromCanvas / replaceOverlaysWithCanvas / replaceBaseFromCanvas`。四个入口：合并选中（≥2 层，插回最低层位置）、向下合并（与下一层合并；已在最底层则并入主图）、合并可见（主图 + 全部可见层合成一层，隐藏层保留）、拼合图像（全部并入主图）。
+  - **与主图合并语义**：结果写回 base、图层清空、变换/调色/蒙版重置、历史重开，并自动在 Dock 记一张「合并主图」卡；合并后这张图就是 AI 修改 / 扩图 / 主体选择的唯一操作对象，AI 逻辑不变。合并前确认文案提示「不能按图层撤销，建议先按快门」。
+  - 栅格化提示：选中层含文字 / 形状 / 调整层时先确认「将栅格化 N 个图层」。
+  - 单层导出：`doc.size` 画布 + `drawLayers([layer])` → PNG，命名 `${工程名}-${图层名}.png`，透明保留。
+  - 图层库：DB `v2 → v3`，新增 `layerLibrary` store（全局，keyPath `id`）+ `addLayerAsset / listLayerAssets / deleteLayerAsset / clearLayerAssets / trimLayerAssets(50)`；面板头部「库」浮层：存入当前图层、缩略图列表、置入（居中、60% 适配）、删除。
+  - 跨工程复制粘贴：模块级 `layerClipboard`，`Ctrl/Cmd+C` / `V`（同一标签内切工程有效，刷新失效；仅图片图层，文字/形状/调整层暂不支持）。
+  - UI：图层栏底部改为 4×2 八键（上移 / 下移 / 置顶 / 置底 / 复制 / 删除 / 导出 / 合并），「合并」点开四项下拉。
+  - 修复：`renderUnderlay / renderPreviewBase` 的 `drawImage` 支持 Canvas 作为底图（`naturalWidth` 缺失时回退 `width/height`）；否则合并后的新主图在内存里显示为空白，刷新后才恢复。
+  - 实测（headless Chromium 1440×900）：合并选中 → `合并图层 1`；向下合并命中主图 → 确认弹窗、图层清空、主图更名 `g01-合并.png`、Dock 出现「合并主图」卡且画布像素不透明；`Ctrl+Shift+E` 合并可见、`Ctrl+Alt+Shift+E` 拼合正常；单层导出 toast；图层库保存 → 列表 → 置入 → 删除 → 空态；`Ctrl+C/V` 复制粘贴图层成功；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1613,7 +1624,7 @@ DOM 结构：
 | D22.2 | 项目生命周期 | 已完成 | 本次提交 | 顶栏 `＋` 项目菜单（新建本地/素材仓库、立即保存 Ctrl+S、重命名、关闭、删除）+ 导入菜单「作为新主图」；`startNewProject` 改为选中图片后再关旧工程；`closeProject` 改 async（等在途保存 → 补存 → `clearLastProject`）；`saveNow` 等待真实落盘；删除走 `clearProject` 回空状态；实测见 §12.11 |
 | D23.1 | 图层系统 L1：左侧可折叠图层栏 | 已完成 | 本次提交 | 四栏布局（工具轨 58 / 图层 200 可收 40 / 画布 / 检查器 336）；`createLayerColumn` 顶层在上 + 主图虚拟行置底、32px 缩略图、眼睛/锁/蒙版、不透明度、六键工具条；`baseVisible` 透明底合成与工程持久化；AI 分页移除内嵌列表；版本切换弹图层丢弃确认；实测见 §12.11 |
 | D23.2 | 图层系统 L2：自由变换 + 多选 | 已完成 | 本次提交 | 图层自由坐标（可拖出画布）、手柄 cursor（move/grab/nwse/nesw）、Ctrl 加选 + Shift 连选、多选显隐/锁定/删除（一次快照）、Alt+] / Alt+[ 排序、Ctrl+Shift+] / [ 置顶置底、Ctrl+J 复制、Delete 删除、F2 改名、越界圆点；底部工具条改带文字标签；实测见 §12.11 |
-| D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 方案定稿（等通知实施） | — | 合并选中 / 向下合并 / 合并可见 / 拼合；**与主图合并后结果自动成为新主图，AI 编辑逻辑不变**；单层导出 PNG；IndexedDB `layerLibrary`；跨工程复制粘贴；详见 §20.7 |
+| D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 已完成 | 本次提交 | 四个合并入口（选中 / 向下 / 可见 / 拼合）；**与主图合并后结果自动成为新主图，AI 编辑逻辑不变**；单层导出 PNG；DB v3 `layerLibrary` 图层库 + 面板浮层；跨工程 `Ctrl+C/V`；底部八键 + 合并下拉；实测见 §12.11 |
 | D23.4 | 图层系统 L4：AI 结果图层 / 图层组 / 组级调整 | 方案定稿（等通知实施） | — | AI 结果「作为新图层」保留主图；`groupId` 图层组与组参数；调整层作用域到组；详见 §20.8 |
 | D24.1 | 工作室全屏铺满 | 已完成 | 本次提交 | `showPage` 切换 `.app-main/#viewport` 的 `is-studio`；viewport 去限宽/内边距、flex 吃掉顶栏以下高度；`.page-host/.page-studio` 100%；`.studio` 去边框圆角；实测 1440×900 四边零缝隙、无页面滚动 |
 | D24.2 | 版本槽「快门」 | 已完成 | 本次提交 | Dock 最左 52×72 快门，烘焙当前主图为 `kind:'manual'`（角标「快」/`快照 N`，尺寸取 `doc.size`）；快门帘 + 白闪 + 缩略图飞入槽位（420ms）+ 落槽弹跳；busy 防重入、`prefers-reduced-motion` 降级、临时 DOM/定时器随 `destroy()` 清理；实测见 §12.11 |
@@ -2963,7 +2974,7 @@ studioVersionBlobs（IndexedDB）
 
 **提交建议**：`feat(studio): 图层自由变换、手柄光标与多选（D23.2 L2）`
 
-### 20.7 L3：合并 / 单层导出 / 图层库 / 跨工程
+### 20.7 L3：合并 / 单层导出 / 图层库 / 跨工程——已完成
 
 **目标**：把多个图层合成一个；图层可单独带走；抠图能直接放到另一个工程。
 

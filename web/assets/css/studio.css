@@ -226,6 +226,7 @@
 /* ------------------------------------------------------------- 图层面板（D23.1 L1） */
 
 .studio-layers {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -233,6 +234,163 @@
   overflow: hidden;
   border-right: 1px solid var(--line-soft);
   background: var(--panel-2);
+}
+
+.studio-layers-head .spacer {
+  flex: 1 1 auto;
+}
+
+/* 图层库入口（D23.3） */
+.studio-layers-library {
+  flex: 0 0 auto;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.studio-layers-library:hover,
+.studio-layers-library:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.studio-library {
+  position: absolute;
+  top: 40px;
+  left: 6px;
+  right: 6px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  max-height: 62%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 16px 36px rgb(0 0 0 / 22%);
+}
+
+.studio-library[hidden] {
+  display: none;
+}
+
+.studio-library-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.studio-library-title {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.studio-library-head .btn {
+  margin-left: auto;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.studio-library-close {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.studio-library-close:hover {
+  color: var(--accent);
+}
+
+.studio-library-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.studio-library-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+
+.studio-library-item:hover {
+  background: var(--accent-dim);
+}
+
+.studio-library-thumb {
+  display: block;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: repeating-conic-gradient(rgb(255 255 255 / 6%) 0% 25%, transparent 0% 50%) 50% / 8px 8px;
+}
+
+.studio-library-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.studio-library-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.studio-library-btn {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 9.5px;
+  cursor: pointer;
+}
+
+.studio-library-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.studio-library-btn.is-del {
+  padding: 0 5px;
+}
+
+.studio-library-empty {
+  padding: 16px 10px;
+  color: var(--dim);
+  font-size: 10px;
+  text-align: center;
+}
+
+.studio-library-empty[hidden] {
+  display: none;
 }
 
 .studio-layers-head {
@@ -498,12 +656,52 @@
 }
 
 .studio-layers-foot {
+  position: relative;
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 6px;
   border-top: 1px solid var(--line-soft);
+}
+
+/* 合并下拉（D23.3） */
+.studio-merge-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 14px 30px rgb(0 0 0 / 22%);
+}
+
+.studio-merge-menu[hidden] {
+  display: none;
+}
+
+.studio-merge-menu button {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-merge-menu button:hover,
+.studio-merge-menu button:focus-visible {
+  background: var(--accent-dim);
+  color: var(--accent);
+  outline: none;
 }
 
 .studio-layers-foot button {
@@ -572,7 +770,8 @@
 .studio-layers.is-collapsed .studio-layers-list,
 .studio-layers.is-collapsed .studio-layers-empty,
 .studio-layers.is-collapsed .studio-layers-opacity,
-.studio-layers.is-collapsed .studio-layers-foot {
+.studio-layers.is-collapsed .studio-layers-foot,
+.studio-layers.is-collapsed .studio-library {
   display: none;
 }
 

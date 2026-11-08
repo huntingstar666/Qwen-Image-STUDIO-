@@ -15,13 +15,15 @@
  */
 
 const DB_NAME = 'wb-studio';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const LAYER_STORE = 'layers';
 const VERSION_STORE = 'studioVersions';
 const VERSION_BLOB_STORE = 'studioVersionBlobs';
+/** D23.3：跨工程图层素材库（全局，不按工程归档）。 */
+const LAYER_LIBRARY_STORE = 'layerLibrary';
 const ALL_STORES = [
   'meta',
   'projects',
@@ -33,6 +35,7 @@ const ALL_STORES = [
   'drafts',
   VERSION_STORE,
   VERSION_BLOB_STORE,
+  LAYER_LIBRARY_STORE,
 ];
 
 /** 已写入数据库的签名，避免每次自动保存都重写未变化的大图。 */
@@ -90,9 +93,9 @@ export function openDb() {
       const db = request.result;
       for (const name of ALL_STORES) {
         if (db.objectStoreNames.contains(name)) continue;
-        if (name === 'projects') {
+        if (name === 'projects' || name === LAYER_LIBRARY_STORE) {
           const store = db.createObjectStore(name, { keyPath: 'id' });
-          store.createIndex('updatedAt', 'updatedAt');
+          if (name === 'projects') store.createIndex('updatedAt', 'updatedAt');
         } else {
           db.createObjectStore(name);
         }
@@ -518,6 +521,56 @@ export async function clearStudioVersions(projectId) {
     deleteByRange(tx.objectStore(VERSION_BLOB_STORE), rangeFor(projectId)),
   ]);
   await done;
+}
+
+/* ============================================================
+ * 图层素材库（D23.3，全局跨工程）
+ * ============================================================ */
+
+export async function addLayerAsset(asset) {
+  if (!asset?.id) throw new Error('缺少图层素材 id');
+  const db = await openDb();
+  const tx = db.transaction([LAYER_LIBRARY_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  tx.objectStore(LAYER_LIBRARY_STORE).put({
+    ...asset,
+    createdAt: Number(asset.createdAt) || Date.now(),
+  });
+  await done;
+  return asset;
+}
+
+/** 按创建时间倒序返回（最新的在前）。 */
+export async function listLayerAssets() {
+  const db = await openDb();
+  const tx = db.transaction([LAYER_LIBRARY_STORE], 'readonly');
+  const items = await readRequest(tx.objectStore(LAYER_LIBRARY_STORE).getAll());
+  return (items || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+export async function deleteLayerAsset(id) {
+  if (!id) return;
+  const db = await openDb();
+  const tx = db.transaction([LAYER_LIBRARY_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  tx.objectStore(LAYER_LIBRARY_STORE).delete(id);
+  await done;
+}
+
+export async function clearLayerAssets() {
+  const db = await openDb();
+  const tx = db.transaction([LAYER_LIBRARY_STORE], 'readwrite');
+  const done = transactionDone(tx);
+  tx.objectStore(LAYER_LIBRARY_STORE).clear();
+  await done;
+}
+
+/** 超限时按 createdAt 淘汰最旧的，返回被删除的 id。 */
+export async function trimLayerAssets(limit = 50) {
+  const items = await listLayerAssets();
+  const extra = items.slice(Math.max(0, limit));
+  for (const item of extra) await deleteLayerAsset(item.id);
+  return extra.map((item) => item.id);
 }
 
 /* ============================================================

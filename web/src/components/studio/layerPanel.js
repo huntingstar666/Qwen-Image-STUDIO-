@@ -20,7 +20,18 @@ export function createLayerColumn(host, ctx) {
   host.innerHTML = `
     <div class="studio-layers-head">
       <span class="studio-layers-title">图层 <span class="mono" data-lc-count>0</span></span>
+      <span class="spacer"></span>
+      <button class="studio-layers-library" type="button" data-lc-library title="图层库：跨工程存取图层">库</button>
       <button class="studio-layers-collapse" type="button" data-lc-collapse title="收起图层栏" aria-label="收起图层栏">‹</button>
+    </div>
+    <div class="studio-library" data-lc-lib hidden>
+      <div class="studio-library-head">
+        <span class="studio-library-title">图层库</span>
+        <button class="btn ghost sm" type="button" data-lc-lib-save title="把当前选中图层存入图层库">存入当前图层</button>
+        <button class="studio-library-close" type="button" data-lc-lib-close aria-label="关闭">×</button>
+      </div>
+      <div class="studio-library-list" data-lc-lib-list></div>
+      <div class="studio-library-empty" data-lc-lib-empty>还没有图层素材</div>
     </div>
     <div class="studio-layers-list" data-lc-list role="listbox" aria-label="图层"></div>
     <div class="studio-layers-empty" data-lc-empty>打开图片后可管理图层</div>
@@ -36,6 +47,14 @@ export function createLayerColumn(host, ctx) {
       <button type="button" data-lc-act="bottom" title="置底（Ctrl/Cmd + Shift + [）"><span class="glyph">⤓</span><span class="label">置底</span></button>
       <button type="button" data-lc-act="copy" title="复制图层（Ctrl/Cmd + J）"><span class="glyph">⧉</span><span class="label">复制</span></button>
       <button type="button" data-lc-act="del" title="删除图层（Delete）"><span class="glyph">✕</span><span class="label">删除</span></button>
+      <button type="button" data-lc-act="export" title="把选中图层导出为 PNG（画布尺寸）"><span class="glyph">⭳</span><span class="label">导出</span></button>
+      <button type="button" data-lc-act="merge" title="合并图层" aria-haspopup="menu" aria-expanded="false"><span class="glyph">⇩</span><span class="label">合并</span></button>
+      <div class="studio-merge-menu" data-lc-merge-menu role="menu" hidden>
+        <button type="button" role="menuitem" data-lc-merge="selected">合并选中</button>
+        <button type="button" role="menuitem" data-lc-merge="down">向下合并（Ctrl/Cmd + E）</button>
+        <button type="button" role="menuitem" data-lc-merge="visible">合并可见（Ctrl/Cmd + Shift + E）</button>
+        <button type="button" role="menuitem" data-lc-merge="flatten">拼合图像（Ctrl/Cmd + Alt + Shift + E）</button>
+      </div>
     </div>
     <button class="studio-layers-spine" type="button" data-lc-spine title="展开图层栏" aria-label="展开图层栏">
       <span class="studio-layers-spine-count mono" data-lc-spine-count>0</span>
@@ -50,7 +69,52 @@ export function createLayerColumn(host, ctx) {
     alpha: host.querySelector('[data-lc-alpha]'),
     alphaVal: host.querySelector('[data-lc-alpha-val]'),
     foot: host.querySelector('.studio-layers-foot'),
+    mergeMenu: host.querySelector('[data-lc-merge-menu]'),
+    mergeBtn: host.querySelector('[data-lc-act="merge"]'),
+    lib: host.querySelector('[data-lc-lib]'),
+    libList: host.querySelector('[data-lc-lib-list]'),
+    libEmpty: host.querySelector('[data-lc-lib-empty]'),
+    libSave: host.querySelector('[data-lc-lib-save]'),
   };
+
+  const closeMergeMenu = () => {
+    if (!refs.mergeMenu || refs.mergeMenu.hidden) return;
+    refs.mergeMenu.hidden = true;
+    refs.mergeBtn?.setAttribute('aria-expanded', 'false');
+  };
+
+  const toggleMergeMenu = () => {
+    if (!refs.mergeMenu) return;
+    const open = refs.mergeMenu.hidden;
+    refs.mergeMenu.hidden = !open;
+    refs.mergeBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  async function refreshLibrary() {
+    const assets = (await ctx.listLayerAssets?.()) || [];
+    refs.libList.innerHTML = assets
+      .map(
+        (asset) => `
+      <div class="studio-library-item">
+        <span class="studio-library-thumb">${
+          asset.thumbUrl ? `<img src="${asset.thumbUrl}" alt="" />` : ''
+        }</span>
+        <span class="studio-library-name" title="${escapeHtml(asset.name || '')}">${escapeHtml(
+          asset.name || '图层',
+        )}</span>
+        <button type="button" class="studio-library-btn" data-lc-lib-insert="${asset.id}">置入</button>
+        <button type="button" class="studio-library-btn is-del" data-lc-lib-del="${asset.id}" title="删除">×</button>
+      </div>`,
+      )
+      .join('');
+    refs.libEmpty.hidden = assets.length > 0;
+  }
+
+  function setLibraryOpen(open) {
+    if (!refs.lib) return;
+    refs.lib.hidden = !open;
+    if (open) void refreshLibrary();
+  }
 
   const rows = () => ctx.listLayersForPanel?.() || [];
 
@@ -138,10 +202,13 @@ export function createLayerColumn(host, ctx) {
     const selectedId = ctx.getSelectedLayerId?.() || '';
     const selected = list.find((layer) => layer.id === selectedId && layer.kind !== 'base') || null;
     const canEdit = Boolean(selected);
+    const hasLayers = list.some((layer) => layer.kind !== 'base');
     for (const button of refs.foot.querySelectorAll('[data-lc-act]')) {
-      button.disabled = !canEdit;
+      // 「合并」菜单里的「合并可见 / 拼合」不需要选中层，只要求有图层。
+      button.disabled = button.dataset.lcAct === 'merge' ? !hasLayers : !canEdit;
     }
     refs.alpha.disabled = !canEdit;
+    if (refs.libSave) refs.libSave.disabled = !canEdit;
     if (selected) {
       const value = Math.round((selected.opacity ?? 1) * 100);
       refs.alpha.value = String(value);
@@ -165,6 +232,51 @@ export function createLayerColumn(host, ctx) {
   /* ---------------------------------------------------------- 单击操作 */
 
   host.addEventListener('click', (event) => {
+    // 点菜单/图层库以外的地方先收起浮层。
+    if (!event.target.closest('.studio-merge-menu') && !event.target.closest('[data-lc-act="merge"]')) {
+      closeMergeMenu();
+    }
+    if (!event.target.closest('.studio-library') && !event.target.closest('[data-lc-library]')) {
+      setLibraryOpen(false);
+    }
+    const libBtn = event.target.closest('[data-lc-library]');
+    if (libBtn) {
+      setLibraryOpen(refs.lib?.hidden !== false);
+      return;
+    }
+    const libClose = event.target.closest('[data-lc-lib-close]');
+    if (libClose) {
+      setLibraryOpen(false);
+      return;
+    }
+    const libSave = event.target.closest('[data-lc-lib-save]');
+    if (libSave) {
+      void (async () => {
+        const asset = await ctx.saveSelectedToLayerLibrary?.();
+        if (asset) await refreshLibrary();
+      })();
+      return;
+    }
+    const libInsert = event.target.closest('[data-lc-lib-insert]');
+    if (libInsert) {
+      void ctx.insertLayerAsset?.(libInsert.dataset.lcLibInsert);
+      setLibraryOpen(false);
+      return;
+    }
+    const libDel = event.target.closest('[data-lc-lib-del]');
+    if (libDel) {
+      void (async () => {
+        await ctx.deleteLayerAsset?.(libDel.dataset.lcLibDel);
+        await refreshLibrary();
+      })();
+      return;
+    }
+    const mergeItem = event.target.closest('[data-lc-merge]');
+    if (mergeItem) {
+      closeMergeMenu();
+      void ctx.mergeLayers?.(mergeItem.dataset.lcMerge);
+      return;
+    }
     const collapse = event.target.closest('[data-lc-collapse], [data-lc-spine]');
     if (collapse) {
       ctx.toggleCollapsed?.();
@@ -206,15 +318,27 @@ export function createLayerColumn(host, ctx) {
     }
     const act = event.target.closest('[data-lc-act]');
     if (act) {
+      const action = act.dataset.lcAct;
+      if (action === 'merge') {
+        toggleMergeMenu();
+        return;
+      }
       const id = ctx.getSelectedLayerId?.();
       if (!id) return;
-      if (act.dataset.lcAct === 'up') ctx.moveLayer?.(id, 1);
-      else if (act.dataset.lcAct === 'down') ctx.moveLayer?.(id, -1);
-      else if (act.dataset.lcAct === 'top') ctx.moveLayerEdge?.(id, 'top');
-      else if (act.dataset.lcAct === 'bottom') ctx.moveLayerEdge?.(id, 'bottom');
-      else if (act.dataset.lcAct === 'copy') ctx.cloneLayer?.(id);
-      else if (act.dataset.lcAct === 'del') ctx.removeLayer?.(id);
+      if (action === 'up') ctx.moveLayer?.(id, 1);
+      else if (action === 'down') ctx.moveLayer?.(id, -1);
+      else if (action === 'top') ctx.moveLayerEdge?.(id, 'top');
+      else if (action === 'bottom') ctx.moveLayerEdge?.(id, 'bottom');
+      else if (action === 'copy') ctx.cloneLayer?.(id);
+      else if (action === 'del') ctx.removeLayer?.(id);
+      else if (action === 'export') void ctx.exportLayer?.(id);
     }
+  });
+
+  host.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    closeMergeMenu();
+    setLibraryOpen(false);
   });
 
   host.addEventListener('input', (event) => {

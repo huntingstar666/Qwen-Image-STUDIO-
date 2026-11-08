@@ -569,10 +569,68 @@ export class StudioDoc {
   }
 
   /**
-   * 新建文字图层（D11.2）。
-   * @param {object} props 见 TEXT_DEFAULTS（text/fontFamily/fontSize/...）
-   * @param {{name?:string, x?:number, y?:number}} [options]
+   * 用画布新建叠加层（D23.3 合并结果）。
+   * `x/y` 默认对齐当前裁剪偏移，`scale:1` 表示像素 1:1。
    */
+  addOverlayFromCanvas(canvas, { name = '合并图层', x, y, scale = 1, index = -1 } = {}) {
+    const crop = this.transform.crop;
+    const layer = new OverlayLayer(canvas, {
+      name,
+      x: x ?? (crop ? crop.x : 0),
+      y: y ?? (crop ? crop.y : 0),
+      scale,
+    });
+    addLayer(this._doc, layer, { index });
+    this._base = null;
+    this.snapshot();
+    return layer;
+  }
+
+  /**
+   * 用合并结果替换一组叠加层：新层插在最低被替换层的位置，只落一次快照。
+   */
+  replaceOverlaysWithCanvas(ids, canvas, { name = '合并图层' } = {}) {
+    const set = new Set(ids || []);
+    const first = this.layers.findIndex((layer) => set.has(layer.id));
+    const crop = this.transform.crop;
+    const layer = new OverlayLayer(canvas, {
+      name,
+      x: crop ? crop.x : 0,
+      y: crop ? crop.y : 0,
+      scale: 1,
+    });
+    // 先删旧层再插新层，整个过程只落一次快照（一次撤销恢复原图层）。
+    for (const id of set) removeLayer(this._doc, id);
+    const index = first < 0 ? -1 : Math.min(first, this._doc.layers.length);
+    addLayer(this._doc, layer, { index });
+    this._base = null;
+    this.snapshot();
+    return layer;
+  }
+
+  /**
+   * 与主图合并（D23.3）：合成结果写回 base，清空全部叠加层，历史重置。
+   * 合并后这张图就是 AI 编辑的操作对象，AI 逻辑不需要任何改动。
+   */
+  replaceBaseFromCanvas(canvas, { name = '' } = {}) {
+    this.image = canvas;
+    this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
+    this.adjust = { ...ADJUST_DEFAULTS };
+    this.mask = makeCanvas(this.oriented.width, this.oriented.height);
+    this.layers = [];
+    this.repair = null;
+    this.baseVisible = true;
+    this._maskHas = null;
+    this._tint = null;
+    this.invalidateBase();
+    // 旧历史的状态指向旧底图，保留会产生错误合成，直接重开一段历史。
+    this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
+    if (name) this.name = name;
+    this.snapshot();
+    return this;
+  }
+
+  /** 新建文字图层（D11.2）。 */
   addTextLayer(props = {}, { name = '文字', x = 0, y = 0 } = {}) {
     const layer = new TextLayer({ ...props, name, x, y });
     addLayer(this._doc, layer);
@@ -722,7 +780,9 @@ export class StudioDoc {
       const saturation = 1 + adjust.saturation / 100;
       ctx.filter = `brightness(${Math.max(0, brightness)}) contrast(${Math.max(0, contrast)}) saturate(${Math.max(0, saturation)})`;
     }
-    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2, img.naturalWidth, img.naturalHeight);
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
     ctx.restore();
     if (supportsCanvasFilter) ctx.filter = 'none';
 
@@ -818,7 +878,9 @@ export class StudioDoc {
       const saturation = 1 + adjust.saturation / 100;
       ctx.filter = `brightness(${Math.max(0, brightness)}) contrast(${Math.max(0, contrast)}) saturate(${Math.max(0, saturation)})`;
     }
-    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2, img.naturalWidth, img.naturalHeight);
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
     ctx.restore();
     if (supportsCanvasFilter) ctx.filter = 'none';
     if (adjust.temperature) {

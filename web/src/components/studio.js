@@ -25,14 +25,17 @@ import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openUpscaleDialog } from './studio/upscaleDialog.js';
 import { REF_MIME, filesFromDataTransfer, openImportPicker, urlToDataUrl } from './studio/importPicker.js';
 import {
+  addLayerAsset,
   addStudioVersion,
   clearLastProject,
   clearProject,
   cleanupProjects,
   createProjectLease,
+  deleteLayerAsset,
   deleteStudioVersion,
   estimateStorage,
   leaseHeldByOther,
+  listLayerAssets,
   listStudioVersions,
   loadLastProject,
   loadProject,
@@ -42,6 +45,7 @@ import {
   requestPersistentStorage,
   saveStudioProject,
   storageAvailable,
+  trimLayerAssets,
   trimStudioVersions,
 } from './studio/persistence.js';
 import { consumeStudioHandoff, goToEditPage, setHandoff } from '../handoff.js';
@@ -85,6 +89,9 @@ import { drawLayers } from './studio/renderer.js';
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const MAX_FILE_BYTES = 30 * 1024 * 1024;
+
+/** D23.3：同一标签内的图层复制缓冲（切工程仍有效，刷新页面后失效）。 */
+const layerClipboard = [];
 
 const TOOLS = [
   {
@@ -1444,6 +1451,354 @@ export function createStudioPage(host) {
     return '';
   }
 
+  /* ============================================================
+   * D23.3 L3：合并 / 单层导出 / 图层库 / 跨工程复制粘贴
+   * ============================================================ */
+
+  const MAX_LAYER_ASSETS = 50;
+
+  function mergeNameCount(prefix) {
+    return doc ? doc.layers.filter((layer) => String(layer.name || '').startsWith(prefix)).length + 1 : 1;
+  }
+
+  async function confirmRasterize(layers) {
+    const risky = layers.filter((layer) => layer.isText || layer.isShape || layer.isAdjustment);
+    if (!risky.length) return true;
+    return confirmDialog({
+      title: '合并图层',
+      message: `将栅格化 ${risky.length} 个文字 / 形状 / 调整图层，合并后不能按原类型编辑。`,
+      confirmText: '继续合并',
+    });
+  }
+
+  /** 合并选中 / 向下合并 / 合并可见；与主图合并见 mergeIntoBaseAction。 */
+  async function mergeLayersAction(mode) {
+    if (!doc) return false;
+    if (mode === 'flatten') return mergeIntoBaseAction('flatten');
+    const layers = doc.layers;
+    if (!layers.length) {
+      toastWarn('当前没有可合并的图层');
+      return false;
+    }
+    const ids = selectedLayerIds.size ? [...selectedLayerIds] : selectedLayerId ? [selectedLayerId] : [];
+    const primaryId = selectedLayerId;
+    const primaryIndex = primaryId ? layers.findIndex((layer) => layer.id === primaryId) : -1;
+    let targets = [];
+    let stack = layers;
+    let skip = null;
+    let name = '';
+
+    if (mode === 'selected') {
+      if (ids.length < 2) {
+        toastWarn('请先选中至少两个图层');
+        return false;
+      }
+      targets = layers.filter((layer) => ids.includes(layer.id));
+      const top = Math.max(...targets.map((layer) => layers.indexOf(layer)));
+      stack = layers.slice(0, top + 1);
+      const targetSet = new Set(ids);
+      skip = new Set(stack.filter((layer) => !targetSet.has(layer.id)).map((layer) => layer.id));
+      name = `合并图层 ${mergeNameCount('合并图层')}`;
+    } else if (mode === 'down') {
+      if (primaryIndex < 0) {
+        toastWarn('请先选中一个图层');
+        return false;
+      }
+      // 主选已经在最底层：向下合并 = 并入主图。
+      if (primaryIndex === 0) return mergeIntoBaseAction('down');
+      const below = layers[primaryIndex - 1];
+      targets = [below, layers[primaryIndex]];
+      stack = layers.slice(0, primaryIndex + 1);
+      skip = new Set(stack.filter((layer) => layer.id !== layers[primaryIndex].id).map((layer) => layer.id));
+      name = `合并图层 ${mergeNameCount('合并图层')}`;
+    } else if (mode === 'visible') {
+      targets = layers.filter((layer) => layer.visible !== false);
+      if (!targets.length) {
+        toastWarn('没有可见图层');
+        return false;
+      }
+      name = `合并可见 ${mergeNameCount('合并可见')}`;
+    } else {
+      return false;
+    }
+
+    if (!(await confirmRasterize(targets))) return false;
+    const crop = doc.transform.crop;
+    const canvas = makeCanvas(doc.size.width, doc.size.height);
+    const c2 = canvas.getContext('2d');
+    // 「合并可见」把主图也烤进新层；合并选中/向下合并保持透明底。
+    if (mode === 'visible' && baseVisible) c2.drawImage(doc.renderUnderlay(), 0, 0);
+    drawLayers(c2, stack, { crop, skip });
+
+    const removeIds = targets.map((layer) => layer.id);
+    const layer = doc.replaceOverlaysWithCanvas(removeIds, canvas, { name });
+    for (const id of removeIds) {
+      layerBlobs.delete(id);
+      selectedLayerIds.delete(id);
+    }
+    selectedLayerIds.add(layer.id);
+    selectedLayerId = layer.id;
+    syncAdjustInputs();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    ai?.refresh?.();
+    toastSuccess(`已${mode === 'visible' ? '合并可见图层' : '合并图层'} · ${name}`);
+    return true;
+  }
+
+  /**
+   * 与主图合并（向下合并命中主图 / 拼合图像）：结果写回 base，图层清空。
+   * 合并后的图就是新的主图，AI 修改/扩图/主体选择仍只操作它，逻辑不变。
+   */
+  async function mergeIntoBaseAction(kind) {
+    if (!doc) return false;
+    if (!doc.layers.length) {
+      toastWarn('当前没有可合并的图层');
+      return false;
+    }
+    const confirmed = await confirmDialog({
+      title: kind === 'flatten' ? '拼合图像' : '合并到主图',
+      message:
+        '将把当前主图与图层合并成新主图，所有图层会被清空，且不能按图层撤销' +
+        '（建议先按底部「快门」保存当前状态）。是否继续？',
+      confirmText: '合并',
+      danger: true,
+    });
+    if (!confirmed) return false;
+    const crop = doc.transform.crop;
+    const canvas = makeCanvas(doc.size.width, doc.size.height);
+    const c2 = canvas.getContext('2d');
+    if (baseVisible) c2.drawImage(doc.renderUnderlay(), 0, 0);
+    drawLayers(c2, doc.layers, { crop });
+    try {
+      sourceBlob = await canvasToBlob(canvas, 'image/png');
+    } catch {
+      sourceBlob = null;
+    }
+    const stem = (doc.name || 'studio').replace(/\.[^.]+$/, '') || 'studio';
+    const mergedName = /-合并$/.test(stem) ? doc.name : `${stem}-合并.png`;
+    doc.replaceBaseFromCanvas(canvas, { name: mergedName });
+    layerBlobs.clear();
+    selectedLayerId = null;
+    selectedLayerIds.clear();
+    editingLayerMaskId = '';
+    baseVisible = true;
+    refs.stage.classList.remove('is-base-hidden');
+    refs.fileName.textContent = doc.name;
+    syncAdjustInputs();
+    syncTextPane();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    updateHistoryUi();
+    updateSizeInfo();
+    updateMaskStatus();
+    setPreview(null);
+    ai?.refresh?.();
+    scheduleSave();
+    scheduleDraw();
+    fitView();
+    // 让 Dock 指针指向合并后的新主图，避免「当前卡」还是旧图。
+    if (sourceBlob) {
+      await recordVersion('manual', sourceBlob, {
+        label: '合并主图',
+        width: doc.size.width,
+        height: doc.size.height,
+        meta: { task: 'merge' },
+      });
+    }
+    toastSuccess(kind === 'flatten' ? '已拼合为主图（AI 编辑仍以主图为对象）' : '已合并到主图');
+    return true;
+  }
+
+  /** 单层导出 PNG：画布尺寸 = doc.size，透明区域保留。 */
+  async function exportLayerAction(id) {
+    if (!doc) return false;
+    const layer = doc.findLayer(id);
+    if (!layer) return false;
+    const canvas = makeCanvas(doc.size.width, doc.size.height);
+    drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
+    try {
+      const blob = await canvasToBlob(canvas, 'image/png');
+      const url = URL.createObjectURL(blob);
+      downloadUrl(url, `${baseName(doc.name || 'studio')}-${layer.name || '图层'}.png`);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toastSuccess(`已导出图层「${layer.name}」`);
+      return true;
+    } catch (err) {
+      toastError(err, '导出图层失败');
+      return false;
+    }
+  }
+
+  /** 复制选中图层到内存缓冲（限图片图层；文字/形状/调整层暂不支持）。 */
+  async function copySelectedLayersAction() {
+    if (!doc) return 0;
+    const ids = selectedLayerIds.size ? [...selectedLayerIds] : selectedLayerId ? [selectedLayerId] : [];
+    if (!ids.length) return 0;
+    const items = [];
+    for (const id of ids) {
+      const layer = doc.findLayer(id);
+      if (!layer || layer.isAdjustment || layer.isText || layer.isShape) continue;
+      const blob = await layerBlobFor(layer);
+      if (!blob) continue;
+      items.push({
+        name: layer.name,
+        blob,
+        scale: layer.scale,
+        rotation: layer.rotation,
+        flipH: layer.flipH,
+        flipV: layer.flipV,
+        opacity: layer.opacity,
+        blend: layer.blend,
+      });
+    }
+    if (!items.length) {
+      toastWarn('仅支持复制图片图层');
+      return 0;
+    }
+    layerClipboard.splice(0, layerClipboard.length, ...items);
+    toast(`已复制 ${items.length} 个图层，可切换到其它工程后粘贴`);
+    return items.length;
+  }
+
+  /** 粘贴图层缓冲：按当前画布居中放置，id 重新生成。 */
+  async function pasteLayersAction() {
+    if (!doc || !layerClipboard.length) return 0;
+    let count = 0;
+    for (const item of layerClipboard) {
+      const url = URL.createObjectURL(item.blob);
+      try {
+        const image = await loadImage(url);
+        const fit = Math.min(1, (doc.size.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
+        const layer = doc.addOverlay(image, {
+          name: `${item.name || '粘贴图层'} 副本`,
+          scale: item.scale || fit,
+          rotation: item.rotation || 0,
+          flipH: Boolean(item.flipH),
+          flipV: Boolean(item.flipV),
+          opacity: item.opacity ?? 1,
+          blend: item.blend || 'source-over',
+        });
+        layerBlobs.set(layer.id, item.blob);
+        selectedLayerIds.clear();
+        selectedLayerIds.add(layer.id);
+        selectedLayerId = layer.id;
+        count += 1;
+      } catch {
+        /* 单张失败跳过 */
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    if (count) {
+      syncAdjustInputs();
+      syncStickerPane();
+      syncShapePane();
+      syncLayerProps();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      ai?.refresh?.();
+      toastSuccess(`已粘贴 ${count} 个图层`);
+    }
+    return count;
+  }
+
+  async function fetchLayerAssetsAction() {
+    try {
+      return await listLayerAssets();
+    } catch {
+      return [];
+    }
+  }
+
+  async function saveSelectedToLibraryAction() {
+    if (!doc || !selectedLayerId) {
+      toastWarn('请先选中一个图层');
+      return null;
+    }
+    const layer = doc.findLayer(selectedLayerId);
+    if (!layer) return null;
+    if (layer.isAdjustment) {
+      toastWarn('调整图层没有位图，不能存入图层库');
+      return null;
+    }
+    const blob = await layerBlobFor(layer);
+    if (!blob) {
+      toastWarn('该图层没有可保存的位图');
+      return null;
+    }
+    const asset = {
+      id: `la-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: layer.name || '图层',
+      width: Math.round(layer.width || 0),
+      height: Math.round(layer.height || 0),
+      thumbUrl: layerThumbFor(layer),
+      blob,
+      createdAt: Date.now(),
+      meta: { source: 'layer', projectId },
+    };
+    try {
+      await addLayerAsset(asset);
+      await trimLayerAssets(MAX_LAYER_ASSETS);
+      toastSuccess('已存入图层库');
+      return asset;
+    } catch (err) {
+      toastError(err, '存入图层库失败');
+      return null;
+    }
+  }
+
+  async function insertLayerFromLibraryAction(id) {
+    if (!doc || !id) return null;
+    const assets = await fetchLayerAssetsAction();
+    const asset = assets.find((item) => item.id === id);
+    if (!asset?.blob) {
+      toastWarn('该图层素材已失效');
+      return null;
+    }
+    const url = URL.createObjectURL(asset.blob);
+    try {
+      const image = await loadImage(url);
+      const fit = Math.min(1, (doc.size.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
+      const layer = doc.addOverlay(image, { name: asset.name || '图层库素材', scale: fit });
+      layerBlobs.set(layer.id, asset.blob);
+      selectedLayerIds.clear();
+      selectedLayerIds.add(layer.id);
+      selectedLayerId = layer.id;
+      syncAdjustInputs();
+      syncStickerPane();
+      syncShapePane();
+      syncLayerProps();
+      updateHistoryUi();
+      scheduleSave();
+      scheduleDraw();
+      ai?.refresh?.();
+      toastSuccess(`已置入「${asset.name || '图层库素材'}」`);
+      return layer;
+    } catch (err) {
+      toastError(err, '置入图层失败');
+      return null;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function removeLayerAssetAction(id) {
+    try {
+      await deleteLayerAsset(id);
+      return true;
+    } catch (err) {
+      toastError(err, '删除图层素材失败');
+      return false;
+    }
+  }
+
   const ai = mountAiPanel(refs.aiPane, {
     /** AI 面板里的指令 / 参考图 / 参数变化后，合并到同一条自动保存。 */
     onPersistChange() {
@@ -1827,6 +2182,25 @@ export function createStudioPage(host) {
     },
     getLayerThumb(layer) {
       return layerThumbFor(layer);
+    },
+    /* D23.3：合并 / 导出 / 图层库 / 复制粘贴 */
+    mergeLayers(mode) {
+      return mergeLayersAction(mode);
+    },
+    exportLayer(id) {
+      return exportLayerAction(id);
+    },
+    listLayerAssets() {
+      return fetchLayerAssetsAction();
+    },
+    saveSelectedToLayerLibrary() {
+      return saveSelectedToLibraryAction();
+    },
+    insertLayerAsset(id) {
+      return insertLayerFromLibraryAction(id);
+    },
+    deleteLayerAsset(id) {
+      return removeLayerAssetAction(id);
     },
     /** 图层是否部分在画布外（面板行小圆点提示，D23.2）。 */
     isLayerOutside(layer) {
@@ -8048,6 +8422,19 @@ export function createStudioPage(host) {
       void saveNow();
       return;
     }
+    // D23.3：合并（可见/拼合不要求选中层）与粘贴图层
+    if (doc && mod && event.key.toLowerCase() === 'e') {
+      event.preventDefault();
+      if (event.shiftKey && event.altKey) void mergeLayersAction('flatten');
+      else if (event.shiftKey) void mergeLayersAction('visible');
+      else if (selectedLayerId) void mergeLayersAction('down');
+      return;
+    }
+    if (doc && mod && !event.shiftKey && event.key.toLowerCase() === 'v' && layerClipboard.length) {
+      event.preventDefault();
+      void pasteLayersAction();
+      return;
+    }
     // D23.2：图层排序 / 复制快捷键（带修饰键，避开工具键）。
     if (doc && selectedLayerId) {
       const bracket = event.key === ']' || event.key === '[';
@@ -8065,6 +8452,12 @@ export function createStudioPage(host) {
       if (mod && !event.shiftKey && event.key.toLowerCase() === 'j') {
         event.preventDefault();
         ai?.layerCtx?.cloneLayer?.(selectedLayerId);
+        return;
+      }
+      // D23.3：复制图层到内存缓冲（切工程后可粘贴）
+      if (mod && !event.shiftKey && event.key.toLowerCase() === 'c') {
+        event.preventDefault();
+        void copySelectedLayersAction();
         return;
       }
     }

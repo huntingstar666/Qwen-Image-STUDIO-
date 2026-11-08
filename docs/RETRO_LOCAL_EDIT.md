@@ -415,6 +415,12 @@
 | P1-9 | 扩图缺省值可能超全局上限 | `pipeline.py:911` 缺省 `max_side=5120`，全局 4096；无预设路径先在 `986` 建大画布后被拒 | 缺省取 `cfg.max_side` | 不带 `outpaint.max_side` 的请求不再随机失败 | **已修复**：缺省改为 `op.max_side or cfg.max_side or 4096`，与全局上限一致（本机实测全局 4096 → 缺省 4096）。 |
 | P1-10 | 「本次保护」两个开关另存一份 `protection`，与预设 `local.color_match / local.color_restore / zero_shift.enabled` 是两套状态 | `guards.js` + `edit.js:1606/2436` + `aiPanel.js:522/1293`；高级设置里还有两个同名开关 | 自定义预设关了校色，界面仍显示开启；改开关还会被预设覆盖 | 开关显示由预设生效值推导，改动写回 overrides；删掉重复开关 | **已修复**：新增 `protectionOf()` / `applyProtection()`，两页的开关都只读预设+overrides、改动写回同一条覆盖项；高级设置里重复的「颜色匹配 / 区域色彩还原」两个 switch 已删除（保留强度滑杆）；`protection` 状态与 payload 字段一并移除。实测：预设关 → 开关显示关；重新打开 → 显式下发 `local.color_match/color_restore=true`；关闭 → 下发 `false`。 |
 
+> **同类排查结论（随 P1-10 一并做）**
+> 1. `zero_shift.enabled` 与 `local.color_match / local.color_restore` 是同一个 bug（共用一份 `protection`），已一并迁移到 overrides，不再单独存状态。
+> 2. 其余参数均为「预设 → 高级设置 / 参数条 → overrides → 按差异回传」单一链路，无第二状态源：`scheme`、`feather`、`expand_pct`、`crop_min_side / crop_floor / crop_*`、`blend_pixels`、`color_strength`、`preprocess.*`、`panorama.*`、`task`、`consistency`、`steps / cfg / sampler / scheduler / denoise`。
+> 3. `edit.colorMatch` 只剩「无预设」的旧参数路径在用，已改为读同一份 guard，避免该路径又长出第二套开关。
+> 4. 以后新增保护类开关时：**不要建独立 settings 字段**，一律在 `presets.js` 的 `protectionOf / applyProtection` 里映射到预设路径，否则会重现本条问题。
+
 ### 17.3 P2 死参数与显示
 
 | # | 问题 | 证据 | 处理 | 状态 |

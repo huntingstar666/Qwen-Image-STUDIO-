@@ -476,6 +476,49 @@ TASK_ALIASES: dict[str, str] = {
 #: 局部编辑方案枚举（``raw`` 是 ``native`` 的历史别名）。
 SCHEMES = ("a", "b", "auto", "native", "raw")
 
+#: 数值参数区间：预设保存校验、API 请求校验、前端控件共用这一份。
+#: ``step`` 只给前端控件用；区间不一致会让「保存得进、提交被拒」或「UI 调不到」。
+NUMERIC_LIMITS: dict[str, dict[str, Any]] = {
+    "preprocess.max_side": {"min": 256, "max": 8192, "step": 32},
+    "preprocess.min_side": {"min": 256, "max": 8192, "step": 32},
+    "preprocess.multiple": {"min": 8, "max": 256, "step": 8},
+    "local.expand_top": {"min": 1, "max": 3, "step": 0.05},
+    "local.expand_bottom": {"min": 1, "max": 3, "step": 0.05},
+    "local.expand_left": {"min": 1, "max": 3, "step": 0.05},
+    "local.expand_right": {"min": 1, "max": 3, "step": 0.05},
+    "local.expand_pct": {"min": 0, "max": 20, "step": 0.5},
+    "local.feather_pct": {"min": 0, "max": 30, "step": 0.5},
+    "local.blend_pixels": {"min": 0, "max": 256, "step": 4},
+    "local.feather": {"min": 0, "max": 256, "step": 4},
+    "local.mask_expand": {"min": 0, "max": 256, "step": 4},
+    "local.context_pixels": {"min": 0, "max": 1024, "step": 32},
+    "local.context_factor": {"min": 1, "max": 4, "step": 0.1},
+    "local.color_strength": {"min": 0, "max": 1, "step": 0.01},
+    "local.color_restore_strength": {"min": 0, "max": 1, "step": 0.01},
+    "local.crop_min_side": {"min": 0, "max": 4096, "step": 32},
+    "local.crop_max_side": {"min": 0, "max": 4096, "step": 32},
+    "local.crop_floor": {"min": 0, "max": 2048, "step": 32},
+    "consistency.strength": {"min": 0, "max": 2, "step": 0.01},
+    "sampling.steps": {"min": 1, "max": 200, "step": 1},
+    "sampling.cfg": {"min": 0, "max": 30, "step": 0.5},
+    # denoise=0 等于「不采样、原样返回」，没有实际意义，统一从 0.05 起。
+    "sampling.denoise": {"min": 0.05, "max": 1, "step": 0.05},
+    "outpaint.top": {"min": 0, "max": 200, "step": 1},
+    "outpaint.bottom": {"min": 0, "max": 200, "step": 1},
+    "outpaint.left": {"min": 0, "max": 200, "step": 1},
+    "outpaint.right": {"min": 0, "max": 200, "step": 1},
+    "outpaint.max_side": {"min": 1024, "max": 8192, "step": 32},
+    "panorama.long_side": {"min": 1024, "max": 4096, "step": 32},
+    "panorama.seam_blend": {"min": 0, "max": 128, "step": 4},
+    "chain.anchor_every": {"min": 1, "max": 50, "step": 1},
+    "chain.drift_warn_delta_e": {"min": 0, "max": 100, "step": 1},
+}
+
+
+def limits(path: str) -> dict[str, Any]:
+    """取某个数值参数的区间（缺省返回全开区间，调用方自行兜底）。"""
+    return NUMERIC_LIMITS.get(path) or {"min": None, "max": None, "step": None}
+
 
 def _get(params: dict[str, Any], path: str, default: Any = None) -> Any:
     cursor: Any = params
@@ -541,6 +584,11 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
             return None
         return value
 
+    def bounds(path: str) -> tuple[float, float]:
+        """从共享区间表取 (min, max)，避免每个校验点各写一套数字。"""
+        lim = limits(path)
+        return float(lim["min"]), float(lim["max"])
+
     task = str(_get(params, "task.mode", "edit")).strip().lower()
     if task not in TASK_ALIASES:
         errors.append(f"未知 task.mode：{task!r}")
@@ -570,40 +618,40 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
 
     if _get(params, "preprocess.mode", "downscale_only") not in ("downscale_only", "clamp_range"):
         errors.append("preprocess.mode 只支持 downscale_only / clamp_range")
-    pre_max = integer("preprocess.max_side", 256, 8192, "preprocess.max_side")
-    pre_min = integer("preprocess.min_side", 256, 8192, "preprocess.min_side")
-    integer("preprocess.multiple", 8, 256, "preprocess.multiple")
+    pre_max = integer("preprocess.max_side", *bounds("preprocess.max_side"), "preprocess.max_side")
+    pre_min = integer("preprocess.min_side", *bounds("preprocess.min_side"), "preprocess.min_side")
+    integer("preprocess.multiple", *bounds("preprocess.multiple"), "preprocess.multiple")
     if pre_max is not None and pre_min is not None and pre_min > pre_max:
         errors.append("preprocess.min_side 不能大于 max_side")
 
-    for path, label, low, high in (
-        ("local.expand_top", "上扩系数", 1, 3),
-        ("local.expand_bottom", "下扩系数", 1, 3),
-        ("local.expand_left", "左扩系数", 1, 3),
-        ("local.expand_right", "右扩系数", 1, 3),
-        ("local.expand_pct", "接缝扩展", 0, 20),
-        ("local.feather_pct", "接缝羽化", 0, 30),
-        ("local.color_strength", "颜色强度", 0, 1),
-        ("local.color_restore_strength", "还原强度", 0, 1),
-        ("consistency.strength", "一致性强度", 0, 2),
-        ("sampling.cfg", "CFG", 0, 30),
-        ("sampling.denoise", "降噪", 0, 1),
+    for path, label in (
+        ("local.expand_top", "上扩系数"),
+        ("local.expand_bottom", "下扩系数"),
+        ("local.expand_left", "左扩系数"),
+        ("local.expand_right", "右扩系数"),
+        ("local.expand_pct", "接缝扩展"),
+        ("local.feather_pct", "接缝羽化"),
+        ("local.color_strength", "颜色强度"),
+        ("local.color_restore_strength", "还原强度"),
+        ("consistency.strength", "一致性强度"),
+        ("sampling.cfg", "CFG"),
+        ("sampling.denoise", "降噪"),
     ):
-        num(path, low, high, label)
+        num(path, *bounds(path), label)
 
-    crop_min = integer("local.crop_min_side", 0, 4096, "裁块下限")
-    crop_max = integer("local.crop_max_side", 0, 4096, "裁块上限")
-    integer("local.crop_floor", 0, 2048, "最小裁剪窗")
-    integer("local.feather", 0, 256, "羽化像素")
-    integer("local.mask_expand", 0, 256, "遮罩外扩")
-    integer("local.blend_pixels", 0, 256, "过渡带宽度")
+    crop_min = integer("local.crop_min_side", *bounds("local.crop_min_side"), "裁块下限")
+    crop_max = integer("local.crop_max_side", *bounds("local.crop_max_side"), "裁块上限")
+    integer("local.crop_floor", *bounds("local.crop_floor"), "最小裁剪窗")
+    integer("local.feather", *bounds("local.feather"), "羽化像素")
+    integer("local.mask_expand", *bounds("local.mask_expand"), "遮罩外扩")
+    integer("local.blend_pixels", *bounds("local.blend_pixels"), "过渡带宽度")
     if crop_min and crop_max and crop_min > crop_max:
         errors.append("裁块下限不能大于裁块上限")
 
     if _get(params, "local.band_mode", "lowfreq") not in ("alpha", "lowfreq"):
         errors.append("local.band_mode 只支持 alpha / lowfreq")
 
-    steps = integer("sampling.steps", 1, 200, "采样步数")
+    steps = integer("sampling.steps", *bounds("sampling.steps"), "采样步数")
     sampler = str(_get(params, "sampling.sampler", "") or "")
     scheduler = str(_get(params, "sampling.scheduler", "") or "")
     if sampler and sampler not in config.SAMPLERS:
@@ -620,9 +668,10 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
     max_side = int(cfg.get("max_side") or 4096)
     pads = []
     for key in ("top", "bottom", "left", "right"):
-        value = num(f"outpaint.{key}", 0, 200, f"扩图 {key}", required=False)
+        value = num(f"outpaint.{key}", *bounds(f"outpaint.{key}"),
+                    f"扩图 {key}", required=False)
         pads.append(0 if value is None else value)
-    integer("outpaint.max_side", 1024, 8192, "扩图最大长边")
+    integer("outpaint.max_side", *bounds("outpaint.max_side"), "扩图最大长边")
     out_max = _get(params, "outpaint.max_side")
     try:
         out_max_int = int(out_max) if out_max is not None else None
@@ -634,16 +683,16 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
     aspect = str(_get(params, "panorama.aspect", "2:1") or "2:1")
     if aspect not in ("2:1", "3:1", "4:1", "21:9"):
         errors.append(f"未知全景比例：{aspect!r}")
-    pano_long = integer("panorama.long_side", 1024, 4096, "全景长边")
+    pano_long = integer("panorama.long_side", *bounds("panorama.long_side"), "全景长边")
     if pano_long is not None and pano_long > max_side:
         errors.append(f"panorama.long_side 不能超过全局 max_side（{max_side}）")
-    integer("panorama.seam_blend", 0, 128, "全景接缝融合")
+    integer("panorama.seam_blend", *bounds("panorama.seam_blend"), "全景接缝融合")
 
     chain_mode = _get(params, "chain.mode")
     if chain_mode is not None and str(chain_mode) not in ("mask", "native"):
         errors.append("chain.mode 只支持 mask / native")
-    integer("chain.anchor_every", 1, 50, "回锚间隔")
-    integer("chain.drift_warn_delta_e", 0, 100, "漂移告警阈值")
+    integer("chain.anchor_every", *bounds("chain.anchor_every"), "回锚间隔")
+    integer("chain.drift_warn_delta_e", *bounds("chain.drift_warn_delta_e"), "漂移告警阈值")
 
     consistency_lora = str(_get(params, "consistency.lora", "") or "").strip()
     if consistency_lora and not config.resolve_model(cfg, "lora", consistency_lora):

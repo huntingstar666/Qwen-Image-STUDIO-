@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from server import main
+from server import main, presets
 
 
 def test_valid_payload_passes():
@@ -233,6 +233,23 @@ def test_request_does_not_enforce_preset_task_combos():
 def test_rejects_mask_wrong_type():
     with pytest.raises(main.ApiError, match="mask"):
         main._validate_edit_params({"mask": 123})
+
+
+def test_param_limits_single_source():
+    """数值区间只有 presets.NUMERIC_LIMITS 一份，请求校验与预设校验读同一张表（P1-8）。"""
+    for path in ("sampling.denoise", "local.blend_pixels", "preprocess.max_side",
+                 "local.crop_min_side", "outpaint.max_side", "panorama.long_side"):
+        lim = presets.limits(path)
+        assert lim["min"] is not None and lim["max"] is not None, path
+
+    # denoise=0 以前「预设存得进、接口拒绝」，现在两侧一致拒绝
+    with pytest.raises(main.ApiError, match="denoise"):
+        main._validate_edit_params({"denoise": 0})
+    assert presets.validate_params({"sampling": {"denoise": 0}})["errors"]
+
+    # blend_pixels=236 以前前端上限 128 调不到，现在两侧都接受
+    main._validate_edit_params({"local": {"blend_pixels": 236}})
+    assert not presets.validate_params({"local": {"blend_pixels": 236}})["errors"]
 
 
 def test_edit_endpoint_rejects_image_without_data():

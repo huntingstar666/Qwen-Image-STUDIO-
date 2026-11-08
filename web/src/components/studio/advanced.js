@@ -34,9 +34,9 @@ const GROUPS = [
       { key: 'local.expand_left', label: '左扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向左扩展的倍数。', showIf: isB },
       { key: 'local.expand_right', label: '右扩系数', type: 'number', min: 1, max: 3, step: 0.05, fallback: 1.4, unit: '×', hint: '遮罩包围盒向右扩展的倍数。', showIf: isB },
       { key: 'local.fills', label: '填充闭合选区', type: 'switch', fallback: false, hint: '把描边内部一并填满，避免只移除一圈边。元素移除必须开。', showIf: isB, disabled: (ctx) => ctx.task === 'remove' },
-      { key: 'local.crop_min_side', label: '裁块下限', type: 'select', fallback: 768, numeric: true, options: [0, 512, 768, 1024, 1536], unit: 'px', hint: '裁块短边至少这么大；扩图档位是 1024。', showIf: isB },
+      { key: 'local.crop_min_side', label: '裁块下限', type: 'select', fallback: 768, numeric: true, options: [0, 512, 768, 1024, 1536, 2048, 3072, 4096], unit: 'px', hint: '裁块短边至少这么大；扩图档位是 1024。', showIf: isB },
       { key: 'local.crop_max_side', label: '裁块上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072, 4096], unit: 'px', hint: '裁块长边上限；越大越贵，超过 2048 收益递减。', showIf: isB },
-      { key: 'local.crop_floor', label: '最小裁剪窗', type: 'select', fallback: 1024, numeric: true, options: [512, 768, 1024], unit: 'px', hint: '遮罩很小时，以遮罩为中心把裁块扩到至少这么大——补的是真实周边像素，不是放大；默认 1024 与孤海一致。', showIf: isB },
+      { key: 'local.crop_floor', label: '最小裁剪窗', type: 'select', fallback: 1024, numeric: true, options: [512, 768, 1024, 1536, 2048], unit: 'px', hint: '遮罩很小时，以遮罩为中心把裁块扩到至少这么大——补的是真实周边像素，不是放大；默认 1024 与孤海一致。', showIf: isB },
     ],
   },
   {
@@ -46,7 +46,7 @@ const GROUPS = [
     fields: [
       { key: 'local.expand_pct', label: '接缝扩展', type: 'range', min: 0, max: 20, step: 0.5, fallback: 4, unit: '%', hint: '方案 B：还原时把写入区向外扩的百分比；0 = 严格按遮罩。', showIf: isB },
       { key: 'local.feather_pct', label: '接缝羽化', type: 'range', min: 0, max: 30, step: 0.5, fallback: 5, unit: '%', hint: '方案 B：扩展区的过渡带宽度（占遮罩短边）。', showIf: isB },
-      { key: 'local.blend_pixels', label: '过渡带宽度', type: 'number', min: 0, max: 128, step: 4, fallback: 24, unit: 'px', hint: '方案 B 贴回裁切结果时的边界过渡带。', showIf: isB },
+      { key: 'local.blend_pixels', label: '过渡带宽度', type: 'number', min: 0, max: 256, step: 4, fallback: 24, unit: 'px', hint: '方案 B 贴回裁切结果时的边界过渡带。', showIf: isB },
       { key: 'local.feather', label: '羽化像素', type: 'number', min: 0, max: 256, step: 4, fallback: 32, unit: 'px', hint: '方案 A：合成时遮罩边缘向内羽化的像素数；0 = 不羽化。', showIf: isA },
       { key: 'local.mask_expand', label: '遮罩外扩', type: 'number', min: 0, max: 256, step: 4, fallback: 0, unit: 'px', hint: '方案 A：把可写入区域向外扩 N 像素；0 = 严格只改选区。', showIf: isA },
       { key: 'local.dither', label: '确定性抖动', type: 'switch', fallback: true, hint: '消除 8bit 舍入造成的色阶断层，幅度 < 1/255，肉眼不可见。', showIf: notNative },
@@ -102,9 +102,9 @@ const GROUPS = [
     note: '长边超过上限时才真正缩小；出图后按接缝记录一次性还原，不二次取整。',
     fields: [
       { key: 'preprocess.enabled', label: '启用预处理', type: 'switch', fallback: true, hint: '关掉后 4K 图更慢，可能爆显存。' },
-      { key: 'preprocess.max_side', label: '长边上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072], unit: 'px', hint: '超过就等比缩小；越大越清晰也越慢。' },
+      { key: 'preprocess.max_side', label: '长边上限', type: 'select', fallback: 2048, numeric: true, options: [1024, 1536, 2048, 2560, 3072, 4096, 6144, 8192], unit: 'px', hint: '超过就等比缩小；越大越清晰也越慢。' },
       { key: 'preprocess.mode', label: '缩放范围', type: 'select', fallback: 'downscale_only', options: RANGE_MODES, hint: '默认只缩小；「缩小 + 放大」会把小图也拉到长边区间。' },
-      { key: 'preprocess.min_side', label: '长边下限', type: 'number', min: 256, max: 2048, step: 32, fallback: 768, unit: 'px', hint: '仅在「缩小 + 放大」模式生效。', showIf: (value) => value === 'clamp_range' },
+      { key: 'preprocess.min_side', label: '长边下限', type: 'number', min: 256, max: 8192, step: 32, fallback: 768, unit: 'px', hint: '仅在「缩小 + 放大」模式生效。', showIf: (value) => value === 'clamp_range' },
       { key: 'preprocess.multiple', label: '对齐倍数', type: 'readonly', hint: '训练约定固定 32，不可改。' },
     ],
   },

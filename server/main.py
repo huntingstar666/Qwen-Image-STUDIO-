@@ -643,6 +643,8 @@ def api_meta() -> dict[str, Any]:
         "default_preset": presets.default_preset_id(),
         "edit_presets": presets.public_presets(),
         "custom_presets": presets.public_custom_presets(),
+        # 数值区间单一来源：前端控件与请求校验都读它，避免「UI 能选、后端拒绝」（P1-8）
+        "param_limits": presets.NUMERIC_LIMITS,
     }
 
 
@@ -856,14 +858,16 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 max_side = int(pre.get("max_side") or 2048)
             except (TypeError, ValueError):
                 raise ApiError("preprocess.max_side 必须是整数")
-            if not 256 <= max_side <= 8192:
-                raise ApiError("preprocess.max_side 必须在 256~8192")
+            lim = presets.limits("preprocess.max_side")
+            if not lim["min"] <= max_side <= lim["max"]:
+                raise ApiError(f"preprocess.max_side 必须在 {lim['min']}~{lim['max']}")
             try:
                 min_side = int(pre.get("min_side") or 768)
             except (TypeError, ValueError):
                 raise ApiError("preprocess.min_side 必须是整数")
-            if not 256 <= min_side <= 8192:
-                raise ApiError("preprocess.min_side 必须在 256~8192")
+            lim = presets.limits("preprocess.min_side")
+            if not lim["min"] <= min_side <= lim["max"]:
+                raise ApiError(f"preprocess.min_side 必须在 {lim['min']}~{lim['max']}")
             if min_side > max_side:
                 raise ApiError("preprocess.min_side 不能大于 max_side")
             if pre.get("multiple") is not None:
@@ -871,34 +875,39 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                     multiple = int(pre["multiple"])
                 except (TypeError, ValueError):
                     raise ApiError("preprocess.multiple 必须是整数")
-                if not 8 <= multiple <= 256:
-                    raise ApiError("preprocess.multiple 必须在 8~256")
+                lim = presets.limits("preprocess.multiple")
+                if not lim["min"] <= multiple <= lim["max"]:
+                    raise ApiError(f"preprocess.multiple 必须在 {lim['min']}~{lim['max']}")
             mode = str(pre.get("mode") or "downscale_only")
             if mode not in ("downscale_only", "clamp_range"):
                 raise ApiError(f"未知 preprocess.mode：{mode!r}")
 
     # 采样参数：非法值会让管线在 worker 里抛 ValueError（前端只看到 500）。
+    # 区间统一从 presets.NUMERIC_LIMITS 取，避免「前端能选、后端拒绝」（P1-8）。
     if payload.get("steps") is not None:
         try:
             steps = int(payload["steps"])
         except (TypeError, ValueError):
             raise ApiError("steps 必须是整数")
-        if not 1 <= steps <= 200:
-            raise ApiError("steps 必须在 1~200")
+        lim = presets.limits("sampling.steps")
+        if not lim["min"] <= steps <= lim["max"]:
+            raise ApiError(f"steps 必须在 {lim['min']}~{lim['max']}")
     if payload.get("cfg") is not None:
         try:
             cfg_value = float(payload["cfg"])
         except (TypeError, ValueError):
             raise ApiError("cfg 必须是数字")
-        if not 0 <= cfg_value <= 30:
-            raise ApiError("cfg 必须在 0~30")
+        lim = presets.limits("sampling.cfg")
+        if not lim["min"] <= cfg_value <= lim["max"]:
+            raise ApiError(f"cfg 必须在 {lim['min']}~{lim['max']}")
     if payload.get("denoise") is not None:
         try:
             denoise = float(payload["denoise"])
         except (TypeError, ValueError):
             raise ApiError("denoise 必须是数字")
-        if not 0 < denoise <= 1:
-            raise ApiError("denoise 必须在 0~1")
+        lim = presets.limits("sampling.denoise")
+        if not lim["min"] <= denoise <= lim["max"]:
+            raise ApiError(f"denoise 必须在 {lim['min']}~{lim['max']}")
     if payload.get("sampler") and str(payload["sampler"]) not in config.SAMPLERS:
         raise ApiError(f"未知采样器：{payload['sampler']!r}")
     if payload.get("scheduler") and str(payload["scheduler"]) not in config.SCHEDULERS:
@@ -924,15 +933,17 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 value = float(outpaint[key])
             except (TypeError, ValueError):
                 raise ApiError(f"outpaint.{key} 必须是数字（百分比）")
-            if not 0 <= value <= 200:
-                raise ApiError(f"outpaint.{key} 必须在 0~200（百分比）")
+            lim = presets.limits(f"outpaint.{key}")
+            if not lim["min"] <= value <= lim["max"]:
+                raise ApiError(f"outpaint.{key} 必须在 {lim['min']}~{lim['max']}（百分比）")
         if outpaint.get("max_side") is not None:
             try:
                 max_side = int(outpaint["max_side"])
             except (TypeError, ValueError):
                 raise ApiError("outpaint.max_side 必须是整数")
-            if not 1024 <= max_side <= 8192:
-                raise ApiError("outpaint.max_side 必须在 1024~8192")
+            lim = presets.limits("outpaint.max_side")
+            if not lim["min"] <= max_side <= lim["max"]:
+                raise ApiError(f"outpaint.max_side 必须在 {lim['min']}~{lim['max']}")
             limit = int(config.load_config().get("max_side") or 8192)
             if max_side > limit:
                 raise ApiError(f"outpaint.max_side 不能超过全局 max_side（{limit}）")
@@ -950,8 +961,9 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 long_side = int(panorama["long_side"])
             except (TypeError, ValueError):
                 raise ApiError("panorama.long_side 必须是整数")
-            if not 1024 <= long_side <= 4096:
-                raise ApiError("panorama.long_side 必须在 1024~4096")
+            lim = presets.limits("panorama.long_side")
+            if not lim["min"] <= long_side <= lim["max"]:
+                raise ApiError(f"panorama.long_side 必须在 {lim['min']}~{lim['max']}")
             limit = int(config.load_config().get("max_side") or 4096)
             if long_side > limit:
                 raise ApiError(f"panorama.long_side 不能超过全局 max_side（{limit}）")
@@ -962,8 +974,9 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
                 seam_blend = int(panorama["seam_blend"])
             except (TypeError, ValueError):
                 raise ApiError("panorama.seam_blend 必须是整数")
-            if not 0 <= seam_blend <= 128:
-                raise ApiError("panorama.seam_blend 必须在 0~128")
+            lim = presets.limits("panorama.seam_blend")
+            if not lim["min"] <= seam_blend <= lim["max"]:
+                raise ApiError(f"panorama.seam_blend 必须在 {lim['min']}~{lim['max']}")
 
     local = payload.get("local")
     if local is not None:
@@ -973,23 +986,24 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
         # 与预设校验共用同一份枚举（raw 是 native 的历史别名）
         if scheme is not None and str(scheme).strip().lower() not in presets.SCHEMES:
             raise ApiError(f"未知 local.scheme：{scheme!r}")
-        for key, low, high in (("feather", 0, 256), ("mask_expand", 0, 256),
-                               ("blend_pixels", 0, 256), ("context_pixels", 0, 1024)):
+        for key in ("feather", "mask_expand", "blend_pixels", "context_pixels"):
             if local.get(key) is None:
                 continue
             try:
                 value = int(local[key])
             except (TypeError, ValueError):
                 raise ApiError(f"local.{key} 必须是整数")
-            if not low <= value <= high:
-                raise ApiError(f"local.{key} 必须在 {low}~{high}")
+            lim = presets.limits(f"local.{key}")
+            if not lim["min"] <= value <= lim["max"]:
+                raise ApiError(f"local.{key} 必须在 {lim['min']}~{lim['max']}")
         if local.get("context_factor") is not None:
             try:
                 factor = float(local["context_factor"])
             except (TypeError, ValueError):
                 raise ApiError("local.context_factor 必须是数字")
-            if not 1.0 <= factor <= 4.0:
-                raise ApiError("local.context_factor 必须在 1~4")
+            lim = presets.limits("local.context_factor")
+            if not lim["min"] <= factor <= lim["max"]:
+                raise ApiError(f"local.context_factor 必须在 {lim['min']}~{lim['max']}")
 
     mask = payload.get("mask")
     if mask is not None and not isinstance(mask, (str, dict)):

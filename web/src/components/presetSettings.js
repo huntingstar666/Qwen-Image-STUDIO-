@@ -65,7 +65,7 @@ const GROUPS = [
       { path: 'sampling.cfg', label: 'CFG', type: 'number', min: 0, max: 30, step: 0.1 },
       { path: 'sampling.sampler', label: '采样器', type: 'select', options: 'sampler' },
       { path: 'sampling.scheduler', label: '调度器', type: 'select', options: 'scheduler' },
-      { path: 'sampling.denoise', label: '降噪 denoise', type: 'number', min: 0, max: 1, step: 0.05 },
+      { path: 'sampling.denoise', label: '降噪 denoise', type: 'number', min: 0.05, max: 1, step: 0.05 },
     ],
   },
   {

@@ -451,6 +451,7 @@
 .studio-canvas-wrap canvas[data-tool="clone"],
 .studio-canvas-wrap canvas[data-tool="healbrush"],
 .studio-canvas-wrap canvas[data-tool="smudge"],
+.studio-canvas-wrap canvas[data-tool="skin"],
 .studio-canvas-wrap canvas[data-tool="eraser"] {
   cursor: none;
 }

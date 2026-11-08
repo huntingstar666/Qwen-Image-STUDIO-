@@ -842,6 +842,14 @@ DOM 结构：
   - 实测（headless Chromium，800×600：左红 `#c0392b`、右蓝 `#1f6fd0`，分界 x=400，笔刷 64px）：从 `(360,300)` 拖到 `(470,300)` 后，红被推过原分界（`x=405/450` 由纯蓝 `[31,111,208]` 变为 `[191,55,41]`），`x=475` 仍为红、`x=600` 保持蓝，形成带柔边的舌头状拖尾；撤销后 `x=405/600` 回到 `[31,111,208]`，重做恢复 `[191,55,41]`。截图 `.screenshots/D10.3-smudge-2026-11-08T04-22-54-971Z.png`。
   - 说明：当前不是流体模拟，落笔依赖当前合成结果逐步累积，长距离拖动会把颜色推得较远；追求更自然的细节可后续换成双缓冲位移场。
 
+- **D10.4 磨皮（已完成）** —— 频率分离式局部柔化，保留纹理不产生塑料感：
+  - 新增 `studio/skin.js`：`boxBlur(data, w, h, radius)`（可分离箱式模糊 + 边缘夹取，纯函数）、`smoothSkin(data, w, h, radius, ratio)`（低频再模糊一次后与「按比例保留的高频」相加，再按 ratio 与原图混合，`keep = 1 - ratio*0.45` 保证细节不会归零）、`skinDab(ctx, source, {x,y,radius,strength,opacity,softness})`（窗口内磨皮 + 径向柔边贴回修复层，越界返回 false）。
+  - 工具：左栏「修复」组新增 `skin`（磨皮，K）；复用笔刷大小/硬度/不透明度，其中不透明度兼作磨皮强度（`strength = 0.4 + opacity * 0.55`），光标与浮条沿用修复类样式。
+  - 交互：按下即落笔，沿拖动按 `brush.size * 0.22` 间距连续处理，整笔只落一次撤销步，结果写进 D10.1 的修复层（可撤销、可持久化）。
+  - 单测：新增 `web/tests/studio/skin.test.mjs` 6 项（纯色不变、脉冲扩散与总量、radius=0、单像素瑕疵被提亮且整体亮度保持、条纹方差下降、ratio=0 不变），`node --test web/tests/studio/skin.test.mjs` → `pass 6 / fail 0`。
+  - 实测（headless Chromium，800×600 肤色底 `#d9a07a` + 1200 个 1.4px 深浅斑点，笔刷 160px）：在 `(400,300)` 点一下后 120×120 区域亮度标准差 `2.43 → 1.58`（−35%），均值保持 `217`，说明斑点被柔化而肤色未偏移；撤销可恢复。截图 `.screenshots/D10.4-skin-2026-11-08T04-25-23-215Z.png`。
+  - 说明：磨皮只处理小半径细节，痘印/发丝级瑕疵仍建议先用污点修复或修复画笔；参数按「局部平均 + 细节衰减」设计，不追求中性灰高低频分离那种可再合成的图层结构。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1030,6 +1038,7 @@ DOM 结构：
 | `heal.js` | `ringSamples` / `healDab`（污点修复）、`meanRgb` / `shiftPatch` / `cloneDab`（仿制与修复画笔） | 无 | D10.1 / D10.2 |
 | `tools/smudge.js` | 涂抹（D10.3 暂内联在 `studio.js`，算法在 `smudge.js`） | `renderer` | D10.3（已落地） |
 | `smudge.js` | `normalizeVector` / `smudgeShift` / `smudgeDab`（涂抹位移与柔边贴回） | 无 | D10.3 |
+| `skin.js` | `boxBlur` / `smoothSkin` / `skinDab`（频率分离磨皮，D10.4 已落地） | 无 | D10.4 |
 | `tools/liquify.js` | 液化网格形变 | `renderer` | D10 |
 | `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
 | `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
@@ -1343,7 +1352,7 @@ DOM 结构：
 | D10.1 | 污点修复 | 已完成 | 本次提交 | 新增 `studio/heal.js`（`ringSamples` + `healDab` 锥形渐变补丁）；`studioDoc.repair` 修复层并入渲染/历史/旋转翻转；`spot` 工具（J）+ 笔刷参数；随工程保存 `repairBlob`；单测 5 项；实测见 §12.11 |
 | D10.2 | 仿制图章 / 修复画笔 | 已完成 | 本次提交 | `heal.js` 追加 `cloneDab/meanRgb/shiftPatch`；`studioDoc.renderSample()` 提供干净取样源；`clone`（S）/`healbrush`（H）工具 + Alt 取样 + 对齐开关 + 锚点/取样标记；实测见 §12.11 |
 | D10.3 | 涂抹 | 已完成 | 本次提交 | 新增 `studio/smudge.js`（`normalizeVector/smudgeShift/smudgeDab`）；`smudge` 工具（U）+ 笔刷参数；写入修复层并整笔一次撤销；单测 5 项；实测见 §12.11 |
-| D10.4 | 磨皮 | 未开始 | — | — |
+| D10.4 | 磨皮 | 已完成 | 本次提交 | 新增 `studio/skin.js`（`boxBlur/smoothSkin/skinDab` 频率分离）；`skin` 工具（K）+ 笔刷参数（不透明度兼作强度）；单测 6 项；实测见 §12.11 |
 | D10.5 | 液化 | 未开始 | — | — |
 | D11.1 | 马赛克 / 模糊 | 未开始 | — | — |
 | D11.2 | 文字图层 | 未开始 | — | — |

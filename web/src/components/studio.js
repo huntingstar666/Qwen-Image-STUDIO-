@@ -50,6 +50,7 @@ import { histogram, parseCube } from './studio/color.js';
 import { ADJUSTMENT_DEFAULTS } from './studio/adjustments.js';
 import { healDab, cloneDab } from './studio/heal.js';
 import { normalizeVector, smudgeDab, smudgeShift } from './studio/smudge.js';
+import { skinDab } from './studio/skin.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -153,6 +154,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16c3.2 0 3.2-8 6.4-8s3.2 8 6.4 8 3.2-4 3.2-4"/><path d="M4 20c3.2 0 3.2-4 6.4-4s3.2 4 6.4 4 3.2-2 3.2-2"/></svg>',
   },
   {
+    id: 'skin',
+    label: '磨皮',
+    key: 'K',
+    hint: '频率分离式柔化：抹平肤色过渡，保留毛孔与发丝细节',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20c4.2 0 7-3 7-7.4C19 8 15.5 4 12 4S5 8 5 12.6C5 17 7.8 20 12 20z"/><path d="M9.2 11.4c.6.5 1.2.5 1.8 0"/><path d="M13 11.4c.6.5 1.2.5 1.8 0"/><path d="M10.2 15c1.1.8 2.5.8 3.6 0"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -181,11 +190,11 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 /** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge']);
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin']);
 /** 仿制图章 / 修复画笔（D10.2） */
 const CLONE_TOOLS = new Set(['clone', 'healbrush']);
 /** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
-const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge']);
+const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -193,7 +202,7 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
-  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge'] },
+  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -1963,6 +1972,40 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 磨皮（D10.4）
+   * ============================================================ */
+
+  function skinAt(point) {
+    if (!doc) return;
+    const repair = doc.ensureRepair();
+    const source = doc.renderUnderlay();
+    const ok = skinDab(repair.getContext('2d'), source, {
+      x: point.x,
+      y: point.y,
+      radius: Math.max(3, brush.size / 2),
+      // 不透明度兼作磨皮强度：100% 最平滑，30% 只做轻微柔化。
+      strength: 0.4 + brush.opacity * 0.55,
+      opacity: brush.opacity,
+      softness: 1 - brush.hardness,
+    });
+    if (!ok) return;
+    doc.invalidateBase();
+  }
+
+  function skinStroke(point) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(2, brush.size * 0.22);
+    if (distance < step) return;
+    const count = Math.floor(distance / step);
+    for (let i = 1; i <= count; i += 1) {
+      const t = (i * step) / distance;
+      skinAt({ x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t });
+    }
+    if (drag) drag.last = point;
+  }
+
+  /* ============================================================
    * 指针交互
    * ============================================================ */
 
@@ -2020,6 +2063,12 @@ export function createStudioPage(host) {
     }
     if (tool === 'smudge') {
       drag = { mode: 'smudge', last: point };
+      return;
+    }
+    if (tool === 'skin') {
+      drag = { mode: 'skin', last: point };
+      skinAt(point);
+      scheduleDraw();
       return;
     }
     if (tool === 'spot') {
@@ -2085,6 +2134,11 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'clone' || drag.mode === 'clone-blocked') {
       if (drag.mode === 'clone') cloneStroke(point);
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'skin') {
+      skinStroke(point);
       scheduleDraw();
       return;
     }
@@ -2160,6 +2214,10 @@ export function createStudioPage(host) {
       updateHistoryUi();
     } else if (mode === 'smudge') {
       // 整笔涂抹作为一个撤销步（D10.3）。
+      doc?.snapshot();
+      updateHistoryUi();
+    } else if (mode === 'skin') {
+      // 整笔磨皮作为一个撤销步（D10.4）。
       doc?.snapshot();
       updateHistoryUi();
     } else if (mode === 'shape' && rect) {

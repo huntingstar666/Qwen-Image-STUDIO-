@@ -79,6 +79,16 @@ export function fmtNum(value, digits = 0) {
   return digits > 0 ? n.toFixed(digits) : Math.round(n).toLocaleString('zh-CN');
 }
 
+/** 覆盖率（0~1）→ 百分比文案；小选区不四舍五入成 0%，避免“画了却显示未绘制”。 */
+export function fmtCoverage(ratio) {
+  const percent = Math.max(0, Number(ratio) || 0) * 100;
+  if (percent <= 0) return '0%';
+  if (percent < 0.1) return '<0.1%';
+  // 10% 以下保留一位小数（2% 不显示成 2.0%），再大就取整
+  if (percent < 10) return `${Math.round(percent * 10) / 10}%`;
+  return `${Math.round(percent)}%`;
+}
+
 /** 字节 → 可读大小 */
 export function fmtBytes(bytes) {
   const n = Number(bytes);

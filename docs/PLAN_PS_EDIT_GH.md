@@ -2380,5 +2380,62 @@ web/src/components/studio/guards.js       （新，两个保护开关 + 文案�
 
 测试：`tests/test_edit_presets.py` 覆盖预设覆盖/恢复、自定义不继承、冲突拒绝。
 
+---
+
+## 17. 遮罩编辑器可视化与覆盖率回显（补丁）
+
+### 17.1 三个问题
+
+| 现象 | 根因 |
+| --- | --- |
+| 遮罩压在深色主体上看不清 | 旧叠加只是羽化预览：`rgba(47,107,98,0.55)` × `globalAlpha 0.66`，有效不透明度约 36%，且是深墨绿 |
+| 拖笔过程中几乎看不到正在画的区域 | 叠加层来自缓存离屏 canvas，只在 `pointerup → finalizeChange()` 时重建，绘制中画的是上一笔的缓存 |
+| 只点了一下却提示「尚未绘制遮罩」 | 状态栏用 `Math.round(coverage * 100)`，48px 点在 2048×1365 上约 0.06%，被舍入成 0 |
+
+第三条只是显示问题：`empty` / `getMask` 用的是 `coverage > 0`，保存本来就能成功。
+
+### 17.2 画布分层（从下到上）
+
+| 层 | 内容 | 说明 |
+| --- | --- | --- |
+| 底图 | 第 1 张参考图 | 按 dpr + 缩放/平移绘制 |
+| `tintCanvas` | 原始遮罩（不羽化）染 `rgba(0,230,118,0.78)` | 静止时绘制，`globalAlpha 0.9` |
+| `liveTint` | 视图像素级实时层 | 拖笔时每帧重建：把原分辨率遮罩画到一屏大小，再 `source-in` 染色 |
+| `previewCanvas` | 羽化 + 外扩光晕 `rgba(0,230,118,0.55)` | `globalAlpha 0.38`，绘制中跳过（避免显示上一笔的光晕） |
+| 包围框 | `alpha > 8` 的 bbox | 白黑双线虚线，快速定位画到哪 |
+| 形状预览 | 矩形/椭圆拖拽 | 绿色实色 0.45；橡皮红色 0.35 |
+
+遮罩数据仍然只存在原分辨率的 `maskCanvas` 里，`liveTint` 只影响显示，不改变导出。
+
+### 17.3 覆盖率口径
+
+- `computeCoverage()`：`alpha > 8` 计为覆盖，返回 `covered / total`。
+- 判定「是否已绘制」一律用 `coverage > 0`（编辑器状态栏、`empty`、`getMask`）。
+- `fmtCoverage()`（`utils.js`）统一文案：
+
+| 覆盖率 | 显示 |
+| --- | --- |
+| 0 | `0%` |
+| 0 < x < 0.1% | `<0.1%` |
+| 0.1% ~ 10% | 一位小数，整数省略 `.0`（`2%`、`2.4%`） |
+| ≥ 10% | 取整（`12%`） |
+
+应用位置：遮罩编辑器状态栏、编辑页保存提示 / 缩略图「遮罩 x%」角标 / 右侧「遮罩覆盖 x%」、PS 面板状态栏「蒙版」、选区栏「选区」、AI 面板「已圈选」。
+
+扩图规划与「图像处理」页交接带进来的遮罩，覆盖率不再硬编码 `0`，改由 `probeMaskCoverage()` 实算（alpha 有变化取 alpha，否则取亮度，与后端 `decode_mask` 同口径）。
+
+### 17.4 指针健壮性
+
+`setPointerCapture()` 在合成事件或部分触控笔下会抛 `NotFoundError`，抛出点在 `activeStroke` 赋值之前，会导致整笔被中断。现统一走 `capturePointer()`（try/catch）忽略该错误。
+
+### 17.5 代码位置
+
+| 功能 | 文件 |
+|---|---|
+| 分层绘制 / 实时层 / 包围框 / 覆盖率 | `web/src/components/maskEditor.js` |
+| 覆盖率文案 | `web/src/utils.js`（`fmtCoverage`） |
+| 编辑页遮罩回显、交接遮罩覆盖率 | `web/src/components/edit.js`（`probeMaskCoverage`） |
+| PS 面板蒙版 / 选区 / 已圈选文案 | `web/src/components/studio.js`、`studio/aiPanel.js` |
+
 
 

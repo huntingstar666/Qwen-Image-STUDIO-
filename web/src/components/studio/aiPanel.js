@@ -15,7 +15,7 @@ import { api } from '../../api.js';
 import { JobRunner, qualityItems } from '../jobView.js';
 import { toastError, toastSuccess, toastWarn } from '../toast.js';
 import { confirmDialog } from '../modal.js';
-import { escapeHtml, loadImage } from '../../utils.js';
+import { escapeHtml, fmtCoverage, loadImage } from '../../utils.js';
 import { patchSettings, store } from '../../store.js';
 import {
   buildEditPayload,
@@ -1769,7 +1769,7 @@ export function mountAiPanel(host, ctx) {
     /** studio 端画完蒙版后调用：只更新任务识别与提示，不做整图编码 */
     onMaskChanged(coverage) {
       const task = detectTask(promptEditor.getText(), coverage > 0);
-      refs.submitHint.textContent = `已圈选 ${(coverage * 100).toFixed(1)}% · 自动识别：${
+      refs.submitHint.textContent = `已圈选 ${fmtCoverage(coverage)} · 自动识别：${
         TASK_LABELS[task] || task
       }`;
       // 有没有蒙版会决定预设是否降级，及时刷新卡片与高级参数回显。

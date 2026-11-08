@@ -27,7 +27,7 @@ import { openPoseStudio } from './poseStudio.js';
 import { openCompareDialog } from './compare.js';
 import { consumeHandoff } from '../handoff.js';
 import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
-import { escapeHtml, fmtNum, loadImage, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
+import { escapeHtml, fmtCoverage, fmtNum, loadImage, readFileAsDataURL, probeImageSize, snapUp } from '../utils.js';
 import {
   defaultPresetId,
   effectiveValue,
@@ -143,7 +143,7 @@ export function createEditPage(host) {
 
         <section class="panel">
           <div class="panel-head">
-            <div class="panel-title">局部编辑 <span class="panel-sub">只重绘遮罩白色区域</span></div>
+            <div class="panel-title">局部编辑 <span class="panel-sub">只重绘绿色遮罩区域</span></div>
           </div>
           <div class="panel-body">
             <label class="switch">
@@ -975,7 +975,9 @@ export function createEditPage(host) {
 
     const modal = openModal({
       title: '遮罩编辑器',
-      subtitle: isTarget ? '白色描色区域 = 模型重绘的部分' : '标记区域后可把这张设为编辑目标',
+      subtitle: isTarget
+        ? '绿色实色 = 模型重绘区域；浅绿光晕 = 接缝羽化/外扩；虚线框 = 遮罩包围盒'
+        : '标记区域后可把这张设为编辑目标',
       content,
       size: 'lg',
       dialogClass: 'mask-dialog-modal',
@@ -1023,7 +1025,7 @@ export function createEditPage(host) {
             refs.localEnabled.checked = true;
             syncLocalUi();
             syncImages();
-            toastSuccess(`遮罩已保存（覆盖 ${Math.round(coverage * 100)}%），局部编辑已开启`);
+            toastSuccess(`遮罩已保存（覆盖 ${fmtCoverage(coverage)}），局部编辑已开启`);
             return true;
           },
         },
@@ -1071,6 +1073,45 @@ export function createEditPage(host) {
     }
   }
 
+  /**
+   * 估算遮罩 PNG 的覆盖率（alpha 优先、否则取亮度，与后端 decode_mask 一致）。
+   * 扩图规划 / 图像处理页交接带进来的遮罩没有覆盖率字段，回显不能直接写 0%。
+   */
+  async function probeMaskCoverage(dataUrl) {
+    try {
+      const img = await loadImage(dataUrl);
+      const width = img.naturalWidth || img.width;
+      const height = img.naturalHeight || img.height;
+      if (!width || !height) return 0;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, width, height);
+      const data = ctx.getImageData(0, 0, width, height).data;
+      let alphaVaries = false;
+      for (let i = 3; i < data.length; i += 4 * 7) {
+        if (data[i] !== 255 && data[i] !== 0) {
+          alphaVaries = true;
+          break;
+        }
+      }
+      let hit = 0;
+      let total = 0;
+      for (let i = 0; i < data.length; i += 4 * 2) {
+        total += 1;
+        const value = alphaVaries
+          ? data[i + 3]
+          : Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+        if (value > 8) hit += 1;
+      }
+      return total ? hit / total : 0;
+    } catch (err) {
+      console.warn('[edit] 遮罩覆盖率估算失败', err);
+      return 0;
+    }
+  }
+
   function renderUploadList() {
     refs.uploadCount.textContent = `${images.length} / ${MAX_IMAGES}`;
     refs.uploadList.innerHTML = images
@@ -1080,7 +1121,7 @@ export function createEditPage(host) {
         <div class="upload-item ${hasMask ? 'has-mask' : ''}" draggable="true" data-image-index="${index}" title="${escapeHtml(image.name)}">
           <img src="${escapeHtml(image.previewUrl || image.dataUrl)}" alt="${imageLabel(index)}" loading="lazy" />
           <span class="upload-badge">${imageLabel(index)}</span>
-          ${hasMask ? `<span class="upload-mask-flag">遮罩 ${Math.round((image.mask.coverage || 0) * 100)}%</span>` : ''}
+          ${hasMask ? `<span class="upload-mask-flag">遮罩 ${fmtCoverage(image.mask.coverage || 0)}</span>` : ''}
           <button class="upload-del" type="button" data-delete="${index}" title="删除这张">×</button>
           <button class="upload-cut ${hasMask ? 'active' : ''}" type="button" data-mask="${index}" title="绘制遮罩：只重绘标记区域" aria-label="绘制遮罩"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6.5" r="2.6"/><circle cx="6" cy="17.5" r="2.6"/><path d="M8.3 7.9L19 17.2M8.3 16.1L19 6.8"/></svg></button>
           <span class="upload-index">${index === 0 ? 'target' : `image${index + 1}`}</span>
@@ -1977,13 +2018,12 @@ export function createEditPage(host) {
   function updateMaskStatus() {
     const target = images[0];
     const hasMask = Boolean(target?.mask?.dataUrl);
-    const percent = Math.round((target?.mask?.coverage || 0) * 100);
     if (!refs.localEnabled.checked) {
       refs.actionHint.textContent = '局部编辑关闭：整图参与编辑';
     } else if (!hasMask) {
       refs.actionHint.textContent = '局部编辑已开启：点参考图上的 ✂ 涂抹要重绘的区域';
     } else {
-      refs.actionHint.textContent = `局部编辑已开启：遮罩覆盖 ${percent}%，遮罩外逐像素保留`;
+      refs.actionHint.textContent = `局部编辑已开启：遮罩覆盖 ${fmtCoverage(target.mask.coverage || 0)}，遮罩外逐像素保留`;
     }
     // 遮罩有无会影响「需蒙版预设」是否降级，及时刷新预设条与保护提示
     if (presetList.length) renderPresets();
@@ -3082,7 +3122,12 @@ export function createEditPage(host) {
           width,
           height,
           mask: result.maskDataUrl
-            ? { dataUrl: result.maskDataUrl, width, height, coverage: 0 }
+            ? {
+                dataUrl: result.maskDataUrl,
+                width,
+                height,
+                coverage: await probeMaskCoverage(result.maskDataUrl),
+              }
             : null,
         };
         renderUploadList();
@@ -3149,7 +3194,7 @@ export function createEditPage(host) {
           dataUrl: payload.mask,
           width: images[0].width,
           height: images[0].height,
-          coverage: 0,
+          coverage: await probeMaskCoverage(payload.mask),
         };
       }
       renderUploadList();

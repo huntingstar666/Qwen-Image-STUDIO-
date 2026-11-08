@@ -13,7 +13,7 @@
  * - 视图层（view canvas）只负责按缩放/平移把原图与彩色叠加画出来。
  */
 
-import { clamp, escapeHtml } from '../utils.js';
+import { clamp, escapeHtml, fmtCoverage } from '../utils.js';
 
 const TAU = Math.PI * 2;
 const MAX_HISTORY = 40;
@@ -69,6 +69,11 @@ export class MaskEditor {
     this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true });
     this.unionCanvas = document.createElement('canvas');
     this.previewCanvas = document.createElement('canvas');
+    // 原始遮罩的高对比实色层（和"羽化/外扩光晕"分开画，保证画过的地方一眼可见）
+    this.tintCanvas = document.createElement('canvas');
+    // 绘制过程中的实时遮罩层：笔画还没落笔（pointerup）时也要能看到画到哪了
+    this.liveTint = document.createElement('canvas');
+    this.maskBBox = null;
 
     this.render();
     this.bind();
@@ -397,6 +402,8 @@ export class MaskEditor {
     this.refs.canvas.height = Math.round(cssH * dpr);
     this.refs.canvas.style.width = `${cssW}px`;
     this.refs.canvas.style.height = `${cssH}px`;
+    this.liveTint.width = this.refs.canvas.width;
+    this.liveTint.height = this.refs.canvas.height;
     this.dpr = dpr;
     this.requestDraw();
   }
@@ -442,16 +449,37 @@ export class MaskEditor {
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, w, h);
 
-    // 遮罩叠加（羽化 + 外扩后的预览）：浅色主题下用半透明墨绿 + 白色描边
-    if (this.showOverlay && this.previewCanvas.width > 1) {
+    // 1) 原始遮罩：高对比亮绿实色，保证深色衣服 / 红色主体上也看得清
+    //    正在拖笔时用实时层（缓存层要等 pointerup 才重建，否则落笔过程中看不到遮罩）
+    if (this.showOverlay && this.activeStroke) {
+      this.drawLiveMask(ctx);
+    } else if (this.showOverlay && this.tintCanvas.width > 1) {
       ctx.save();
-      ctx.globalAlpha = 0.66;
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(this.tintCanvas, x, y, w, h);
+      ctx.restore();
+    }
+    // 2) 羽化 + 外扩的接缝光晕：低透明度叠在实色遮罩外圈（绘制中跳过，避免显示上一笔的光晕）
+    if (this.showOverlay && !this.activeStroke && this.previewCanvas.width > 1) {
+      ctx.save();
+      ctx.globalAlpha = 0.38;
       ctx.drawImage(this.previewCanvas, x, y, w, h);
       ctx.restore();
+    }
+    // 3) 遮罩包围框：白黑双线虚线，快速定位画到哪了
+    if (this.showOverlay && this.maskBBox) {
+      const bx = x + this.maskBBox.x * this.viewScale;
+      const by = y + this.maskBBox.y * this.viewScale;
+      const bw = this.maskBBox.w * this.viewScale;
+      const bh = this.maskBBox.h * this.viewScale;
       ctx.save();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(bx, by, bw, bh);
       ctx.restore();
     }
 
@@ -463,7 +491,7 @@ export class MaskEditor {
       const ex = x + current.x * this.viewScale;
       const ey = y + current.y * this.viewScale;
       ctx.save();
-      ctx.fillStyle = this.tool === 'eraser' ? 'rgba(163,77,69,0.12)' : 'rgba(47,107,98,0.16)';
+      ctx.fillStyle = this.tool === 'eraser' ? 'rgba(235,87,87,0.35)' : 'rgba(0,230,118,0.45)';
       ctx.setLineDash([]);
       ctx.beginPath();
       if (this.tool === 'rect') {
@@ -483,7 +511,7 @@ export class MaskEditor {
       ctx.strokeStyle = 'rgba(255,255,255,0.95)';
       ctx.lineWidth = 2.5;
       ctx.stroke();
-      ctx.strokeStyle = this.tool === 'eraser' ? 'rgba(163,77,69,0.95)' : 'rgba(47,107,98,0.95)';
+      ctx.strokeStyle = this.tool === 'eraser' ? 'rgba(235,87,87,0.95)' : 'rgba(0,190,95,0.95)';
       ctx.lineWidth = 1.2;
       ctx.setLineDash([6, 4]);
       ctx.stroke();
@@ -508,6 +536,35 @@ export class MaskEditor {
       ctx.fill();
       ctx.restore();
     }
+  }
+
+  /**
+   * 绘制实时遮罩层：把原分辨率 maskCanvas 按当前视图缩放画到视图级离屏 canvas，
+   * 再用 source-in 染色。只处理视图像素（约 1 屏），每帧开销很小，
+   * 保证拖笔过程中就能看到绿色区域，而不是等 pointerup 后才出现。
+   */
+  drawLiveMask(ctx) {
+    const layer = this.liveTint;
+    if (layer.width < 2 || layer.height < 2) return;
+    const lctx = layer.getContext('2d');
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.clearRect(0, 0, layer.width, layer.height);
+    lctx.setTransform(this.dpr || 1, 0, 0, this.dpr || 1, 0, 0);
+    lctx.drawImage(
+      this.maskCanvas,
+      this.viewX,
+      this.viewY,
+      this.width * this.viewScale,
+      this.height * this.viewScale,
+    );
+    lctx.globalCompositeOperation = 'source-in';
+    lctx.fillStyle = 'rgba(0, 230, 118, 0.78)';
+    lctx.fillRect(0, 0, this.cssWidth || 1, this.cssHeight || 1);
+    lctx.globalCompositeOperation = 'source-over';
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(layer, 0, 0, this.cssWidth || 1, this.cssHeight || 1);
+    ctx.restore();
   }
 
   /* ============================================================
@@ -545,22 +602,30 @@ export class MaskEditor {
   /* ============================================================
    * 指针绘制
    * ============================================================ */
+  /** 捕获指针（合成事件 / 某些触控笔没有活跃指针时会抛 NotFoundError，忽略即可）。 */
+  capturePointer(event) {
+    try {
+      this.refs.stage.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* 没有活跃指针：不影响后续绘制 */
+    }
+  }
+
   onPointerDown(event) {
     if (!this.image) return;
     this.refs.stage.focus({ preventScroll: true });
-
     if (event.button === 1 || this.spaceDown) {
       event.preventDefault();
       this.panning = { startX: event.clientX, startY: event.clientY, viewX: this.viewX, viewY: this.viewY };
       this.refs.stage.classList.add('panning');
-      this.refs.stage.setPointerCapture?.(event.pointerId);
+      this.capturePointer(event);
       return;
     }
     if (event.button !== 0) return;
 
     const point = this.toImage(event.clientX, event.clientY);
     this.pointer = point;
-    this.refs.stage.setPointerCapture?.(event.pointerId);
+    this.capturePointer(event);
 
     if (this.tool === 'fill') {
       this.pushCommand({ type: 'fill' });
@@ -825,6 +890,9 @@ export class MaskEditor {
     if (!this.width || !this.height || !this.image) {
       this.previewCanvas.width = 1;
       this.previewCanvas.height = 1;
+      this.tintCanvas.width = 1;
+      this.tintCanvas.height = 1;
+      this.maskBBox = null;
       return;
     }
     const width = this.width;
@@ -867,9 +935,47 @@ export class MaskEditor {
     pctx.restore();
     pctx.save();
     pctx.globalCompositeOperation = 'source-in';
-    pctx.fillStyle = 'rgba(47, 107, 98, 0.55)';
+    pctx.fillStyle = 'rgba(0, 230, 118, 0.55)';
     pctx.fillRect(0, 0, width, height);
     pctx.restore();
+
+    // 3) 原始遮罩实色层：不受羽化影响，画过的地方保持高对比
+    const tint = this.tintCanvas;
+    if (tint.width !== width || tint.height !== height) {
+      tint.width = width;
+      tint.height = height;
+    }
+    const tctx = tint.getContext('2d');
+    tctx.clearRect(0, 0, width, height);
+    tctx.drawImage(this.maskCanvas, 0, 0);
+    tctx.save();
+    tctx.globalCompositeOperation = 'source-in';
+    tctx.fillStyle = 'rgba(0, 230, 118, 0.78)';
+    tctx.fillRect(0, 0, width, height);
+    tctx.restore();
+    this.maskBBox = this.computeMaskBBox();
+  }
+
+  computeMaskBBox() {
+    if (!this.width || !this.height) return null;
+    const data = this.maskCtx.getImageData(0, 0, this.width, this.height).data;
+    let minX = this.width;
+    let minY = this.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < this.height; y += 1) {
+      const row = y * this.width * 4;
+      for (let x = 0; x < this.width; x += 1) {
+        if (data[row + x * 4 + 3] > 8) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0) return null;
+    return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
   }
 
   computeCoverage() {
@@ -899,10 +1005,10 @@ export class MaskEditor {
     } else {
       this.refs.sizeInfo.textContent = '—';
     }
-    const percent = Math.round(this.coverage * 100);
+    // 只要有像素被涂到就算“已绘制”（小选区覆盖率不足 0.1% 时不能四舍五入成 0）
     this.refs.coverageInfo.innerHTML =
-      percent > 0
-        ? `<span class="mask-valid">● 覆盖 ${percent}%</span>`
+      this.coverage > 0
+        ? `<span class="mask-valid">● 覆盖 ${fmtCoverage(this.coverage)}</span>`
         : '<span class="mask-invalid">○ 尚未绘制遮罩</span>';
     this.refs.previewInfo.textContent = `羽化 ${Math.round(this.feather)}px · 外扩 ${Math.round(this.expand)}px`;
   }

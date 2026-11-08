@@ -13,7 +13,7 @@
  * 文档模型见 studioDoc.js：原图不变，所有操作是状态，渲染与导出共用一条管线。
  */
 
-import { downloadUrl, fmtNum, readFileAsDataURL, escapeHtml } from '../utils.js';
+import { downloadUrl, fmtCoverage, fmtNum, readFileAsDataURL, escapeHtml } from '../utils.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
@@ -2050,7 +2050,7 @@ export function createStudioPage(host) {
     const has = Boolean(selection);
     const coverage = has ? coverageAlpha(selection.alpha) : 0;
     refs.selbar.hidden = !(has || WAND_TOOLS.has(tool));
-    refs.selInfo.textContent = has ? `选区 ${(coverage * 100).toFixed(1)}%` : '未选区';
+    refs.selInfo.textContent = has ? `选区 ${fmtCoverage(coverage)}` : '未选区';
   }
 
   function ensureAnts() {
@@ -4106,7 +4106,7 @@ export function createStudioPage(host) {
       return;
     }
     const stats = doc.maskStats();
-    refs.statusMask.textContent = `蒙版 ${(stats.coverage * 100).toFixed(1)}%`;
+    refs.statusMask.textContent = `蒙版 ${fmtCoverage(stats.coverage)}`;
     refs.maskClear.disabled = !stats.has;
     refs.maskExport.disabled = !stats.has;
     ai?.onMaskChanged?.(stats.coverage);

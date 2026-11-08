@@ -6880,8 +6880,10 @@ export function createStudioPage(host) {
     const alphaCanvas = alphaToCanvas(prepared, alphaWidth, alphaHeight);
     const canvas = makeCanvas(rect.width, rect.height);
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(base, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    // base 已经是「裁剪后」输出空间（doc.size），不能再按 rect.x/y 取样，否则会整块透明。
+    ctx.drawImage(base, 0, 0, rect.width, rect.height, 0, 0, rect.width, rect.height);
     ctx.globalCompositeOperation = 'destination-in';
+    // 选区 alpha 是「旋转后未裁剪」空间，才需要按裁剪偏移取样。
     ctx.drawImage(alphaCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
     ctx.globalCompositeOperation = 'source-over';
     if (cutoutDecon) {
@@ -6900,8 +6902,9 @@ export function createStudioPage(host) {
   async function buildCutoutCanvas() {
     if (!doc) return null;
     const base = doc.renderBase();
-    if (selection.width !== base.width || selection.height !== base.height) {
-      toastWarn('选区与当前画布尺寸不一致，请重新选择');
+    // 选区与蒙版都保存在「旋转后未裁剪」空间，尺寸比对必须用 oriented。
+    if (selection.width !== doc.oriented.width || selection.height !== doc.oriented.height) {
+      toastWarn('选区与当前画面尺寸不一致，请重新选择');
       clearSelection(true);
       return null;
     }
@@ -6985,14 +6988,18 @@ export function createStudioPage(host) {
         const blob = await canvasToBlob(raw, 'image/png');
         const file = new File([blob], `${name}-cutout.png`, { type: 'image/png' });
         const count = (doc.layers || []).filter((layer) => String(layer.name || '').startsWith('抠图')).length + 1;
-        await addOverlayFile(file, {
+        const layer = await addOverlayFile(file, {
           name: `抠图 ${count}`,
           x: rect.x,
           y: rect.y,
           scale: 1,
           focusSticker: true,
         });
-        toastSuccess('已建立抠图层（可拖动 / 缩放）');
+        if (layer) {
+          // 抠图层与原图坐标完全重合；先隐藏主图，才能直接看到抠出来的结果。
+          if (baseVisible) setBaseVisibleTo(false);
+          toastSuccess('已建立抠图层 · 已隐藏主图，点主图「眼睛」可对比原图');
+        }
       }
     } catch (err) {
       toastError(err, '抠图导出失败');

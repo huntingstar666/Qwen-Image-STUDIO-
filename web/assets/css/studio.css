@@ -453,6 +453,7 @@
 .studio-canvas-wrap canvas[data-tool="smudge"],
 .studio-canvas-wrap canvas[data-tool="skin"],
 .studio-canvas-wrap canvas[data-tool="liquify"],
+.studio-canvas-wrap canvas[data-tool="mosaic"],
 .studio-canvas-wrap canvas[data-tool="eraser"] {
   cursor: none;
 }
@@ -591,6 +592,13 @@
 /* 仿制类工具（D10.2）：对齐取样开关 */
 .studio-check[hidden] {
   display: none;
+}
+
+/* 马赛克 / 模糊模式（D11.1） */
+.studio-maskbar-mode .select {
+  width: 96px;
+  height: 26px;
+  font-size: 11.5px;
 }
 
 .studio-maskbar-tool {

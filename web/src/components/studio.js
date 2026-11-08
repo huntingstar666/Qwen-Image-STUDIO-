@@ -52,6 +52,7 @@ import { healDab, cloneDab } from './studio/heal.js';
 import { normalizeVector, smudgeDab, smudgeShift } from './studio/smudge.js';
 import { skinDab } from './studio/skin.js';
 import { warpPatch } from './studio/liquify.js';
+import { mosaicDab } from './studio/mosaic.js';
 
 const MAX_IMAGE_SIDE = 8192;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -171,6 +172,14 @@ const TOOLS = [
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8c3.5 0 4.5 8 8 8s4.5-8 8-8"/><path d="M9 4.5l-2 2 2 2"/><path d="M15 19.5l2-2-2-2"/></svg>',
   },
   {
+    id: 'mosaic',
+    label: '马赛克 / 模糊',
+    key: 'P',
+    hint: '涂抹打码；可在浮条切换马赛克与局部模糊',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4" y="4" width="5" height="5"/><rect x="9" y="4" width="5" height="5"/><rect x="4" y="9" width="5" height="5"/><rect x="14" y="9" width="5" height="5"/><rect x="9" y="14" width="5" height="5"/><rect x="14" y="14" width="5" height="5"/></svg>',
+  },
+  {
     id: 'move',
     label: '移动叠加图',
     key: 'M',
@@ -199,11 +208,11 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 /** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify']);
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic']);
 /** 仿制图章 / 修复画笔（D10.2） */
 const CLONE_TOOLS = new Set(['clone', 'healbrush']);
 /** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
-const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify']);
+const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
 
@@ -211,7 +220,7 @@ const WAND_TOOLS = new Set(['wand']);
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
   { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
-  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify'] },
+  { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'generate', title: '生成', tools: ['outpaint'] },
 ];
@@ -382,6 +391,13 @@ export function createStudioPage(host) {
                 </label>
                 <label class="studio-check studio-maskbar-align" data-ref="cloneAlignWrap" hidden>
                   <input type="checkbox" data-ref="cloneAligned" checked /><span>对齐取样</span>
+                </label>
+                <label class="studio-maskbar-field studio-maskbar-mode" data-ref="mosaicModeWrap" hidden>
+                  <span>模式</span>
+                  <select class="select" data-ref="mosaicMode">
+                    <option value="mosaic">马赛克</option>
+                    <option value="blur">局部模糊</option>
+                  </select>
                 </label>
                 <span class="spacer"></span>
                 <button class="btn ghost sm" type="button" data-ref="maskExport">导出蒙版</button>
@@ -614,6 +630,8 @@ export function createStudioPage(host) {
     maskbar: ref('maskbar'),
     cloneAlignWrap: ref('cloneAlignWrap'),
     cloneAligned: ref('cloneAligned'),
+    mosaicModeWrap: ref('mosaicModeWrap'),
+    mosaicMode: ref('mosaicMode'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -1014,6 +1032,7 @@ export function createStudioPage(host) {
     refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next));
     refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
     if (refs.cloneAlignWrap) refs.cloneAlignWrap.hidden = !CLONE_TOOLS.has(next);
+    if (refs.mosaicModeWrap) refs.mosaicModeWrap.hidden = next !== 'mosaic';
     if (MASK_TOOLS.has(next)) refs.maskTool.value = next;
     tool = next;
     if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
@@ -2037,6 +2056,42 @@ export function createStudioPage(host) {
   }
 
   /* ============================================================
+   * 马赛克 / 局部模糊（D11.1）
+   * ============================================================ */
+
+  function mosaicAt(point) {
+    if (!doc) return;
+    const repair = doc.ensureRepair();
+    const source = doc.renderUnderlay();
+    const radius = Math.max(3, brush.size / 2);
+    const ok = mosaicDab(repair.getContext('2d'), source, {
+      x: point.x,
+      y: point.y,
+      radius,
+      mode: refs.mosaicMode?.value === 'blur' ? 'blur' : 'mosaic',
+      block: Math.max(2, Math.round(radius * 0.22)),
+      blurRadius: Math.max(1, Math.round(radius * 0.18)),
+      opacity: brush.opacity,
+      softness: 0.45,
+    });
+    if (!ok) return;
+    doc.invalidateBase();
+  }
+
+  function mosaicStroke(point) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(2, brush.size * 0.3);
+    if (distance < step) return;
+    const count = Math.floor(distance / step);
+    for (let i = 1; i <= count; i += 1) {
+      const t = (i * step) / distance;
+      mosaicAt({ x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t });
+    }
+    if (drag) drag.last = point;
+  }
+
+  /* ============================================================
    * 指针交互
    * ============================================================ */
 
@@ -2107,6 +2162,12 @@ export function createStudioPage(host) {
       drag = { mode: 'liquify', start: point, last: point, total: { x: 0, y: 0 }, base: doc.renderUnderlay() };
       return;
     }
+    if (tool === 'mosaic') {
+      drag = { mode: 'mosaic', last: point };
+      mosaicAt(point);
+      scheduleDraw();
+      return;
+    }
     if (tool === 'spot') {
       drag = { mode: 'spot', last: point };
       healAt(point);
@@ -2170,6 +2231,11 @@ export function createStudioPage(host) {
     }
     if (drag.mode === 'clone' || drag.mode === 'clone-blocked') {
       if (drag.mode === 'clone') cloneStroke(point);
+      scheduleDraw();
+      return;
+    }
+    if (drag.mode === 'mosaic') {
+      mosaicStroke(point);
       scheduleDraw();
       return;
     }
@@ -2267,6 +2333,10 @@ export function createStudioPage(host) {
       updateHistoryUi();
     } else if (mode === 'liquify') {
       // 整笔液化作为一个撤销步（D10.5）。
+      doc?.snapshot();
+      updateHistoryUi();
+    } else if (mode === 'mosaic') {
+      // 整笔马赛克/模糊作为一个撤销步（D11.1）。
       doc?.snapshot();
       updateHistoryUi();
     } else if (mode === 'shape' && rect) {

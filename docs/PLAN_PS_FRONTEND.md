@@ -858,6 +858,14 @@ DOM 结构：
   - 实测（headless Chromium，800×600 蓝底 + `(360,260)-(440,340)` 红色方块，笔刷 160px）：从 `(400,300)` 向右拖 60px 后，`x=450` 由蓝 `[31,111,208]` 变为红 `[231,76,60]`，`x=360` 边缘混合为 `[143,91,124]`，`x=560` 仍为蓝，方块整体右移且边缘平滑；撤销 `x=450` 回到蓝、重做恢复红。截图 `.screenshots/D10.5-liquify-2026-11-08T04-26-52-863Z.png`。
   - 说明：本轮只实现「向前推」一种液化笔刷（重建/膨胀/收缩/左推留给后续）；位移以文档像素为单位，大半径 + 大位移时边缘可能出现轻微拉伸纹理，属正常形变表现。
 
+- **D11.1 马赛克 / 局部模糊（已完成）** —— 打码与柔化，边缘羽化不出现硬方块：
+  - 新增 `studio/mosaic.js`：`pixelate(data, w, h, block)`（方块均值填充，越界按剩余像素取均值，纯函数）、`mosaicDab(ctx, source, {x,y,radius,mode,block,blurRadius,opacity,softness})`——`mosaic` 走 `pixelate`、`blur` 复用 `skin.boxBlur`，两者都用径向渐变柔边后贴回修复层；取样越界返回 `false`。
+  - 工具：左栏「修复」组新增 `mosaic`（马赛克 / 模糊，P）；浮条新增「模式」下拉（马赛克 / 局部模糊，仅本工具显示），大小滑杆同时决定方块尺寸（`radius*0.22`）与模糊半径（`radius*0.18`）。
+  - 交互：按下即落笔，沿拖动按 `brush.size * 0.3` 间距连续处理，整笔只落一次撤销步，结果写入修复层（可撤销、可持久化）。
+  - 单测：新增 `web/tests/studio/mosaic.test.mjs` 4 项（方块内统一、均值为区域平均、block≤1 不变、越界取剩余像素），`node --test web/tests/studio/mosaic.test.mjs` → `pass 4 / fail 0`。
+  - 实测（headless Chromium，800×600 的 4px 黑白棋盘，笔刷 160px）：马赛克点按后中心 80×80 区域亮度标准差 `99 → 1`，区域外保持 `99.5`；切「局部模糊」后另一处 `99.5 → 0.5`，撤销回到 `99.5`，中心马赛克不受影响（整笔一次撤销）。修复了 `boxBlur` 返回新数组未写回导致模糊模式无效果的缺陷。截图 `.screenshots/D11.1-mosaic-2026-11-08T04-29-25-596Z.png`。
+  - 说明：马赛克方块大小随笔刷线性变化，不做「固定屏幕像素」模式；若需要整脸大块打码，建议调大笔刷或多次涂抹。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1049,7 +1057,8 @@ DOM 结构：
 | `skin.js` | `boxBlur` / `smoothSkin` / `skinDab`（频率分离磨皮，D10.4 已落地） | 无 | D10.4 |
 | `tools/liquify.js` | 液化（D10.5 暂内联在 `studio.js`，形变算法在 `liquify.js`） | `renderer` | D10.5（已落地） |
 | `liquify.js` | `pushWeight` / `warpPatch`（反向取样形变，D10.5 已落地） | 无 | D10.5 |
-| `tools/mosaic.js` | 马赛克 / 局部模糊 | `renderer` | D11 |
+| `tools/mosaic.js` | 马赛克 / 局部模糊（D11.1 暂内联在 `studio.js`，算法在 `mosaic.js`） | `renderer` | D11.1（已落地） |
+| `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
 | `tools/text.js` | 文字图层创建与编辑 | `renderer` | D11 |
 | `tools/sticker.js` | 贴纸 / 图片层变换 | `renderer` | D11 |
 | `panels/layers.js` | 图层面板 | `document/layers` | D7 |
@@ -1363,7 +1372,7 @@ DOM 结构：
 | D10.3 | 涂抹 | 已完成 | 本次提交 | 新增 `studio/smudge.js`（`normalizeVector/smudgeShift/smudgeDab`）；`smudge` 工具（U）+ 笔刷参数；写入修复层并整笔一次撤销；单测 5 项；实测见 §12.11 |
 | D10.4 | 磨皮 | 已完成 | 本次提交 | 新增 `studio/skin.js`（`boxBlur/smoothSkin/skinDab` 频率分离）；`skin` 工具（K）+ 笔刷参数（不透明度兼作强度）；单测 6 项；实测见 §12.11 |
 | D10.5 | 液化 | 已完成 | 本次提交 | 新增 `studio/liquify.js`（`pushWeight` + `warpPatch` 反向取样形变）；`liquify` 工具（Y）+ 累计位移；单测 4 项；实测见 §12.11 |
-| D11.1 | 马赛克 / 模糊 | 未开始 | — | — |
+| D11.1 | 马赛克 / 模糊 | 已完成 | 本次提交 | 新增 `studio/mosaic.js`（`pixelate` + `mosaicDab`，马赛克/模糊双模式）；`mosaic` 工具（P）+ 模式下拉；单测 4 项；实测见 §12.11 |
 | D11.2 | 文字图层 | 未开始 | — | — |
 | D11.3 | 贴纸 | 未开始 | — | — |
 | D11.4 | 形状与图案图章 | 未开始 | — | — |

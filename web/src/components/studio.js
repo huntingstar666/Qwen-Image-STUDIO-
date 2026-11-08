@@ -375,6 +375,8 @@ export function createStudioPage(host) {
   let projectCreatedAt = 0;
   let sourceBlob = null;
   const layerBlobs = new Map();
+  /** 替换过内容的智能对象：撤销/重做后 blob 可能仍指向上一次的图，保存前需失效重编码。 */
+  const smartSwappedIds = new Set();
   let saveTimer = 0;
   let idleTimer = 0;
   let saveRetryTimer = 0;
@@ -7621,6 +7623,22 @@ export function createStudioPage(host) {
     });
   }
 
+  /** 蒙版按 cover 适配到新尺寸：等比放大铺满 + 居中裁剪，避免替换内容后被拉伸。 */
+  function fitMaskCover(mask, width, height) {
+    const srcW = mask.width;
+    const srcH = mask.height;
+    if (!srcW || !srcH || width < 1 || height < 1) return mask;
+    if (srcW === width && srcH === height) return mask;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width);
+    canvas.height = Math.round(height);
+    const scale = Math.max(canvas.width / srcW, canvas.height / srcH);
+    const drawW = srcW * scale;
+    const drawH = srcH * scale;
+    canvas.getContext('2d').drawImage(mask, (canvas.width - drawW) / 2, (canvas.height - drawH) / 2, drawW, drawH);
+    return canvas;
+  }
+
   async function applySmartReplacement(id, item) {
     const current = doc;
     const layer = current?.findLayer(id);
@@ -7634,14 +7652,22 @@ export function createStudioPage(host) {
         return false;
       }
       if (imageTooLarge(image, '智能对象')) return false;
+      const hadMask = Boolean(layer.mask);
+      const nextWidth = image.naturalWidth || image.width || 0;
+      const nextHeight = image.naturalHeight || image.height || 0;
       const centerX = layer.x + layer.width / 2;
       const centerY = layer.y + layer.height / 2;
       layer.image = image;
+      // D23.10-4：蒙版跟着新图等比适配（cover），宽高比变化时不被拉伸。
+      if (hadMask) layer.mask = fitMaskCover(layer.mask, nextWidth, nextHeight);
       layer._masked = null;
       layer._warpCache = null;
       layer.smart = true;
-      layer.sourceWidth = image.naturalWidth || image.width || 0;
-      layer.sourceHeight = image.naturalHeight || image.height || 0;
+      layer.sourceWidth = nextWidth;
+      layer.sourceHeight = nextHeight;
+      // 旧图的 Blob 不能再给新内容用；撤销/重做后也按当前像素重新编码。
+      layerBlobs.delete(id);
+      smartSwappedIds.add(id);
       layer.x = Math.round(centerX - (layer.sourceWidth * layer.scale) / 2);
       layer.y = Math.round(centerY - (layer.sourceHeight * layer.scale) / 2);
       try {
@@ -7662,7 +7688,11 @@ export function createStudioPage(host) {
       updateHistoryUi();
       scheduleSave();
       scheduleDraw();
-      toastSuccess('已替换智能对象内容 · 位置、缩放与蒙版保持不变');
+      toastSuccess(
+        hadMask
+          ? '已替换智能对象内容 · 蒙版已按新图等比适配（居中裁剪）'
+          : '已替换智能对象内容 · 位置、缩放与蒙版保持不变',
+      );
       return true;
     } catch (err) {
       toastError(err, '替换内容失败');
@@ -8678,6 +8708,7 @@ export function createStudioPage(host) {
 
   refs.undoBtn.addEventListener('click', () => {
     if (doc?.undo()) {
+      for (const id of smartSwappedIds) layerBlobs.delete(id);
       syncAdjustInputs();
       updateSizeInfo();
       updateHistoryUi();
@@ -8695,6 +8726,7 @@ export function createStudioPage(host) {
   });
   refs.redoBtn.addEventListener('click', () => {
     if (doc?.redo()) {
+      for (const id of smartSwappedIds) layerBlobs.delete(id);
       syncAdjustInputs();
       updateSizeInfo();
       updateHistoryUi();

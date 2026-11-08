@@ -33,6 +33,12 @@ export const SHAPE_STYLE_DEFAULTS = {
   colorOverlay: { enabled: false, color: '#000000', opacity: 0.4 },
 };
 
+/** 数值兜底：非法值回退默认，再夹到区间，避免 NaN 进入 Canvas 属性。 */
+function numberOr(value, fallback, min, max) {
+  const numeric = Number(value);
+  return clamp(Number.isFinite(numeric) ? numeric : fallback, min, max);
+}
+
 /** 深合并样式，忽略未知字段，数值夹在合理区间。 */
 export function normalizeShapeStyle(style = {}) {
   const base = SHAPE_STYLE_DEFAULTS;
@@ -44,26 +50,26 @@ export function normalizeShapeStyle(style = {}) {
     shadow: {
       enabled: Boolean(shadow.enabled),
       color: shadow.color || base.shadow.color,
-      blur: clamp(shadow.blur ?? base.shadow.blur, 0, 120),
-      distance: clamp(shadow.distance ?? base.shadow.distance, 0, 200),
-      angle: Number.isFinite(Number(shadow.angle)) ? Number(shadow.angle) : base.shadow.angle,
+      blur: numberOr(shadow.blur, base.shadow.blur, 0, 120),
+      distance: numberOr(shadow.distance, base.shadow.distance, 0, 200),
+      angle: numberOr(shadow.angle, base.shadow.angle, -360, 360),
     },
     glow: {
       enabled: Boolean(glow.enabled),
       color: glow.color || base.glow.color,
-      blur: clamp(glow.blur ?? base.glow.blur, 0, 120),
+      blur: numberOr(glow.blur, base.glow.blur, 0, 120),
     },
     gradient: {
       enabled: Boolean(gradient.enabled),
       from: gradient.from || base.gradient.from,
       to: gradient.to || base.gradient.to,
-      angle: Number.isFinite(Number(gradient.angle)) ? Number(gradient.angle) : base.gradient.angle,
-      opacity: clamp(gradient.opacity ?? base.gradient.opacity, 0, 1),
+      angle: numberOr(gradient.angle, base.gradient.angle, -360, 360),
+      opacity: numberOr(gradient.opacity, base.gradient.opacity, 0, 1),
     },
     colorOverlay: {
       enabled: Boolean(overlay.enabled),
       color: overlay.color || base.colorOverlay.color,
-      opacity: clamp(overlay.opacity ?? base.colorOverlay.opacity, 0, 1),
+      opacity: numberOr(overlay.opacity, base.colorOverlay.opacity, 0, 1),
     },
   };
 }

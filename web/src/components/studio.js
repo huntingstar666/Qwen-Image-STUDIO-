@@ -2365,18 +2365,53 @@ export function createStudioPage(host) {
    * 污点修复（D10.1）
    * ============================================================ */
 
+  /**
+   * 修复类笔触的统一入口：写入修复层，并在有选区时按选区 alpha 裁剪，
+   * 与蒙版画笔/形状保持同一套选区语义（此前修复类会画到选区外）。
+   *
+   * 选区轮廓是蚂蚁线路径（大量不闭合线段），只能描边不能填充，
+   * 所以这里沿用蒙版画笔的做法：先画到等尺寸临时画布，再用
+   * destination-in 叠选区 alpha，最后贴回修复层。
+   */
+  function repairPaint(point, radius, paint) {
+    if (!doc) return false;
+    const repair = doc.ensureRepair();
+    if (!selection) return paint(repair.getContext('2d'));
+    const canvas = fullScratch(repair.width, repair.height);
+    const sctx = canvas.getContext('2d');
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    // 只处理笔触附近，避免每次整图合成；边距覆盖笔刷最大外溢。
+    const pad = Math.ceil(radius * 2) + 16;
+    const x0 = Math.max(0, Math.floor(point.x - pad));
+    const y0 = Math.max(0, Math.floor(point.y - pad));
+    const x1 = Math.min(repair.width, Math.ceil(point.x + pad));
+    const y1 = Math.min(repair.height, Math.ceil(point.y + pad));
+    const width = x1 - x0;
+    const height = y1 - y0;
+    if (width <= 0 || height <= 0) return false;
+    sctx.clearRect(x0, y0, width, height);
+    const result = paint(sctx);
+    sctx.globalCompositeOperation = 'destination-in';
+    sctx.drawImage(selection.canvas, x0, y0, width, height, x0, y0, width, height);
+    sctx.globalCompositeOperation = 'source-over';
+    repair.getContext('2d').drawImage(canvas, x0, y0, width, height, x0, y0, width, height);
+    return result;
+  }
+
   /** 在文档坐标点画一个修复笔触：取样来自「底图合成」，结果写进修复层。 */
   function healAt(point) {
     if (!doc) return;
-    const repair = doc.ensureRepair();
     const source = doc.renderUnderlay();
-    healDab(repair.getContext('2d'), source, {
-      x: point.x,
-      y: point.y,
-      radius: Math.max(2, brush.size / 2),
-      opacity: brush.opacity,
-      softness: 1 - brush.hardness,
-    });
+    const radius = Math.max(2, brush.size / 2);
+    repairPaint(point, radius, (target) =>
+      healDab(target, source, {
+        x: point.x,
+        y: point.y,
+        radius,
+        opacity: brush.opacity,
+        softness: 1 - brush.hardness,
+      }),
+    );
     // 修复层画在 underlay 之上，必须让 underlay/base 一起失效才能看到即时结果。
     doc.invalidateBase();
   }
@@ -2401,18 +2436,20 @@ export function createStudioPage(host) {
 
   function cloneAt(point) {
     if (!doc || !drag || drag.mode !== 'clone') return;
-    const repair = doc.ensureRepair();
     if (!drag.sample) drag.sample = doc.renderSample();
-    const ok = cloneDab(repair.getContext('2d'), drag.sample, {
-      x: point.x,
-      y: point.y,
-      sx: point.x - drag.offset.x,
-      sy: point.y - drag.offset.y,
-      radius: Math.max(2, brush.size / 2),
-      opacity: brush.opacity,
-      softness: 1 - brush.hardness,
-      blend: tool === 'healbrush' ? 'heal' : 'clone',
-    });
+    const radius = Math.max(2, brush.size / 2);
+    const ok = repairPaint(point, radius, (target) =>
+      cloneDab(target, drag.sample, {
+        x: point.x,
+        y: point.y,
+        sx: point.x - drag.offset.x,
+        sy: point.y - drag.offset.y,
+        radius,
+        opacity: brush.opacity,
+        softness: 1 - brush.hardness,
+        blend: tool === 'healbrush' ? 'heal' : 'clone',
+      }),
+    );
     if (!ok) {
       toastWarn('取样区域超出画面，请重新 Alt 点击取样');
       drag.mode = 'clone-blocked';
@@ -2443,15 +2480,17 @@ export function createStudioPage(host) {
     if (!doc || !patternRect) return;
     if (!drag) return;
     if (!drag.sample) drag.sample = doc.renderSample();
-    const repair = doc.ensureRepair();
-    const ok = patternDab(repair.getContext('2d'), drag.sample, {
-      x: point.x,
-      y: point.y,
-      radius: Math.max(2, brush.size / 2),
-      opacity: brush.opacity,
-      softness: 1 - brush.hardness,
-      pattern: patternRect,
-    });
+    const radius = Math.max(2, brush.size / 2);
+    const ok = repairPaint(point, radius, (target) =>
+      patternDab(target, drag.sample, {
+        x: point.x,
+        y: point.y,
+        radius,
+        opacity: brush.opacity,
+        softness: 1 - brush.hardness,
+        pattern: patternRect,
+      }),
+    );
     if (!ok) {
       toastWarn('图案取样区域超出画面，请按住 Alt 重新拖框取样');
       drag.mode = 'pattern-blocked';
@@ -2486,19 +2525,20 @@ export function createStudioPage(host) {
 
   function smudgeAt(point, delta) {
     if (!doc) return;
-    const repair = doc.ensureRepair();
     const source = doc.renderUnderlay();
     const radius = Math.max(2, brush.size / 2);
     const shift = smudgeShift(normalizeVector(delta.x, delta.y), radius, 0.35);
-    smudgeDab(repair.getContext('2d'), source, {
-      x: point.x,
-      y: point.y,
-      dx: shift.x,
-      dy: shift.y,
-      radius,
-      opacity: brush.opacity,
-      softness: 1 - brush.hardness,
-    });
+    repairPaint(point, radius, (target) =>
+      smudgeDab(target, source, {
+        x: point.x,
+        y: point.y,
+        dx: shift.x,
+        dy: shift.y,
+        radius,
+        opacity: brush.opacity,
+        softness: 1 - brush.hardness,
+      }),
+    );
     doc.invalidateBase();
   }
 
@@ -2508,17 +2548,19 @@ export function createStudioPage(host) {
 
   function skinAt(point) {
     if (!doc) return;
-    const repair = doc.ensureRepair();
     const source = doc.renderUnderlay();
-    const ok = skinDab(repair.getContext('2d'), source, {
-      x: point.x,
-      y: point.y,
-      radius: Math.max(3, brush.size / 2),
-      // 不透明度兼作磨皮强度：100% 最平滑，30% 只做轻微柔化。
-      strength: 0.4 + brush.opacity * 0.55,
-      opacity: brush.opacity,
-      softness: 1 - brush.hardness,
-    });
+    const radius = Math.max(3, brush.size / 2);
+    const ok = repairPaint(point, radius, (target) =>
+      skinDab(target, source, {
+        x: point.x,
+        y: point.y,
+        radius,
+        // 不透明度兼作磨皮强度：100% 最平滑，30% 只做轻微柔化。
+        strength: 0.4 + brush.opacity * 0.55,
+        opacity: brush.opacity,
+        softness: 1 - brush.hardness,
+      }),
+    );
     if (!ok) return;
     doc.invalidateBase();
   }
@@ -2545,15 +2587,17 @@ export function createStudioPage(host) {
    */
   function liquifyAt(point) {
     if (!doc || !drag?.base) return;
-    const repair = doc.ensureRepair();
-    const ok = warpPatch(repair.getContext('2d'), drag.base, {
-      x: point.x,
-      y: point.y,
-      dx: drag.total.x,
-      dy: drag.total.y,
-      radius: Math.max(3, brush.size / 2),
-      strength: 0.4 + brush.opacity * 0.6,
-    });
+    const radius = Math.max(3, brush.size / 2);
+    const ok = repairPaint(point, radius, (target) =>
+      warpPatch(target, drag.base, {
+        x: point.x,
+        y: point.y,
+        dx: drag.total.x,
+        dy: drag.total.y,
+        radius,
+        strength: 0.4 + brush.opacity * 0.6,
+      }),
+    );
     if (!ok) return;
     doc.invalidateBase();
   }
@@ -2564,19 +2608,20 @@ export function createStudioPage(host) {
 
   function mosaicAt(point) {
     if (!doc) return;
-    const repair = doc.ensureRepair();
     const source = doc.renderUnderlay();
     const radius = Math.max(3, brush.size / 2);
-    const ok = mosaicDab(repair.getContext('2d'), source, {
-      x: point.x,
-      y: point.y,
-      radius,
-      mode: refs.mosaicMode?.value === 'blur' ? 'blur' : 'mosaic',
-      block: Math.max(2, Math.round(radius * 0.22)),
-      blurRadius: Math.max(1, Math.round(radius * 0.18)),
-      opacity: brush.opacity,
-      softness: 0.45,
-    });
+    const ok = repairPaint(point, radius, (target) =>
+      mosaicDab(target, source, {
+        x: point.x,
+        y: point.y,
+        radius,
+        mode: refs.mosaicMode?.value === 'blur' ? 'blur' : 'mosaic',
+        block: Math.max(2, Math.round(radius * 0.22)),
+        blurRadius: Math.max(1, Math.round(radius * 0.18)),
+        opacity: brush.opacity,
+        softness: 0.45,
+      }),
+    );
     if (!ok) return;
     doc.invalidateBase();
   }
@@ -2606,11 +2651,12 @@ export function createStudioPage(host) {
 
     if (tool === 'text' && event.button === 0) {
       // 在画面上点一下即创建文字图层，并切到「文字」分页直接编辑（D11.2）。
+      const at = maskPoint(point);
       const count = doc.layers.filter((layer) => layer.isText).length + 1;
       const layer = doc.addTextLayer(TEXT_DEFAULTS, {
         name: `文字 ${count}`,
-        x: Math.round(point.x),
-        y: Math.round(point.y),
+        x: Math.round(at.x),
+        y: Math.round(at.y),
       });
       selectedLayerId = layer.id;
       editingLayerMaskId = '';
@@ -2629,7 +2675,8 @@ export function createStudioPage(host) {
 
     // 局部调整取景（D9.4）：优先级最高（含「抓手」工具），拖完自动退出，不会误涂或误平移。
     if (localEdit && adjustmentTarget() && event.button === 0) {
-      drag = { mode: 'local', type: localEdit, start: point, end: point };
+      const at = maskPoint(point);
+      drag = { mode: 'local', type: localEdit, start: at, end: at };
       return;
     }
     if (event.button === 1 || spaceDown || tool === 'view') {
@@ -2651,11 +2698,12 @@ export function createStudioPage(host) {
       return;
     }
     if (CLONE_TOOLS.has(tool)) {
+      const imagePoint = maskPoint(point);
       if (event.altKey) {
         // Alt + 点击 = 取样（对齐模式下会清空旧偏移）。
-        cloneAnchor = { x: point.x, y: point.y };
+        cloneAnchor = { x: imagePoint.x, y: imagePoint.y };
         cloneOffset = null;
-        toast(`已取样：${Math.round(point.x)}, ${Math.round(point.y)}`);
+        toast(`已取样：${Math.round(imagePoint.x)}, ${Math.round(imagePoint.y)}`);
         scheduleDraw();
         return;
       }
@@ -2663,40 +2711,41 @@ export function createStudioPage(host) {
         toastWarn('按住 Alt 点击画面取样，再涂抹复制');
         return;
       }
-      const relative = { x: point.x - cloneAnchor.x, y: point.y - cloneAnchor.y };
+      const relative = { x: imagePoint.x - cloneAnchor.x, y: imagePoint.y - cloneAnchor.y };
       // 对齐：整段会话沿用第一次落笔的相对偏移；非对齐：每笔重新对齐取样点。
       const useAligned = refs.cloneAligned?.checked !== false;
       if (useAligned && !cloneOffset) cloneOffset = relative;
       const offset = useAligned ? cloneOffset || relative : relative;
-      drag = { mode: 'clone', last: point, offset, sample: doc.renderSample() };
-      cloneAt(point);
+      drag = { mode: 'clone', last: imagePoint, offset, sample: doc.renderSample() };
+      cloneAt(imagePoint);
       scheduleDraw();
       return;
     }
     if (tool === 'smudge') {
-      drag = { mode: 'smudge', last: point };
+      drag = { mode: 'smudge', last: maskPoint(point) };
       return;
     }
     if (tool === 'skin') {
-      drag = { mode: 'skin', last: point };
-      skinAt(point);
+      drag = { mode: 'skin', last: maskPoint(point) };
+      skinAt(maskPoint(point));
       scheduleDraw();
       return;
     }
     if (tool === 'liquify') {
       // 记下本笔开始时的底图，后续都从它取样（真正的形变，不会越推越花）。
-      drag = { mode: 'liquify', start: point, last: point, total: { x: 0, y: 0 }, base: doc.renderUnderlay() };
+      const at = maskPoint(point);
+      drag = { mode: 'liquify', start: at, last: at, total: { x: 0, y: 0 }, base: doc.renderUnderlay() };
       return;
     }
     if (tool === 'mosaic') {
-      drag = { mode: 'mosaic', last: point };
-      mosaicAt(point);
+      drag = { mode: 'mosaic', last: maskPoint(point) };
+      mosaicAt(maskPoint(point));
       scheduleDraw();
       return;
     }
     if (tool === 'spot') {
-      drag = { mode: 'spot', last: point };
-      healAt(point);
+      drag = { mode: 'spot', last: maskPoint(point) };
+      healAt(maskPoint(point));
       scheduleDraw();
       return;
     }
@@ -2721,17 +2770,18 @@ export function createStudioPage(host) {
       return;
     }
     if (tool === 'pattern') {
+      const at = maskPoint(point);
       if (event.altKey) {
         // Alt + 拖框 = 重新取样图案区域。
-        drag = { mode: 'patternPick', start: point, rect: null };
+        drag = { mode: 'patternPick', start: at, rect: null };
         return;
       }
       if (!patternRect) {
         toastWarn('按住 Alt 在画面上拖框取样图案，再涂抹复制');
         return;
       }
-      drag = { mode: 'patternPaint', last: point, sample: doc.renderSample() };
-      patternAt(point);
+      drag = { mode: 'patternPaint', last: at, sample: doc.renderSample() };
+      patternAt(at);
       scheduleDraw();
       return;
     }
@@ -2827,46 +2877,47 @@ export function createStudioPage(host) {
       return;
     }
     const point = clampPoint(toImage(event.clientX, event.clientY, rect));
+    const imagePoint = maskPoint(point);
     if (drag.mode === 'paint') {
-      strokeTo(maskPoint(point));
+      strokeTo(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'spot') {
-      healStroke(point);
+      healStroke(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'clone' || drag.mode === 'clone-blocked') {
-      if (drag.mode === 'clone') cloneStroke(point);
+      if (drag.mode === 'clone') cloneStroke(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'mosaic') {
-      mosaicStroke(point);
+      mosaicStroke(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'liquify') {
-      const step = drag.last || point;
-      drag.total.x += point.x - step.x;
-      drag.total.y += point.y - step.y;
-      drag.last = point;
-      liquifyAt(point);
+      const step = drag.last || imagePoint;
+      drag.total.x += imagePoint.x - step.x;
+      drag.total.y += imagePoint.y - step.y;
+      drag.last = imagePoint;
+      liquifyAt(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'skin') {
-      skinStroke(point);
+      skinStroke(imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'smudge') {
-      const from = drag.last || point;
-      const delta = { x: point.x - from.x, y: point.y - from.y };
+      const from = drag.last || imagePoint;
+      const delta = { x: imagePoint.x - from.x, y: imagePoint.y - from.y };
       if (Math.hypot(delta.x, delta.y) >= 1) {
-        smudgeAt(point, delta);
-        drag.last = point;
+        smudgeAt(imagePoint, delta);
+        drag.last = imagePoint;
       }
       scheduleDraw();
       return;
@@ -2882,7 +2933,7 @@ export function createStudioPage(host) {
       return;
     }
     if (drag.mode === 'local') {
-      drag.end = point;
+      drag.end = imagePoint;
       scheduleDraw();
       return;
     }
@@ -2901,12 +2952,12 @@ export function createStudioPage(host) {
       return;
     }
     if (drag.mode === 'patternPick') {
-      drag.rect = normalizeRect(drag.start, point);
+      drag.rect = normalizeRect(drag.start, imagePoint);
       scheduleDraw();
       return;
     }
     if (drag.mode === 'patternPaint' || drag.mode === 'pattern-blocked') {
-      if (drag.mode === 'patternPaint') patternStroke(point);
+      if (drag.mode === 'patternPaint') patternStroke(imagePoint);
       scheduleDraw();
       return;
     }
@@ -4168,9 +4219,9 @@ export function createStudioPage(host) {
     const layer = stickerTarget();
     refs.stickerEmpty.hidden = Boolean(layer);
     refs.stickerFields.hidden = !layer;
-    refs.stickerPerspective.checked = Boolean(layer) && perspectiveEdit;
+    refs.stickerPerspective.checked = Boolean(layer?.quad) && perspectiveEdit;
     refs.stickerPerspective.disabled = !layer;
-    refs.stickerPerspectiveHint.hidden = !(layer && perspectiveEdit);
+    refs.stickerPerspectiveHint.hidden = !(layer?.quad && perspectiveEdit);
     refs.stickerPerspectiveReset.disabled = !layer?.quad;
     if (!layer) return;
     const percent = Math.round(layer.scale * 100);
@@ -4623,7 +4674,7 @@ export function createStudioPage(host) {
 
   refs.snapshotAdd.addEventListener('click', () => {
     if (!doc) return;
-    const item = doc.addSnapshot(`快照 ${doc.snapshots.length + 1}`);
+    const item = doc.addSnapshot(doc.nextSnapshotName());
     if (!item) return;
     renderSnapshots();
     toast(`已创建快照「${item.name}」`);

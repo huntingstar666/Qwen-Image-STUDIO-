@@ -229,6 +229,11 @@ export class StudioDoc {
     return this._history.removeSnapshot(id);
   }
 
+  /** 默认快照名（避免删除后重名）。 */
+  nextSnapshotName() {
+    return this._history.nextSnapshotName();
+  }
+
   /* ---------------------------------------------------------- 变换 */
 
   rotateRight() {

@@ -96,5 +96,14 @@ export function createHistory({ limit = 30, budget = 256 * 1024 * 1024 } = {}) {
     findSnapshot(id) {
       return snapshots.find((item) => item.id === id) || null;
     },
+    /** 生成不重复的默认快照名（删除中间项后不会重复）。 */
+    nextSnapshotName() {
+      let max = 0;
+      for (const item of snapshots) {
+        const match = /^快照\s+(\d+)$/.exec(item.name);
+        if (match) max = Math.max(max, Number(match[1]));
+      }
+      return `快照 ${max + 1}`;
+    },
   };
 }

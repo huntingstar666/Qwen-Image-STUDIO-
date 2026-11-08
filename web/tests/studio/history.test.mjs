@@ -32,6 +32,18 @@ test('历史快照：不占撤销步数，默认名递增', () => {
   assert.notEqual(a.id, b.id);
 });
 
+test('历史快照：默认名在删除中间项后不重复', () => {
+  const history = createHistory();
+  const state = history.push({ version: 1, bytes: 10 });
+  const first = history.addSnapshot(state, '快照 1');
+  const second = history.addSnapshot(state, '快照 2');
+  assert.equal(history.nextSnapshotName(), '快照 3');
+  history.removeSnapshot(first.id);
+  assert.equal(history.nextSnapshotName(), '快照 3');
+  history.removeSnapshot(second.id);
+  assert.equal(history.nextSnapshotName(), '快照 1');
+});
+
 test('历史快照：历史清空/撤销后仍保留快照引用', () => {
   const history = createHistory();
   const base = history.push({ version: 1, bytes: 10 });

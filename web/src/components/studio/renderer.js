@@ -72,10 +72,11 @@ export function drawLayers(ctx, layers, { crop = null } = {}) {
       ctx.restore();
       return;
     }
-    // 剪贴蒙版：取最近的、未剪贴的下层作为 alpha 基座（D12.1）。
+    // 剪贴蒙版：取最近的、未剪贴且可绘制的下层作为 alpha 基座（D12.1）。
+    // 调整层没有独立像素/alpha，跳过它继续向下找，找不到就不剪贴。
     if (layer.clipped) {
       let baseIndex = index - 1;
-      while (baseIndex >= 0 && layers[baseIndex].clipped) baseIndex -= 1;
+      while (baseIndex >= 0 && (layers[baseIndex].clipped || layers[baseIndex].isAdjustment)) baseIndex -= 1;
       const base = baseIndex >= 0 ? layers[baseIndex] : null;
       if (base) {
         drawClippedLayer(ctx, layer, base, crop, scratch, ensure);

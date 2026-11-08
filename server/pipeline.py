@@ -455,6 +455,32 @@ def _resolve_models(cfg: dict[str, Any], params: dict[str, Any],
     return out
 
 
+def _lora_basename(value: Any) -> str:
+    """LoRA 文件名归一：前端可能传绝对路径，后端配的是相对路径。"""
+    return os.path.basename(str(value or "").replace("\\", "/")).strip().lower()
+
+
+def _ensure_task_lora(loras: list[dict[str, Any]], task_mode: str) -> list[dict[str, Any]]:
+    """保证「移除 / 扩图」的任务 LoRA 存在，但同一文件不重复挂两份。
+
+    前端会按任务先挂一次（传绝对路径），后端再按预设注入一次（相对路径），
+    按路径字符串判重会漏掉；这里统一按文件名判，命中就保留用户那份
+    （显式 > 预设，强度也听用户的）。
+    """
+    spec = config.resolve_lora_preset(task_mode)
+    if not spec:
+        return loras
+    key = _lora_basename(spec.get("name"))
+    for item in loras:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("preset") or "").strip().lower() == task_mode:
+            return loras
+        if key and _lora_basename(item.get("name") or item.get("value")) == key:
+            return loras
+    return [{"preset": task_mode}, *loras]
+
+
 def _build_loras(cfg: dict[str, Any], params: dict[str, Any], profile: dict[str, Any], *,
                  sampling: dict[str, Any]) -> list[dict[str, Any]]:
     """收集 LoRA：请求里显式的 + 加速档位要求的 + 一致性 LoRA。"""
@@ -1136,11 +1162,12 @@ class Pipeline:
         has_explicit_consistency = isinstance(cons_cfg, dict) and cons_cfg.get("enabled") is not False
         current_loras = list(params.get("loras") or [])
         if task_mode in ("remove", "outpaint"):
-            # 任务 LoRA 是训练约定的一部分：即使用户加了别的 LoRA 也要保证它存在。
-            if not any(str(item.get("preset") or "").strip().lower() == task_mode
-                       for item in current_loras if isinstance(item, dict)):
+            # 任务 LoRA 是训练约定的一部分：即使用户加了别的 LoRA 也要保证它存在；
+            # 同一文件（前端绝对路径 vs 后端相对路径）只挂一份。
+            merged_loras = _ensure_task_lora(current_loras, task_mode)
+            if merged_loras is not current_loras:
                 params = dict(params)
-                params["loras"] = [{"preset": task_mode}, *current_loras]
+                params["loras"] = merged_loras
         elif not current_loras and cons_enabled and not has_explicit_consistency:
             params = dict(params)
             params["loras"] = [{"preset": "consistency"}]

@@ -47,7 +47,6 @@ import {
   urlToDataUrl,
 } from './importPicker.js';
 import { hasRefDrag, readRefDrag } from '../refLibrary.js';
-import { createLayerPanel } from './layerPanel.js';
 import { createPromptEditor } from './promptEditor.js';
 import { createSessionHistory } from './sessionHistory.js';
 import { mountAiHistory } from './aiHistory.js';
@@ -110,7 +109,6 @@ export function mountAiPanel(host, ctx) {
         <input type="file" accept="image/*" multiple hidden data-ref="refInput" />
         <input type="file" accept="image/*" hidden data-ref="overlayInput" />
         <div class="ai-hint">图一 = 主图（锁定为底图）；叠加图会画进主图，可拖动/缩放/调透明度。</div>
-        <div class="ai-layers" data-ref="layers"></div>
       </section>
 
       <section class="ai-section ai-submit-section">
@@ -263,7 +261,6 @@ export function mountAiPanel(host, ctx) {
     addOverlayBtn: ref('addOverlayBtn'),
     refInput: ref('refInput'),
     overlayInput: ref('overlayInput'),
-    layers: ref('layers'),
     sizeMode: ref('sizeMode'),
     customSize: ref('customSize'),
     width: ref('width'),
@@ -299,9 +296,6 @@ export function mountAiPanel(host, ctx) {
     quality: ref('quality'),
     historyHost: ref('historyHost'),
   };
-
-  /* D7.3：图层条独立成模块，负责拖拽排序 / 双击重命名 / 锁定 / 不透明度。 */
-  const layerPanel = createLayerPanel(refs.layers, ctx);
 
   const editSettings = store.state.edit || {};
   const state = {
@@ -1122,10 +1116,6 @@ export function mountAiPanel(host, ctx) {
 
   /* ------------------------------------------------------------ 叠加层 */
 
-  function renderLayers() {
-    layerPanel.render();
-  }
-
   /* ------------------------------------------------------------ 指令 */
 
   function syncPrompt() {
@@ -1593,7 +1583,6 @@ export function mountAiPanel(host, ctx) {
     if (!file) return;
     try {
       await ctx.addOverlay?.(file);
-      renderLayers();
       toastSuccess('已叠加，切换到「移动」工具可拖动');
     } catch (err) {
       toastError(err, '叠加失败');
@@ -1767,11 +1756,12 @@ export function mountAiPanel(host, ctx) {
   /* ------------------------------------------------------------ 对外接口 */
 
   const controller = {
+    /** D23.1：左侧图层栏复用同一套图层控制器。 */
+    layerCtx: ctx,
     /** 主图/蒙版变化后刷新（尺寸、缩略图、叠加层列表、编辑历史会话） */
     refresh() {
       renderMeta();
       renderRefs();
-      renderLayers();
       renderHistory();
     },
     /** 底图被替换（载入结果 / 打开新图）：清空结果态，避免旧预览残留 */

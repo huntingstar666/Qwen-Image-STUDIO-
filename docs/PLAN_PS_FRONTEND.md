@@ -1037,6 +1037,17 @@ DOM 结构：
   - 抽出 `deleteVersion(version)`，右键菜单「删除此版本」与悬停 `×` 共用：二次确认「删除「快照 N」？…不可恢复」→ 删当前版本先切前一版（无前一版切第一张）→ `deleteStudioVersion` → 从 `versions` 移除 → `renderDock()` → toast「版本已删除」；失败 `toastError` 且 Dock 不变。
   - 实测（headless Chromium）：hover 第 3 张 → `×` `opacity:1` / `pointer-events:auto` / 16×16，原始卡无 `×`；删「快照 2」→ 弹窗标题「删除版本」+ 文案正确，确认后剩 `原始主图 / 快照 1 / 快照 3`、toast「版本已删除」；再删当前「快照 3」→ 自动切到「快照 1」（画布 810×615）。
 
+- **D23.1 图层系统 L1：左侧可折叠图层栏（已完成）** —— 解决「找不到图层面板 / 看不出顺序」：
+  - 布局：`.studio-body` 改四栏 `58px / 200px / 1fr / 336px`（`--studio-layers-w`）；收起时 `.studio-layers.is-collapsed` + `.studio-body.is-layers-collapsed` → 第二列 40px 书脊（竖排「图层」+ 数量角标），状态写 `localStorage['wb.studio.layersOpen']`，≤1200 默认收起。
+  - `studio/layerPanel.js` 重写为 `createLayerColumn(host, ctx)`：头部 `图层 · N` + 收起钮；列表为「顶层在上 + 主图虚拟行（id='base'）置底」；行内 32×32 缩略图（透明棋盘格）、名称（单击选中 / 双击改名）、类型/剪贴/蒙版角标、眼睛、锁；底部不透明度滑杆 + 六键工具条（下移 / 上移 / 置底 / 置顶 / 复制 / 删除，无选中或主图时置灰）；空态提示「从文件或图层库添加图层」。
+  - 主图行：只允许显隐（`baseVisible`），锁恒为真并提示「主图是背景层」；不可拖动/删除/改名。
+  - 合成语义：`StudioDoc.baseVisible` 为 false 时 `renderBase()` 只合成叠加层（导出透明底），`renderPreviewBase()` 回退到 `renderBase()`，画布实时图层捷径同时禁用；画布容器加 `.is-base-hidden` 显示棋盘格；`session.baseVisible` 随工程持久化，`resetAll()` 复位为 true。
+  - 数据与动作：`layerThumbFor()` 生成 32px WebP（位图层取 `maskedImage()`，主图取 `renderUnderlay()`，按 id+scale+rotation+蒙版状态缓存，上限 120 条）；`moveLayerEdgeTo(id,'top'|'bottom')`；`syncLayersPanel()` 接到 `updateHistoryUi()`（撤销/重做自动同步）与 `selectLayer`；新建叠加层自动展开图层栏并滚到新行。
+  - AI 分页清理：删除内嵌 `<div class="ai-layers">` 与 `createLayerPanel` 调用，保留「叠加扣图」；`ai.layerCtx` 暴露同一套图层控制器给左栏复用。
+  - 版本保护：`switchVersion()` 在 `doc.layers.length > 0` 时先弹「切换版本会丢弃当前 N 个图层（不会自动保存），是否继续？」。
+  - 实测（headless Chromium 1440×900）：网格 `58px 200px 610px 336px`、主图行名 `g01.webp`、计数 0；叠加 g03/g05 后行 `[g05, g03, 主图]`、缩略图可见、新层自动选中；下移 / 置顶 / 复制（`g05.webp 副本`）/ 删除顺序正确；双击改名「改名图层」生效；真实拖拽把第 2 行拖到第 1 行后顺序更新；主图眼睛 → `.is-base-hidden` + 行 `is-hidden`/`◌`，再点恢复；蒙版 chip 变 `is-on` 并出现 ✎；不透明度 40% 同步行内文本；收起 → 40px 书脊 + 网格 `58px 40px 770px 336px` + storage `0`，展开回 200 / storage `1`；刷新后图层顺序、改名与主图显隐恢复；有图层时点版本卡弹出上述确认；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+  - 偏差：≤980 堆叠布局下图层栏整体隐藏（原方案「保留 40px 书脊」在纵向堆叠里没有可用形态）。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1571,7 +1582,7 @@ DOM 结构：
 | D21.1 | 抠图 / 透明导出 | 已完成（P0~P4） | 本次提交 | 新增 `studio/cutout.js`（边缘预设 / alpha 预处理 / 输出矩形 / 去色边 / 固定尺寸）+ 单测 10 项；选区条「抠出选区 ▾」：透明 PNG / 复制 / 抠图层 / 白底 JPG + 边缘三档 + 去色边 + 固定尺寸（含 16~8192 自定义）+ 选区组（≤6）+ 批量导出；`renderBase → 裁 crop → destination-in → 去色边 → contain`；抠图层走 `addOverlayFile`；实测见 §12.11 |
 | D22.1 | 主图版本抽屉 | 已完成（V1~V4） | 本次提交 | 底部通栏 Dock 96px + 64×64 卡片；`studioVersions/studioVersionBlobs`（DB v2）落原始/AI/放大版本，原始卡第一张；点击切换主图 + 220ms 弹跳 + 150ms 画布淡入 + 当前圆点，`currentVersionId` 持久化；上限 30 张淘汰最旧非原始版本；滚轮横向轮播 + 键盘；右键菜单（对比/另存/删除此版本/从此处重开）；右端「项目历史」书脊浮层 + 全局历史页「精修工程」分组（同源 `listProjects()`，打开走 `wb.studio.openProject` 交接）；实测见 §12.11 |
 | D22.2 | 项目生命周期 | 已完成 | 本次提交 | 顶栏 `＋` 项目菜单（新建本地/素材仓库、立即保存 Ctrl+S、重命名、关闭、删除）+ 导入菜单「作为新主图」；`startNewProject` 改为选中图片后再关旧工程；`closeProject` 改 async（等在途保存 → 补存 → `clearLastProject`）；`saveNow` 等待真实落盘；删除走 `clearProject` 回空状态；实测见 §12.11 |
-| D23.1 | 图层系统 L1：左侧可折叠图层栏 | 方案定稿（等通知实施） | — | 复用 `studio/layerPanel.js` 并搬到左栏第 4 列（200px，可收成 40px 书脊）；列表改「顶层在上 + 主图置底」；补齐置顶/置底、主图显隐、图层缩略图；详见 §20.5 |
+| D23.1 | 图层系统 L1：左侧可折叠图层栏 | 已完成 | 本次提交 | 四栏布局（工具轨 58 / 图层 200 可收 40 / 画布 / 检查器 336）；`createLayerColumn` 顶层在上 + 主图虚拟行置底、32px 缩略图、眼睛/锁/蒙版、不透明度、六键工具条；`baseVisible` 透明底合成与工程持久化；AI 分页移除内嵌列表；版本切换弹图层丢弃确认；实测见 §12.11 |
 | D23.2 | 图层系统 L2：自由变换 + 多选 | 方案定稿（等通知实施） | — | 图层拖动/缩放/旋转不再夹在图像内；手柄悬停切换 cursor；Ctrl/Shift 多选、Alt+] / Alt+[ 排序、双击改名；详见 §20.6 |
 | D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 方案定稿（等通知实施） | — | 合并选中 / 向下合并 / 合并可见 / 拼合；**与主图合并后结果自动成为新主图，AI 编辑逻辑不变**；单层导出 PNG；IndexedDB `layerLibrary`；跨工程复制粘贴；详见 §20.7 |
 | D23.4 | 图层系统 L4：AI 结果图层 / 图层组 / 组级调整 | 方案定稿（等通知实施） | — | AI 结果「作为新图层」保留主图；`groupId` 图层组与组参数；调整层作用域到组；详见 §20.8 |
@@ -2813,7 +2824,7 @@ studioVersionBlobs（IndexedDB）
 - L1 起：切换版本前，若 `doc.layers.length > 0`，弹确认「切换版本会丢弃当前 N 个图层（不会自动保存），是否继续？」；确认后按现状清空。
 - 文案与 §19.17 的「切换语义」保持一致，不新增跨版本图层合并能力（L5 再议）。
 
-### 20.5 L1：左侧可折叠图层栏（第一批，先解决「找不到 / 切不了」）
+### 20.5 L1：左侧可折叠图层栏（第一批，先解决「找不到 / 切不了」）——已完成
 
 **目标**：把已有图层面板从 AI 分页搬到左侧常驻，顺序改成 PS 式，补齐主图行与置顶/置底，不改渲染与合并。
 

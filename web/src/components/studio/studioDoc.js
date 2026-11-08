@@ -22,7 +22,7 @@ import {
   removeLayer,
 } from './document.js';
 import { createHistory } from './history.js';
-import { composite } from './renderer.js';
+import { composite, drawLayers } from './renderer.js';
 import { applyCube } from './color.js';
 import { AdjustmentLayer, applyAdjustmentLayer, normalizeAdjustment } from './adjustments.js';
 import { TextLayer } from './textLayer.js';
@@ -91,6 +91,8 @@ export class StudioDoc {
     this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
     this.adjust = { ...ADJUST_DEFAULTS };
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
+    /** D23.1：主图（背景层）显隐；false 时导出为透明底 */
+    this.baseVisible = true;
     /** 污点修复图层（D10.1）：与原图同尺寸，透明处不覆盖底图 */
     this.repair = null;
     /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
@@ -297,6 +299,7 @@ export class StudioDoc {
     this.mask = makeCanvas(this.oriented.width, this.oriented.height);
     this.layers = [];
     this.repair = null;
+    this.baseVisible = true;
     this._maskHas = null;
     this.snapshot();
   }
@@ -742,6 +745,14 @@ export class StudioDoc {
    */
   renderBase() {
     if (this._base) return this._base;
+    // D23.1：主图隐藏时只合成叠加层，导出为透明底（与 PS 背景层隐藏一致）。
+    if (this.baseVisible === false) {
+      const size = this.size;
+      const canvas = makeCanvas(size.width, size.height);
+      drawLayers(canvas.getContext('2d'), this.layers, { crop: this.transform.crop });
+      this._base = canvas;
+      return canvas;
+    }
     const underlay = this.renderUnderlay();
     if (!this.layers.length) {
       this._base = underlay;
@@ -759,6 +770,8 @@ export class StudioDoc {
    * 不写入任何缓存，`change` 后仍需 `invalidateBase()` + `renderBase()` 出正式结果。
    */
   renderPreviewBase(maxSide = 1024) {
+    // 主图隐藏时不能走「原图直绘」的预览路径，直接复用合成结果。
+    if (this.baseVisible === false) return this.renderBase();
     const oriented = this.oriented;
     const crop = this.transform.crop;
     const fullWidth = crop ? crop.width : oriented.width;

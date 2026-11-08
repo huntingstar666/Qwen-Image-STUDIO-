@@ -19,6 +19,7 @@ import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
+import { createLayerColumn } from './studio/layerPanel.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { openUpscaleDialog } from './studio/upscaleDialog.js';
@@ -316,6 +317,11 @@ export function createStudioPage(host) {
   /* D18.2：调色滑杆拖动期间用低分辨率代理预览，change 后再全分辨率合成。 */
   let adjustPreview = false;
   let selectedLayerId = null;
+  /* D23.1：左侧图层栏（可折叠）+ 主图显隐 + 缩略图缓存。 */
+  let layersPanel = null;
+  let baseVisible = true;
+  const layerThumbs = new Map();
+  let layersOpen = true;
   /* D11.3：贴纸工具点击画面后等待文件选择，记录落点（图像坐标）。 */
   let pendingStickerPoint = null;
   /* D11.4：形状工具的新建样式（无选中形状时作为默认值）。 */
@@ -453,6 +459,7 @@ export function createStudioPage(host) {
 
         <div class="studio-body">
           <div class="studio-rail" data-ref="rail"></div>
+          <aside class="studio-layers" data-ref="layerColumn" aria-label="图层"></aside>
 
           <section class="studio-stage">
             <div class="studio-stage-bar">
@@ -936,6 +943,7 @@ export function createStudioPage(host) {
     dock: ref('dock'),
     dockShutter: ref('dockShutter'),
     dockTrack: ref('dockTrack'),
+    layerColumn: ref('layerColumn'),
     projHistoryBtn: ref('projHistoryBtn'),
     projHistoryCount: ref('projHistoryCount'),
     projHistoryPanel: ref('projHistoryPanel'),
@@ -1146,6 +1154,14 @@ export function createStudioPage(host) {
     scheduleDraw();
     scheduleSave();
     ai?.refresh();
+    // D23.1：新建图层后展开图层栏并滚到新行。
+    if (!layersOpen) setLayersOpen(true);
+    syncLayersPanel();
+    requestAnimationFrame(() => {
+      refs.layerColumn
+        .querySelector(`.studio-layer[data-layer="${layer.id}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    });
     return layer;
   }
 
@@ -1198,6 +1214,100 @@ export function createStudioPage(host) {
       coverage: total ? hit / total : 0,
       has: hit > 0,
     };
+  }
+
+  /* ============================================================
+   * 左侧图层栏（D23.1 L1）
+   * 状态与动作都在 studio，layerPanel.js 只负责 DOM 与交互。
+   * ============================================================ */
+
+  function syncLayersPanel() {
+    layersPanel?.render();
+  }
+
+  /** 32px 图层缩略图：位图层用蒙版后的像素，主图用底图合成结果。 */
+  function layerThumbFor(layer) {
+    if (!doc || !layer) return '';
+    try {
+      if (layer.kind === 'base') {
+        const base = doc.renderUnderlay();
+        const canvas = makeCanvas(32, 32);
+        const ctx2 = canvas.getContext('2d');
+        const k = Math.min(32 / base.width, 32 / base.height);
+        const w = Math.max(1, Math.round(base.width * k));
+        const h = Math.max(1, Math.round(base.height * k));
+        ctx2.drawImage(base, (32 - w) / 2, (32 - h) / 2, w, h);
+        return canvas.toDataURL('image/webp', 0.7);
+      }
+      const key = `${layer.id}:${Math.round((layer.scale || 1) * 100)}:${layer.rotation || 0}:${
+        layer.mask ? (layer.maskVisible ? 1 : 0) : 2
+      }`;
+      const hit = layerThumbs.get(key);
+      if (hit !== undefined) return hit;
+      const source = layer.maskedImage ? layer.maskedImage() : layer.image;
+      if (!source) return '';
+      const nw = source.naturalWidth || source.width || 1;
+      const nh = source.naturalHeight || source.height || 1;
+      const k = Math.min(32 / nw, 32 / nh);
+      const canvas = makeCanvas(32, 32);
+      canvas.getContext('2d').drawImage(source, (32 - nw * k) / 2, (32 - nh * k) / 2, nw * k, nh * k);
+      const url = canvas.toDataURL('image/webp', 0.7);
+      if (layerThumbs.size > 120) layerThumbs.clear();
+      layerThumbs.set(key, url);
+      return url;
+    } catch {
+      return '';
+    }
+  }
+
+  function readLayersOpen() {
+    try {
+      const raw = localStorage.getItem('wb.studio.layersOpen');
+      if (raw === '0') return false;
+      if (raw === '1') return true;
+    } catch {
+      /* 隐私模式下 localStorage 不可用，按默认值 */
+    }
+    return window.innerWidth > 1200;
+  }
+
+  function setLayersOpen(open, { persist = true } = {}) {
+    layersOpen = Boolean(open);
+    layersPanel?.setCollapsed(!layersOpen);
+    refs.layerColumn.classList.toggle('is-collapsed', !layersOpen);
+    refs.layerColumn.parentElement?.classList.toggle('is-layers-collapsed', !layersOpen);
+    if (persist) {
+      try {
+        localStorage.setItem('wb.studio.layersOpen', layersOpen ? '1' : '0');
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }
+
+  /** 主图（背景层）显隐：只改合成，不写撤销栈；随工程 session 持久化。 */
+  function setBaseVisibleTo(next) {
+    if (!doc) return;
+    baseVisible = Boolean(next);
+    doc.baseVisible = baseVisible;
+    doc.invalidateBase();
+    refs.stage.classList.toggle('is-base-hidden', !baseVisible);
+    scheduleDraw();
+    scheduleSave();
+    syncLayersPanel();
+  }
+
+  function moveLayerEdgeTo(id, edge) {
+    if (!doc) return false;
+    const to = edge === 'top' ? doc.layers.length - 1 : 0;
+    const moved = doc.moveOverlay(id, to);
+    if (moved < 0) return false;
+    selectedLayerId = id;
+    syncLayerProps();
+    updateHistoryUi();
+    scheduleSave();
+    scheduleDraw();
+    return true;
   }
 
   const ai = mountAiPanel(refs.aiPane, {
@@ -1328,6 +1438,7 @@ export function createStudioPage(host) {
       syncShapePane();
       syncLayerProps();
       scheduleDraw();
+      syncLayersPanel();
     },
     removeLayer(id) {
       if (!doc) return;
@@ -1522,6 +1633,58 @@ export function createStudioPage(host) {
       scheduleDraw();
       scheduleSave();
     },
+
+    /* ---------------- D23.1 L1：左侧图层栏（复用同一套图层控制器） ---------------- */
+
+    getSelectedLayerId() {
+      return selectedLayerId;
+    },
+    getBaseVisible() {
+      return baseVisible;
+    },
+    /** 面板行：顶层在上 + 主图虚拟行（id='base'）置底。 */
+    listLayersForPanel() {
+      if (!doc) return [];
+      return [
+        ...doc.layers.slice().reverse(),
+        {
+          id: 'base',
+          kind: 'base',
+          name: doc.name || '主图',
+          visible: baseVisible,
+          locked: true,
+          opacity: 1,
+        },
+      ];
+    },
+    getLayerThumb(layer) {
+      return layerThumbFor(layer);
+    },
+    /** 点主图行：清空选中，不改工具，也不写撤销栈。 */
+    selectNone() {
+      if (!doc) return;
+      selectedLayerId = null;
+      editingLayerMaskId = '';
+      syncAdjustInputs();
+      syncTextPane();
+      syncStickerPane();
+      syncShapePane();
+      syncLayerProps();
+      scheduleDraw();
+      syncLayersPanel();
+    },
+    setBaseVisible(next) {
+      setBaseVisibleTo(next);
+    },
+    toggleBaseVisible() {
+      setBaseVisibleTo(!baseVisible);
+    },
+    baseLockedHint() {
+      toast('主图是背景层：可显隐，但不可改名/删除/拖动');
+    },
+    moveLayerEdge(id, edge) {
+      return moveLayerEdgeTo(id, edge);
+    },
     openOutpaint() {
       if (!doc) {
         toastWarn('请先打开一张图片');
@@ -1530,6 +1693,16 @@ export function createStudioPage(host) {
       setTool('outpaint');
     },
   });
+
+  /* D23.1：左侧图层栏（主图行 + 顶层在上的列表），复用 AI 面板的图层控制器。 */
+  layersPanel = createLayerColumn(refs.layerColumn, {
+    ...ai.layerCtx,
+    toggleCollapsed() {
+      setLayersOpen(!layersOpen);
+    },
+  });
+  setLayersOpen(readLayersOpen(), { persist: false });
+  syncLayersPanel();
 
   function setPreview(url) {
     if (!url) {
@@ -1907,6 +2080,7 @@ export function createStudioPage(host) {
     // 图层蒙版涂抹同理：只重绘图层，底图继续走 underlay 缓存。
     const liveLayers =
       !adjustPreview &&
+      doc.baseVisible !== false &&
       doc.layers.length > 0 &&
       // 调整层会改写已合成内容，不能走「底图缓存 + 实时图层」捷径（D9.3）。
       !doc.hasAdjustmentLayers &&
@@ -4209,6 +4383,15 @@ export function createStudioPage(host) {
     if (!doc || !versionId || versionId === currentVersionId) return;
     const version = versions.find((item) => item.id === versionId);
     if (!version) return;
+    // D23.1：切换版本会重建文档，当前图层会丢；先确认。
+    if (doc?.layers.length) {
+      const confirmed = await confirmDialog({
+        title: '切换版本',
+        message: `切换版本会丢弃当前 ${doc.layers.length} 个图层（不会自动保存），是否继续？`,
+        confirmText: '继续切换',
+      });
+      if (!confirmed) return;
+    }
     const token = ++openSeq;
     let blob = version.blob || null;
     if (!blob) {
@@ -4941,6 +5124,7 @@ export function createStudioPage(host) {
         viewport,
         activeTool: tool,
         currentVersionId,
+        baseVisible,
       },
     };
   }
@@ -5206,7 +5390,7 @@ export function createStudioPage(host) {
       cropRect = session.cropRect ? { ...session.cropRect } : null;
       startLease(projectId);
 
-      setDoc(next, { restore: true, fit: false, tool: session.activeTool });
+      setDoc(next, { restore: true, fit: false, tool: session.activeTool, baseVisible: session.baseVisible !== false });
       if (cropRect) {
         refs.cropbar.hidden = false;
         refs.cropInfo.textContent = `${Math.round(cropRect.width)} × ${Math.round(cropRect.height)}`;
@@ -5388,6 +5572,11 @@ export function createStudioPage(host) {
   function setDoc(next, options = {}) {
     doc = next;
     if (!options.restore) layerBlobs.clear();
+    // D23.1：主图显隐随文档切换（恢复工程时用 session.baseVisible）。
+    baseVisible = options.baseVisible !== false;
+    doc.baseVisible = baseVisible;
+    layerThumbs.clear();
+    refs.stage.classList.toggle('is-base-hidden', !baseVisible);
     // 选区组属于上一张图的坐标空间（P4），换图后作废。
     selectionSets = [];
     cropRect = null;
@@ -5443,6 +5632,7 @@ export function createStudioPage(host) {
   function updateHistoryUi() {
     refs.undoBtn.disabled = !doc?.canUndo;
     refs.redoBtn.disabled = !doc?.canRedo;
+    syncLayersPanel();
   }
 
   function updateMaskStatus() {
@@ -7425,6 +7615,8 @@ export function createStudioPage(host) {
     });
     if (!ok) return;
     doc.resetAll();
+    baseVisible = true;
+    refs.stage.classList.remove('is-base-hidden');
     syncAdjustInputs();
     tintDirty = true;
     updateSizeInfo();
@@ -7743,6 +7935,8 @@ export function createStudioPage(host) {
       stopAnts();
       clearShutterFx();
       versionBusy = false;
+      layersPanel = null;
+      layerThumbs.clear();
       selection = null;
       selPath = null;
       editingLayerMaskId = '';

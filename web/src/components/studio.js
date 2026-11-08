@@ -2632,19 +2632,14 @@ export function createStudioPage(host) {
       perf.end(t0);
       return;
     }
-    // 叠加层拖动（D18.2）：底层合成复用缓存，叠加层按视口实时重画，避免每帧重建 4K base。
-    // 图层蒙版涂抹同理：只重绘图层，底图继续走 underlay 缓存。
+    // 有图层时始终走「底图缓存 + 实时绘制图层」，与拖动中的预览路径完全一致，
+    // 避免 renderBase 缓存与图层状态不同步导致「只有按住鼠标才显示」。
     const liveLayers =
       !adjustPreview &&
       doc.baseVisible !== false &&
       doc.layers.length > 0 &&
-      // 调整层会改写已合成内容，不能走「底图缓存 + 实时图层」捷径（D9.3）。
-      !doc.hasAdjustmentLayers &&
-      (drag?.mode === 'moveLayer' ||
-        drag?.mode === 'stickerScale' ||
-        drag?.mode === 'stickerRotate' ||
-        drag?.mode === 'perspCorner' ||
-        (editingLayerMaskId && drag?.mode === 'paint'));
+      // 调整层会改写已合成内容，不能走这条捷径（D9.3）。
+      !doc.hasAdjustmentLayers;
     const image = adjustPreview
       ? doc.renderPreviewBase()
       : liveLayers
@@ -7459,11 +7454,11 @@ export function createStudioPage(host) {
           focusSticker: true,
         });
         if (layer) {
-          // 抠图层与原图坐标完全重合；先隐藏主图，才能直接看到抠出来的结果。
-          if (baseVisible) setBaseVisibleTo(false);
+          // 抠图层与主图坐标完全重合；保持主图可见（用户要求），
+          // 需要单独看抠图结果时点主图眼睛即可。
           doc.invalidateBase();
           scheduleDraw();
-          toastSuccess('已建立抠图层 · 已隐藏主图，点主图「眼睛」可对比原图');
+          toastSuccess('已建立抠图层 · 与主图重合，可拖动 / 缩放（点主图眼睛可单独查看）');
         }
       }
     } catch (err) {

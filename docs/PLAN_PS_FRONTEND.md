@@ -1061,9 +1061,10 @@ DOM 结构：
 - **抠图层可见性修复（D21.1 补丁）** —— 用户反馈「扣出来的图层会不可见」：
   - 原因 1：抠图层坐标与原图完全重合，主图可见时画面没有任何变化，看起来像「没生成图层」。
   - 原因 2（裁剪场景）：`composeCutout()` 从已裁剪的 `renderBase()` 又按 `crop.x/y` 取样，输出整块透明；`buildCutoutCanvas()` 的尺寸校验误用裁剪后的 `base` 而非选区空间 `doc.oriented`，裁剪后直接提示「尺寸不一致」并清空选区。
-  - 修复：底图固定按 `(0,0,rect.width,rect.height)` 取样，只有选区 alpha 按裁剪偏移取样；尺寸校验改用 `doc.oriented`；「新建抠图层」成功后自动隐藏主图（`setBaseVisibleTo(false)`），画布直接显示抠出的主体，toast 提示「点主图眼睛可对比原图」。
+  - 修复：底图固定按 `(0,0,rect.width,rect.height)` 取样，只有选区 alpha 按裁剪偏移取样；尺寸校验改用 `doc.oriented`。**不再自动隐藏主图**（用户要求）：建层后主图保持可见，需要单独查看抠图结果时点主图「眼睛」；toast 提示「与主图重合，可拖动 / 缩放」。
   - 二次修复（「只有框、什么都看不见」）：先圈选再裁剪、选区被裁到画面外时，抠图结果是全透明，仍会建出一个「只有选框、没有像素」的空图层。`runCutout()` 新增 `cutoutHasPixels(raw)` 检查：全透明时提示「选区里没有可抠出的像素（可能已被裁剪到画面外），请重新圈选」，不建层、不隐藏主图；建层成功后额外 `invalidateBase()` + 重绘，确保立即显示。
-  - 实测（headless Chromium）：无裁剪、裁剪 `617 × 567`、以及「先选区后裁剪（选区 0.9% 且在裁剪外）」三种场景：前两者正常建层并显示主体，第三者弹出上述提示且不产生新图层；主图眼睛可随时恢复对比；`node --test` 139 passed。
+  - 三次修复（「必须按住鼠标才显示图层」）：画布渲染改为——只要存在图层、主图可见且没有调整层，就始终走「`renderUnderlay()` 缓存 + `drawLayers()` 直绘」路径（与拖动预览完全一致），不再依赖 `renderBase()` 合成缓存；避免缓存与图层/主图可见性不同步时，静止状态下只画选框、按住拖动才出现内容。
+  - 实测（headless Chromium）：建层后主图保持可见、画面正常；隐藏主图 → 抠图层静止可见（取样覆盖率 368），显示主图 → 底图 + 图层（1791）；无控制台错误；`node --test` 139 passed。
 
 - **AI 结果未进入版本槽修复（D22.1 补丁）** —— 用户反馈「AI 编辑后的图片没有进下面的卡槽」：
   - 根因：`adoptResult()` 的 `sourceBlob` 回退分支漏了 `await`（`bakeBlob()` 返回 Promise），而 `fetchBlob()` 对跨域的结果 URL 必然失败，于是 Promise 被当成 Blob 传入 `recordVersion()`；`versionThumb()` 里 `URL.createObjectURL(Promise)` 抛 `TypeError`，整个 `recordVersion()` 中断，Dock 不生成「编辑 N」卡片。

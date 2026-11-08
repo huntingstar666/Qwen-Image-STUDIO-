@@ -394,7 +394,7 @@
 
 | # | 问题 | 证据 | 修法 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| P1-1 | PS 面板预设 denoise 永不生效 | `aiPanel.js:855-875` 的 `sampling()` 不含 denoise；`studio/payload.js:207` 固定 `denoise:1`，与预设不等而覆盖 | `sampling()` 返回预设 denoise；与预设一致时**不回传** | 全局设置改 denoise 后，payload 不再固定 1 | 待修 |
+| P1-1 | PS 面板预设 denoise 永不生效 | `aiPanel.js:855-875` 的 `sampling()` 不含 denoise；`studio/payload.js:207` 固定 `denoise:1`，与预设不等而覆盖 | `sampling()` 返回预设 denoise；与预设一致时**不回传** | 全局设置改 denoise 后，payload 不再固定 1 | **已修复**：预设模式直接不回传 `denoise`（该值没有 UI 入口，只会来自预设），非预设的老参数路径保持 `denoise:1` 不变。快照：有预设 → 无 `denoise` 键；无预设 → `denoise:1`。 |
 | P1-2 | 选区不参与提交 | `studio.js:1058-1069` 只取 `doc.mask`；选区须手动"转为蒙版"（`2266-2308`） | 提交前自动把 `selection.alpha` 并入/替代 mask；状态栏提示 | 只画选区直接提交，`mask` 非空且覆盖正确 | **已修复（待浏览器实操）**：新增 `submissionMask()`，提交时把文档蒙版与选区并成一份 PNG（含裁剪换算），**不写回文档**、不产生撤销步；`hasMask()` 与 `getSource()` 同步改用合并结果，选区状态栏加「提交时会自动并入蒙版」提示。 |
 | P1-3 | `chain_*` 预设被别名吞掉 | `aiPanel.js:492/506/1242-1250` 把 chain_mask→mask_edit、chain_native→native；`presets.py:244-312` 的 chain 配置从不发送 | 真正下发 `chain_*`，或删除该配置与提示 | 选连续编辑，payload 含 `preset=chain_*` 与 `chain.*` | **未复现（设计如此）**：`aiPanel.js:546` 已把带 `params.chain` 的内置预设从精修面板选择器过滤掉，接力状态机只在图生图页（`edit.js` + `studio/chain.js`）存在；别名仅用于恢复历史工程，且会提示"请在「图生图」页使用"。无需改动。 |
 | P1-4 | 扩图/全景可能沿用编辑档位 | 手动改任务只切 task（`aiPanel.js:1609-1618`）；merge 后 `crop_min_side=768`、`expand/feather_pct=4/5` 优先于扩图 1024/3/3（`pipeline.py:1145-1147/1342-1347`） | task=outpaint/panorama 时后端强制对应档位；或提交前自动切对应预设 | 扩图任务的 `quality.color.mask_band` 为 3%/3% | **已修复**：新增 `_TASK_LOCAL_DEFAULTS` + `_task_local_overrides()`，任务归一后按任务补齐 `crop_min_side / expand_pct / feather_pct / hint / fills`；**请求显式给过的键仍优先**（实测：`mask_edit`+outpaint 合并出 768/4/5 → 归一为 1024/3/3/gray_fill，显式 `expand_pct=4.5` 保留）。 |

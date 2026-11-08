@@ -268,6 +268,8 @@ export function buildEditPayload({
   // 任务框停在「自动」（settings.taskExplicit === false）时不发 task，交给预设决定：
   // 显式 task 会被后端判定为「与预设任务不一致」，把预设的提示图/填洞/任务 LoRA 复位。
   if (settings.taskExplicit === false) delete payload.task;
+  // denoise 没有 UI 入口，值只会来自预设：不回传，否则固定 1 会把预设里的降噪覆盖掉。
+  delete payload.denoise;
   const extra = nestOverrides(overrides);
   const localExtra = { ...(extra.local || {}) };
   // 任务训练约定优先于预设文案：移除必须填洞 + 绿提示，扩图必须灰提示。

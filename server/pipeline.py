@@ -1384,7 +1384,8 @@ class Pipeline:
         try:
             diag_mask = (align.dilate_mask(mask_canvas, effective_expand)
                          if band_px and mask_canvas is not None else mask_canvas)
-            diff_stats = align.changed_stats(canvas, composed, diag_mask)
+            diff_stats = align.changed_stats(
+                canvas, composed, diag_mask, inside_mask=mask_canvas)
         except Exception as exc:  # noqa: BLE001 - 诊断是附加信息，不能拖垮任务
             print(f"[pipeline] 改动诊断跳过：{type(exc).__name__}: {exc}", flush=True)
             diff_stats = {}
@@ -1482,6 +1483,9 @@ class Pipeline:
             },
             "zero_shift": dict(zs_spec, verified=bool(zs_spec.get("enabled"))),
             "changed_ratio": diff_stats.get("changed_ratio"),
+            # 遮罩内改动率：判断"局部编辑有没有真的改到目标"的唯一可靠指标
+            # （全图 changed_ratio 会被小目标稀释，删对了也只有 0.1% 左右）。
+            "mask_changed_ratio": diff_stats.get("mask_changed_ratio"),
             "leak_ratio": diff_stats.get("leak_ratio"),
             "diff_threshold": diff_stats.get("threshold"),
             "lora_warning": job.meta.get("lora_warning"),

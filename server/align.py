@@ -934,10 +934,15 @@ def changed_stats(
     threshold: float | None = None,
     preblur: float = 0.0,
     chroma_weight: float = 1.0,
+    inside_mask=None,
 ) -> dict:
     """诊断：模型实际改动比例与遮罩外泄漏比例。纯只读，不参与像素写入。
 
     ``mask`` 给出时额外算 ``leak_ratio``（遮罩外被改动的像素占遮罩外的比例）；
+    ``inside_mask`` 给出时算 ``mask_changed_ratio``（**遮罩内**被改动的像素占
+    遮罩像素的比例）。两者分开传是因为方案 B 的写入范围是膨胀后的过渡带：
+    查泄漏要用膨胀遮罩，验证"有没有真的改到目标"必须用用户原始遮罩。
+
     阈值缺省用 :func:`mad_threshold` 自适应。
 
     ``preblur`` 默认 0：诊断要的是"哪一像素真的变了"，预模糊会把边界外
@@ -952,6 +957,16 @@ def changed_stats(
         "threshold": round(thr, 6),
         "changed_ratio": float(changed.mean()),
     }
+    if inside_mask is not None:
+        im = _as_mask(inside_mask)
+        if im.shape != changed.shape:
+            im = resize_mask(im, changed.shape[1], changed.shape[0])
+        inside = im > 0.0
+        inside_total = int(inside.sum())
+        stats["mask_changed_ratio"] = (
+            float((changed & inside).sum()) / float(inside_total)
+            if inside_total else None
+        )
     if mask is not None:
         m = _as_mask(mask)
         if m.shape != changed.shape:

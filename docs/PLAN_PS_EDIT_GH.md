@@ -1296,7 +1296,7 @@ $PY = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
 | P1 | 差异图 | `diff_map(original, edited, *, preblur=0.8, chroma_weight=1.0) -> (H,W) float32` |
 | P2 | 锚区仿射 | `anchor_affine(original, edited, alpha, *, anchor_min=0.02, scale_clamp=(0.5,2.0), shift_abs=None, strength=1.0) -> (scale[3], shift[3], skipped)` |
 | P3 | 过渡带低频移植 | `lowfreq_merge(original, edited, alpha, *, levels=3, sigma=2.0, downscale=4) -> float32 RGB` |
-| P4 | 诊断 | `changed_stats(original, edited, mask=None, *, threshold=None) -> {threshold, changed_ratio, leak_ratio}` |
+| P4 | 诊断 | `changed_stats(original, edited, mask=None, *, threshold=None, preblur=0.0, chroma_weight=1.0, inside_mask=None) -> {threshold, changed_ratio, mask_changed_ratio, leak_ratio}`（`mask` 查泄漏、`inside_mask` 查"是否真改到目标"） |
 
 接入：`imaging.composite` / `imaging.stitch_region` 各加三个参数
 `anchor_match=True`、`anchor_strength=1.0`、`band_mode="lowfreq"`，并把报告写进 `job.quality.color` 与 `quality.changed_ratio / leak_ratio`。

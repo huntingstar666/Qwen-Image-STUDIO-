@@ -104,7 +104,17 @@ export function qualityItems(job) {
       kind: quality.size_match ? 'ok' : 'warn',
     });
   }
-  if (quality.changed_ratio != null) items.push({ text: `改动 ${fmtRatio(quality.changed_ratio)}` });
+  if (quality.changed_ratio != null) {
+    items.push({ text: `全图改动 ${fmtRatio(quality.changed_ratio)}`, title: '整张画布被改动的像素占比（小目标会被面积稀释，仅作参考）' });
+  }
+  if (quality.mask_changed_ratio != null) {
+    const ratio = Number(quality.mask_changed_ratio);
+    items.push({
+      text: `遮罩内改动 ${fmtRatio(ratio)}`,
+      kind: ratio >= 0.6 ? 'ok' : ratio < 0.2 ? 'warn' : '',
+      title: '遮罩范围内被改动的像素占比；判断局部编辑有没有真的改到目标看这一项',
+    });
+  }
   if (quality.leak_ratio != null) {
     items.push({
       text: `遮罩外改动 ${fmtRatio(quality.leak_ratio)}`,

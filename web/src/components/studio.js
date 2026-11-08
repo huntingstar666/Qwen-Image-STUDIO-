@@ -1311,6 +1311,13 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 显示蒙版色纱（右上角勾选同步）：只影响画布叠色，不改文档。 */
+  function setShowMask(next) {
+    showMask = Boolean(next);
+    if (refs.maskVisible) refs.maskVisible.checked = showMask;
+    scheduleDraw();
+  }
+
   /** 主图（背景层）显隐：只改合成，不写撤销栈；随工程 session 持久化。 */
   function setBaseVisibleTo(next) {
     if (!doc) return;
@@ -2069,6 +2076,8 @@ export function createStudioPage(host) {
           focusSticker: true,
         });
         if (!layer) return null;
+        // 落层后关掉蒙版色纱：42% 红色会盖住刚生成的结果图层，看起来像「没生效」。
+        if (showMask) setShowMask(false);
         toastSuccess(
           meta.mask?.dataUrl
             ? '已把结果作为新图层（只在修改区域显示），主图保留'
@@ -8670,8 +8679,7 @@ export function createStudioPage(host) {
   });
 
   refs.maskVisible.addEventListener('change', () => {
-    showMask = refs.maskVisible.checked;
-    scheduleDraw();
+    setShowMask(refs.maskVisible.checked);
   });
 
   for (const input of host.querySelectorAll('[data-adjust]')) {

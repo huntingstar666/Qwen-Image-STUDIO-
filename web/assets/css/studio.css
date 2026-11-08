@@ -318,6 +318,63 @@
   text-align: center;
 }
 
+/* 当前版本圆点（macOS running indicator），放在卡片底部内侧避免与名称浮层打架 */
+.studio-dock-dot {
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: studio-dock-dot-in 160ms ease-out;
+}
+
+@keyframes studio-dock-dot-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+/* 切换弹跳：点一下只弹一次 */
+@keyframes studio-dock-bounce {
+  0% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-8px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+.studio-dock-card.is-bounce {
+  animation: studio-dock-bounce 220ms cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+/* 画布版本切换：150ms 淡入，只动 opacity */
+@keyframes studio-canvas-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.studio-canvas-wrap canvas.is-version-fade {
+  animation: studio-canvas-fade 150ms ease-out;
+}
+
 .studio-dock-label {
   position: absolute;
   top: 66px;
@@ -556,6 +613,12 @@
   .studio-dock-card:hover,
   .studio-dock-card:focus-visible {
     transform: none;
+  }
+
+  .studio-dock-card.is-bounce,
+  .studio-dock-dot,
+  .studio-canvas-wrap canvas.is-version-fade {
+    animation: none;
   }
 }
 

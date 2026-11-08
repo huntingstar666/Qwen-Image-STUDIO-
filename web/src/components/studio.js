@@ -4064,6 +4064,12 @@ export function createStudioPage(host) {
       badge.className = 'studio-dock-badge';
       badge.textContent = VERSION_BADGES[version.kind] || '图';
       card.appendChild(badge);
+      if (version.id === currentVersionId) {
+        const dot = document.createElement('span');
+        dot.className = 'studio-dock-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        card.appendChild(dot);
+      }
       item.appendChild(card);
       const label = document.createElement('span');
       label.className = 'studio-dock-label';
@@ -4157,6 +4163,10 @@ export function createStudioPage(host) {
       const next = new StudioDoc(image, name);
       sourceBlob = blob;
       setDoc(next);
+      // 150ms 淡入：只动 opacity，不做位移，避免切换时晕。
+      refs.canvas.classList.remove('is-version-fade');
+      void refs.canvas.offsetWidth;
+      refs.canvas.classList.add('is-version-fade');
       currentVersionId = version.id;
       renderDock();
       scheduleSave();
@@ -4198,6 +4208,11 @@ export function createStudioPage(host) {
   refs.dockTrack.addEventListener('click', (event) => {
     const card = event.target.closest('[data-vid]');
     if (!card) return;
+    card.classList.remove('is-bounce');
+    // 触发一次 macOS 式弹跳（只弹一次）
+    void card.offsetWidth;
+    card.classList.add('is-bounce');
+    setTimeout(() => card.classList.remove('is-bounce'), 260);
     void switchVersion(card.dataset.vid);
   });
 

@@ -1557,6 +1557,8 @@ DOM 结构：
 | D23.2 | 图层系统 L2：自由变换 + 多选 | 方案定稿（等通知实施） | — | 图层拖动/缩放/旋转不再夹在图像内；手柄悬停切换 cursor；Ctrl/Shift 多选、Alt+] / Alt+[ 排序、双击改名；详见 §20.6 |
 | D23.3 | 图层系统 L3：合并 / 导出 / 图层库 / 跨工程 | 方案定稿（等通知实施） | — | 合并选中 / 向下合并 / 合并可见 / 拼合；单层导出 PNG；IndexedDB `layerLibrary`；跨工程复制粘贴；详见 §20.7 |
 | D23.4 | 图层系统 L4：AI 结果图层 / 图层组 / 组级调整 | 方案定稿（等通知实施） | — | AI 结果「作为新图层」保留主图；`groupId` 图层组与组参数；调整层作用域到组；详见 §20.8 |
+| D24.1 | 工作室全屏铺满 | 方案定稿（等通知实施） | — | 工作室页去掉 `.viewport` 的 20/24/72px 内边距与 1560px 限宽，`.studio` 去边框圆角；高度 = `100vh - --topbar-h`，四周零缝隙；详见 §21.1 |
+| D24.2 | 版本槽「快门」 | 方案定稿（等通知实施） | — | Dock 最左新增快门按钮，把当前合成主图（含图层）写入版本链 `kind:'manual'`，可切回；烘焙提示、30 张上限、持久化；详见 §21.2 |
 
 ### 14.13 启动顺序（等通知后）
 
@@ -1567,6 +1569,7 @@ DOM 结构：
 5. M1C 与 M1D 验收通过后再进 D7.1；之后按里程碑顺序推进。
 6. D14/D15 只在对应后端合入后启动。
 7. D23.1 → D23.4（图层系统 L1~L4）在 D21/D22 收口后启动，完整方案与验收见 §20。
+8. D24.1（全屏铺满）可与 D23.1 一起做；D24.2（版本槽快门）在 D24.1 之后，详见 §21。
 
 ---
 
@@ -2595,6 +2598,7 @@ studioVersionBlobs（IndexedDB）
 | V2 | 版本落盘（IndexedDB）+ 点击切换 + 原始/编辑版本生成 |
 | V3 | Dock 悬停放大 + 切换弹跳 + 横向滚动与键盘 |
 | V4 | 卡片菜单（对比/另存/删除/从此处重开）+ 全部网格 + 清理策略 |
+| V5 | 手动「快门」：把当前合成主图写入版本槽（见 §21.2 / D24.2） |
 
 ---
 
@@ -3047,6 +3051,146 @@ mergeLayers(ids, { keepBase = false }):
 每阶段完成后：`node --test web/tests/studio/*.test.mjs` 全绿 + 浏览器实测记录（窗口 1280×800 与 1024×700 两档）+ 截图归档到 `.screenshots/`。
 
 > 本章实施顺序与 §14.13 启动顺序不冲突；D23.x 在现有 D21/D22 完成后再开工。
+
+---
+
+## 21. 工作室全屏铺满与版本槽「快门」（D24.1 / D24.2 方案定稿，等通知实施）
+
+> **状态：方案定稿，本轮不改代码。** 两项都是对现有工作室的收口：一个改页面布局，一个给版本 Dock 加手动入口。
+
+### 21.1 全屏铺满（D24.1）
+
+**用户诉求**：PS 面板现在和页面上下左右都有缝隙，要铺满整个页面（顶栏以下的全部区域）。
+
+**根因（已核实）**
+
+| 位置 | 现状 | 造成的缝隙 |
+| --- | --- | --- |
+| `app.css .viewport` | `max-width: 1560px; margin: 0 auto; padding: 20px 24px 72px;` | 上 20 / 左右 24 / 下 72；宽屏还被 1560 限宽 |
+| `studio.css .page-studio` | `height: calc(100vh - var(--topbar-h) - 92px); min-height: 560px;` | 高度按内边距反算，改 padding 后必须同步 |
+| `studio.css .studio` | `border: 1px; border-radius; box-shadow` | 视觉上多一圈「卡片边」 |
+
+**目标**
+
+- 顶栏以下、侧栏以右的整个区域都是工作室；
+- 四边 0 缝隙，无页面滚动条，状态栏与 Dock 贴底；
+- 其它页面（文生图 / 图像编辑 / 历史 / 画廊）保持原有留白，不受影响；
+- 与 D23.1 图层栏共存时不产生新缝隙。
+
+**实现步骤**
+
+1. `app.js showPage(id)` 增加一行：
+   ```js
+   viewport.classList.toggle('is-studio', id === 'studio');
+   ```
+   （用 `#viewport` 的类名做作用域，不写 body dataset，避免影响其它页。）
+2. `app.css` 追加：
+   ```css
+   .viewport.is-studio {
+     max-width: none;
+     margin: 0;
+     padding: 0;
+     height: calc(100vh - var(--topbar-h));
+     overflow: hidden;
+   }
+   /* 去掉 page-in 的 4px 位移动画，避免铺满时闪一下 */
+   .viewport.is-studio .page { animation: none; }
+   ```
+3. `studio.css` 覆盖工作室高度与容器：
+   ```css
+   .page-studio {
+     height: 100%;
+     min-height: 0;
+   }
+   .page-studio .studio {
+     border: 0;
+     border-radius: 0;
+     box-shadow: none;
+   }
+   ```
+   （`--studio-rail-w / --studio-panel-w / --studio-layers-w` 全部保留。）
+4. 窄屏 ≤980 的堆叠布局同样铺满；`.studio-body` 已是 `grid-template-rows: minmax(0,1fr)`，内部自行滚动，不出现页面滚动条。
+5. 移动端安全区：`.studio-status` 追加 `padding-bottom: env(safe-area-inset-bottom)`（放在 `@supports` 内），避免 iPhone 底部横条遮挡。
+6. 回归检查：其它页面的 `.viewport` 仍保留 `padding: 20px 24px 72px` 与 1560 限宽，全部不变。
+
+**验收**
+
+1. 1024×700 与 1280×800 下，工作室距顶栏 0、距侧栏 0、距窗口右/下 0；
+2. 页面没有横向/纵向滚动条；缩放窗口后高度始终 = 视口高 − 顶栏高；
+3. Dock、状态栏、右栏面板底部都可达；切换回文生图/历史页留白恢复；
+4. 与图层栏同批实施时，图层栏在铺满容器内布局，无额外缝隙。
+
+**提交建议**：`feat(studio): 工作室全屏铺满（D24.1）`
+
+### 21.2 版本槽「快门」（D24.2）
+
+**用户诉求**：底部版本槽现在只记录 AI 对主图的操作；希望用户也能手动按「快门」，把当前主图状态存进槽里。
+
+**现状**：版本链只有三个写入点——`openFile / openUrl`（`original`）、`adoptResult`（`edit`）、放大载入（`upscale`）；Dock 没有任何手动入口。
+
+**目标**：Dock 最左新增「快门」按钮，点击即把**当前看到的合成主图**写入版本链，之后像其它版本一样点卡片切回。
+
+**语义（锁死）**
+
+- 快门保存 `doc.bakeBlob('image/png')`：含旋转 / 翻转 / 裁剪 / 调色 / 图层 / 修复，尺寸 = `doc.size`（裁剪后）。
+- 由于已经烘焙，切回快照是一张**扁平新主图**，原图层不会恢复；按钮 `title` 与 toast 都要写清「会烘焙当前图层」。
+- 版本类型 `kind: 'manual'`，卡片角标「快」，名称 `快照 N`（只按 manual 计数）。
+- 上限与现有版本一致：30 张，超出淘汰最旧的非原始版本；原始卡永不淘汰。
+- 与「导出 PNG」「另存为 PNG」互不影响：快照进版本链，导出只下载文件。
+
+**实现步骤**
+
+1. `VERSION_BADGES` 增加 `manual: '快'`；`nextVersionLabel(kind)` 对 `manual` 用 `versions.filter(v => v.kind === 'manual').length + 1`。
+2. `recordVersion(kind, blob, options)` 支持显式 `options.width / options.height`（烘焙图是裁剪后尺寸，不能再取 `doc.sourceSize`），并写入 `meta: { task: 'manual', layers: doc.layers.length, tool }`。
+3. 新增 `captureSnapshot()`：
+   ```js
+   if (!doc || versionBusy) return;
+   if (previewBlocked('快门')) return;
+   const layerCount = doc.layers.length;
+   const blob = await doc.bakeBlob('image/png');
+   await recordVersion('manual', blob, {
+     width: doc.size.width,
+     height: doc.size.height,
+     meta: { task: 'manual', layers: layerCount },
+   });
+   // 220ms 闪光 + toastSuccess(`已保存快照 · W × H` + （已烘焙 N 个图层）)
+   ```
+   - busy 期间按钮禁用，防重入；无文档时按钮禁用。
+   - 只读标签（`leaseLocked`）允许快门：它只读当前画面并写本机版本，不改文档内容。
+4. UI：`.studio-dock` 内最左插入快门块，卡片区与项目历史书脊保持原位：
+   ```html
+   <button class="studio-dock-shutter" data-ref="dockShutter"
+     title="快门：把当前主图存入版本槽（会烘焙当前图层）">
+     <!-- 相机 SVG -->
+     <span>快门</span>
+   </button>
+   ```
+   - 52px 宽、72px 高，右侧 1px 分隔线，悬停 `--accent` 描边；与卡片同底线。
+   - 触发时给 Dock 加 `.is-flash` 220ms（外环闪一下）；`prefers-reduced-motion` 下取消动画。
+5. 版本恢复：现有 `restoreVersions()` / `switchVersion()` 直接复用；`currentVersionId` 指向新快照并自动保存。
+6. 边界：
+   - 有图层时快门成功后 toast 追加「（已烘焙 N 个图层）」；
+   - 之后切回该快照，按 §20.4 的版本切换确认规则提示「图层不会恢复」；
+   - 存储不可用（`persistDisabled`）时仍可在内存中生成快照并从 Dock 切回，刷新后丢失。
+
+**验收**
+
+1. 无 AI 操作时连按 3 次快门 → Dock 出现 3 张「快照 1/2/3」卡片，当前指针逐次右移。
+2. 调色/裁剪后快门 → 切到上一张 → 再切回快照，画布与快门时一致。
+3. 有 2 个图层时快门 → 切到快照图层为 0（有提示）；原版本按现有规则处理。
+4. 刷新页面后快照仍在，指针回到最后一张。
+5. 连按 31 次：最旧的非原始版本被淘汰，原始卡仍在。
+6. 只读标签可快门，不触发保存冲突。
+7. `prefers-reduced-motion` 下无闪光动画。
+
+**提交建议**：`feat(studio): 版本槽手动快门（D24.2）`
+
+### 21.3 交付顺序与回写
+
+1. **D24.1 全屏铺满**（可与 D23.1 同批）→ 提交 → 回写 §12.11 / §14.12。
+2. **D24.2 快门**（Dock V1/V2 已完成，可立即做）→ 提交 → 回写 §12.11 / §14.12 / §19.21 的 V5。
+3. 两项都完成后回归：全屏 + Dock 快门 + 版本切换 + 图层栏（若已上线）组合测试。
+
 
 
 

@@ -1151,6 +1151,13 @@ export function mountAiPanel(host, ctx) {
     refs.polish.disabled = true;
     refs.polish.textContent = '润色中…';
     const size = mainSize();
+    const source = ctx.getSource?.();
+    // 参考图与编辑页同一套契约：服务端只读 name/description/size，图片本体走 images。
+    const refImages = state.refs.filter((item) => item.dataUrl).slice(0, 5);
+    const images = [
+      source?.main?.data ? { data: source.main.data, name: source.main.name || 'main.png' } : null,
+      ...refImages.map((item) => ({ data: item.dataUrl, name: item.name || '参考图' })),
+    ].filter(Boolean);
     try {
       const result = await api.polish({
         prompt: text,
@@ -1158,11 +1165,21 @@ export function mountAiPanel(host, ctx) {
         image_model: 'qwen',
         target_size: [size.width, size.height],
         references: [
-          { label: '图1', role: '主图（编辑目标）' },
-          ...state.refs.map((item, index) => ({ label: `图${index + 2}`, role: item.name })),
+          {
+            name: 'image1',
+            description: `${source?.main?.name || '主图'}（编辑目标）`,
+            size: [size.width, size.height],
+          },
+          ...refImages.map((item, index) => ({
+            name: `image${index + 2}`,
+            description: item.name || '参考图',
+            size: [item.width || 0, item.height || 0],
+          })),
         ],
+        images,
       });
-      const polished = String(result?.prompt || '').trim();
+      // 接口返回字段是 rewritten_prompt（与 edit 页共用的 /api/polish 契约）。
+      const polished = String(result?.rewritten_prompt || '').trim();
       if (!polished) {
         toastWarn('润色没有返回内容，可直接提交原文');
         return;

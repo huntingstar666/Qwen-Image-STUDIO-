@@ -112,6 +112,13 @@ export function qualityItems(job) {
       title: '采样画布（32 的倍数表示零偏移对齐正常）',
     });
   }
+  const sampleCanvas = quality.sample_canvas;
+  if (sampleCanvas && canvas && (sampleCanvas.w !== canvas.w || sampleCanvas.h !== canvas.h)) {
+    items.push({
+      text: `采样 ${fmtNum(sampleCanvas.w)} × ${fmtNum(sampleCanvas.h)}`,
+      title: '实际送进采样器的画布（方案 B 下是裁块尺寸）',
+    });
+  }
   const band = quality.color?.mask_band;
   if (band && (band.expand_px != null || band.feather_px != null)) {
     items.push({
@@ -138,10 +145,13 @@ export function qualityItems(job) {
   }
   if (quality.mask_changed_ratio != null) {
     const ratio = Number(quality.mask_changed_ratio);
+    const idle = ratio < 0.3;
     items.push({
-      text: `遮罩内改动 ${fmtRatio(ratio)}`,
-      kind: ratio >= 0.6 ? 'ok' : ratio < 0.2 ? 'warn' : '',
-      title: '遮罩范围内被改动的像素占比；判断局部编辑有没有真的改到目标看这一项',
+      text: `遮罩内改动 ${fmtRatio(ratio)}${idle ? ' · 几乎未动' : ''}`,
+      kind: ratio >= 0.6 ? 'ok' : idle ? 'warn' : '',
+      title: idle
+        ? '遮罩内几乎未改动：优先检查预设 / 任务 / 指令是否匹配，可对比「整画布」或「原生」再跑一次'
+        : '遮罩范围内被改动的像素占比；判断局部编辑有没有真的改到目标看这一项',
     });
   }
   if (quality.leak_ratio != null) {

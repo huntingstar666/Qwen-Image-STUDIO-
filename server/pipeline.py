@@ -1515,6 +1515,9 @@ class Pipeline:
                 },
             },
             "canvas": {"w": plan.width, "h": plan.height},
+            # 送进采样器的画布（方案 B 是裁块）与本次是否用到了遮罩
+            "sample_canvas": {"w": work_image.width, "h": work_image.height},
+            "mask_used": mask_canvas is not None,
             "source": {"w": src.width, "h": src.height},
             "output": {"w": final.width, "h": final.height},
             "size_mode": size_mode,

@@ -13,7 +13,8 @@
  * 文档模型见 studioDoc.js：原图不变，所有操作是状态，渲染与导出共用一条管线。
  */
 
-import { downloadUrl, fmtCoverage, fmtNum, readFileAsDataURL, escapeHtml } from '../utils.js';
+import { downloadUrl, fmtCoverage, fmtNum, loadImage, readFileAsDataURL, escapeHtml } from '../utils.js';
+import { api, pollJob } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog } from './modal.js';
 import { favoriteImage } from './favorites.js';
@@ -57,6 +58,7 @@ import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
 import { BLEND_MODES } from './studio/layers.js';
 import { SHAPE_DEFAULTS, SHAPE_KINDS, SHAPE_STYLE_DEFAULTS, ShapeLayer, normalizeShapeStyle } from './studio/shapeLayer.js';
 import { patternDab } from './studio/pattern.js';
+import { SEGMENT_MODES, maskGrayToAlpha, segmentSendSize, sortSegmentMasks, toSendBox, toSendPoints } from './studio/segment.js';
 import { drawLayers } from './studio/renderer.js';
 
 const MAX_IMAGE_SIDE = 8192;
@@ -127,6 +129,14 @@ const TOOLS = [
     hint: '点一下选中相近颜色；Shift 加选，Alt 减选',
     icon:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5-3 3-5-5 3-3z"/><path d="M11.5 7.5L4 15l5 5 7.5-7.5"/><path d="M6.5 17.5l-.8 2.2 2.2-.8"/><path d="M18 14.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8.8-1.7z"/></svg>',
+  },
+  {
+    id: 'segment',
+    label: 'AI 主体选择',
+    key: 'A',
+    hint: '点一下自动选主体；也可框选 / 点选 / 输入文字描述（D13.1）',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l1.7 3.9 3.9 1.7-3.9 1.7L12 14.4l-1.7-3.9-3.9-1.7 3.9-1.7L12 3.2z"/><path d="M18.4 14.2l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8.8-1.9z"/><path d="M5 18.5l4-4"/><path d="M5 15.5v3h3"/></svg>',
   },
   {
     id: 'spot',
@@ -256,7 +266,7 @@ const WAND_TOOLS = new Set(['wand']);
 /** 左栏分组：只影响 DOM 分组，工具行为仍走 setTool。 */
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
-  { id: 'select', title: '选区', tools: ['wand', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
+  { id: 'select', title: '选区', tools: ['wand', 'segment', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
   { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'compose', title: '文字 / 贴纸 / 形状', tools: ['text', 'sticker', 'shape'] },
@@ -301,6 +311,13 @@ export function createStudioPage(host) {
   let antsOffset = 0;
   let wand = { tolerance: 32, contiguous: true };
   let selRadius = 8;
+  /* D13.1 AI 主体选择：模式、点提示（未裁剪图像坐标）、候选与请求状态 */
+  let segMode = 'subject';
+  let segPoints = [];
+  let segCandidates = [];
+  let segAppliedId = '';
+  let segBusy = false;
+  let segJob = null;
   /* D8.2 图层蒙版：当前正在涂抹的叠加层 id（空 = 涂抹文档蒙版） */
   let editingLayerMaskId = '';
   /* D9.4 局部调整：正在画布上拉取的渐变类型（null = 未进入取景模式） */
@@ -478,6 +495,21 @@ export function createStudioPage(host) {
                 <button class="btn ghost sm" type="button" data-sel-op="clear">清除选区</button>
                 <span class="spacer"></span>
                 <span class="mono" data-ref="selInfo">未选区</span>
+              </div>
+              <div class="studio-segbar" data-ref="segbar" hidden>
+                <span class="studio-selbar-title">主体选择</span>
+                <div class="studio-segmodes" data-ref="segModes"></div>
+                <label class="studio-check"><input type="checkbox" data-ref="segMulti" /><span>多候选</span></label>
+                <label class="studio-maskbar-field">
+                  <span>羽化</span>
+                  <input class="studio-selbar-num" type="number" min="0" max="32" step="1" value="2" data-ref="segFeather" />
+                </label>
+                <input class="input studio-segtext" type="text" placeholder="描述要选的主体，如：人物 / 沙发" data-ref="segText" hidden />
+                <button class="btn primary sm" type="button" data-ref="segRun" hidden>选取</button>
+                <button class="btn ghost sm" type="button" data-ref="segClear">清空提示</button>
+                <span class="spacer"></span>
+                <span class="mono studio-segstatus" data-ref="segStatus">点一下画面，自动选出最显著主体</span>
+                <div class="studio-segcands" data-ref="segCands" hidden></div>
               </div>
               <div class="studio-outpaint" data-ref="outpaintLayer" hidden>
                 <div class="so-shade" data-shade="top"></div>
@@ -904,6 +936,15 @@ export function createStudioPage(host) {
     wandContig: ref('wandContig'),
     selRadius: ref('selRadius'),
     selInfo: ref('selInfo'),
+    segbar: ref('segbar'),
+    segModes: ref('segModes'),
+    segMulti: ref('segMulti'),
+    segFeather: ref('segFeather'),
+    segText: ref('segText'),
+    segRun: ref('segRun'),
+    segClear: ref('segClear'),
+    segStatus: ref('segStatus'),
+    segCands: ref('segCands'),
     rotateLeft: ref('rotateLeft'),
     rotateRight: ref('rotateRight'),
     flipH: ref('flipH'),
@@ -1437,6 +1478,15 @@ export function createStudioPage(host) {
     }
     refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next));
     refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
+    if (refs.segbar) {
+      refs.segbar.hidden = next !== 'segment';
+      if (next === 'segment') syncSegUi();
+    }
+    if (next !== 'segment') {
+      segPoints = [];
+      segCandidates = [];
+      segAppliedId = '';
+    }
     if (refs.cloneAlignWrap) refs.cloneAlignWrap.hidden = !CLONE_TOOLS.has(next);
     if (refs.mosaicModeWrap) refs.mosaicModeWrap.hidden = next !== 'mosaic';
     if (refs.patternWrap) refs.patternWrap.hidden = next !== 'pattern';
@@ -1741,6 +1791,34 @@ export function createStudioPage(host) {
         ctx.stroke(path);
         ctx.restore();
       }
+    }
+
+    // AI 主体选择（D13.1）：框选虚线框与点提示标记
+    if (tool === 'segment') {
+      const crop = doc.transform.crop;
+      ctx.save();
+      ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+      ctx.scale(view.scale, view.scale);
+      if (drag?.mode === 'segBox' && drag.rect) {
+        ctx.setLineDash([6 / view.scale, 4 / view.scale]);
+        ctx.lineWidth = 1.2 / view.scale;
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.strokeRect(drag.rect.x, drag.rect.y, drag.rect.width, drag.rect.height);
+        ctx.setLineDash([]);
+      }
+      if (segMode === 'points') {
+        for (const point of segPoints) {
+          const radius = 5 / view.scale;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = point.label === 0 ? 'rgba(255,80,60,0.95)' : 'rgba(46,204,113,0.95)';
+          ctx.fill();
+          ctx.lineWidth = 1.5 / view.scale;
+          ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
     }
 
     // 形状预览
@@ -2228,6 +2306,151 @@ export function createStudioPage(host) {
       prompt: '移除选区内的内容，并按周围环境自然补全背景。',
     });
     toast('已填入「元素移除」指令，点「修改」开始消除');
+  }
+
+  /* ============================================================
+   * AI 主体选择（D13.1）：/api/image/segment
+   * ============================================================ */
+
+  function syncSegUi(keepStatus = false) {
+    if (refs.segModes) {
+      refs.segModes.innerHTML = SEGMENT_MODES.map(
+        (item) =>
+          `<button class="btn ${item.id === segMode ? 'primary' : 'ghost'} sm" type="button" data-seg-mode="${item.id}">${item.label}</button>`,
+      ).join('');
+    }
+    if (refs.segText) refs.segText.hidden = segMode !== 'text';
+    if (refs.segRun) refs.segRun.hidden = segMode !== 'text';
+    if (refs.segCands) {
+      const multi = segCandidates.length > 1;
+      refs.segCands.hidden = !multi;
+      refs.segCands.innerHTML = multi
+        ? segCandidates
+            .map(
+              (item, index) =>
+                `<button class="btn ${item.url === segAppliedId ? 'primary' : 'ghost'} sm" type="button" data-seg-cand="${index}">候选 ${index + 1}</button>`,
+            )
+            .join('')
+        : '';
+    }
+    if (refs.segStatus && !segBusy && !keepStatus) {
+      const meta = SEGMENT_MODES.find((item) => item.id === segMode) || SEGMENT_MODES[0];
+      refs.segStatus.textContent =
+        segMode === 'points' && segPoints.length ? `${meta.hint}（已 ${segPoints.length} 点）` : meta.hint;
+    }
+  }
+
+  /** 把分割蒙版贴进选区（灰度 PNG，白 = 选中；尺寸与原图一致，这里统一缩到蒙版空间）。 */
+  async function applySegmentMask(mask) {
+    if (!doc || !mask?.url) return;
+    const size = maskSize();
+    if (!size.width || !size.height) return;
+    const image = await loadImage(api.fileUrl(mask.url));
+    const canvas = makeCanvas(size.width, size.height);
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(image, 0, 0, size.width, size.height);
+    const data = ctx.getImageData(0, 0, size.width, size.height).data;
+    const alpha = maskGrayToAlpha(data, size.width, size.height);
+    let hasPixels = false;
+    for (let i = 0; i < alpha.length; i += 1) {
+      if (alpha[i] > 0) {
+        hasPixels = true;
+        break;
+      }
+    }
+    if (!hasPixels) {
+      toastWarn('这个提示没有选到区域，换个位置或改用框选');
+      return;
+    }
+    setSelectionAlpha(alpha, size.width, size.height);
+    segAppliedId = mask.url;
+    toastSuccess(`已生成选区 ${(coverageAlpha(alpha) * 100).toFixed(1)}%`);
+  }
+
+  /**
+   * 发起一次主体分割：发送「旋转后未裁剪」的合成图（长边超 2048 先缩小），
+   * 异步任务轮询进度；框/点提示换算到发送图坐标后再提交。
+   */
+  async function runSegment(hint = {}) {
+    if (!doc || segBusy) return;
+    const base = doc.renderBase();
+    const send = segmentSendSize(base.width, base.height, 2048);
+    let image = base;
+    if (send.scale !== 1) {
+      image = makeCanvas(send.width, send.height);
+      const ictx = image.getContext('2d');
+      ictx.imageSmoothingEnabled = true;
+      ictx.imageSmoothingQuality = 'high';
+      ictx.drawImage(base, 0, 0, send.width, send.height);
+    }
+    const crop = doc.transform.crop;
+    const payload = {
+      image: image.toDataURL('image/png'),
+      mode: segMode,
+      multi: Boolean(refs.segMulti?.checked),
+      feather: Math.max(0, Math.min(32, Math.round(Number(refs.segFeather?.value) || 0))),
+      async: true,
+    };
+    if (segMode === 'text') {
+      const text = String(hint.text ?? refs.segText?.value ?? '').trim();
+      if (!text) {
+        toastWarn('先写一句主体描述，例如「穿黑衣服的人」');
+        refs.segText?.focus();
+        return;
+      }
+      payload.text = text;
+    }
+    if (segMode === 'box' && hint.box) payload.box = toSendBox(hint.box, send.scale, crop);
+    if (segMode === 'points') payload.points = toSendPoints(segPoints, send.scale, crop);
+
+    segBusy = true;
+    segCandidates = [];
+    segAppliedId = '';
+    syncSegUi();
+    refs.segStatus.textContent = '正在分割（首次加载模型较慢）…';
+    scheduleDraw();
+    let failed = '';
+    try {
+      const started = await api.segment(payload);
+      const jobId = started?.job_id;
+      if (!jobId) throw new Error('后端没有返回分割任务');
+      segJob = pollJob(jobId, (job) => {
+        if (!refs.segStatus) return;
+        if (job?.status === 'running') {
+          const pct = Math.round(((Number(job.progress) || 0) / 1000) * 100);
+          refs.segStatus.textContent = `正在分割… ${pct}%`;
+        }
+      });
+      const job = await segJob;
+      segJob = null;
+      if (!job) return;
+      if (job.status !== 'done') throw new Error(job.error || '分割失败');
+      const masks = sortSegmentMasks(job.meta?.masks || job.masks || []);
+      if (!masks.length) throw new Error('没有返回蒙版');
+      segCandidates = masks;
+      await applySegmentMask(masks[0]);
+    } catch (err) {
+      failed = err?.message || '分割失败';
+      toastError(err, '主体选择失败');
+    } finally {
+      segBusy = false;
+      // 失败时保留错误文案，别被模式提示覆盖。
+      syncSegUi(Boolean(failed));
+      if (failed && refs.segStatus) refs.segStatus.textContent = failed;
+      scheduleDraw();
+    }
+  }
+
+  function resetSegmentHints() {
+    segJob?.stop?.();
+    segJob = null;
+    segBusy = false;
+    segPoints = [];
+    segCandidates = [];
+    segAppliedId = '';
+    syncSegUi();
   }
 
   /* ============================================================
@@ -2838,6 +3061,25 @@ export function createStudioPage(host) {
       wandSelectAt(point, mode);
       return;
     }
+    if (tool === 'segment') {
+      // D13.1：主体 = 点一下即分割；框选 = 拖框；点选 = 累积提示点；文字 = 走浮条输入。
+      const at = maskPoint(point);
+      if (segMode === 'box') {
+        drag = { mode: 'segBox', start: at, rect: null };
+        scheduleDraw();
+      } else if (segMode === 'points') {
+        segPoints.push({ x: at.x, y: at.y, label: event.altKey ? 0 : 1 });
+        syncSegUi();
+        scheduleDraw();
+        void runSegment({});
+      } else if (segMode === 'subject') {
+        void runSegment({});
+      } else {
+        toast('文字模式：在下方输入主体描述后点「选取」');
+        refs.segText?.focus();
+      }
+      return;
+    }
     if (CLONE_TOOLS.has(tool)) {
       const imagePoint = maskPoint(point);
       if (event.altKey) {
@@ -3068,6 +3310,11 @@ export function createStudioPage(host) {
       syncCropOverlay(drag.rect);
       return;
     }
+    if (drag.mode === 'segBox') {
+      drag.rect = normalizeRect(drag.start, imagePoint);
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'shape') {
       drag.rect = normalizeRect(drag.start, point);
       scheduleDraw();
@@ -3231,6 +3478,13 @@ export function createStudioPage(host) {
         scheduleSave();
         ai?.refresh?.();
         toast('已创建形状，可在右侧调整填充 / 描边 / 圆角');
+      }
+    } else if (mode === 'segBox') {
+      // D13.1 框选：松手才发起分割，太小的框视为误触。
+      if (rect && rect.width > 6 && rect.height > 6) {
+        void runSegment({ box: rect });
+      } else {
+        toastWarn('框太小了，请重新拖出一个框');
       }
     } else if (mode === 'patternPick') {
       if (rect && rect.width > 4 && rect.height > 4) {
@@ -4046,6 +4300,7 @@ export function createStudioPage(host) {
     if (!options.restore) layerBlobs.clear();
     cropRect = null;
     clearSelection(true);
+    resetSegmentHints();
     editingLayerMaskId = '';
     selectedLayerId = null;
     pendingStickerPoint = null;
@@ -5541,6 +5796,47 @@ export function createStudioPage(host) {
       runSelectionOp(op);
     });
   }
+
+  /* ---------------------------------------------------------- AI 主体选择（D13.1） */
+
+  refs.segModes?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-seg-mode]');
+    if (!button) return;
+    const next = button.dataset.segMode;
+    if (!SEGMENT_MODES.some((item) => item.id === next) || next === segMode) return;
+    segMode = next;
+    segPoints = [];
+    segCandidates = [];
+    segAppliedId = '';
+    syncSegUi();
+    scheduleDraw();
+    if (segMode === 'text') refs.segText?.focus();
+  });
+
+  refs.segRun?.addEventListener('click', () => {
+    void runSegment({ text: refs.segText?.value || '' });
+  });
+
+  refs.segText?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    void runSegment({ text: refs.segText.value });
+  });
+
+  refs.segClear?.addEventListener('click', () => {
+    resetSegmentHints();
+    scheduleDraw();
+  });
+
+  refs.segCands?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-seg-cand]');
+    if (!button) return;
+    const mask = segCandidates[Number(button.dataset.segCand)];
+    if (!mask) return;
+    void applySegmentMask(mask).then(() => syncSegUi());
+  });
+
+  syncSegUi();
 
   refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));
   refs.rotateRight.addEventListener('click', () => commitTransform('向右旋转', () => doc?.rotateRight()));

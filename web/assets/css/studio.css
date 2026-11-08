@@ -889,6 +889,21 @@
   font-size: 11px;
 }
 
+/* 局部调整（D9.4） */
+.studio-local {
+  margin-top: 12px;
+}
+
+.studio-local .btn.is-active {
+  border-color: var(--accent-ring);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.studio-canvas-wrap canvas.is-local-picking {
+  cursor: crosshair;
+}
+
 .studio-note {
   margin-top: 14px;
   padding: 10px 12px;

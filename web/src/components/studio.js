@@ -186,6 +186,8 @@ export function createStudioPage(host) {
   let selRadius = 8;
   /* D8.2 图层蒙版：当前正在涂抹的叠加层 id（空 = 涂抹文档蒙版） */
   let editingLayerMaskId = '';
+  /* D9.4 局部调整：正在画布上拉取的渐变类型（null = 未进入取景模式） */
+  let localEdit = null;
   let preview = { url: '', image: null, flash: false };
   let outpaint = null;
   /* D5.3：拖动期间复用的画布矩形，避免 pointermove 触发同步布局。 */
@@ -430,6 +432,20 @@ export function createStudioPage(host) {
                 <button class="btn ghost sm" type="button" data-ref="addAdjustLayer">＋ 新建调整图层</button>
               </div>
               <div class="studio-note">调整图层作用于它下面的所有内容，可随时回改、显隐、加蒙版；在图层面板选中后，上方滑杆即改为编辑该图层。</div>
+              <div class="studio-local" data-ref="localBox" hidden>
+                <div class="studio-pane-title">局部范围</div>
+                <div class="studio-row">
+                  <button class="btn ghost sm" type="button" data-ref="localLinear">线性渐变</button>
+                  <button class="btn ghost sm" type="button" data-ref="localRadial">径向渐变</button>
+                  <button class="btn ghost sm" type="button" data-ref="localBrush">画笔蒙版</button>
+                  <button class="btn ghost sm" type="button" data-ref="localClear">全图</button>
+                </div>
+                <label class="studio-slider">
+                  <span class="studio-slider-head"><span>过渡</span><span class="mono" data-ref="localFeatherVal">50</span></span>
+                  <input type="range" min="0" max="100" step="1" value="50" data-ref="localFeather" />
+                </label>
+                <div class="studio-note" data-ref="localHint"></div>
+              </div>
               <div class="studio-pane-title">3D LUT</div>
               <div class="studio-row">
                 <button class="btn ghost sm" type="button" data-ref="lutBtn">加载 .cube</button>
@@ -512,6 +528,14 @@ export function createStudioPage(host) {
     adjustTargetName: ref('adjustTargetName'),
     adjustTargetBack: ref('adjustTargetBack'),
     addAdjustLayer: ref('addAdjustLayer'),
+    localBox: ref('localBox'),
+    localLinear: ref('localLinear'),
+    localRadial: ref('localRadial'),
+    localBrush: ref('localBrush'),
+    localClear: ref('localClear'),
+    localFeather: ref('localFeather'),
+    localFeatherVal: ref('localFeatherVal'),
+    localHint: ref('localHint'),
     filterNote: ref('filterNote'),
     hist: ref('hist'),
     histInfo: ref('histInfo'),
@@ -1190,6 +1214,46 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 局部调整取景辅助线（D9.4）：拖动中实时显示，未拖动时回显已有几何
+    {
+      const crop = doc.transform.crop;
+      const toView = (p) => ({
+        x: view.x + (p.x - (crop?.x || 0)) * view.scale,
+        y: view.y + (p.y - (crop?.y || 0)) * view.scale,
+      });
+      const target = localEdit ? adjustmentTarget() : null;
+      const geometry =
+        drag?.mode === 'local'
+          ? { type: drag.type, start: drag.start, end: drag.end }
+          : target?.local?.type === localEdit && localEdit
+            ? target.local
+            : null;
+      if (geometry) {
+        const a = toView(geometry.start);
+        const b = toView(geometry.end);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        if (geometry.type === 'linear') {
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+        } else {
+          ctx.ellipse(a.x, a.y, Math.max(1, Math.abs(b.x - a.x)), Math.max(1, Math.abs(b.y - a.y)), 0, 0, Math.PI * 2);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        for (const point of geometry.type === 'linear' ? [a, b] : [a]) {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+
     // 套索路径预览
     if (drag?.mode === 'lasso' && drag.points?.length > 1) {
       ctx.save();
@@ -1732,6 +1796,11 @@ export function createStudioPage(host) {
     dragRect = refs.canvas.getBoundingClientRect();
     const point = clampPoint(toImage(event.clientX, event.clientY, dragRect));
 
+    // 局部调整取景（D9.4）：优先级最高（含「抓手」工具），拖完自动退出，不会误涂或误平移。
+    if (localEdit && adjustmentTarget() && event.button === 0) {
+      drag = { mode: 'local', type: localEdit, start: point, end: point };
+      return;
+    }
     if (event.button === 1 || spaceDown || tool === 'view') {
       drag = { mode: 'pan', startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
       refs.canvas.classList.add('is-grabbing');
@@ -1810,6 +1879,11 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
+    if (drag.mode === 'local') {
+      drag.end = point;
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'lasso') {
       const last = drag.points[drag.points.length - 1];
       const threshold = Math.max(1, 1.6 / view.scale);
@@ -1835,6 +1909,7 @@ export function createStudioPage(host) {
     const mode = drag.mode;
     const rect = drag.rect;
     const points = drag.points;
+    const localDrag = drag.mode === 'local' ? { type: drag.type, start: drag.start, end: drag.end } : null;
     drag = null;
     if (mode === 'paint') {
       if (editingLayerMaskId) {
@@ -1858,6 +1933,30 @@ export function createStudioPage(host) {
       doc?.commitLayers();
       updateHistoryUi();
       ai?.refresh?.();
+    } else if (mode === 'local') {
+      // 拖太短视为误触，不落快照；否则按几何重建蒙版并退出取景。
+      const target = adjustmentTarget();
+      const distance = localDrag
+        ? Math.hypot(localDrag.end.x - localDrag.start.x, localDrag.end.y - localDrag.start.y)
+        : 0;
+      if (target && distance >= 4 / Math.max(0.01, view.scale)) {
+        target.setLocal({
+          type: localDrag.type,
+          start: localDrag.start,
+          end: localDrag.end,
+          feather: target.local?.feather ?? 50,
+        });
+        doc.touchLayers();
+        doc.commitLayers();
+        updateHistoryUi();
+        ai?.refresh?.();
+        toastSuccess(
+          localDrag.type === 'linear' ? '已应用线性局部调整' : '已应用径向局部调整',
+        );
+      }
+      localEdit = null;
+      refs.canvas.classList.remove('is-local-picking');
+      syncAdjustInputs();
     } else if (mode === 'crop' && rect && rect.width > 6 && rect.height > 6) {
       cropRect = rect;
       refs.cropbar.hidden = false;
@@ -2101,7 +2200,7 @@ export function createStudioPage(host) {
           visible: layer.visible !== false,
           hasMask: Boolean(layer.mask),
           maskVisible: layer.maskVisible,
-          ...(layer.isAdjustment ? { params: { ...layer.params } } : {}),
+          ...(layer.isAdjustment ? { params: { ...layer.params }, local: { ...layer.local } } : {}),
         },
         blob,
         maskBlob: layerMaskBlob,
@@ -2302,10 +2401,13 @@ export function createStudioPage(host) {
           const layer = next.addAdjustmentLayer(props.params || {}, {
             name: props.name,
             opacity: props.opacity,
+            local: props.local,
           });
           layer.id = record.id;
           layer.visible = props.visible !== false;
           layer.locked = Boolean(props.locked);
+          // 没有蒙版快照时按几何重建，保证刷新后局部范围还在（D9.4）。
+          if (!record.maskBlob && layer.local?.type !== 'none') layer.setLocal(layer.local);
           await restoreLayerMask(layer, props, record.maskBlob);
           continue;
         }
@@ -2604,8 +2706,104 @@ export function createStudioPage(host) {
     }
     refs.adjustTarget.hidden = !target;
     if (target) refs.adjustTargetName.textContent = target.name;
+    syncLocalUi(target);
     syncLutUi();
   }
+
+  /* --------------------------------------------------- 局部调整（D9.4） */
+
+  function localLabel(layer) {
+    const local = layer?.local;
+    // 涂抹过蒙版后以「画笔蒙版」为准，避免仍显示上一次的渐变类型（D9.4）。
+    if (local?.freehand && layer?.mask) return '当前：画笔涂抹的蒙版';
+    if (local?.type === 'linear') return '当前：线性渐变（画面上拖线可重画）';
+    if (local?.type === 'radial') return '当前：径向渐变（画面上拖拽可重画）';
+    return '当前作用全图';
+  }
+
+  function syncLocalUi(target) {
+    if (!target) {
+      localEdit = null;
+      refs.localBox.hidden = true;
+      refs.canvas.classList.remove('is-local-picking');
+      return;
+    }
+    refs.localBox.hidden = false;
+    refs.canvas.classList.toggle('is-local-picking', Boolean(localEdit));
+    const feather = target.local?.feather ?? 50;
+    refs.localFeather.value = String(feather);
+    refs.localFeatherVal.textContent = String(feather);
+    refs.localLinear.classList.toggle('is-active', localEdit === 'linear');
+    refs.localRadial.classList.toggle('is-active', localEdit === 'radial');
+    refs.localHint.textContent =
+      localEdit === 'linear'
+        ? '在画面上拖一条线：起点完全生效，终点不生效。'
+        : localEdit === 'radial'
+          ? '在画面上从中心往外拖：中心完全生效，边缘不生效。'
+          : localLabel(target);
+  }
+
+  function pickLocalType(type) {
+    if (!adjustmentTarget()) return;
+    localEdit = localEdit === type ? null : type;
+    syncLocalUi(adjustmentTarget());
+    refs.canvas.classList.toggle('is-local-picking', Boolean(localEdit));
+  }
+
+  refs.localLinear.addEventListener('click', () => pickLocalType('linear'));
+  refs.localRadial.addEventListener('click', () => pickLocalType('radial'));
+
+  refs.localBrush.addEventListener('click', () => {
+    const target = adjustmentTarget();
+    if (!target) return;
+    target.ensureMask();
+    target.local.freehand = true;
+    localEdit = null;
+    editingLayerMaskId = target.id;
+    selectedLayerId = target.id;
+    setTool('brush');
+    doc.touchLayers();
+    doc.commitLayers();
+    syncAdjustInputs();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    toast(`正在涂抹「${target.name}」的蒙版：画笔隐藏效果，橡皮擦恢复`);
+  });
+
+  refs.localClear.addEventListener('click', () => {
+    const target = adjustmentTarget();
+    if (!target) return;
+    target.clearLocal();
+    localEdit = null;
+    editingLayerMaskId = editingLayerMaskId === target.id ? '' : editingLayerMaskId;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncAdjustInputs();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+    toastSuccess('已恢复全图生效');
+  });
+
+  refs.localFeather.addEventListener('input', () => {
+    const target = adjustmentTarget();
+    if (!target) return;
+    refs.localFeatherVal.textContent = refs.localFeather.value;
+    target.local.feather = Number(refs.localFeather.value);
+  });
+
+  refs.localFeather.addEventListener('change', () => {
+    const target = adjustmentTarget();
+    if (!target || target.local.type === 'none') return;
+    // 过渡曲线只在松手时重建蒙版，避免逐帧逐像素重算。
+    target.setLocal(target.local);
+    doc.touchLayers();
+    doc.commitLayers();
+    updateHistoryUi();
+    scheduleDraw();
+    scheduleSave();
+  });
 
   /* --------------------------------------------------- 直方图（D9.2） */
 

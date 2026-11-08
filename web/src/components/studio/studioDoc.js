@@ -395,7 +395,7 @@ export class StudioDoc {
    * @param {object} [params] 见 ADJUSTMENT_DEFAULTS
    * @param {{name?: string, opacity?: number}} [options]
    */
-  addAdjustmentLayer(params = {}, { name = '调整图层', opacity = 1 } = {}) {
+  addAdjustmentLayer(params = {}, { name = '调整图层', opacity = 1, local = null } = {}) {
     const oriented = this.oriented;
     const layer = new AdjustmentLayer({
       name,
@@ -403,7 +403,9 @@ export class StudioDoc {
       width: oriented.width,
       height: oriented.height,
       opacity,
+      local,
     });
+    if (local?.type && local.type !== 'none') layer.setLocal(local);
     addLayer(this._doc, layer);
     this._base = null;
     this.snapshot();

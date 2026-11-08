@@ -5,7 +5,9 @@ import {
   ADJUSTMENT_DEFAULTS,
   applyAdjustment,
   hasAdjustment,
+  localStrengthAt,
   normalizeAdjustment,
+  normalizeLocal,
 } from '../../src/components/studio/adjustments.js';
 
 function pixel(r, g, b, a = 255) {
@@ -124,4 +126,62 @@ test('组合参数按顺序叠加且不越界', () => {
   applyAdjustment(data, { exposure: 60, contrast: 40, saturation: 40, temperature: 30 });
   for (const value of data) assert.ok(value >= 0 && value <= 255);
   assert.ok(data[0] >= data[1] && data[1] >= data[2], `rgb=${[...data]}`);
+});
+
+/* ------------------------------------------------- 局部调整（D9.4） */
+
+test('normalizeLocal 归一化类型与坐标', () => {
+  const local = normalizeLocal({ type: 'radial', start: { x: 10, y: '20' }, end: { x: 'abc' }, feather: 200 });
+  assert.equal(local.type, 'radial');
+  assert.deepEqual(local.start, { x: 10, y: 20 });
+  assert.deepEqual(local.end, { x: 0, y: 0 });
+  assert.equal(local.feather, 100);
+  assert.equal(normalizeLocal({ type: 'nope' }).type, 'none');
+});
+
+test('none 类型对任意点都为全量', () => {
+  assert.equal(localStrengthAt({ type: 'none' }, 0, 0), 1);
+  assert.equal(localStrengthAt({ type: 'none' }, 999, 999), 1);
+});
+
+test('线性渐变：起点全量、终点为零、中点约一半', () => {
+  const local = { type: 'linear', start: { x: 0, y: 0 }, end: { x: 100, y: 0 }, feather: 0 };
+  assert.ok(localStrengthAt(local, 0, 0) > 0.99);
+  assert.ok(localStrengthAt(local, 100, 0) < 0.01);
+  near(localStrengthAt(local, 50, 0) * 100, 50, 1);
+  // 渐变垂直方向不衰减
+  near(localStrengthAt(local, 50, 80) * 100, 50, 1);
+  // 超出两端夹取
+  assert.ok(localStrengthAt(local, -200, 0) > 0.99);
+  assert.ok(localStrengthAt(local, 400, 0) < 0.01);
+});
+
+test('线性渐变支持斜向', () => {
+  const local = { type: 'linear', start: { x: 0, y: 0 }, end: { x: 80, y: 60 }, feather: 0 };
+  near(localStrengthAt(local, 40, 30) * 100, 50, 1);
+  assert.ok(localStrengthAt(local, 0, 0) > 0.99);
+});
+
+test('径向渐变：中心全量、边缘为零、椭圆按两轴半径', () => {
+  const local = { type: 'radial', start: { x: 100, y: 100 }, end: { x: 140, y: 120 }, feather: 0 };
+  assert.ok(localStrengthAt(local, 100, 100) > 0.99);
+  assert.ok(localStrengthAt(local, 140, 100) < 0.01);
+  assert.ok(localStrengthAt(local, 100, 120) < 0.01);
+  // 椭圆边界点（长轴中点 = 归一化半径 1）与半轴中点（强度 50%）
+  near(localStrengthAt(local, 120, 100) * 100, 50, 2);
+  assert.ok(localStrengthAt(local, 140, 100) < 0.01);
+});
+
+test('过渡 feather 只改变曲线形状，不改变两端取值', () => {
+  const base = { type: 'linear', start: { x: 0, y: 0 }, end: { x: 100, y: 0 } };
+  const linear = localStrengthAt({ ...base, feather: 0 }, 25, 0);
+  const smooth = localStrengthAt({ ...base, feather: 100 }, 25, 0);
+  assert.ok(Math.abs(linear - smooth) > 0.05, `linear=${linear} smooth=${smooth}`);
+  assert.ok(localStrengthAt({ ...base, feather: 100 }, 0, 0) > 0.99);
+  assert.ok(localStrengthAt({ ...base, feather: 100 }, 100, 0) < 0.01);
+});
+
+test('零长度几何退化为全量，不产生 NaN', () => {
+  assert.equal(localStrengthAt({ type: 'linear', start: { x: 5, y: 5 }, end: { x: 5, y: 5 } }, 50, 50), 1);
+  assert.equal(localStrengthAt({ type: 'radial', start: { x: 5, y: 5 }, end: { x: 5, y: 5 } }, 50, 50), 1);
 });

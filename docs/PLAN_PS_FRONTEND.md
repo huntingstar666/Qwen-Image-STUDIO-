@@ -801,6 +801,20 @@ DOM 结构：
   - 实测（headless Chromium 1440×900，800×600 红/绿底图）：新建「调整图层 1」后行内出现「调整」徽标、顶部提示条显示层名；曝光 60 → 红色 `[192,57,43] → [255,86,65]`（input 实时与 change 提交一致）；眼按钮隐藏后回 `[192,57,43]`、再显示回 `[255,86,65]`，行变 `is-hidden`；`◐` 建蒙版后进入 `✎` 自动切画笔，涂抹处回 `[192,57,43]`、未涂抹处仍 `[255,86,65]`（绿色区 `[102,212,115] → [155,255,174]`）；撤销回填、重做复原；改曝光 −40 → `[146,43,33]`，改回 60；「编辑主图」后提示条隐藏、滑杆归 0；删除图层回原始、撤销复原；刷新 `?cb=32#studio` 后参数仍 60、蒙版孔洞保留、选中后提示条正常。另用 1600×1200 底图验证低分辨率代理（1024/1600 比例、蒙版按 scale 缩放）与全分辨率最终像素一致（均为 `[255,86,65]`）。截图 `.screenshots/D9.3-adjust-layer-2026-11-07T17-43-56-734Z.png`。
   - 已知代价：调整层每次重合成都要整图 `getImageData`，4K 下拖动下层会有可感知延迟；当前先以正确性优先，若后续 D18 基准触发预算再考虑 tile/WebGL 化。
 
+- **D9.4 局部调整（已完成）** —— 调整图层支持「线性渐变 / 径向渐变 / 画笔」三种局部范围：
+  - 新增纯函数（`studio/adjustments.js`）：`normalizeLocal`（type/start/end/feather/freehand 归一化）、`localStrengthAt(local, x, y)` → 0~1 强度、`buildLocalMask(local, width, height)` → 文档尺寸蒙版画布（白=应用、透明=不影响，逐像素写入 alpha）。
+    - 线性：把点投影到 `start → end` 向量上得到 t，起点全量、终点为零，垂直方向不衰减，两端夹取；支持任意斜向。
+    - 径向：`start` 为中心，`|end - start|` 为两轴半径（`ry=0` 时退化为正圆），归一化半径 r=1 处为零，超出即不再影响。
+    - `feather` 0~100 在「线性斜坡」与 `smoothstep` 之间插值，只改变过渡曲线形状、不改变两端取值；零长度几何退化为全量，避免除零。
+  - `AdjustmentLayer` 增加 `local` 与 `setLocal(local)/clearLocal()`：`setLocal` 直接按几何重建 `mask`（复用既有合成管线，线性/径向/画笔三者天然可叠加涂抹）；`clearLocal` 清几何并移除蒙版，恢复全图。
+  - 交互：选中调整图层后调色面板出现「局部范围」区块（线性渐变 / 径向渐变 / 画笔蒙版 / 全图 + 过渡滑杆）。点线性/径向进入取景态（按钮高亮、画布 `crosshair`），画布上按下拖动即定义几何：拖动中只画白色虚线辅助线（线性画线+两端点，径向画椭圆+圆心），松手才逐像素重建蒙版并落一次撤销步；拖动距离 < `4/scale` 视为误触不生效，结束后自动退出取景态。取景优先级高于所有工具（含抓手），不会误平移或误涂。
+  - 画笔蒙版：切到 `brush` 并直接进入该调整层的蒙版涂抹模式（画笔隐藏效果、橡皮恢复），`local.freehand=true`，提示文案随之改为「当前：画笔涂抹的蒙版」。
+  - 过渡滑杆：`input` 只改参数与读数，`change` 才重建蒙版（避免逐帧逐像素重算），并落撤销步。
+  - 持久化：工程图层 props 增加 `local`；恢复时先把 `local` 传给 `addAdjustmentLayer`（无蒙版快照时按几何重建），再用 `maskBlob` 覆盖为实际涂抹结果，因此「渐变 + 手涂」的组合刷新后完全保留。
+  - 单测：`adjustments.test.mjs` 追加 7 项（类型/坐标归一化、none 全量、线性三点与夹取、斜向、径向两轴与半轴 50%、feather 曲线形状、零长度退化）；`node --test web/tests/studio/adjustments.test.mjs web/tests/studio/color.test.mjs` → `pass 49 / fail 0`。
+  - 实测（headless Chromium 1440×900，800×600 红/绿底图，调整层曝光 60）：全图时红 `[192,57,43] → [255,86,65]`、绿 `[102,212,115] → [155,255,174]`；线性拖拽后起点侧 `[255,86,65]`、中点 `[218,68,52]`、终点侧回 `[102,212,115]`；径向拖拽后中心 `[255,85,64]`、半径处 `[192,57,43]`、外部回原色，截图可见中心暖色光斑；过渡 0/50/100 三档蒙版重建（统计差异 6168/6173/6175）；画笔在光斑中心点一下即回 `[192,57,43]`（提示「正在涂抹…画笔隐藏效果，橡皮擦恢复」）；「全图」立即恢复全量并提示；撤销可回到渐变。刷新 `?cb=43#studio` 恢复后提示为「当前：画笔涂抹的蒙版」、过渡 50、行扫描呈「渐变环 + 中心手涂孔洞」，即渐变与手涂组合被完整保留。截图 `.screenshots/D9.4-local-adjust-clean-2026-11-08T04-12-37-422Z.png`。
+  - 说明：径向目前只支持椭圆（两轴由拖拽向量决定），不做旋转椭圆；「范围蒙版（按颜色/亮度）」仍留在 §13.2 的 P1 清单，本轮不做。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -983,7 +997,7 @@ DOM 结构：
 | `renderer.js` | `drawLayers(ctx, layers, {crop})`、`composite(ctx, underlay, layers, {crop})`；调整层转交 `applyAdjustmentLayer` | `layers/adjustments` | D7（D7.2 已落地，D9.3 扩展） |
 | `selection.js` | `createAlpha/rectAlpha/ellipseAlpha/lassoAlpha/wandAlpha`、`combineAlpha/invertAlpha`、`featherAlpha/expandAlpha/contractAlpha`、`coverageAlpha/boundsAlpha`、`alphaToCanvas/canvasToAlpha`、`buildOutlinePath` | 无 | D8.1（已落地） |
 | `color.js` | 曲线 LUT、色阶、HSL、色彩平衡、白平衡、直方图、`.cube` 解析与三线性采样（纯函数） | 无 | D9.1 / D9.2（已落地） |
-| `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})` | `color` | D9.3（已落地） |
+| `adjustments.js` | `AdjustmentLayer`（参数 + 文档坐标蒙版 + `local/setLocal/clearLocal` + clone）、`normalizeAdjustment/hasAdjustment`、`applyAdjustment(imageData, params, strength)`、`applyAdjustmentLayer(ctx, layer, {crop, scale})`、`normalizeLocal/localStrengthAt/buildLocalMask` | `color` | D9.3 / D9.4（已落地） |
 | `tools/brush.js` | 画笔 / 橡皮 / 蒙版画笔 | `renderer` | D8 |
 | `tools/clone.js` | 仿制图章 / 修复画笔 | `renderer` | D10 |
 | `tools/smudge.js` | 涂抹 | `renderer` | D10 |
@@ -1296,7 +1310,7 @@ DOM 结构：
 | D9.1 | 调色数学库 | 已完成 | 本次提交 | 新增 `studio/color.js`（曲线/色阶/HSL/色彩平衡/白平衡，纯函数）；新增 `web/tests/studio/color.test.mjs`，`node --test` 23 项全绿；实测见 §12.11 |
 | D9.2 | 直方图 + LUT | 已完成 | 本次提交 | `color.js` 追加 `histogram/parseCube/sampleCube/applyCube`；`studioDoc` 支持 `adjust.lut` 逐像素查表；调色面板加直方图与 .cube 加载/强度；实测见 §12.11 |
 | D9.3 | 调整图层 | 已完成 | 本次提交 | 新增 `studio/adjustments.js`（`AdjustmentLayer` + `applyAdjustment` + `applyAdjustmentLayer`）；`renderer`/`studioDoc` 合成管线支持调整层；图层显隐眼睛按钮；面板选中调整层后滑杆接管、LUT 禁用；随工程保存 `kind/params/visible`；实测见 §12.11 |
-| D9.4 | 局部调整 | 未开始 | — | — |
+| D9.4 | 局部调整 | 已完成 | 本次提交 | `adjustments.js` 追加 `normalizeLocal/localStrengthAt/buildLocalMask`；`AdjustmentLayer` 支持 `local` + `setLocal/clearLocal`；调色面板「局部范围」区块（线性/径向/画笔/全图 + 过渡）；画布取景辅助线；随工程保存 `local`；实测见 §12.11 |
 | D10.1 | 污点修复 | 未开始 | — | — |
 | D10.2 | 仿制图章 / 修复画笔 | 未开始 | — | — |
 | D10.3 | 涂抹 | 未开始 | — | — |

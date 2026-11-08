@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { SHAPE_DEFAULTS, SHAPE_KINDS, ShapeLayer, shapeLayerFromProps } from '../../src/components/studio/shapeLayer.js';
+import { SHAPE_DEFAULTS, SHAPE_KINDS, SHAPE_STYLE_DEFAULTS, ShapeLayer, normalizeShapeStyle, shapeLayerFromProps } from '../../src/components/studio/shapeLayer.js';
 
 function fakeCtx(calls) {
   return {
@@ -119,6 +119,31 @@ test('ShapeLayer：混合模式与剪贴标记随 clone 保留', () => {
   assert.equal(copy.blend, 'screen');
   assert.equal(copy.clipped, true);
   assert.equal(new ShapeLayer({ blend: 'bad-mode' }).blend, 'source-over');
+});
+
+test('ShapeLayer：图层样式默认值、夹取与 clone 保留', () => {
+  const layer = new ShapeLayer({ width: 10, height: 10 });
+  assert.equal(layer.style.shadow.enabled, false);
+  assert.equal(layer.style.glow.blur, SHAPE_STYLE_DEFAULTS.glow.blur);
+  assert.equal(layer.style.gradient.from, SHAPE_STYLE_DEFAULTS.gradient.from);
+
+  const clamped = normalizeShapeStyle({
+    shadow: { enabled: true, blur: 999, distance: -5 },
+    gradient: { opacity: 5 },
+    colorOverlay: { opacity: -1 },
+  });
+  assert.equal(clamped.shadow.enabled, true);
+  assert.equal(clamped.shadow.blur, 120);
+  assert.equal(clamped.shadow.distance, 0);
+  assert.equal(clamped.gradient.opacity, 1);
+  assert.equal(clamped.colorOverlay.opacity, 0);
+
+  const styled = new ShapeLayer({ width: 10, height: 10, style: { glow: { enabled: true, blur: 30 } } });
+  const copy = styled.clone({ fresh: true });
+  assert.equal(copy.style.glow.enabled, true);
+  assert.equal(copy.style.glow.blur, 30);
+  copy.style.glow.blur = 5;
+  assert.equal(styled.style.glow.blur, 30);
 });
 
 test('ShapeLayer：clone 独立，props 还原保留样式与几何', () => {

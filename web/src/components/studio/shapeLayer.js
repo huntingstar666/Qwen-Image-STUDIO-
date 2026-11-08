@@ -25,10 +25,67 @@ export const SHAPE_DEFAULTS = {
   opacity: 1,
 };
 
+/** 图层样式默认值（D12.2）：外阴影 / 外发光 / 渐变叠加 / 颜色叠加。 */
+export const SHAPE_STYLE_DEFAULTS = {
+  shadow: { enabled: false, color: '#000000', blur: 18, distance: 10, angle: 135 },
+  glow: { enabled: false, color: '#f6c85f', blur: 18 },
+  gradient: { enabled: false, from: '#ff3b30', to: '#7aa2ff', angle: 90, opacity: 1 },
+  colorOverlay: { enabled: false, color: '#000000', opacity: 0.4 },
+};
+
+/** 深合并样式，忽略未知字段，数值夹在合理区间。 */
+export function normalizeShapeStyle(style = {}) {
+  const base = SHAPE_STYLE_DEFAULTS;
+  const shadow = style.shadow || {};
+  const glow = style.glow || {};
+  const gradient = style.gradient || {};
+  const overlay = style.colorOverlay || {};
+  return {
+    shadow: {
+      enabled: Boolean(shadow.enabled),
+      color: shadow.color || base.shadow.color,
+      blur: clamp(shadow.blur ?? base.shadow.blur, 0, 120),
+      distance: clamp(shadow.distance ?? base.shadow.distance, 0, 200),
+      angle: Number.isFinite(Number(shadow.angle)) ? Number(shadow.angle) : base.shadow.angle,
+    },
+    glow: {
+      enabled: Boolean(glow.enabled),
+      color: glow.color || base.glow.color,
+      blur: clamp(glow.blur ?? base.glow.blur, 0, 120),
+    },
+    gradient: {
+      enabled: Boolean(gradient.enabled),
+      from: gradient.from || base.gradient.from,
+      to: gradient.to || base.gradient.to,
+      angle: Number.isFinite(Number(gradient.angle)) ? Number(gradient.angle) : base.gradient.angle,
+      opacity: clamp(gradient.opacity ?? base.gradient.opacity, 0, 1),
+    },
+    colorOverlay: {
+      enabled: Boolean(overlay.enabled),
+      color: overlay.color || base.colorOverlay.color,
+      opacity: clamp(overlay.opacity ?? base.colorOverlay.opacity, 0, 1),
+    },
+  };
+}
+
 const KIND_IDS = new Set(SHAPE_KINDS.map((item) => item.id));
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, Number(value) || 0));
+}
+
+/** 十六进制颜色转带透明度的 rgba，用于阴影/发光（颜色选择器不支持 alpha）。 */
+function withAlpha(color, alpha) {
+  if (!color) return `rgba(0, 0, 0, ${alpha})`;
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    const full = hex.length === 3 ? hex.split('').map((char) => char + char).join('') : hex;
+    const num = Number.parseInt(full, 16);
+    if (Number.isFinite(num)) {
+      return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+    }
+  }
+  return color;
 }
 
 function normalizeBox(x, y, width, height) {
@@ -83,6 +140,8 @@ export class ShapeLayer {
     /** 混合模式与剪贴蒙版（D12.1）。 */
     this.blend = BLEND_IDS.has(options.blend) ? options.blend : 'source-over';
     this.clipped = Boolean(options.clipped);
+    /** 图层样式（D12.2）。 */
+    this.style = normalizeShapeStyle(options.style);
   }
 
   get isOpenPath() {
@@ -129,64 +188,118 @@ export class ShapeLayer {
   draw(ctx) {
     if (!this.visible || this.opacity <= 0) return;
     if (Math.abs(this.width) < 0.5 && Math.abs(this.height) < 0.5) return;
+    const box = normalizeBox(this.x, this.y, this.width, this.height);
+    if (!this.isOpenPath && (box.width < 0.5 || box.height < 0.5)) return;
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
     ctx.globalCompositeOperation = this.blend || 'source-over';
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
-    if (this.shape === 'rect') {
+    // 图层样式（D12.2）：先画发光/阴影剪影，再画主体。
+    const style = this.style;
+    if (style?.glow?.enabled) {
+      this._paintSilhouetteShadow(ctx, { color: style.glow.color, blur: style.glow.blur, dx: 0, dy: 0 });
+    }
+    if (style?.shadow?.enabled) {
+      const rad = (style.shadow.angle * Math.PI) / 180;
+      this._paintSilhouetteShadow(ctx, {
+        color: style.shadow.color,
+        blur: style.shadow.blur,
+        dx: Math.cos(rad) * style.shadow.distance,
+        dy: Math.sin(rad) * style.shadow.distance,
+      });
+    }
+    this._paintBody(ctx, box);
+    ctx.restore();
+  }
+
+  /** 绘制几何路径（直线/箭头不走这里）。 */
+  _trace(ctx) {
+    if (this.shape === 'ellipse') {
       const box = normalizeBox(this.x, this.y, this.width, this.height);
-      if (box.width < 0.5 || box.height < 0.5) {
-        ctx.restore();
-        return;
-      }
-      roundRectPath(ctx, box.x, box.y, box.width, box.height, this.radius);
-      this._fillAndStroke(ctx, true);
-    } else if (this.shape === 'ellipse') {
-      const box = normalizeBox(this.x, this.y, this.width, this.height);
-      if (box.width < 0.5 || box.height < 0.5) {
-        ctx.restore();
-        return;
-      }
       ctx.beginPath();
       ctx.ellipse(box.x + box.width / 2, box.y + box.height / 2, box.width / 2, box.height / 2, 0, 0, Math.PI * 2);
-      this._fillAndStroke(ctx, true);
-    } else if (this.shape === 'line') {
+      return;
+    }
+    const box = normalizeBox(this.x, this.y, this.width, this.height);
+    roundRectPath(ctx, box.x, box.y, box.width, box.height, this.radius);
+  }
+
+  /** 用纯色画出「剪影」，供阴影/发光只取 alpha（D12.2）。 */
+  _paintSilhouette(ctx, color) {
+    if (this.isOpenPath) {
+      this._paintArrowStroke(ctx, color, Math.max(1, this.strokeWidth || 1), true);
+      return;
+    }
+    this._trace(ctx);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  /**
+   * 只让阴影落回画面：把剪影平移到画布外，再用反向 shadowOffset 把阴影投回原位。
+   * shadowOffset/Blur 不受 CTM 影响，这里用 CTM 的缩放把文档单位换算成设备像素。
+   */
+  _paintSilhouetteShadow(ctx, { color, blur, dx, dy }) {
+    const t = ctx.getTransform();
+    const scale = Math.hypot(t.a, t.b) || 1;
+    const shift = 10000;
+    ctx.save();
+    ctx.shadowColor = withAlpha(color, 0.6);
+    ctx.shadowBlur = Math.max(0, blur) * scale;
+    ctx.shadowOffsetX = dx * scale + shift;
+    ctx.shadowOffsetY = dy * scale;
+    ctx.translate(-shift / scale, 0);
+    this._paintSilhouette(ctx, '#000000');
+    ctx.restore();
+  }
+
+  _paintArrowStroke(ctx, color, lineWidth, withHead) {
+    const x2 = this.x + this.width;
+    const y2 = this.y + this.height;
+    const angle = Math.atan2(this.height, this.width);
+    const head = Math.max(8, lineWidth * 4);
+    const backX = x2 - Math.cos(angle) * head * 0.85;
+    const backY = y2 - Math.sin(angle) * head * 0.85;
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y);
+    ctx.lineTo(backX, backY);
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    if (!withHead) return;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(backX - Math.sin(angle) * head * 0.42, backY + Math.cos(angle) * head * 0.42);
+    ctx.lineTo(backX + Math.sin(angle) * head * 0.42, backY - Math.cos(angle) * head * 0.42);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  /** 填充/描边主体；渐变叠加与颜色叠加画在主体之上（D12.2）。 */
+  _paintBody(ctx, box) {
+    const style = this.style;
+    const alpha = ctx.globalAlpha;
+    if (this.shape === 'line') {
       ctx.beginPath();
       ctx.moveTo(this.x, this.y);
       ctx.lineTo(this.x + this.width, this.y + this.height);
       ctx.lineWidth = Math.max(1, this.strokeWidth || 1);
       ctx.strokeStyle = this.stroke;
       ctx.stroke();
-    } else {
-      // 箭头：主杆 + 实心三角箭头，颜色统一用描边色。
-      const x2 = this.x + this.width;
-      const y2 = this.y + this.height;
-      const angle = Math.atan2(this.height, this.width);
-      const lineWidth = Math.max(1, this.strokeWidth || 1);
-      const head = Math.max(8, lineWidth * 4);
-      const backX = x2 - Math.cos(angle) * head * 0.85;
-      const backY = y2 - Math.sin(angle) * head * 0.85;
-      ctx.beginPath();
-      ctx.moveTo(this.x, this.y);
-      ctx.lineTo(backX, backY);
-      ctx.lineWidth = lineWidth;
-      ctx.strokeStyle = this.stroke;
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(backX - Math.sin(angle) * head * 0.42, backY + Math.cos(angle) * head * 0.42);
-      ctx.lineTo(backX + Math.sin(angle) * head * 0.42, backY - Math.cos(angle) * head * 0.42);
-      ctx.closePath();
-      ctx.fillStyle = this.stroke;
-      ctx.fill();
+      this._paintOverlayStroke(ctx, box, style);
+      return;
     }
-    ctx.restore();
-  }
+    if (this.shape === 'arrow') {
+      this._paintArrowStroke(ctx, this.stroke, Math.max(1, this.strokeWidth || 1), true);
+      this._paintOverlayStroke(ctx, box, style);
+      return;
+    }
 
-  _fillAndStroke(ctx, allowFill) {
-    if (allowFill && this.fill && this.fill !== 'none') {
+    this._trace(ctx);
+    if (this.fill && this.fill !== 'none') {
       ctx.fillStyle = this.fill;
       ctx.fill();
     }
@@ -195,6 +308,46 @@ export class ShapeLayer {
       ctx.strokeStyle = this.stroke;
       ctx.stroke();
     }
+    // 叠加层画在主体之上：渐变优先于颜色叠加。
+    if (style?.gradient?.enabled) {
+      ctx.globalAlpha = alpha * style.gradient.opacity;
+      ctx.fillStyle = this._linearGradient(ctx, box, style.gradient);
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+    } else if (style?.colorOverlay?.enabled) {
+      ctx.globalAlpha = alpha * style.colorOverlay.opacity;
+      ctx.fillStyle = style.colorOverlay.color;
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+    }
+  }
+
+  /** 直线/箭头的叠加：在原有描边之上再描一次渐变或纯色。 */
+  _paintOverlayStroke(ctx, box, style) {
+    if (!style) return;
+    const alpha = ctx.globalAlpha;
+    if (style.gradient?.enabled) {
+      ctx.globalAlpha = alpha * style.gradient.opacity;
+      this._paintArrowStroke(ctx, this._linearGradient(ctx, box, style.gradient), Math.max(1, this.strokeWidth || 1), true);
+      ctx.globalAlpha = alpha;
+    } else if (style.colorOverlay?.enabled) {
+      ctx.globalAlpha = alpha * style.colorOverlay.opacity;
+      this._paintArrowStroke(ctx, style.colorOverlay.color, Math.max(1, this.strokeWidth || 1), true);
+      ctx.globalAlpha = alpha;
+    }
+  }
+
+  _linearGradient(ctx, box, gradient) {
+    const rad = (gradient.angle * Math.PI) / 180;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const length = Math.abs(box.width * Math.cos(rad)) + Math.abs(box.height * Math.sin(rad));
+    const dx = (Math.cos(rad) * length) / 2;
+    const dy = (Math.sin(rad) * length) / 2;
+    const paint = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+    paint.addColorStop(0, gradient.from);
+    paint.addColorStop(1, gradient.to);
+    return paint;
   }
 
   clone({ fresh = false } = {}) {
@@ -215,6 +368,7 @@ export class ShapeLayer {
       visible: this.visible,
       blend: this.blend,
       clipped: this.clipped,
+      style: this.style,
     });
   }
 

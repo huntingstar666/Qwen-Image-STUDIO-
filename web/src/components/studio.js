@@ -55,7 +55,7 @@ import { warpPatch } from './studio/liquify.js';
 import { mosaicDab } from './studio/mosaic.js';
 import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
 import { BLEND_MODES } from './studio/layers.js';
-import { SHAPE_DEFAULTS, SHAPE_KINDS, ShapeLayer } from './studio/shapeLayer.js';
+import { SHAPE_DEFAULTS, SHAPE_KINDS, SHAPE_STYLE_DEFAULTS, ShapeLayer, normalizeShapeStyle } from './studio/shapeLayer.js';
 import { patternDab } from './studio/pattern.js';
 import { drawLayers } from './studio/renderer.js';
 
@@ -286,7 +286,7 @@ export function createStudioPage(host) {
   /* D11.3：贴纸工具点击画面后等待文件选择，记录落点（图像坐标）。 */
   let pendingStickerPoint = null;
   /* D11.4：形状工具的新建样式（无选中形状时作为默认值）。 */
-  const shapeStyle = { ...SHAPE_DEFAULTS };
+  const shapeStyle = { ...SHAPE_DEFAULTS, style: normalizeShapeStyle() };
   /* D11.4：图案图章的取样矩形（图像坐标，未裁剪空间）。 */
   let patternRect = null;
   /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
@@ -699,6 +699,27 @@ export function createStudioPage(host) {
                 <span class="studio-slider-head"><span>圆角</span><span class="mono" data-ref="shapeRadiusVal">0</span></span>
                 <input type="range" min="0" max="200" step="1" value="0" data-ref="shapeRadius" />
               </label>
+              <div class="studio-pane-title">图层样式</div>
+              <label class="studio-check"><input type="checkbox" data-ref="styleShadow" /><span>外阴影</span></label>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>颜色</span><input type="color" data-ref="styleShadowColor" value="#000000" /></label>
+                <label class="studio-maskbar-field"><span>模糊</span><input type="range" min="0" max="80" step="1" value="18" data-ref="styleShadowBlur" /><span class="mono" data-ref="styleShadowBlurVal">18</span></label>
+              </div>
+              <label class="studio-check"><input type="checkbox" data-ref="styleGlow" /><span>外发光</span></label>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>颜色</span><input type="color" data-ref="styleGlowColor" value="#f6c85f" /></label>
+                <label class="studio-maskbar-field"><span>模糊</span><input type="range" min="0" max="80" step="1" value="18" data-ref="styleGlowBlur" /><span class="mono" data-ref="styleGlowBlurVal">18</span></label>
+              </div>
+              <label class="studio-check"><input type="checkbox" data-ref="styleGradient" /><span>渐变叠加</span></label>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>起</span><input type="color" data-ref="styleGradientFrom" value="#ff3b30" /></label>
+                <label class="studio-check studio-text-color"><span>止</span><input type="color" data-ref="styleGradientTo" value="#7aa2ff" /></label>
+              </div>
+              <label class="studio-check"><input type="checkbox" data-ref="styleOverlay" /><span>颜色叠加</span></label>
+              <div class="studio-row">
+                <label class="studio-check studio-text-color"><span>颜色</span><input type="color" data-ref="styleOverlayColor" value="#000000" /></label>
+                <label class="studio-maskbar-field"><span>不透明</span><input type="range" min="0" max="100" step="1" value="40" data-ref="styleOverlayOpacity" /><span class="mono" data-ref="styleOverlayOpacityVal">40</span></label>
+              </div>
               <button class="btn ghost sm studio-block" type="button" data-ref="shapeDelete" disabled>删除形状</button>
               <div class="studio-note" data-ref="shapeHint">当前未选中形状：参数将用于新形状。</div>
             </div>
@@ -821,6 +842,21 @@ export function createStudioPage(host) {
     shapeRadiusVal: ref('shapeRadiusVal'),
     shapeDelete: ref('shapeDelete'),
     shapeHint: ref('shapeHint'),
+    styleShadow: ref('styleShadow'),
+    styleShadowColor: ref('styleShadowColor'),
+    styleShadowBlur: ref('styleShadowBlur'),
+    styleShadowBlurVal: ref('styleShadowBlurVal'),
+    styleGlow: ref('styleGlow'),
+    styleGlowColor: ref('styleGlowColor'),
+    styleGlowBlur: ref('styleGlowBlur'),
+    styleGlowBlurVal: ref('styleGlowBlurVal'),
+    styleGradient: ref('styleGradient'),
+    styleGradientFrom: ref('styleGradientFrom'),
+    styleGradientTo: ref('styleGradientTo'),
+    styleOverlay: ref('styleOverlay'),
+    styleOverlayColor: ref('styleOverlayColor'),
+    styleOverlayOpacity: ref('styleOverlayOpacity'),
+    styleOverlayOpacityVal: ref('styleOverlayOpacityVal'),
     patternWrap: ref('patternWrap'),
     patternHint: ref('patternHint'),
     patternClear: ref('patternClear'),
@@ -3243,6 +3279,7 @@ export function createStudioPage(host) {
                 stroke: layer.stroke,
                 shapeStrokeWidth: layer.strokeWidth,
                 radius: layer.radius,
+                style: layer.style,
               }
             : {}),
         },
@@ -3488,6 +3525,7 @@ export function createStudioPage(host) {
               opacity: props.opacity,
               blend: props.blend,
               clipped: props.clipped,
+              style: props.style,
             },
             {
               name: props.name,
@@ -4171,6 +4209,50 @@ export function createStudioPage(host) {
     refs.shapeHint.textContent = target
       ? `正在编辑「${target.name}」：改动可撤销。`
       : '当前未选中形状：参数将用于新形状。';
+
+    // 图层样式（D12.2）
+    const layerStyle = style.style || normalizeShapeStyle();
+    refs.styleShadow.checked = layerStyle.shadow.enabled;
+    refs.styleShadowColor.value = toHex(layerStyle.shadow.color);
+    refs.styleShadowBlur.value = String(Math.round(layerStyle.shadow.blur));
+    refs.styleShadowBlurVal.textContent = String(Math.round(layerStyle.shadow.blur));
+    refs.styleGlow.checked = layerStyle.glow.enabled;
+    refs.styleGlowColor.value = toHex(layerStyle.glow.color);
+    refs.styleGlowBlur.value = String(Math.round(layerStyle.glow.blur));
+    refs.styleGlowBlurVal.textContent = String(Math.round(layerStyle.glow.blur));
+    refs.styleGradient.checked = layerStyle.gradient.enabled;
+    refs.styleGradientFrom.value = toHex(layerStyle.gradient.from);
+    refs.styleGradientTo.value = toHex(layerStyle.gradient.to);
+    refs.styleOverlay.checked = layerStyle.colorOverlay.enabled;
+    refs.styleOverlayColor.value = toHex(layerStyle.colorOverlay.color);
+    refs.styleOverlayOpacity.value = String(Math.round(layerStyle.colorOverlay.opacity * 100));
+    refs.styleOverlayOpacityVal.textContent = String(Math.round(layerStyle.colorOverlay.opacity * 100));
+  }
+
+  /** 颜色输入只接受 #rrggbb，做一次兜底转换。 */
+  function toHex(color) {
+    const value = String(color || '').trim();
+    if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+    if (/^#[0-9a-f]{3}$/i.test(value)) {
+      return `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`;
+    }
+    return '#000000';
+  }
+
+  /** 形状样式控件：input 实时预览，change 落撤销步。 */
+  function bindShapeStyleControl(el, apply) {
+    el.addEventListener('input', () => {
+      apply(shapeStyleTarget().style, el);
+      if (shapeTarget()) {
+        doc.touchLayers();
+        scheduleDraw();
+      }
+    });
+    el.addEventListener('change', () => {
+      apply(shapeStyleTarget().style, el);
+      commitShape();
+      syncShapePane();
+    });
   }
 
   /** 形状样式落一步撤销（仅在选中形状时）。 */
@@ -4242,6 +4324,46 @@ export function createStudioPage(host) {
   refs.shapeRadius.addEventListener('change', () => {
     shapeStyleTarget().radius = Number(refs.shapeRadius.value);
     commitShape();
+  });
+
+  bindShapeStyleControl(refs.styleShadow, (style, el) => {
+    style.shadow.enabled = el.checked;
+  });
+  bindShapeStyleControl(refs.styleShadowColor, (style, el) => {
+    style.shadow.color = el.value;
+  });
+  bindShapeStyleControl(refs.styleShadowBlur, (style, el) => {
+    style.shadow.blur = Number(el.value);
+    refs.styleShadowBlurVal.textContent = el.value;
+  });
+  bindShapeStyleControl(refs.styleGlow, (style, el) => {
+    style.glow.enabled = el.checked;
+  });
+  bindShapeStyleControl(refs.styleGlowColor, (style, el) => {
+    style.glow.color = el.value;
+  });
+  bindShapeStyleControl(refs.styleGlowBlur, (style, el) => {
+    style.glow.blur = Number(el.value);
+    refs.styleGlowBlurVal.textContent = el.value;
+  });
+  bindShapeStyleControl(refs.styleGradient, (style, el) => {
+    style.gradient.enabled = el.checked;
+  });
+  bindShapeStyleControl(refs.styleGradientFrom, (style, el) => {
+    style.gradient.from = el.value;
+  });
+  bindShapeStyleControl(refs.styleGradientTo, (style, el) => {
+    style.gradient.to = el.value;
+  });
+  bindShapeStyleControl(refs.styleOverlay, (style, el) => {
+    style.colorOverlay.enabled = el.checked;
+  });
+  bindShapeStyleControl(refs.styleOverlayColor, (style, el) => {
+    style.colorOverlay.color = el.value;
+  });
+  bindShapeStyleControl(refs.styleOverlayOpacity, (style, el) => {
+    style.colorOverlay.opacity = Number(el.value) / 100;
+    refs.styleOverlayOpacityVal.textContent = el.value;
   });
 
   refs.shapeDelete.addEventListener('click', () => {

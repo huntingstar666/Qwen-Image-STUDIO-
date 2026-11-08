@@ -906,6 +906,14 @@ DOM 结构：
   - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`，已有椭圆/矩形/箭头三层）：选中矩形层设「正片叠底」后，矩形内像素由 `[255,59,48]` 变为 `[40,14,17]`（与逐通道相乘理论值一致），底色不变。把矩形移到椭圆上方并勾选「剪贴到下层」后：两者重叠处仍为红 `[255,59,48]`，矩形超出椭圆的区域回到底色 `[40,60,90]`，椭圆自身区域保持绿 `[46,204,113]`；图层条出现「剪」徽标。刷新后 `x=65,y=60,clipped=true` 与画面结果完整恢复。截图 `.screenshots/D12.1-blend-clip-2026-11-08T05-15-57-077Z.png`。
   - 说明：剪贴基座是「下方第一个未剪贴图层」，暂不支持成组剪贴到组；混合模式暂不作用于调整图层与修复层。
 
+- **D12.2 图层样式（已完成）** —— 形状层的外阴影、外发光、渐变叠加与颜色叠加：
+  - `shapeLayer.js` 新增 `SHAPE_STYLE_DEFAULTS` 与 `normalizeShapeStyle()`：`shadow`（颜色/模糊/距离/角度）、`glow`（颜色/模糊）、`gradient`（起止色/角度/不透明度）、`colorOverlay`（颜色/不透明度），深合并并夹取数值；`ShapeLayer.style` 随 `clone()` 复制、随工程持久化。
+  - 绘制：先画「剪影阴影」——把纯色剪影平移到画布外，再用反向 `shadowOffset` 把阴影投回原位（`shadowOffset/Blur` 不受 CTM 影响，按 CTM 缩放把文档单位换算成设备像素），因此发光/阴影在缩放视口与导出时位置一致；主体先填色/描边，再把渐变或颜色叠加以独立 alpha 画在最上层。原有填充、描边、圆角仍作为基础样式。
+  - UI：形状分页新增「图层样式」区块：外阴影（开关 + 颜色 + 模糊）、外发光（开关 + 颜色 + 模糊）、渐变叠加（开关 + 起止色）、颜色叠加（开关 + 颜色 + 不透明度）；`input` 实时预览、`change` 落撤销步。
+  - 单测：`shapeLayer.test.mjs` 追加 1 项（默认值、数值夹取、clone 深拷贝），四份图层测试合计 `pass 24 / fail 0`。
+  - 实测（headless Chromium，800×600 纯色底 `[40,60,90]`，200×200 红色形状）：外阴影（模糊 20、距离 10、角度 135°）启用后形状左下方 `[33,50,75]`、更远处为底色，形状内部不变；外发光（金色、模糊 18）在边缘外 2px 为 `[89,93,90]`，约 20px 外衰减回底色；渐变叠加（`#ff3b30 → #7aa2ff`、90°）后形状顶部 `[250,62,54]`、中部 `[187,110,152]`、底部 `[125,159,250]`；颜色叠加（黑、40%）后中心由 `[255,59,48]` 变为 `[153,35,28]`。刷新后样式开关、面板状态与像素结果完整恢复。截图 `.screenshots/D12.2-layer-style-2026-11-08T05-35-19-942Z.png`。
+  - 说明：本轮图层样式只作用于形状层；文字层继续使用自身的描边/投影字段，贴纸仍用不透明度与混合模式。暂不支持内阴影、描边独立于形状描边、渐变角度 UI（默认 90°，可通过工程数据调整）。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1101,7 +1109,7 @@ DOM 结构：
 | `mosaic.js` | `pixelate` / `mosaicDab`（方块均值 + 箱式模糊，D11.1 已落地） | `skin` | D11.1 |
 | `tools/text.js` | 文字图层创建与编辑（D11.2 暂内联在 `studio.js`，图层实体在 `textLayer.js`） | `renderer` | D11.2（已落地） |
 | `textLayer.js` | `TextLayer` / `TEXT_FONTS` / `TEXT_DEFAULTS` / `textLayerFromProps`（文字图层实体与绘制） | 无 | D11.2 |
-| `shapeLayer.js` | `ShapeLayer` / `SHAPE_KINDS` / `SHAPE_DEFAULTS` / `shapeLayerFromProps`（形状图层实体与绘制） | 无 | D11.4 |
+| `shapeLayer.js` | `ShapeLayer` / `SHAPE_KINDS` / `SHAPE_DEFAULTS` / `SHAPE_STYLE_DEFAULTS` / `normalizeShapeStyle` / `shapeLayerFromProps`（形状图层实体、绘制与图层样式） | 无 | D11.4 / D12.2 |
 | `pattern.js` | `tilePatch` / `patternDab`（图案平铺与柔边盖章） | 无 | D11.4 |
 | `tools/shape.js` | 形状创建与样式编辑（D11.4 暂内联在 `studio.js`，图层实体在 `shapeLayer.js`） | `renderer` | D11.4（已落地） |
 | `tools/pattern.js` | 图案图章（D11.4 暂内联在 `studio.js`，算法在 `pattern.js`） | `renderer` | D11.4（已落地） |
@@ -1422,7 +1430,7 @@ DOM 结构：
 | D11.3 | 贴纸 | 已完成 | 本次提交 | `layers.js` 追加 `BLEND_MODES` / `flipH/flipV/blend` / 旋转命中；`addOverlayFile` 支持落点与切页；`sticker` 工具（G）+ 右侧「贴纸」分页（导入/缩放/旋转/翻转/混合模式/删除）；画布四角缩放 + 旋转圆点（15° 吸附）；工程持久化翻转与混合；单测 5 项；实测见 §12.11 |
 | D11.4 | 形状与图案图章 | 已完成 | 本次提交 | 新增 `studio/shapeLayer.js`（矩形/椭圆/直线/箭头，填充/描边/圆角，`kind:'shape'` 持久化）与 `studio/pattern.js`（`tilePatch` + `patternDab`）；`shape` 工具（D）+ 右侧「形状」分页；`pattern` 工具（N）+ Alt 拖框取样 + 浮条提示/清除；`renderSample()` 纳入叠加层/文字/形状；单测 10 项；实测见 §12.11 |
 | D12.1 | 混合模式 + 剪贴蒙版 | 已完成 | 本次提交 | `BLEND_MODES` 扩展到叠加/文字/形状层；图层新增 `blend/clipped` 并持久化；`renderer.drawLayers()` 用双离屏画布做 alpha 剪贴（取最近未剪贴下层）；右侧「图层属性」区块 + 「剪」徽标；拖动预览复用同一渲染路径；实测见 §12.11 |
-| D12.2 | 图层样式 | 未开始 | — | — |
+| D12.2 | 图层样式 | 已完成 | 本次提交 | `shapeLayer.js` 新增 `SHAPE_STYLE_DEFAULTS/normalizeShapeStyle` 与 `style`（外阴影/外发光/渐变叠加/颜色叠加）；剪影 + 反向 shadowOffset 实现阴影/发光，渐变与颜色叠加画在主体之上；形状分页新增样式区块并持久化；单测 24 项；实测见 §12.11 |
 | D12.3 | 历史快照 | 未开始 | — | — |
 | D13.1 | AI 主体选择 | 未开始 | — | 待后端 |
 | D13.2 | 内容识别填充 | 未开始 | — | 待后端 |

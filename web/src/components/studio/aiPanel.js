@@ -1341,6 +1341,13 @@ export function mountAiPanel(host, ctx) {
           refs.previewBtn.textContent = '回到主图';
           ctx.showResult?.(state.resultUrl);
           toastSuccess('修改完成，已叠加到画布预览');
+          // D22.1：结果一出图就自动存入底部版本槽（不切换主图，点卡片再载入）。
+          void ctx.recordAiResult?.({
+            url: state.resultUrl,
+            width: state.resultInfo.width,
+            height: state.resultInfo.height,
+            task: actualTask,
+          });
           notifyPersist();
 
           // 成功的任务落一张历史卡片；一张图都没取到时不记录，避免空记录。

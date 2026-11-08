@@ -1070,6 +1070,13 @@ DOM 结构：
   - 修复：回退分支改为 `await next.bakeBlob('image/png')`；`versionThumb()` 只接受真正的 Blob（`typeof blob.size === 'number'`）；`recordVersion()` 对非 Blob 退化为「无原图」版本，但版本卡仍照常创建与落盘，不再整条链路失败。
   - 实测：快门等其它写入点仍正常生成卡片（`原始主图 / 快照 1`，缩略图为 WebP dataURL）；`node --test` 139 passed。
 
+- **AI 结果出图自动入槽（D22.1 增强）** —— 不再需要手动「载入为新底图」才进卡槽：
+  - `aiPanel.onDone` → `ctx.recordAiResult({url,width,height,task})`：结果一出图就调用 `recordVersion('edit', blob, { select:false, reveal:true })`，卡片立即出现在 Dock 末尾并自动滚入视野。
+  - `select:false`：只建卡、不改变 `currentVersionId`，主图仍是当前底图；点卡片时才走 `switchVersion` 载入（保留有图层时的丢弃确认）。
+  - 去重：`meta.resultUrl` 记录结果地址，同一 URL 只入槽一次；随后点「载入为新底图」时若已存在该结果卡，只把指针指过去，不再重复建卡。
+  - 取图：`fetchBlob(url)` 拿字节；跨域失败时用远程地址作缩略图（卡片可见/可对比），切换时再尝试 `fetchBlob` 补取；后端没给尺寸时用图片实际像素补宽高。
+  - 实测：`node --test` 139 passed；快门等既有写入点不受影响。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---

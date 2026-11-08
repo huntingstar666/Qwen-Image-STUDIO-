@@ -1533,10 +1533,22 @@ export function createStudioPage(host) {
           }
         }
         setDoc(next);
-        void recordVersion('edit', sourceBlob, {
-          label: meta.task === 'outpaint' ? nextVersionLabel('outpaint') : undefined,
-          meta: { task: meta.task || '', width: meta.width || 0, height: meta.height || 0 },
-        });
+        // AI 结果出图时已自动入槽；这里只把指针指过去，避免重复建卡。
+        const existing = versions.find((item) => item.meta?.resultUrl === url);
+        if (existing) {
+          currentVersionId = existing.id;
+          renderDock();
+        } else {
+          void recordVersion('edit', sourceBlob, {
+            label: meta.task === 'outpaint' ? nextVersionLabel('outpaint') : undefined,
+            meta: {
+              task: meta.task || '',
+              width: meta.width || 0,
+              height: meta.height || 0,
+              resultUrl: url,
+            },
+          });
+        }
         return { width: next.size.width, height: next.size.height, name: next.name };
       } catch (err) {
         if (token === openSeq) toastError(err, '载入结果失败');
@@ -1545,6 +1557,48 @@ export function createStudioPage(host) {
     },
     async addOverlay(file, options = {}) {
       return addOverlayFile(file, options);
+    },
+    /**
+     * AI 出图后自动入槽（D22.1 增强）：只建卡、不切换主图，
+     * 用户点卡片时再走 switchVersion 载入；同一结果 URL 只入槽一次。
+     */
+    async recordAiResult({ url, width, height, task } = {}) {
+      if (!url || !doc) return null;
+      if (versions.some((item) => item.meta?.resultUrl === url)) return null;
+      let blob = await fetchBlob(url);
+      let w = Number(width) || 0;
+      let h = Number(height) || 0;
+      if ((!w || !h) && blob) {
+        // 后端没给尺寸时用实际图片补上，版本卡的宽高才准确。
+        try {
+          const objectUrl = URL.createObjectURL(blob);
+          const image = await loadImage(objectUrl);
+          w = image.naturalWidth || w;
+          h = image.naturalHeight || h;
+          URL.revokeObjectURL(objectUrl);
+        } catch {
+          /* 取不到就退回主图尺寸 */
+        }
+      }
+      // 跨域结果拿不到字节：用远程地址做缩略图，卡片仍然可见、可对比。
+      const thumbUrl = blob ? undefined : url;
+      const record = await recordVersion('edit', blob, {
+        label: task === 'outpaint' ? nextVersionLabel('outpaint') : undefined,
+        width: w || undefined,
+        height: h || undefined,
+        thumbUrl,
+        meta: {
+          task: task || 'edit',
+          resultUrl: url,
+          auto: true,
+          width: width || 0,
+          height: height || 0,
+        },
+        select: false,
+        reveal: true,
+      });
+      if (record) toastSuccess('结果已存入下方版本槽 · 点卡片可载入为主图');
+      return record;
     },
     getLayers() {
       return doc?.layers || [];
@@ -4515,8 +4569,14 @@ export function createStudioPage(host) {
       ...(persistDisabled ? { blob: safeBlob } : {}),
     };
     versions = [...versions, record];
-    currentVersionId = id;
+    // AI 结果自动入槽时默认不改变当前主图指针（等用户点卡片再切换）。
+    if (options.select !== false) currentVersionId = id;
     renderDock();
+    if (options.reveal) {
+      refs.dockTrack
+        ?.querySelector(`[data-vid="${id}"]`)
+        ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
     if (persistDisabled || !projectId) return record;
     try {
       await addStudioVersion({ ...record, projectId, blob: safeBlob });
@@ -4553,6 +4613,10 @@ export function createStudioPage(host) {
       } catch {
         blob = null;
       }
+    }
+    // 自动入槽的 AI 结果可能只存了远程地址（跨域时拿不到字节），切换时再取一次。
+    if (!blob && version.meta?.resultUrl) {
+      blob = await fetchBlob(version.meta.resultUrl);
     }
     if (token !== openSeq || !doc) return;
     if (!blob) {

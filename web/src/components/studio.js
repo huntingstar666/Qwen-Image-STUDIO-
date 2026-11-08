@@ -6924,6 +6924,21 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 抠图结果是否还有可见像素（选区被裁剪框完全排除时会是全透明）。 */
+  function cutoutHasPixels(canvas) {
+    if (!canvas) return false;
+    try {
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] > 8) return true;
+      }
+    } catch {
+      /* getImageData 失败时按有像素处理，避免误拦截 */
+      return true;
+    }
+    return false;
+  }
+
   /** 抠图出口：透明 PNG / 复制 / 抠图层 / 白底 JPG（均支持固定尺寸，抠图层除外）。 */
   async function runCutout(action) {
     if (!doc || cutoutBusy) return;
@@ -6942,6 +6957,12 @@ export function createStudioPage(host) {
       const built = await buildCutoutCanvas();
       if (!built) return;
       const { canvas, raw, rect, target } = built;
+      // 选区可能被裁剪框完全排除（先选区再裁剪），此时输出全透明；
+      // 继续建层只会得到「只有选框、看不见内容」的空图层。
+      if (!cutoutHasPixels(raw)) {
+        toastWarn('选区里没有可抠出的像素（可能已被裁剪到画面外），请重新圈选');
+        return;
+      }
       const name = baseName(doc.name);
       const tag = cutoutSizeTag(target);
       const width = canvas.width;
@@ -6998,6 +7019,8 @@ export function createStudioPage(host) {
         if (layer) {
           // 抠图层与原图坐标完全重合；先隐藏主图，才能直接看到抠出来的结果。
           if (baseVisible) setBaseVisibleTo(false);
+          doc.invalidateBase();
+          scheduleDraw();
           toastSuccess('已建立抠图层 · 已隐藏主图，点主图「眼睛」可对比原图');
         }
       }

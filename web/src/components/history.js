@@ -271,6 +271,47 @@ export function createHistoryPage(host) {
     img.addEventListener('error', done, { once: true });
   }
 
+  const prefersReducedMotion = () =>
+    Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+  /** 列表重绘序号：快速连续切换时只让最后一次生效。 */
+  let renderSeq = 0;
+
+  /**
+   * 带过渡的重绘：先 140ms 淡出，换完 DOM 再 160ms 淡入，并保持滚动位置。
+   * 避免整块 innerHTML 重建时缩略图“闪一下”和页面高度跳变。
+   */
+  function renderAnimated() {
+    const seq = ++renderSeq;
+    const grid = refs.grid;
+    const scrollY = window.scrollY;
+    if (prefersReducedMotion() || typeof grid.animate !== 'function') {
+      render();
+      window.scrollTo({ top: scrollY });
+      return;
+    }
+    const out = grid.animate([{ opacity: 1 }, { opacity: 0 }], {
+      duration: 140,
+      easing: 'ease-in',
+      fill: 'forwards',
+    });
+    out.finished
+      .catch(() => {})
+      .then(() => {
+        if (seq !== renderSeq) {
+          out.cancel();
+          return;
+        }
+        out.cancel();
+        render();
+        window.scrollTo({ top: scrollY });
+        grid.animate([{ opacity: 0 }, { opacity: 1 }], {
+          duration: 160,
+          easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+        });
+      });
+  }
+
   function kindMeta() {
     return HISTORY_KINDS.find((kind) => kind.id === kindFilter) || HISTORY_KINDS[0];
   }
@@ -637,14 +678,17 @@ export function createHistoryPage(host) {
     if (!force && Date.now() - loadedAt < 5000 && items.length) return;
     loading = true;
     render();
+    let failed = false;
     try {
       const data = await api.history(LIMIT);
       const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
       items = rawItems.map(normalizeItem).filter(Boolean);
       loadedAt = Date.now();
     } catch (err) {
+      failed = true;
       items = [];
       loadedAt = 0;
+      refs.summary.textContent = '加载失败';
       refs.grid.innerHTML = `
         <div class="panel"><div class="empty">
           <div class="glyph">!</div>
@@ -656,7 +700,8 @@ export function createHistoryPage(host) {
       toastError(err, '历史记录加载失败');
     } finally {
       loading = false;
-      render();
+      // 失败时保留错误面板与重试按钮，不要被常规渲染覆盖成空状态
+      if (!failed) renderAnimated();
     }
   }
 
@@ -664,7 +709,7 @@ export function createHistoryPage(host) {
     const button = event.target.closest('[data-kind]');
     if (!button) return;
     kindFilter = button.dataset.kind;
-    render();
+    renderAnimated();
   });
 
   refs.refresh.addEventListener('click', () => load({ force: true }));

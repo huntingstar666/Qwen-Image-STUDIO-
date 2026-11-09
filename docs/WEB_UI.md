@@ -364,3 +364,31 @@ import * as promptKit from '/vendor/image-tools-kit/src/prompt.js';        // pa
 
 另外提醒：Turbo 面板只保留「开关 + 预设」，加速 LoRA 由预设自动挂载且同时最多一个；
 「自动切换 Turbo 底模」预设会临时切到仓库里的 Turbo 权重、不挂加速 LoRA。实际挂载结果写进 `job.meta.turbo_lora` / `job.meta.turbo_unet` 便于复现。
+
+---
+
+## 11. 图像编辑：会话恢复 + 参考图/指令框双向同步（D28）
+
+| 问题 | 做法 | 实测 |
+|---|---|---|
+| 刷新页面后参考图全丢 | 新增 `web/src/components/editSession.js`（IndexedDB `wb-edit-session`）：参考图（dataURL + 遮罩）与指令框富文本分两条记录保存；`onShow()` 里「有交接用交接，没有就恢复上次会话」 | 拖入 1 张 → 刷新 → 参考图 1 张 + `@` chip 1 个，尺寸 320×240 原样回来；删掉再刷新为 0（不会复活） |
+| 从小图库拖进参考图区，指令框没有对应 `@` 引用 | `useLibraryItem()` 增加 `chip` 选项：默认在加入参考图区后往指令框末尾追加 chip；`ensureLibraryRef()` 传 `chip:false`，避免「插入 chip」路径重复插两颗 | 拖入后 `.upload-item` 1 个、`.ref-chip` 1 个；往指令框拖仍是单颗且落在光标处 |
+
+改这里要注意：
+
+1. **保存要防「误清空」**：首屏初始化也会走 `syncImages()`，此时还没尝试恢复。`scheduleSaveImages()` 只有在「已有图片」或「恢复流程已跑过」时才落库，否则会把旧记录覆盖成空数组。
+2. **chip 依赖参考图顺序**：chip 的编号/缩略图由 `promptEditor.syncChips(resolveChipRef)` 按 `images` 数组刷新；恢复会话时必须先 `images = restored` 再 `setHTML()` + `syncChips()`，否则 chip 会被判成「解析不到」直接删掉。
+3. **`edit.prompt` 仍只存纯文本**（`getText()`），富文本另存 `getHTML()`；两者不要混用，否则刷新后 chip 会退化成 `@编辑目标` 字样。
+
+### 11.1 PS 面板 AI 调用实测（2026-11-09）
+
+| 功能 | 接口 | 结果 |
+|---|---|---|
+| AI 修改 / 图像编辑 | `POST /api/edit` | ✅ 512×512、4 步，任务 done 并产出 PNG |
+| AI 主体选择 | `POST /api/image/segment`（subject/BiRefNet） | ✅ 1 个蒙版，score 0.9987，box 与画面圆形一致 |
+| 高清放大 | `POST /api/image/upscale`（vosr2） | ✅ 512→1024 出图；修复前「编辑后紧接放大」会把服务进程带崩（见下） |
+| 提示词润色 | `POST /api/polish`（qwen3.5:9b） | ✅ 564ms 返回 `rewritten_prompt` |
+| 模型清单 | `/api/image/segment/models`、`/api/image/upscale/models` | ✅ `ready:true` |
+
+**踩坑（已修）**：`server/main.py::_ensure_upscale_room()` 原来只在「账面可用显存 < 目标」时才卸载生成引擎。实测 Qwen-Image 常驻（约 8GB 已用、23GB 可用）时加载 VOSR2 会在原生层崩掉整个进程（无 Python 栈），前端表现为「用了 AI 功能之后工作台打不开」。现在放大前**无条件卸载生成引擎**再判显存；修复后同一顺序（先 edit 再 upscale）任务 done、服务存活、生成引擎已卸载。
+

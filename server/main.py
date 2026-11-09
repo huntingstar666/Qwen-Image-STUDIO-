@@ -1317,20 +1317,25 @@ def _upscale_room_mb() -> int:
 
 
 def _ensure_upscale_room(engine: str) -> None:
-    """放大前腾显存：先尝试释放生成引擎，不够再报错。"""
-    need = {"seedvr2": 12000, "flashvsr": 7000, "vosr2": 8000}.get(engine, 7000)
-    if _upscale_room_mb() >= need:
-        return
+    """放大前腾显存：先把生成引擎请下卡，再按剩余显存判断。
+
+    只按「账面可用显存」判断是不够的：Qwen-Image 常驻时再加载放大权重，
+    实测会在加载阶段把整个进程带崩（原生崩溃，没有任何 Python 栈），
+    表现就是「用了 AI 功能之后工作台打不开」。所以这里无条件卸载生成引擎，
+    让放大独占显卡；不足时再给出可读的显存不足错误。
+    """
+    need = {"seedvr2": 12000, "flashvsr": 8000, "vosr2": 9000}.get(engine, 8000)
     pipe = get_pipeline()
     gen = getattr(pipe, "_engine", None)
     if gen is not None:
         try:
             gen.free(unload=True)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 卸载失败也要继续尝试放大
             pass
-    if _upscale_room_mb() < need:
+    room = _upscale_room_mb()
+    if room < need:
         raise upscale_manager.UpscaleError(
-            f"显存不足：{engine} 约需 {need // 1000}GB 可用显存，当前仅 {_upscale_room_mb()}MB"
+            f"显存不足：{engine} 约需 {need // 1000}GB 可用显存，当前仅 {room}MB"
         )
 
 

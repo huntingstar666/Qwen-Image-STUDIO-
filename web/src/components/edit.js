@@ -19,6 +19,7 @@ import { JobRunner } from './jobView.js';
 import { createHistoryRail } from './historyRail.js';
 import { createRefLibrary, hasRefDrag, readRefDrag } from './refLibrary.js';
 import { PromptEditor } from './promptEditor.js';
+import { loadEditSession, saveEditImages, saveEditPrompt } from './editSession.js';
 import { MaskEditor } from './maskEditor.js';
 import { createStylePicker } from './stylePicker.js';
 import { LoraPicker, ModelsSummary, TurboControl } from './controls.js';
@@ -489,6 +490,7 @@ export function createEditPage(host) {
       edit.prompt = text;
       patchSettings({ edit: { prompt: text } });
       updatePromptCount();
+      scheduleSavePrompt();
     },
   });
 
@@ -497,6 +499,64 @@ export function createEditPage(host) {
     onUse: (item) => useLibraryItem(item),
     onRemove: (item) => removeLibraryItem(item),
   });
+
+  /* ============================================================
+   * 会话恢复（D28.1）：刷新 / 重开页面后参考图与 @ 引用不丢
+   * ============================================================ */
+  let saveImagesTimer = 0;
+  let savePromptTimer = 0;
+  /** 恢复流程是否已经跑过：跑之前不允许把空列表写回去，否则会把旧记录误清。 */
+  let sessionRestored = false;
+
+  function scheduleSaveImages() {
+    clearTimeout(saveImagesTimer);
+    saveImagesTimer = window.setTimeout(() => {
+      saveImagesTimer = 0;
+      // 还没尝试恢复又没有任何图：保持原记录不动（例如首次挂载时的初始化渲染）
+      if (!images.length && !sessionRestored) return;
+      void saveEditImages(images);
+    }, 600);
+  }
+
+  function scheduleSavePrompt() {
+    clearTimeout(savePromptTimer);
+    savePromptTimer = window.setTimeout(() => {
+      savePromptTimer = 0;
+      void saveEditPrompt(promptEditor.getHTML());
+    }, 600);
+  }
+
+  async function restoreEditSessionOnce() {
+    if (sessionRestored) return;
+    sessionRestored = true;
+    if (images.length) return;
+    const session = await loadEditSession();
+    if (!session?.images?.length) return;
+    const restored = [];
+    for (const item of session.images) {
+      try {
+        const entry = { ...item };
+        if (!entry.width || !entry.height) {
+          const { width, height } = await probeImageSize(entry.dataUrl);
+          entry.width = width;
+          entry.height = height;
+        }
+        entry.previewUrl = await makeThumbnail(entry.dataUrl);
+        restored.push(entry);
+      } catch (err) {
+        console.warn('[edit] 恢复参考图失败', err);
+      }
+    }
+    if (!restored.length) return;
+    images = restored;
+    syncImages();
+    if (session.promptHtml) {
+      promptEditor.setHTML(session.promptHtml);
+      promptEditor.syncChips(resolveChipRef);
+      updatePromptCount();
+    }
+    toastSuccess(`已恢复上次的 ${images.length} 张参考图`);
+  }
 
   /* 参考图盒子与指令卡等高：底边对齐后，两者的分界线正好落在「引擎已就绪」上方的横线上 */
   const sideEl = refs.libHost.closest('.wb-side');
@@ -806,8 +866,8 @@ export function createEditPage(host) {
     return index === 0 ? '编辑目标' : `参考图 ${index + 1}`;
   }
 
-  /** 小图库 → 参考图区域（已在区域里则复用）。 */
-  function useLibraryItem(item) {
+  /** 小图库 → 参考图区域（已在区域里则复用）。`chip=false` 时不往指令框补 @ 引用（插入 chip 时用）。 */
+  function useLibraryItem(item, { chip = true } = {}) {
     const existing = images.find((image) => image.libKey === item.id);
     if (existing) {
       toastWarn('这张图已经在参考图区域了，拖进指令框可插入 @ 引用');
@@ -828,6 +888,8 @@ export function createEditPage(host) {
     images.push(entry);
     syncImages();
     toastSuccess(`已加入参考图区域（${imageLabel(images.indexOf(entry))}）`);
+    // D28.2：从小图库加进参考图区，同时把这张图作为 @ 引用写进指令框（两处同步）。
+    if (chip) appendRefChip(item, entry);
     makeThumbnail(entry.dataUrl).then((url) => {
       if (url === entry.dataUrl || !images.includes(entry)) return;
       entry.previewUrl = url;
@@ -843,6 +905,23 @@ export function createEditPage(host) {
         .catch(() => {});
     }
     return entry;
+  }
+
+  /** 把一张参考图追加成指令框末尾的 chip（已存在同样的引用就跳过）。 */
+  function appendRefChip(item, entry) {
+    if (!item || !entry || !images.includes(entry)) return null;
+    if (promptEditor.hasChip(item.id)) return null;
+    return promptEditor.insertChip(
+      {
+        key: item.id,
+        src: item.src || entry.dataUrl,
+        label: imageLabel(images.indexOf(entry)),
+        index: images.indexOf(entry),
+        width: entry.width,
+        height: entry.height,
+      },
+      promptEditor.endRange(),
+    );
   }
 
   /** 小图库删除 → 对应参考图与指令框里的引用一起消失。 */
@@ -868,9 +947,9 @@ export function createEditPage(host) {
     };
   }
 
-  /** 确保小图库图片已加入参考图区域。 */
+  /** 确保小图库图片已加入参考图区域（chip 由调用方按位置插入，这里不追加）。 */
   function ensureLibraryRef(item) {
-    return images.find((image) => image.libKey === item.id) || useLibraryItem(item);
+    return images.find((image) => image.libKey === item.id) || useLibraryItem(item, { chip: false });
   }
 
   /** 把小图库图片插入指令框，显示为「@ + 缩略图」。 */
@@ -1147,6 +1226,7 @@ export function createEditPage(host) {
     promptEditor.syncChips(resolveChipRef);
     refLib.setUsed(images.map((image) => image.libKey).filter(Boolean));
     syncSizeCard();
+    scheduleSaveImages();
   }
 
   refs.dropzone.addEventListener('click', () => refs.fileInput.click());
@@ -3364,7 +3444,7 @@ export function createEditPage(host) {
    * ============================================================ */
   async function applyHandoff() {
     const payload = consumeHandoff();
-    if (!payload) return;
+    if (!payload) return false;
     try {
       const nextImages = [];
       for (const item of payload.images) {
@@ -3384,7 +3464,7 @@ export function createEditPage(host) {
       }
       if (!nextImages.length) {
         toastWarn('图像处理页交接过来的图片无法读取');
-        return;
+        return false;
       }
       images = nextImages;
       if (payload.mask && images[0]) {
@@ -3433,8 +3513,13 @@ export function createEditPage(host) {
       renderAdvanced();
       updateMaskStatus();
       toastSuccess(payload.toast || '已接收图像处理结果');
+      // 交接过来的图片 / 指令同样写进本机会话，刷新后还能接着改
+      scheduleSaveImages();
+      scheduleSavePrompt();
+      return true;
     } catch (err) {
       toastError(err, '接收图像处理结果失败');
+      return false;
     }
   }
 
@@ -3445,7 +3530,11 @@ export function createEditPage(host) {
       syncFromOtherPage();
       renderHealthHint();
       updateMaskStatus();
-      applyHandoff();
+      // 有交接就优先用交接的图；没有就恢复上次的参考图（D28.1）
+      void (async () => {
+        const applied = await applyHandoff();
+        if (!applied) await restoreEditSessionOnce();
+      })();
     },
   };
 }

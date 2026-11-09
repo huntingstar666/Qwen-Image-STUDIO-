@@ -147,6 +147,70 @@ export class PromptEditor {
     if (!value) this.el.innerHTML = '';
   }
 
+  /** 富文本快照（含 @ 引用 chip），用于刷新后恢复现场。 */
+  getHTML() {
+    return this.el.innerHTML;
+  }
+
+  /**
+   * 恢复富文本快照：只认文字、换行与 ref-chip，其余标签一律丢弃，
+   * chip 用 chipNode 重建（顺带过滤掉保存期间被塞进来的脚本 / 事件属性）。
+   */
+  setHTML(html) {
+    const value = String(html || '');
+    if (!value) {
+      this.setText('');
+      return;
+    }
+    const box = document.createElement('div');
+    box.innerHTML = value;
+    const frag = document.createDocumentFragment();
+    const walk = (node, target) => {
+      for (const child of [...node.childNodes]) {
+        if (child.nodeType === 3) {
+          target.appendChild(document.createTextNode(child.textContent || ''));
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (isChip(child)) {
+          target.appendChild(
+            this.chipNode({
+              key: child.dataset.refKey,
+              src: child.querySelector('.ref-chip-img')?.getAttribute('src') || '',
+              label: child.querySelector('.ref-chip-name')?.textContent || '参考图',
+              index: Number(child.dataset.imageIndex) || 0,
+            }),
+          );
+          continue;
+        }
+        if (/^(DIV|P)$/.test(child.nodeName)) {
+          const block = document.createElement(child.nodeName);
+          walk(child, block);
+          target.appendChild(block);
+          continue;
+        }
+        if (child.nodeName === 'BR') {
+          target.appendChild(document.createElement('br'));
+          continue;
+        }
+        // 其他标签（加粗、span 等）拆掉标签保留文字，避免恢复出无法序列化的结构。
+        walk(child, target);
+      }
+    };
+    walk(box, frag);
+    this.el.innerHTML = '';
+    this.el.appendChild(frag);
+    this.prune();
+    this.emit();
+  }
+
+  /** 指令框里是否已经有这张图（按小图库 key）的 @ 引用。 */
+  hasChip(key) {
+    const target = String(key || '');
+    if (!target) return false;
+    return [...this.el.querySelectorAll('.ref-chip')].some((chip) => chip.dataset.refKey === target);
+  }
+
   /* ------------------------------------------------------------ 插入 */
 
   insertText(text) {

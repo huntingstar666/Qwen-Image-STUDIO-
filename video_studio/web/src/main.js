@@ -1,0 +1,1024 @@
+import { api, toast, formatMs } from "./api.js";
+import { getState, setState, shotAt } from "./store.js";
+import { Timeline } from "./timeline.js";
+import { Storyboard } from "./storyboard.js";
+import { initSegmented } from "./ui.js";
+import { renderInspector, renderPipeline } from "./inspector.js";
+
+const $ = (id) => document.getElementById(id);
+const audioEl = $("audio");
+
+const refs = {
+  stage: $("stage"),
+  stageArea: document.querySelector(".stage-area"),
+  image: $("stageImage"),
+  subtitle: $("stageSubtitle"),
+  empty: $("stageEmpty"),
+  timecode: $("timecode"),
+  seek: $("seek"),
+  play: $("btnPlay"),
+  taskBar: $("taskBar"),
+  taskFill: document.querySelector("#taskBar .task-fill"),
+  taskLabel: document.querySelector("#taskBar .task-label"),
+  inspector: $("inspector"),
+  pipeline: $("pipeline"),
+  projectSelect: $("projectSelect"),
+  tlMeta: $("tlMeta"),
+  canvasTag: $("canvasTag"),
+  drawer: $("drawer"),
+  drawerBody: $("drawerBody"),
+  drawerBackdrop: $("drawerBackdrop"),
+  timelinePanel: $("timelinePanel"),
+  storyboardPanel: $("storyboardPanel"),
+  viewSwitch: $("viewSwitch"),
+  stageHint: $("stageHint"),
+};
+
+let timeline = null;
+let storyboard = null;
+let viewSwitch = null;
+let drawerDraft = null;
+let lastStageKey = "";
+let rafId = 0;
+/** 双击镜头块后的试听区间（ms），播到段尾自动停。 */
+let playRange = null;
+
+// --------------------------------------------------------------------------- 工具
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function toPatch(path, value) {
+  const keys = path.split(".");
+  const root = {};
+  let cursor = root;
+  keys.forEach((key, index) => {
+    if (index === keys.length - 1) cursor[key] = value;
+    else {
+      cursor[key] = {};
+      cursor = cursor[key];
+    }
+  });
+  return root;
+}
+
+function merge(target, patch) {
+  Object.entries(patch).forEach(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      target[key] = merge(target[key] || {}, value);
+    } else {
+      target[key] = value;
+    }
+  });
+  return target;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function currentMs() {
+  return Math.max(0, (audioEl.currentTime || 0) * 1000);
+}
+
+function duration() {
+  const project = getState().project;
+  return Number((project && project.audio && project.audio.durationMs) || 0);
+}
+
+// --------------------------------------------------------------------------- 启动
+
+async function boot() {
+  applyTheme();
+  timeline = new Timeline(
+    {
+      inner: $("tlInner"),
+      ruler: $("tlRuler"),
+      shots: $("tlShots"),
+      subs: $("tlSubs"),
+      bgm: $("tlBgm"),
+      playhead: $("playhead"),
+      wave: $("wave"),
+      empty: $("tlEmpty"),
+      scroll: $("tlScroll"),
+    },
+    {
+      onSeek: (ms) => {
+        playRange = null;
+        seek(ms);
+      },
+      onSelect: (id) => selectShot(id),
+      onRetime: (id, patch) => retimeShot(id, patch),
+      onPlayRange: (shot) => playShot(shot),
+    },
+  );
+
+  bindTopbar();
+  bindTabs();
+  bindTransport();
+  bindDrawer();
+
+  storyboard = new Storyboard(
+    {
+      list: $("sbList"),
+      count: $("sbCount"),
+      filter: $("sbFilter"),
+      search: $("sbSearch"),
+    },
+    {
+      onSelect: (id, shot) => {
+        selectShot(id);
+        if (shot) seek(shot.startMs);
+      },
+      onPatch: (id, patch) => patchShotById(id, patch),
+      onRegenerate: (id) => regenerateShot(id),
+      onUpload: (id) => {
+        selectShot(id);
+        $("fileShotImage").click();
+      },
+      onLocate: (shot) => {
+        setView("timeline");
+        selectShot(shot.id);
+        seek(shot.startMs);
+      },
+      onUploadAudio: () => $("fileAudio").click(),
+      onUploadSubtitle: () => $("fileSubtitle").click(),
+    },
+  );
+
+  viewSwitch = initSegmented(refs.viewSwitch, (view) => setView(view));
+  setView(localStorage.getItem("videoStudio.view") === "storyboard" ? "storyboard" : "timeline");
+
+  if (window.ResizeObserver && refs.stageArea) {
+    new ResizeObserver(() => fitStage()).observe(refs.stageArea);
+  } else {
+    window.addEventListener("resize", () => fitStage());
+  }
+
+  const [health, schema, projects] = await Promise.all([
+    api.get("/api/health").catch((err) => ({ error: err.message })),
+    api.get("/api/schema"),
+    api.get("/api/projects").catch(() => ({ projects: [] })),
+  ]);
+  setState({ health, schema, projects: projects.projects || [] });
+  renderChips();
+
+  let projectId = localStorage.getItem("videoStudio.project") || "";
+  if (!stateProjects().some((item) => item.id === projectId)) {
+    projectId = (stateProjects()[0] || {}).id || "";
+  }
+  if (!projectId && schema) {
+    const created = await api.post("/api/projects", { name: "未命名项目" });
+    projectId = created.id;
+    setState({ projects: [{ id: created.id, name: created.name }] });
+  }
+  if (projectId) await loadProject(projectId);
+  else renderAll();
+
+  window.addEventListener("keydown", (event) => {
+    const tag = (event.target.tagName || "").toLowerCase();
+    if (["input", "textarea", "select"].includes(tag)) return;
+    if (event.code === "Space") {
+      event.preventDefault();
+      togglePlay();
+      return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const step = event.shiftKey ? 1000 : 100;
+      seek(currentMs() + (event.key === "ArrowLeft" ? -step : step));
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      seek(0);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      seek(duration());
+    }
+  });
+}
+
+function stateProjects() {
+  return getState().projects || [];
+}
+
+function applyTheme() {
+  const saved = localStorage.getItem("videoStudio.theme");
+  const dark = saved
+    ? saved === "dark"
+    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+
+// --------------------------------------------------------------------------- 项目
+
+async function loadProject(projectId, { keepTime = true } = {}) {
+  const previous = currentMs();
+  const project = await api.get(`/api/projects/${projectId}`);
+  localStorage.setItem("videoStudio.project", projectId);
+  const list = stateProjects().some((item) => item.id === projectId)
+    ? stateProjects()
+    : [{ id: project.id, name: project.name }, ...stateProjects()];
+  const selected = (project.shots || []).some((shot) => shot.id === getState().selectedId)
+    ? getState().selectedId
+    : (project.shots || [])[0]?.id || "";
+  setState({ project, projects: list, selectedId: selected });
+  syncAudio(project, keepTime ? previous : 0);
+  renderAll();
+}
+
+function syncAudio(project, previousMs) {
+  const url = (project.audio && project.audio.url) || "";
+  if (audioEl.dataset.url !== url) {
+    audioEl.dataset.url = url;
+    if (url) {
+      audioEl.src = url;
+      audioEl.load();
+    } else {
+      audioEl.removeAttribute("src");
+    }
+  }
+  if (url && previousMs > 0) {
+    audioEl.addEventListener(
+      "loadedmetadata",
+      () => {
+        audioEl.currentTime = Math.min(previousMs / 1000, audioEl.duration || 0);
+        renderStage();
+      },
+      { once: true },
+    );
+  }
+}
+
+async function refreshProjects() {
+  const data = await api.get("/api/projects");
+  setState({ projects: data.projects || [] });
+  renderProjectPicker();
+}
+
+function renderAll() {
+  const state = getState();
+  renderProjectPicker();
+  renderChips();
+  applyCanvasTag();
+  renderStage();
+  renderSide();
+  syncSegmentInputs();
+  updateMeta();
+  updateTransport();
+  if (state.project && timeline) {
+    timeline.setProject(state.project, state.selectedId, state.pxPerSec);
+    timeline.setPlayhead(currentMs());
+  }
+  if (state.project && storyboard) {
+    storyboard.setProject(state.project, state.selectedId);
+  }
+}
+
+function syncSegmentInputs() {
+  const project = getState().project;
+  if (!project) return;
+  const config = project.segments || {};
+  $("mergeGap").value = config.mergeGapMs || 350;
+  $("maxShot").value = config.maxShotMs || 8000;
+}
+
+/** 切换「时间线 / 分镜表」：两块共用 selectedId，只有渲染入口不同。 */
+function setView(view) {
+  const next = view === "storyboard" ? "storyboard" : "timeline";
+  document.querySelector(".app").dataset.view = next;
+  localStorage.setItem("videoStudio.view", next);
+  refs.timelinePanel.hidden = next !== "timeline";
+  refs.storyboardPanel.hidden = next !== "storyboard";
+  refs.stageHint.textContent = next === "storyboard"
+    ? "点一行定位画面；台词与提示词可直接改"
+    : "点镜头块看画面，双击只播这一段";
+  if (viewSwitch) viewSwitch.set(next);
+  if (next === "storyboard") {
+    storyboard && storyboard.setProject(getState().project, getState().selectedId);
+  } else if (timeline) {
+    timeline.setProject(getState().project, getState().selectedId, getState().pxPerSec);
+  }
+  fitStage();
+}
+
+function renderProjectPicker() {
+  const state = getState();
+  const options = stateProjects();
+  refs.projectSelect.innerHTML = options
+    .map((item) => `<option value="${escapeHtml(item.id)}" ${
+      state.project && item.id === state.project.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+    .join("");
+}
+
+function renderChips() {
+  const { health } = getState();
+  const main = (health && health.main) || {};
+  const mainChip = $("chipMain");
+  const ok = Boolean(main.reachable && main.engineReady);
+  mainChip.className = `chip ${ok ? "ok" : main.reachable ? "warn" : "bad"}`;
+  mainChip.textContent = ok
+    ? `主项目就绪${main.device ? " · " + main.device.replace("NVIDIA GeForce ", "") : ""}`
+    : main.reachable
+      ? "主项目引擎未就绪"
+      : "主项目离线";
+  mainChip.title = main.error || `生图服务 ${health?.main?.url || ""}`;
+
+  const ff = $("chipFfmpeg");
+  ff.className = `chip ${health && health.ffmpeg ? "ok" : "bad"}`;
+  ff.textContent = health && health.ffmpeg ? "ffmpeg 就绪" : "缺 ffmpeg";
+}
+
+const RATIO_VALUE = {
+  "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1, "4:3": 4 / 3,
+  "3:4": 3 / 4, "3:2": 3 / 2, "2:3": 2 / 3, "21:9": 21 / 9,
+};
+
+/** 和后端 canvas_size 同一套规则：长边定尺寸，宽高取偶数。 */
+function canvasSize(canvas) {
+  const ratio = RATIO_VALUE[(canvas || {}).ratio] || 16 / 9;
+  const longSide = Math.min(2048, Math.max(480, Number((canvas || {}).longSide) || 1920));
+  let width = ratio >= 1 ? longSide : longSide * ratio;
+  let height = ratio >= 1 ? longSide / ratio : longSide;
+  width = Math.max(320, Math.round(width / 2) * 2);
+  height = Math.max(240, Math.round(height / 2) * 2);
+  return { width, height };
+}
+
+function applyCanvasTag() {
+  const project = getState().project;
+  if (!project) return;
+  const canvas = project.canvas || {};
+  const { width, height } = canvasSize(canvas);
+  refs.canvasTag.textContent =
+    `${canvas.ratio || "16:9"} · ${width}×${height} · ${canvas.fps || 30}fps`;
+  refs.canvasTag.title = "导出规格：点击修改画幅 / 分辨率 / 帧率";
+  fitStage();
+}
+
+function fitStage() {
+  const project = getState().project;
+  const area = refs.stageArea;
+  if (!project || !area) return;
+  const ratio = RATIO_VALUE[(project.canvas || {}).ratio] || 16 / 9;
+  const availWidth = Math.max(120, area.clientWidth - 24);
+  const availHeight = Math.max(80, area.clientHeight - 12);
+  const width = Math.min(availWidth, availHeight * ratio);
+  refs.stage.style.width = `${Math.round(width)}px`;
+  refs.stage.style.height = `${Math.round(width / ratio)}px`;
+}
+
+// --------------------------------------------------------------------------- 预览
+
+function renderStage() {
+  const state = getState();
+  const project = state.project;
+  if (!project) {
+    refs.stage.classList.remove("has-image");
+    return;
+  }
+  const ms = currentMs();
+  const shot = shotAt(ms) || (project.shots || []).find((item) => item.id === state.selectedId);
+  const url = (shot && shot.imageUrl) || "";
+  const key = `${shot ? shot.id : ""}|${url}`;
+  if (key !== lastStageKey) {
+    lastStageKey = key;
+    if (url) {
+      refs.image.src = url;
+      refs.stage.classList.add("has-image");
+    } else {
+      refs.image.removeAttribute("src");
+      refs.stage.classList.remove("has-image");
+    }
+  }
+
+  const spec = (project.render || {}).subtitle || {};
+  const cue = (project.subtitle && project.subtitle.cues || []).find(
+    (item) => ms >= item.startMs && ms < item.endMs,
+  );
+  const text = spec.enabled && cue ? cue.text : "";
+  if (refs.subtitle.textContent !== text) refs.subtitle.textContent = text;
+  refs.subtitle.className = `subtitle ${spec.position || "bottom"}`;
+
+  if (project.shots && project.shots.length) refs.empty.hidden = true;
+  else refs.empty.hidden = false;
+}
+
+function updateTransport() {
+  const total = duration();
+  const ms = currentMs();
+  refs.timecode.textContent = `${formatMs(ms)} / ${formatMs(total)}`;
+  refs.seek.value = total ? String(Math.round((ms / total) * 1000)) : "0";
+  refs.play.classList.toggle("is-playing", !audioEl.paused);
+}
+
+function loop() {
+  if (audioEl.paused) {
+    rafId = 0;
+    return;
+  }
+  if (playRange && currentMs() >= playRange.endMs) {
+    const stop = playRange.endMs;
+    playRange = null;
+    audioEl.pause();
+    seek(stop);
+    rafId = 0;
+    return;
+  }
+  updateTransport();
+  timeline && timeline.setPlayhead(currentMs());
+  renderStage();
+  selectFollow(currentMs());
+  rafId = requestAnimationFrame(loop);
+}
+
+function selectFollow(ms) {
+  const state = getState();
+  // 正在编辑检查器时不要抢焦点
+  const active = document.activeElement;
+  if (active && refs.inspector.contains(active)
+      && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
+  const shot = shotAt(ms);
+  if (!shot || shot.id === state.selectedId) return;
+  // 播放/跳转时跟随高亮
+  setState({ selectedId: shot.id });
+  timeline && timeline.setSelected(shot.id);
+  storyboard && storyboard.setSelected(shot.id, false);
+  renderInspector(refs.inspector, getState(), shotHandlers());
+}
+
+function togglePlay() {
+  if (!duration() || !audioEl.src) {
+    toast("还没有音频", "bad");
+    return;
+  }
+  if (audioEl.paused) {
+    audioEl.play().then(() => {
+      if (!rafId) rafId = requestAnimationFrame(loop);
+    }).catch((err) => toast(err.message, "bad"));
+  } else {
+    audioEl.pause();
+  }
+}
+
+function seek(ms) {
+  const total = duration();
+  const value = Math.max(0, Math.min(total || 0, ms));
+  if (audioEl.src) audioEl.currentTime = value / 1000;
+  timeline && timeline.setPlayhead(value);
+  updateTransport();
+  renderStage();
+  selectFollow(value);
+}
+
+/** 双击镜头块：只播这一段，段尾自动停。再双击一次重播。 */
+function playShot(shot) {
+  if (!shot || !audioEl.src) {
+    toast("还没有音频", "bad");
+    return;
+  }
+  seek(shot.startMs);
+  playRange = { startMs: shot.startMs, endMs: shot.endMs };
+  audioEl.play().then(() => {
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }).catch((err) => toast(err.message, "bad"));
+}
+
+function bindTransport() {
+  refs.play.addEventListener("click", togglePlay);
+  refs.canvasTag.addEventListener("click", () => openDrawer());
+  refs.seek.addEventListener("input", () => {
+    playRange = null;
+    seek((Number(refs.seek.value) / 1000) * duration());
+  });
+  audioEl.addEventListener("play", () => {
+    refs.play.classList.add("is-playing");
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  });
+  audioEl.addEventListener("pause", () => {
+    refs.play.classList.remove("is-playing");
+    updateTransport();
+  });
+  audioEl.addEventListener("timeupdate", () => {
+    updateTransport();
+    timeline && timeline.setPlayhead(currentMs());
+    renderStage();
+    selectFollow(currentMs());
+  });
+  audioEl.addEventListener("ended", () => {
+    updateTransport();
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  });
+}
+
+// --------------------------------------------------------------------------- 侧栏
+
+function renderSide() {
+  const state = getState();
+  renderInspector(refs.inspector, state, shotHandlers());
+  renderPipeline(refs.pipeline, state, {
+    pipeline: (action) => pipelineAction(action),
+  });
+}
+
+function bindTabs() {
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item === tab));
+      const name = tab.dataset.tab;
+      refs.inspector.hidden = name !== "shot";
+      refs.pipeline.hidden = name !== "pipeline";
+    });
+  });
+}
+
+function selectShot(id) {
+  setState({ selectedId: id });
+  renderInspector(refs.inspector, getState(), shotHandlers());
+  timeline && timeline.setSelected(id);
+  storyboard && storyboard.setSelected(id, true);
+  renderStage();
+}
+
+function shotHandlers() {
+  return {
+    patchShot: (patch) => patchShot(patch),
+    regenerate: () => regenerateShot(),
+    uploadImage: () => $("fileShotImage").click(),
+    clearImage: () => clearShotImage(),
+  };
+}
+
+async function patchShot(patch) {
+  return patchShotById(getState().selectedId, patch);
+}
+
+/** 按段 id 提交改动：时间线与分镜表共用同一入口，返回更新后的 shot。 */
+async function patchShotById(shotId, patch) {
+  const state = getState();
+  if (!state.project || !shotId) return null;
+  try {
+    const result = await api.patch(
+      `/api/projects/${state.project.id}/shots/${shotId}`,
+      patch,
+    );
+    const shots = (state.project.shots || []).map((shot) =>
+      shot.id === result.shot.id ? result.shot : shot);
+    setState({ project: { ...state.project, shots } });
+    updateMeta();
+    timeline && timeline.setProject(getState().project, getState().selectedId, getState().pxPerSec);
+    renderStage();
+    if (shotId === getState().selectedId) {
+      const active = document.activeElement;
+      if (!active || !refs.inspector.contains(active)) {
+        // 改动来自分镜表或其他入口时，检查器要跟着刷新
+        renderInspector(refs.inspector, getState(), shotHandlers());
+      } else {
+        const promptEl = refs.inspector.querySelector('[data-field="prompt"]');
+        if (promptEl && active !== promptEl) promptEl.value = result.shot.prompt || "";
+      }
+    }
+    return result.shot;
+  } catch (err) {
+    toast(err.message, "bad");
+    return null;
+  }
+}
+
+async function retimeShot(shotId, patch) {
+  const state = getState();
+  if (!state.project) return;
+  try {
+    await api.patch(`/api/projects/${state.project.id}/shots/${shotId}`, patch);
+    const project = await api.get(`/api/projects/${state.project.id}`);
+    setState({ project });
+    renderAll();
+  } catch (err) {
+    toast(err.message, "bad");
+    renderAll();
+  }
+}
+
+async function clearShotImage() {
+  const state = getState();
+  if (!state.project || !state.selectedId) return;
+  try {
+    const project = await api.post(
+      `/api/projects/${state.project.id}/shots/${state.selectedId}/clear`,
+    );
+    setState({ project });
+    renderAll();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 顶栏动作
+
+function bindTopbar() {
+  $("btnAudio").addEventListener("click", () => $("fileAudio").click());
+  $("emptyAudio").addEventListener("click", () => $("fileAudio").click());
+  $("btnSubtitle").addEventListener("click", () => $("fileSubtitle").click());
+  $("emptySubtitle").addEventListener("click", () => $("fileSubtitle").click());
+  $("btnExport").addEventListener("click", () => pipelineAction("export"));
+  $("btnSettings").addEventListener("click", () => openDrawer());
+  $("btnSegment").addEventListener("click", () => pipelineAction("segment"));
+
+  refs.projectSelect.addEventListener("change", () => {
+    loadProject(refs.projectSelect.value, { keepTime: false });
+  });
+
+  $("btnNewProject").addEventListener("click", async () => {
+    const name = window.prompt("项目名称", "未命名项目");
+    if (name === null) return;
+    try {
+      const project = await api.post("/api/projects", { name: name.trim() || "未命名项目" });
+      setState({ projects: [{ id: project.id, name: project.name }, ...stateProjects()] });
+      await loadProject(project.id, { keepTime: false });
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+  });
+
+  $("fileAudio").addEventListener("change", (event) => uploadFile(event, "audio"));
+  $("fileSubtitle").addEventListener("change", (event) => uploadFile(event, "subtitle"));
+  $("fileBgm").addEventListener("change", (event) => uploadFile(event, "bgm"));
+  $("fileShotImage").addEventListener("change", (event) => uploadFile(event, "shotImage"));
+  $("zoom").addEventListener("input", () => {
+    setState({ pxPerSec: Number($("zoom").value) });
+    timeline && timeline.setProject(getState().project, getState().selectedId, getState().pxPerSec);
+  });
+}
+
+async function uploadFile(event, kind) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  const project = getState().project;
+  if (!file || !project) return;
+  const path = {
+    audio: `/api/projects/${project.id}/audio`,
+    subtitle: `/api/projects/${project.id}/subtitle`,
+    bgm: `/api/projects/${project.id}/bgm`,
+  }[kind];
+  try {
+    if (kind === "shotImage") {
+      if (!getState().selectedId) {
+        toast("先选一个镜头段", "bad");
+        return;
+      }
+      const updated = await api.upload(
+        `/api/projects/${project.id}/shots/${getState().selectedId}/image`, file);
+      setState({ project: updated });
+      renderAll();
+      toast("图片已替换", "ok");
+      return;
+    }
+    toast(kind === "audio" ? "正在解析音频…" : "正在解析字幕…");
+    await api.upload(path, file);
+    await loadProject(project.id, { keepTime: kind !== "audio" });
+    toast(kind === "audio" ? "音频已就绪" : kind === "subtitle" ? "字幕已解析" : "背景音乐已就绪", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 流程动作
+
+async function pipelineAction(action) {
+  const project = getState().project;
+  if (!project) return;
+  if (action === "audio") return $("fileAudio").click();
+  if (action === "subtitle") return $("fileSubtitle").click();
+  if (action === "bgm") return $("fileBgm").click();
+
+  try {
+    if (action === "segment") {
+      const hasImages = (project.shots || []).some((shot) => shot.image);
+      if (hasImages && !window.confirm("重新分段会丢弃已生成的画面，确定继续？")) return;
+      await api.post(`/api/projects/${project.id}/segments/apply`, {
+        mergeGapMs: Number($("mergeGap").value) || 350,
+        maxShotMs: Number($("maxShot").value) || 8000,
+        preserveImages: false,
+      });
+      await loadProject(project.id);
+      toast("已完成分段", "ok");
+      return;
+    }
+    if (action === "prompts") {
+      await runTask(`/api/projects/${project.id}/prompts`, "生成分镜提示词");
+      return;
+    }
+    if (action === "images") {
+      await runTask(`/api/projects/${project.id}/images`, "批量生图", {});
+      return;
+    }
+    if (action === "export") {
+      await runTask(`/api/projects/${project.id}/render`, "导出成片");
+      return;
+    }
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+async function regenerateShot(shotId = getState().selectedId) {
+  const state = getState();
+  if (!state.project || !shotId) return;
+  await runTask(`/api/projects/${state.project.id}/images/${shotId}`, "重新生成该镜头");
+}
+
+// --------------------------------------------------------------------------- 任务
+
+async function runTask(path, label, body) {
+  try {
+    const { taskId } = await api.post(path, body === undefined ? {} : body);
+    showTask(taskId, label);
+    const result = await pollTask(taskId);
+    hiddenTask();
+    if (result.status === "done") {
+      toast(`${label}完成`, "ok");
+      const detail = result.result || {};
+      if (detail.error) toast(detail.error);
+      if (Array.isArray(detail.failed) && detail.failed.length) {
+        toast(`${detail.failed.length} 段失败：${detail.failed[0].error}`, "bad");
+      }
+      await loadProject(getState().project.id);
+      await refreshProjects();
+    } else if (result.status === "canceled") {
+      toast("任务已取消");
+    } else {
+      toast(result.error || `${label}失败`, "bad");
+      await loadProject(getState().project.id);
+    }
+    return result;
+  } catch (err) {
+    hiddenTask();
+    toast(err.message, "bad");
+    return null;
+  }
+}
+
+function showTask(taskId, label) {
+  refs.taskBar.hidden = false;
+  refs.taskFill.style.width = "0%";
+  refs.taskLabel.textContent = label;
+  $("taskCancel").onclick = () => api.post(`/api/tasks/${taskId}/cancel`).catch(() => {});
+}
+
+function hiddenTask() {
+  refs.taskBar.hidden = true;
+}
+
+async function pollTask(taskId) {
+  for (;;) {
+    const task = await api.get(`/api/tasks/${taskId}`);
+    const progress = task.progress || {};
+    const percent = Math.max(0, Math.min(100, Number(progress.value) || 0));
+    refs.taskFill.style.width = `${percent}%`;
+    refs.taskLabel.textContent = progress.label || task.kind || "处理中";
+    if (["done", "error", "canceled"].includes(task.status)) return task;
+    await sleep(700);
+  }
+}
+
+// --------------------------------------------------------------------------- 设置抽屉
+
+function drawerFieldsMarkup(fields, values, prefix) {
+  return Object.entries(fields).map(([key, spec]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    const value = values ? values[key] : spec.default;
+    if (spec.type === "object") {
+      return `<div class="sub-section"><h4>${escapeHtml(spec.label || key)}</h4>
+        ${drawerFieldsMarkup(spec.fields || {}, value || {}, path)}</div>`;
+    }
+    if (spec.type === "bool") {
+      return `<div class="field"><label class="switch">
+        <input type="checkbox" data-path="${path}" data-kind="bool" ${value ? "checked" : ""} />
+        <span>${escapeHtml(spec.label || key)}</span></label></div>`;
+    }
+    if (spec.type === "enum") {
+      return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
+        <select class="select" data-path="${path}" data-kind="string">
+          ${(spec.options || []).map((option) =>
+            `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+        </select></div>`;
+    }
+    if (spec.type === "entity_list") {
+      return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
+        <div data-entities="1"></div>
+        <button class="btn" data-add-entity="1" style="margin-top:6px">＋ 添加角色 / 场景</button>
+        <div class="hint" style="margin-top:6px">只有这里登记过的实体允许出现在画面里；固定外观描述会拼进每一段提示词。</div>
+      </div>`;
+    }
+    if (spec.type === "text") {
+      return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
+        <textarea class="textarea" style="min-height:56px" data-path="${path}" data-kind="string">${escapeHtml(value ?? "")}</textarea></div>`;
+    }
+    if (spec.type === "int" || spec.type === "float") {
+      const numeric = value === undefined || value === null || value === ""
+        ? (spec.default ?? spec.min ?? 0)
+        : value;
+      return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
+        <input class="input" type="number" data-path="${path}" data-kind="number"
+          min="${spec.min ?? ""}" max="${spec.max ?? ""}" step="${spec.type === "float" ? "0.01" : "1"}"
+          value="${Number(numeric)}" /></div>`;
+    }
+    return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
+      <input class="input" type="text" data-path="${path}" data-kind="string" value="${escapeHtml(value ?? "")}" /></div>`;
+  }).join("");
+}
+
+async function openDrawer() {
+  const state = getState();
+  const project = state.project;
+  const schema = state.schema;
+  if (!project || !schema) return;
+  drawerDraft = JSON.parse(JSON.stringify({
+    canvas: project.canvas,
+    locks: project.locks,
+    render: project.render,
+    llm: project.llm,
+    image: project.image,
+  }));
+  const models = ((getState().health || {}).main || {}).llmModels || [];
+  let styles = [];
+  try {
+    styles = (await api.get("/api/styles")).styles || [];
+  } catch (err) {
+    styles = [];
+  }
+
+  const sections = ["canvas", "locks", "render", "llm", "image"];
+  refs.drawerBody.innerHTML = sections.map((name) => {
+    const section = schema.sections[name];
+    if (!section) return "";
+    let extra = "";
+    if (name === "llm") {
+      extra = `<datalist id="llmModels">${models
+        .map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
+        <div class="hint" style="margin-bottom:10px">模型留空时使用服务默认模型；没配模型会退回模板拼装，提示词仍可手填。</div>`;
+    }
+    return `<section class="section" data-section="${name}">
+      <h3>${escapeHtml(section.label || name)}</h3>
+      ${extra}
+      ${drawerFieldsMarkup(section.fields || {}, drawerDraft[name] || {}, name)}
+    </section>`;
+  }).join("");
+
+  const llmModel = refs.drawerBody.querySelector('[data-path="llm.model"]');
+  if (llmModel && models.length) llmModel.setAttribute("list", "llmModels");
+  if (styles.length) enhanceStylePicker(styles);
+  bindDrawerFields();
+  refs.drawer.hidden = false;
+  refs.drawerBackdrop.hidden = false;
+}
+
+/** 把风格预设的纯文本输入升级成带分组的风格库下拉，选中即填入风格描述。 */
+function enhanceStylePicker(styles) {
+  const input = refs.drawerBody.querySelector('[data-path="locks.style.styleId"]');
+  if (!input) return;
+  const groups = new Map();
+  styles.forEach((item) => {
+    const key = item.category || "其他";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const select = document.createElement("select");
+  select.className = "select";
+  select.dataset.path = "locks.style.styleId";
+  select.dataset.kind = "string";
+  select.innerHTML = `<option value="">自定义（手写风格描述）</option>` + [...groups.entries()].map(([category, items]) =>
+    `<optgroup label="${escapeHtml(category)}">${items.map((item) =>
+      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)}</option>`).join("")}</optgroup>`).join("");
+  select.value = (drawerDraft.locks.style.styleId || "");
+  select.addEventListener("change", () => {
+    const item = styles.find((entry) => entry.id === select.value);
+    drawerDraft.locks.style.styleId = item ? item.id : "";
+    if (!item) return;
+    const prefix = refs.drawerBody.querySelector('[data-path="locks.style.prefix"]');
+    if (prefix) prefix.value = item.prompt;
+    drawerDraft.locks.style.prefix = item.prompt;
+  });
+  input.replaceWith(select);
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.style.margin = "-4px 0 10px";
+  hint.textContent = `已载入主项目风格库 ${styles.length} 条；选中后会把官方风格描述写进「风格描述」，仍可再改。`;
+  select.insertAdjacentElement("afterend", hint);
+}
+
+function bindDrawerFields() {
+  refs.drawerBody.querySelectorAll("[data-entities]").forEach((host) => {
+    const section = host.closest("[data-section]").dataset.section;
+    const block = drawerDraft[section].content;
+    block.entities = block.entities || [];
+    host.innerHTML = "";
+    block.entities.forEach((entity, index) => host.appendChild(entityRow(section, entity, index)));
+    // 用 onclick 覆盖，避免重复绑定导致一次点击加两条
+    const add = host.parentElement.querySelector("[data-add-entity]");
+    add.onclick = () => {
+      block.entities.push({
+        id: `e${Date.now().toString(36).slice(-4)}`, kind: "character", name: "", desc: "",
+      });
+      bindDrawerFields();
+    };
+  });
+}
+
+function entityRow(section, entity, index) {
+  const row = document.createElement("div");
+  row.className = "entity-row";
+  row.innerHTML = `
+    <div class="entity-head">
+      <select class="select" data-entity="kind">
+        ${[["character", "角色"], ["location", "场景"], ["prop", "道具"]].map(([value, label]) =>
+          `<option value="${value}" ${entity.kind === value ? "selected" : ""}>${label}</option>`).join("")}
+      </select>
+    </div>
+    <input class="input" data-entity="name" placeholder="名称（台词里怎么称呼）" value="${escapeHtml(entity.name || "")}" />
+    <input class="input full" data-entity="desc" placeholder="固定外观描述（会拼进每段提示词）" value="${escapeHtml(entity.desc || "")}" />
+    <div class="full" style="display:flex;justify-content:flex-end">
+      <button class="btn danger" data-remove="1" style="height:26px;padding:0 10px;font-size:12px">删除</button>
+    </div>`;
+  row.querySelectorAll("[data-entity]").forEach((input) => {
+    input.addEventListener("input", () => {
+      entity[input.dataset.entity] = input.value;
+      drawerDraft[section].content.entities[index] = entity;
+    });
+    input.addEventListener("change", () => {
+      entity[input.dataset.entity] = input.value;
+      drawerDraft[section].content.entities[index] = entity;
+    });
+  });
+  row.querySelector("[data-remove]").addEventListener("click", () => {
+    drawerDraft[section].content.entities.splice(index, 1);
+    bindDrawerFields();
+  });
+  return row;
+}
+
+function bindDrawer() {
+  const close = () => {
+    refs.drawer.hidden = true;
+    refs.drawerBackdrop.hidden = true;
+  };
+  $("drawerClose").addEventListener("click", close);
+  refs.drawerBackdrop.addEventListener("click", close);
+  $("drawerSave").addEventListener("click", saveDrawer);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !refs.drawer.hidden) close();
+  });
+}
+
+async function saveDrawer() {
+  const project = getState().project;
+  if (!project) return;
+  const patch = {};
+  refs.drawerBody.querySelectorAll("[data-path]").forEach((input) => {
+    const path = input.dataset.path;
+    const kind = input.dataset.kind;
+    let value = input.type === "checkbox" ? input.checked : input.value;
+    if (kind === "number") value = Number(value);
+    merge(patch, toPatch(path, value));
+  });
+  // 实体卡以草稿为准
+  if (patch.locks && patch.locks.content && drawerDraft) {
+    patch.locks.content.entities = (drawerDraft.locks.content.entities || [])
+      .filter((entity) => (entity.name || "").trim() || (entity.desc || "").trim());
+  }
+  try {
+    const updated = await api.patch(`/api/projects/${project.id}`, patch);
+    setState({ project: updated });
+    refs.drawer.hidden = true;
+    refs.drawerBackdrop.hidden = true;
+    renderAll();
+    toast("设置已保存，提示词已按新风格重新装配", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 元信息
+
+function updateMeta() {
+  const project = getState().project;
+  if (!project) {
+    refs.tlMeta.textContent = "0 段 · 00:00.00";
+    return;
+  }
+  const shots = project.shots || [];
+  const ready = shots.filter((shot) => shot.status === "ready").length;
+  refs.tlMeta.textContent = `${shots.length} 段 · ${formatMs(duration())} · ${ready} 段就绪`;
+}
+
+boot().catch((err) => {
+  console.error(err);
+  toast(`初始化失败：${err.message}`, "bad");
+});

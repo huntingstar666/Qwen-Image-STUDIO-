@@ -39,3 +39,6 @@ web/mj-styles/
 web/vendor/pose3d/vnccs/assets/
 web/vendor/pose3d/vnccs/textures/
 web/vendor/pose3d/poses/
+
+# 视频工作台运行期数据（项目、音频、成片）
+video_studio/_data/

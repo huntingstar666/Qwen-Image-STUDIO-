@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>视频工作台 · video_studio</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23faf8f4'/%3E%3Crect x='13' y='18' width='26' height='28' rx='6' fill='none' stroke='%232f6b62' stroke-width='4'/%3E%3Cpath d='M44 26l9-5v22l-9-5z' fill='%23b87340'/%3E%3C/svg%3E"
+    />
+    <script>
+      // 主题预设必须早于样式解析，避免深色模式先闪一帧白底
+      (function () {
+        try {
+          var saved = localStorage.getItem("videoStudio.theme");
+          var dark = saved
+            ? saved === "dark"
+            : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (err) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.4v13.2L19 12z" /></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9.2 5.4v13.2M14.8 5.4v13.2" stroke-width="2.6" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.2v13.6M5.2 12h13.6" /></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <path d="M4 7.5h9.5M17.5 7.5H20M4 16.5h3.5M11.5 16.5H20" />
+        <circle cx="15.5" cy="7.5" r="2.2" /><circle cx="9.5" cy="16.5" r="2.2" />
+      </symbol>
+      <symbol id="i-export" viewBox="0 0 24 24">
+        <path d="M12 4.4v10.2M8.2 10.8l3.8 3.8 3.8-3.8M4.8 19.4h14.4" />
+      </symbol>
+      <symbol id="i-audio" viewBox="0 0 24 24">
+        <path d="M10 17.6V6.2l9-1.8v11.2" />
+        <circle cx="7.2" cy="18" r="2.6" /><circle cx="16.2" cy="15.8" r="2.6" />
+      </symbol>
+      <symbol id="i-caption" viewBox="0 0 24 24">
+        <rect x="3.6" y="5.6" width="16.8" height="12.8" rx="3" />
+        <path d="M7.2 13.6h3.4M13.4 13.6h3.4" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M19.6 12a7.6 7.6 0 1 1-2.2-5.4M19.8 4.6v4.2h-4.2" />
+      </symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24">
+        <path d="M12 15.6V4.8M8.2 8.6L12 4.8l3.8 3.8M4.8 19.4h14.4" />
+      </symbol>
+      <symbol id="i-locate" viewBox="0 0 24 24">
+        <path d="M4.8 12h13.4M12.8 6.4l5.4 5.6-5.4 5.6" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="10.8" cy="10.8" r="6.2" /><path d="M19.6 19.6l-4.4-4.4" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <rect x="3.6" y="5.2" width="16.8" height="13.6" rx="2.8" />
+        <circle cx="9" cy="10" r="1.7" />
+        <path d="M4.8 17l4.6-4.6 3.4 3.4 2.6-2.6 4.2 4.2" />
+      </symbol>
+    </svg>
+
+    <div class="app" data-view="timeline">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span class="brand-text">视频工作台<em>video studio</em></span>
+        </div>
+        <div class="project-picker">
+          <select id="projectSelect" aria-label="切换项目"></select>
+          <button class="icon-btn" id="btnNewProject" title="新建项目" aria-label="新建项目">
+            <svg class="icon"><use href="#i-plus"></use></svg>
+          </button>
+        </div>
+        <div class="top-actions">
+          <span class="chip" id="chipMain" title="主项目状态">主项目</span>
+          <span class="chip" id="chipFfmpeg" title="ffmpeg 状态">ffmpeg</span>
+          <button class="btn" id="btnAudio">
+            <svg class="icon"><use href="#i-audio"></use></svg>上传音频
+          </button>
+          <button class="btn" id="btnSubtitle">
+            <svg class="icon"><use href="#i-caption"></use></svg>上传字幕
+          </button>
+          <button class="btn" id="btnSettings">
+            <svg class="icon"><use href="#i-settings"></use></svg>设置
+          </button>
+          <button class="btn primary" id="btnExport">
+            <svg class="icon"><use href="#i-export"></use></svg>导出成片
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="stage-card">
+          <div class="stage-head">
+            <div class="segmented" id="viewSwitch" role="tablist" aria-label="工作视图">
+              <span class="seg-thumb"></span>
+              <button class="seg active" type="button" data-view="timeline" role="tab" aria-selected="true">时间线</button>
+              <button class="seg" type="button" data-view="storyboard" role="tab" aria-selected="false">分镜表</button>
+            </div>
+            <span class="stage-hint" id="stageHint">点镜头块看画面，双击只播这一段</span>
+          </div>
+          <div class="stage-area">
+            <div class="stage" id="stage">
+              <img id="stageImage" alt="" />
+              <div class="subtitle" id="stageSubtitle"></div>
+              <div class="stage-empty" id="stageEmpty">
+                <h2>先给一段音频和带时间轴的逐字稿</h2>
+                <p>支持 mp3 / wav / m4a / flac 与 SRT / VTT / ASS。上传后自动分段、对齐、生成分镜，再批量出图合成。</p>
+                <div class="stage-empty-actions">
+                  <button class="btn primary" id="emptyAudio">上传音频</button>
+                  <button class="btn" id="emptySubtitle">上传字幕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="transport">
+            <button class="icon-btn play" id="btnPlay" title="播放 / 暂停" aria-label="播放 / 暂停">
+              <svg class="icon fill play-icon"><use href="#i-play"></use></svg>
+              <svg class="icon pause-icon"><use href="#i-pause"></use></svg>
+            </button>
+            <span class="timecode" id="timecode">00:00.00 / 00:00.00</span>
+            <input class="seek" type="range" id="seek" min="0" max="1000" value="0" />
+            <span class="canvas-tag" id="canvasTag">16:9</span>
+          </div>
+          <div class="task-bar" id="taskBar" hidden>
+            <div class="task-fill"></div>
+            <span class="task-label"></span>
+            <button class="task-cancel" id="taskCancel">
+              <svg class="icon"><use href="#i-close"></use></svg>取消
+            </button>
+          </div>
+        </section>
+
+        <aside class="side">
+          <div class="side-tabs">
+            <button class="tab active" data-tab="shot">镜头</button>
+            <button class="tab" data-tab="pipeline">流程</button>
+          </div>
+          <div class="side-body" id="inspector"></div>
+          <div class="side-body" id="pipeline" hidden></div>
+        </aside>
+      </main>
+
+      <section class="timeline-panel" id="timelinePanel">
+        <div class="tl-toolbar">
+          <div class="tl-left">
+            <button class="btn" id="btnSegment">自动分段</button>
+            <label class="mini-field">合并间隔
+              <input type="number" id="mergeGap" min="0" max="3000" step="50" value="350" />
+              <span>ms</span>
+            </label>
+            <label class="mini-field">单段上限
+              <input type="number" id="maxShot" min="500" max="60000" step="500" value="8000" />
+              <span>ms</span>
+            </label>
+          </div>
+          <div class="tl-meta" id="tlMeta">0 段 · 00:00.00</div>
+          <div class="tl-right">
+            <label class="mini-field">缩放
+              <input type="range" id="zoom" min="8" max="160" step="2" value="36" />
+            </label>
+          </div>
+        </div>
+        <div class="tl-scroll" id="tlScroll">
+          <div class="tl-inner" id="tlInner">
+            <div class="tl-ruler" id="tlRuler"></div>
+            <div class="tl-row wave"><canvas id="wave"></canvas></div>
+            <div class="tl-row shots" id="tlShots"></div>
+            <div class="tl-row subs" id="tlSubs"></div>
+            <div class="tl-row bgm" id="tlBgm"></div>
+            <div class="tl-playhead" id="playhead"></div>
+            <div class="tl-empty" id="tlEmpty">上传音频与字幕，点「自动分段」开始</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="storyboard-panel" id="storyboardPanel" hidden>
+        <div class="sb-toolbar">
+          <div class="segmented small" id="sbFilter" role="tablist" aria-label="筛选镜头段">
+            <span class="seg-thumb"></span>
+            <button class="seg active" type="button" data-filter="all" role="tab" aria-selected="true">全部</button>
+            <button class="seg" type="button" data-filter="todo" role="tab" aria-selected="false">待生成</button>
+            <button class="seg" type="button" data-filter="failed" role="tab" aria-selected="false">失败</button>
+            <button class="seg" type="button" data-filter="ready" role="tab" aria-selected="false">已就绪</button>
+          </div>
+          <label class="search-field">
+            <svg class="icon"><use href="#i-search"></use></svg>
+            <input id="sbSearch" type="search" placeholder="搜索台词或提示词" autocomplete="off" />
+          </label>
+          <span class="sb-count" id="sbCount">0 段</span>
+        </div>
+        <div class="sb-list" id="sbList"></div>
+      </section>
+    </div>
+
+    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden>
+      <header class="drawer-head">
+        <h2>项目设置</h2>
+        <button class="icon-btn" id="drawerClose" title="关闭" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"></use></svg>
+        </button>
+      </header>
+      <div class="drawer-body" id="drawerBody"></div>
+      <footer class="drawer-foot">
+        <span class="drawer-hint" id="drawerHint">改动保存后，已生成的提示词会按新风格重新装配</span>
+        <button class="btn primary" id="drawerSave">保存设置</button>
+      </footer>
+    </aside>
+
+    <input type="file" id="fileAudio" accept="audio/*,video/mp4,video/quicktime" hidden />
+    <input type="file" id="fileSubtitle" accept=".srt,.vtt,.ass,.ssa" hidden />
+    <input type="file" id="fileBgm" accept="audio/*" hidden />
+    <input type="file" id="fileShotImage" accept="image/png,image/jpeg,image/webp" hidden />
+    <audio id="audio" preload="auto"></audio>
+    <div class="toast-root" id="toastRoot"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

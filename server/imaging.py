@@ -234,6 +234,8 @@ class OutpaintInfo:
     canvas_w: int
     canvas_h: int
     fill: tuple[int, int, int]
+    #: 扩图前从源图四边各裁掉的像素数（0 = 不裁）
+    trim: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1065,6 +1067,7 @@ def outpaint_canvas(
     right: float = 0.0,
     top: float = 0.0,
     bottom: float = 0.0,
+    trim: int = 0,
     multiple: int = 32,
     max_side: int = 8192,
     fill: tuple[int, int, int] = _OUTPAINT_FILL,
@@ -1075,10 +1078,20 @@ def outpaint_canvas(
     画布向上取整到 ``multiple``，多出来的像素统一补到右/下，保证源图坐标仍是
     整数偏移（贴回时不需要重采样）。
 
+    ``trim``：扩图前先从源图四边各裁掉 N 像素（某些图四周带 1~3px 白边/描边，
+    直接外扩会把这条边一路"续"出去）。裁掉的区域由模型重新生成，不是简单丢弃。
+
     ``max_side`` 是硬保护：外扩后的画布长边超过它就抛 ``ValueError``。
     扩图不裁回也不预处理，若不设上限，几下百分比就能把显存打爆。
     """
     src = im.convert("RGBA")
+    trim = max(0, int(trim or 0))
+    if trim:
+        sw0, sh0 = src.size
+        if sw0 - trim * 2 < multiple or sh0 - trim * 2 < multiple:
+            raise ValueError(
+                f"裁边 {trim}px 后图片只剩 {sw0 - trim * 2}×{sh0 - trim * 2}，太小了")
+        src = src.crop((trim, trim, sw0 - trim, sh0 - trim))
     sw, sh = src.size
     pads = [float(left), float(right), float(top), float(bottom)]
     if any(not math.isfinite(v) for v in pads):
@@ -1106,6 +1119,7 @@ def outpaint_canvas(
         left=left_px, right=right_px, top=top_px, bottom=bottom_px,
         canvas_w=canvas_w, canvas_h=canvas_h,
         fill=tuple(int(v) for v in fill),
+        trim=trim,
     )
     return canvas, info
 

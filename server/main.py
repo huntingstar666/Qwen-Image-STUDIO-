@@ -968,6 +968,13 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
             lim = presets.limits(f"outpaint.{key}")
             if not lim["min"] <= value <= lim["max"]:
                 raise ApiError(f"outpaint.{key} 必须在 {lim['min']}~{lim['max']}（百分比）")
+        if outpaint.get("trim") is not None:
+            try:
+                trim = int(outpaint["trim"])
+            except (TypeError, ValueError):
+                raise ApiError("outpaint.trim 必须是整数（像素）")
+            if not 0 <= trim <= 64:
+                raise ApiError("outpaint.trim 必须在 0~64 像素")
         if outpaint.get("max_side") is not None:
             try:
                 max_side = int(outpaint["max_side"])

@@ -29,11 +29,19 @@ const RATIOS = [
 // 与后端校验保持一致：单边最多 200%，长边不超过全局 max_side（默认 4096）。
 const MAX_PCT = 200;
 const MAX_SIDES = [2048, 3072, 4096];
+/** 扩图前从源图四边裁掉的像素上限（与后端 /api/edit 校验一致）。 */
+const MAX_TRIM = 64;
 
 function clampPct(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(MAX_PCT, Math.round(n)));
+}
+
+function clampTrim(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(MAX_TRIM, Math.round(n)));
 }
 
 function place(node, x, y, w, h) {
@@ -92,6 +100,13 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
           ${MAX_SIDES.map((value) => `<option value="${value}">${value} px</option>`).join('')}
         </select>
       </label>
+      <label class="ai-field">
+        <span>边缘裁切</span>
+        <span class="op-trim">
+          <input class="input mono" type="number" min="0" max="${MAX_TRIM}" step="1" value="0" data-op="trim" />
+          <em>px</em>
+        </span>
+      </label>
       <div class="op-warn" data-op="warn" hidden></div>
       <button class="btn primary studio-block" type="button" data-op="apply">生成扩图</button>
       <div class="studio-note">拖动画布四边的手柄也能改；按住 Shift 拖动会临时反转「对边同步」。外补区按 32 对齐，原图区域逐字节保留。</div>
@@ -104,6 +119,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     link: el('link'),
     warn: el('warn'),
     maxSide: el('maxSide'),
+    trim: el('trim'),
     inputs: Object.fromEntries(EDGES.map((edge) => [edge, el(edge)])),
   };
   const parts = {
@@ -134,6 +150,11 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     return out;
   }
 
+  /** 扩图前从源图四边裁掉的像素数（部分源图四周带白边/描边，先裁掉再让模型重画）。 */
+  function trimPx() {
+    return clampTrim(effectiveValue(preset(), overrides(), 'outpaint.trim', 0));
+  }
+
   function setEdges(next, { quiet = false } = {}) {
     let merged = overrides();
     for (const edge of EDGES) {
@@ -147,8 +168,12 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
 
   function outputSize(size, value) {
     if (!size) return null;
-    const width = Math.round(size.width * (1 + (value.left + value.right) / 100));
-    const height = Math.round(size.height * (1 + (value.top + value.bottom) / 100));
+    // 裁边后才外扩：输出尺寸按剩下的源图算，和后端 outpaint_canvas 一致。
+    const trim = trimPx();
+    const baseW = Math.max(32, Math.round(size.width) - trim * 2);
+    const baseH = Math.max(32, Math.round(size.height) - trim * 2);
+    const width = Math.round(baseW * (1 + (value.left + value.right) / 100));
+    const height = Math.round(baseH * (1 + (value.top + value.bottom) / 100));
     return { width, height, long: Math.max(width, height) };
   }
 
@@ -157,6 +182,7 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     for (const edge of EDGES) {
       if (document.activeElement !== op.inputs[edge]) op.inputs[edge].value = String(value[edge]);
     }
+    if (op.trim && document.activeElement !== op.trim) op.trim.value = String(trimPx());
     const maxSide = Number(effectiveValue(preset(), overrides(), 'outpaint.max_side', 4096)) || 4096;
     op.maxSide.value = String(maxSide);
 
@@ -188,16 +214,18 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     layerHost.hidden = false;
     const view = getView();
     const value = edges();
-    const iw = size.width;
-    const ih = size.height;
     const scale = view.scale || 1;
+    // 幽灵层画的是「实际参与外扩的源图」：开了裁边就从源图四边缩进去 trim 像素。
+    const trim = trimPx();
+    const iw = Math.max(32, size.width - trim * 2);
+    const ih = Math.max(32, size.height - trim * 2);
     const left = (iw * value.left * scale) / 100;
     const right = (iw * value.right * scale) / 100;
     const top = (ih * value.top * scale) / 100;
     const bottom = (ih * value.bottom * scale) / 100;
 
-    const ox = view.x;
-    const oy = view.y;
+    const ox = view.x + trim * scale;
+    const oy = view.y + trim * scale;
     const ow = iw * scale;
     const oh = ih * scale;
     const x = ox - left;
@@ -358,6 +386,13 @@ export function mountOutpaintPanel(panelHost, layerHost, { getSize, getView, onA
     const merged = withOverride(preset(), overrides(), 'outpaint.max_side', Number(op.maxSide.value) || 4096);
     patchSettings({ edit: { overrides: merged } });
     paint();
+  });
+
+  op.trim?.addEventListener('change', () => {
+    const merged = withOverride(preset(), overrides(), 'outpaint.trim', clampTrim(op.trim.value));
+    patchSettings({ edit: { overrides: merged } });
+    paint();
+    syncGhost();
   });
 
   panelHost.querySelector('[data-op="apply"]').addEventListener('click', () => {

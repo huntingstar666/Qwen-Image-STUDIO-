@@ -3455,19 +3455,24 @@ export function createStudioPage(host) {
       doc.layers.length > 0 &&
       // 调整层会改写已合成内容，不能走这条捷径（D9.3）。
       !doc.hasAdjustmentLayers;
-    const image = adjustPreview
-      ? doc.renderPreviewBase()
-      : liveLayers
-        ? doc.renderUnderlay()
-        : doc.renderBase();
+    // 展示 AI 结果时不再画底图：扩图结果比原图大，旧底图会从四周露出来，
+    // 看起来就是「结果外面围了一圈亮框」（D29.1）。
+    const showPreview = Boolean(preview.image && !preview.flash);
+    const image = showPreview
+      ? null
+      : adjustPreview
+        ? doc.renderPreviewBase()
+        : liveLayers
+          ? doc.renderUnderlay()
+          : doc.renderBase();
     const size = doc.size;
     const w = size.width * view.scale;
     const h = size.height * view.scale;
 
     // 底图阴影交给 CSS drop-shadow（见 .studio-canvas-wrap canvas），
     // 避免每帧对整图做 shadowBlur 模糊。
-    ctx.drawImage(image, view.x, view.y, w, h);
-    if (liveLayers) {
+    if (image) ctx.drawImage(image, view.x, view.y, w, h);
+    if (liveLayers && !showPreview) {
       const crop = doc.transform.crop;
       ctx.save();
       ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);

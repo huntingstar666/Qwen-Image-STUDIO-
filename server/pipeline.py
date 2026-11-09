@@ -980,9 +980,15 @@ class Pipeline:
                 except (TypeError, ValueError) as exc:
                     raise PipelineError(f"outpaint.max_side 必须是整数：{exc}") from exc
                 try:
+                    # 裁边：某些源图四周带 1~3px 白边/描边，直接外扩会把这条边续出去；
+                    # 先裁掉再让模型重新生成（默认 0，不影响不带边框的图）。
+                    op_trim = max(0, min(64, int(op.get("trim") or 0)))
+                except (TypeError, ValueError) as exc:
+                    raise PipelineError(f"扩图裁边必须是整数：{exc}") from exc
+                try:
                     op_canvas, op_info = imaging.outpaint_canvas(
                         src, multiple=int(profile.get("snap") or 32),
-                        max_side=op_max_side, **pads)
+                        max_side=op_max_side, trim=op_trim, **pads)
                 except ValueError as exc:
                     raise PipelineError(f"扩图参数不可用：{exc}") from exc
 

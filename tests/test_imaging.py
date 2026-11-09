@@ -892,6 +892,23 @@ def test_outpaint_canvas_rejects_non_finite_percent():
             lambda: imaging.outpaint_canvas(src, left=float("nan")))
 
 
+def test_outpaint_canvas_trims_source_edges_first():
+    """裁边预处理：先裁掉源图四边 N px，再按百分比外扩，源图区仍是整数偏移的逐字节拷贝。"""
+    src = _rgba(320, 224, seed=35)
+    canvas, info = imaging.outpaint_canvas(src, left=10, right=10, top=10, bottom=10, trim=4)
+    assert info.trim == 4
+    assert (info.src_w, info.src_h) == (312, 216)
+    assert info.left + info.src_w + info.right == info.canvas_w
+    assert info.top + info.src_h + info.bottom == info.canvas_h
+    inner = np.asarray(canvas)[info.top:info.top + info.src_h, info.left:info.left + info.src_w]
+    assert np.array_equal(inner, np.asarray(src)[4:220, 4:316])
+    # 裁得比图还大要报错，别生成一张 32px 的怪画布
+    _raises(ValueError, "太小", lambda: imaging.outpaint_canvas(src, left=10, trim=112))
+    # trim=0 与旧行为完全一致
+    plain, plain_info = imaging.outpaint_canvas(src, left=10, right=10)
+    assert plain_info.trim == 0 and (plain_info.src_w, plain_info.src_h) == (320, 224)
+
+
 def test_sample_size_for_clamps_long_side_and_snaps():
     """孤海扩图档位：整张外补画布按长边 1024~2048 缩放、32 对齐，只缩不放。"""
     # 3904×1856（左/右各 104% 的实例）→ 长边收到 2048，32 对齐

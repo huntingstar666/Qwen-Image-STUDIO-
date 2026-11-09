@@ -4662,6 +4662,19 @@ html[data-theme='dark'] .page-studio {
   color: var(--dim);
 }
 
+/* 边缘裁切：px 输入与单位同一行 */
+.op-trim {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.op-trim em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--dim);
+}
+
 .op-preview {
   display: flex;
   align-items: center;

@@ -333,6 +333,27 @@
   background: #fff;
 }
 
+/* theme.css 在后面给 .tool-canvas 铺了不透明底色，这里用更高优先级显示透明棋盘 */
+.tool-stage .tool-canvas:not(.tool-overlay) {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e6eaee 25%, transparent 25%),
+    linear-gradient(-45deg, #e6eaee 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e6eaee 75%),
+    linear-gradient(-45deg, transparent 75%, #e6eaee 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+html[data-theme="dark"] .tool-stage .tool-canvas:not(.tool-overlay) {
+  background-color: #1d2228;
+  background-image:
+    linear-gradient(45deg, #2b323a 25%, transparent 25%),
+    linear-gradient(-45deg, #2b323a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2b323a 75%),
+    linear-gradient(-45deg, transparent 75%, #2b323a 75%);
+}
+
 /* 还没上传图片时，canvas 只是一块白底，淡出掉，让空状态更干净 */
 .tool-stage:has(.tool-stage-empty:not(.hidden)) .tool-canvas {
   opacity: 0;

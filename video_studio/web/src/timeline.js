@@ -211,8 +211,10 @@ export class Timeline {
       node.style.left = `${left}px`;
       node.style.width = `${width}px`;
       node.dataset.index = String(index);
+      node.tabIndex = 0;
+      node.setAttribute("role", "button");
       node.textContent = cue.text.replace(/\n/g, " ");
-      node.title = `${formatMs(cue.startMs)}–${formatMs(cue.endMs)}  ${cue.text}（点击修改文案）`;
+      node.title = `${formatMs(cue.startMs)}–${formatMs(cue.endMs)}  ${cue.text}（点击或回车修改文案）`;
       host.appendChild(node);
     });
   }
@@ -276,6 +278,16 @@ export class Timeline {
     scroll.addEventListener("click", (event) => {
       const block = event.target.closest(".sub-block");
       if (!block || !this.handlers.onCueText) return;
+      this._startCueEdit(block);
+    });
+
+    // 键盘可达：字幕块聚焦后回车 / 空格进入编辑
+    scroll.addEventListener("keydown", (event) => {
+      const block = event.target.closest(".sub-block");
+      if (!block || event.target !== block) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
       this._startCueEdit(block);
     });
   }

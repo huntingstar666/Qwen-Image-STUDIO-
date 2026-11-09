@@ -95,7 +95,23 @@ html, body {
   font-family: var(--font);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+::selection { background: var(--accent-dim); }
 
 body::before {
   content: "";
@@ -364,7 +380,12 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 .divider { height: 1px; background: var(--line-soft); margin: 14px 0; }
 
 .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
-.empty-hint { padding: 28px 12px; text-align: center; color: var(--muted); line-height: 1.7; }
+.empty-hint {
+  padding: 28px 12px; text-align: center; color: var(--muted); line-height: 1.7;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.empty-hint .icon { width: 26px; height: 26px; color: var(--dim); }
+.empty-hint p { margin: 0; }
 
 /* 流程面板 */
 .steps { display: flex; flex-direction: column; gap: 10px; }
@@ -672,9 +693,20 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 .segmented.small .seg { height: 22px; padding: 0 11px; font-size: 11.5px; }
 
 .btn:focus-visible, .icon-btn:focus-visible, .seg:focus-visible, .mini-btn:focus-visible,
-.sb-expand:focus-visible {
+.sb-expand:focus-visible, .sb-row:focus-visible, .sub-block:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
+}
+
+/* 按下时轻微回弹，接近物理按键的反馈 */
+.btn, .icon-btn, .seg, .mini-btn, .hg-use, .sb-expand {
+  transition-property: background, border-color, color, transform, box-shadow;
+  transition-duration: var(--dur);
+  transition-timing-function: var(--ease);
+}
+.btn:active:not(:disabled), .icon-btn:active, .seg:active,
+.mini-btn:active:not(:disabled), .hg-use:active, .sb-expand:active {
+  transform: scale(0.97);
 }
 
 .stage-head {

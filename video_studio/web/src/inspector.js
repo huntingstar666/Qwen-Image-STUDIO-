@@ -24,6 +24,10 @@ function toPatch(path, value) {
   return root;
 }
 
+function emptyHint(icon, text) {
+  return `<div class="empty-hint"><svg class="icon"><use href="#${icon}"></use></svg><p>${text}</p></div>`;
+}
+
 const MOTION_LABEL = {
   none: "固定画面",
   push: "慢推（靠近人物）",
@@ -40,13 +44,13 @@ export function renderInspector(host, state, handlers) {
   const project = state.project;
   const shot = (project.shots || []).find((item) => item.id === state.selectedId);
   if (!project) {
-    host.innerHTML = '<div class="empty-hint">还没有项目</div>';
+    host.innerHTML = emptyHint("i-image", "还没有项目");
     return;
   }
   if (!shot) {
     host.innerHTML = (project.shots || []).length
-      ? '<div class="empty-hint">在下方时间线上点选一个镜头段</div>'
-      : '<div class="empty-hint">上传音频与字幕后，点「自动分段」</div>';
+      ? emptyHint("i-locate", "在时间线或分镜表里点选一个镜头段")
+      : emptyHint("i-caption", "上传音频与字幕后，点「自动分段」");
     return;
   }
 
@@ -195,7 +199,7 @@ function stepClass(done, active) {
 export function renderPipeline(host, state, handlers) {
   const project = state.project;
   if (!project) {
-    host.innerHTML = '<div class="empty-hint">还没有项目</div>';
+    host.innerHTML = emptyHint("i-settings", "还没有项目");
     return;
   }
   const audio = project.audio || {};

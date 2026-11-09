@@ -149,7 +149,8 @@ export class Storyboard {
       ? `<img class="sb-thumb is-loading" src="${escapeHtml(shot.imageUrl)}" alt="${escapeHtml(shot.id)}" loading="lazy" />`
       : `<div class="sb-thumb empty"><svg class="icon"><use href="#i-image"></use></svg><span>待生成</span></div>`;
 
-    return `<article class="sb-row status-${escapeHtml(status)}${shot.id === this.selectedId ? " selected" : ""}" data-id="${escapeHtml(shot.id)}">
+    return `<article class="sb-row status-${escapeHtml(status)}${shot.id === this.selectedId ? " selected" : ""}"
+      data-id="${escapeHtml(shot.id)}" tabindex="0" aria-label="镜头段 ${escapeHtml(shot.id)}">
       <div class="sb-media">
         ${thumb}
         <span class="sb-num">${escapeHtml(shot.id)}</span>
@@ -294,6 +295,16 @@ export class Storyboard {
       if (event.target.closest("textarea, input, button, label")) return;
       const row = event.target.closest(".sb-row");
       if (!row) return;
+      const shot = this._shot(row.dataset.id);
+      this.handlers.onSelect(row.dataset.id, shot);
+    });
+
+    list.addEventListener("keydown", (event) => {
+      const row = event.target.closest(".sb-row");
+      if (!row || event.target !== row) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
       const shot = this._shot(row.dataset.id);
       this.handlers.onSelect(row.dataset.id, shot);
     });

@@ -99,7 +99,7 @@ export class Storyboard {
       list.innerHTML = `<div class="sb-empty">
         <svg class="icon"><use href="#i-image"></use></svg>
         <strong>还没有镜头段</strong>
-        <p>先上传音频和带时间轴的逐字稿，再点「自动分段」。</p>
+        <p>先上传音频（mp3 / wav / m4a / flac / aac…）和带时间轴的字幕（srt / vtt / ass / ssa），再点「自动分段」。</p>
         <div class="sb-empty-actions">
           <button class="btn primary" type="button" data-empty="audio">上传音频</button>
           <button class="btn" type="button" data-empty="subtitle">上传字幕</button>

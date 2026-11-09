@@ -264,6 +264,8 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 }
 .stage-empty h2 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
 .stage-empty p { margin: 0 auto 16px; max-width: 460px; color: #9aa1a8; line-height: 1.7; }
+.stage-empty .stage-empty-hint { margin: -6px auto 14px; font-size: 12px; color: #858c93; }
+.stage-empty .stage-empty-hint:empty { display: none; }
 .stage-empty-actions { display: flex; gap: 10px; justify-content: center; }
 .stage-empty .btn { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.18); color: #eef1f3; }
 .stage-empty .btn.primary { background: var(--accent); border-color: var(--accent); }

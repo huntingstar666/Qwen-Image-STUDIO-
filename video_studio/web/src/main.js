@@ -500,6 +500,7 @@ function renderStage() {
     refs.stage.classList.remove("has-image");
     return;
   }
+  renderEmptyCopy(project);
   const ms = currentMs();
   const shot = shotAt(ms) || (project.shots || []).find((item) => item.id === state.selectedId);
   const url = (shot && shot.imageUrl) || "";
@@ -525,6 +526,33 @@ function renderStage() {
 
   if (project.shots && project.shots.length) refs.empty.hidden = true;
   else refs.empty.hidden = false;
+}
+
+/** 空状态按「缺什么」给出下一步和对应格式，避免用户不知道传什么。 */
+function renderEmptyCopy(project) {
+  const title = $("emptyTitle");
+  if (!title) return;
+  const desc = $("emptyDesc");
+  const hint = $("emptyHint");
+  const hasAudio = Number((project.audio || {}).durationMs) > 0;
+  const cues = (project.subtitle && project.subtitle.cues) || [];
+  if (!hasAudio) {
+    title.textContent = "先上传一段音频";
+    desc.innerHTML =
+      "音频：mp3 / wav / m4a / flac / aac / ogg / opus / wma / mp4 / mov（≤200MB）<br />"
+      + "带声音的视频也可以直接上传（mp4 / mov）。";
+    hint.textContent = "再准备一份带时间轴的逐字稿（srt / vtt / ass / ssa）。";
+    return;
+  }
+  if (!cues.length) {
+    title.textContent = "音频已就绪，再上传字幕";
+    desc.innerHTML = "字幕：srt / vtt / ass / ssa，每条都要有起止时间（≤5MB）。";
+    hint.textContent = "没有现成字幕？先在剪辑软件里自动识别并导出 SRT。";
+    return;
+  }
+  title.textContent = "素材齐了，点「自动分段」开始";
+  desc.innerHTML = `已载入 ${cues.length} 条字幕 · 音频时长 ${formatMs(duration())}`;
+  hint.textContent = "分段后可逐段改画面描述、生成提示词与图片。";
 }
 
 function updateTransport() {

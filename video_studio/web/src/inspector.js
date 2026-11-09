@@ -255,14 +255,14 @@ export function renderPipeline(host, state, handlers) {
     {
       title: "音频",
       done: Boolean(audio.file),
-      desc: audio.file ? `已上传，时长 ${formatMs(duration)}` : "mp3 / wav / m4a / flac",
+      desc: audio.file ? `已上传，时长 ${formatMs(duration)}` : "mp3 / wav / m4a / flac / aac / ogg…（≤200MB）",
       action: "audio",
       label: audio.file ? "重新上传" : "上传",
     },
     {
       title: "时间轴字幕",
       done: Boolean(cues.length),
-      desc: cues.length ? `${cues.length} 条字幕` : "SRT / VTT / ASS",
+      desc: cues.length ? `${cues.length} 条字幕` : "srt / vtt / ass / ssa（需带时间轴）",
       action: "subtitle",
       label: cues.length ? "重新上传" : "上传",
     },
@@ -285,7 +285,9 @@ export function renderPipeline(host, state, handlers) {
     {
       title: "批量生图",
       done: shots.length > 0 && ready === shots.length,
-      desc: shots.length ? `${ready} / ${shots.length} 段就绪` : "先分段",
+      desc: shots.length
+        ? `${ready} / ${shots.length} 段就绪 · 可上传 png / jpg / webp 换图`
+        : "先分段，再逐段生成或上传 png / jpg / webp",
       action: "images",
       label: "生成待处理",
     },

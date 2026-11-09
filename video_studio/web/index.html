@@ -108,10 +108,10 @@
         <div class="top-actions">
           <span class="chip" id="chipMain" title="主项目状态">主项目</span>
           <span class="chip" id="chipFfmpeg" title="ffmpeg 状态">ffmpeg</span>
-          <button class="btn" id="btnAudio" data-tip="上传音频">
+          <button class="btn" id="btnAudio" data-tip="音频：mp3 / wav / m4a / flac / aac / ogg / opus / wma / mp4 / mov，≤200MB">
             <svg class="icon"><use href="#i-audio"></use></svg><span class="btn-label">上传音频</span>
           </button>
-          <button class="btn" id="btnSubtitle" data-tip="上传字幕">
+          <button class="btn" id="btnSubtitle" data-tip="字幕：srt / vtt / ass / ssa，必须带时间轴，≤5MB">
             <svg class="icon"><use href="#i-caption"></use></svg><span class="btn-label">上传字幕</span>
           </button>
           <button class="icon-btn" id="btnTheme" data-tip="主题：跟随系统" aria-label="切换主题">
@@ -157,8 +157,10 @@
               <img id="stageImage" alt="" />
               <div class="subtitle" id="stageSubtitle"></div>
               <div class="stage-empty" id="stageEmpty">
-                <h2>先给一段音频和带时间轴的逐字稿</h2>
-                <p>支持 mp3 / wav / m4a / flac 与 SRT / VTT / ASS。上传后自动分段、对齐、生成分镜，再批量出图合成。</p>
+                <h2 id="emptyTitle">先给一段音频和带时间轴的逐字稿</h2>
+                <p id="emptyDesc">音频：mp3 / wav / m4a / flac / aac / ogg / opus / wma / mp4 / mov（≤200MB）<br />
+                  字幕：srt / vtt / ass / ssa，必须包含时间轴（≤5MB）</p>
+                <p class="stage-empty-hint" id="emptyHint">两样都齐了，点「自动分段」开始；之后可逐段改画面描述、生成提示词与图片。</p>
                 <div class="stage-empty-actions">
                   <button class="btn primary" id="emptyAudio">上传音频</button>
                   <button class="btn" id="emptySubtitle">上传字幕</button>
@@ -355,9 +357,11 @@
       </footer>
     </aside>
 
-    <input type="file" id="fileAudio" accept="audio/*,video/mp4,video/quicktime" hidden />
+    <input type="file" id="fileAudio"
+      accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.mp4,.mov,audio/*,video/mp4,video/quicktime" hidden />
     <input type="file" id="fileSubtitle" accept=".srt,.vtt,.ass,.ssa" hidden />
-    <input type="file" id="fileBgm" accept="audio/*" hidden />
+    <input type="file" id="fileBgm"
+      accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.mp4,.mov,audio/*" hidden />
     <input type="file" id="fileShotImage" accept="image/png,image/jpeg,image/webp" hidden />
     <audio id="audio" preload="auto"></audio>
     <div class="toast-root" id="toastRoot" role="status" aria-live="polite"></div>

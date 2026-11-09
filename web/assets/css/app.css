@@ -356,6 +356,15 @@ a:hover {
   overflow: hidden;
 }
 
+/* D25.1：顶栏定高。顶栏只有 min-height 且可被 flex 压缩，右侧面板不同分页的
+   固有高度会让它在 64/70px 之间变，导致 viewport 与画布跟着抖动（切 tab 画面跳）。
+   精修页固定吃 64px，其它页仍按内容自适应。 */
+.app-main.is-studio .topbar {
+  flex: 0 0 var(--topbar-h);
+  height: var(--topbar-h);
+  overflow: hidden;
+}
+
 .viewport.is-studio {
   max-width: none;
   margin: 0;

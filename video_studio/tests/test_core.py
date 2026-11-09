@@ -200,6 +200,16 @@ def test_llm_user_message_does_not_echo_appearance() -> None:
     assert "固定外观由资产卡注入" in message
 
 
+def test_detect_entities_location_partial_and_alias() -> None:
+    entities = [
+        {"id": "e2", "kind": "location", "name": "夜班车间"},
+        {"id": "e1", "kind": "character", "name": "小林", "aliases": ["林工"]},
+    ]
+    assert prompts.detect_entities("他走进车间", entities) == ["e2"]
+    assert prompts.detect_entities("林工打开灯", entities) == ["e1"]
+    assert prompts.detect_entities("他打开灯", entities) == []
+
+
 def test_assemble_prompt_detects_entity_from_dialogue() -> None:
     project = _project()
     shot = schema.new_shot(0, 0, 2000, "小林，把灯打开")
@@ -549,7 +559,7 @@ def test_build_anchor_payload_uses_base_and_assets() -> None:
     assert payload["images"][0]["data"].startswith("data:image/png;base64,")
     assert payload["seed"] == 7
     assert payload["meta"]["anchor"] is True
-    assert "图2" in payload["prompt"]
+    assert "<image2>" in payload["prompt"]
     assert "小林" in payload["prompt"]
 
 
@@ -559,7 +569,7 @@ def test_anchor_prompt_groups_multiple_refs_of_same_asset() -> None:
         {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"b"},
     ]
     prompt = images.build_anchor_prompt(refs)
-    assert "图2、图3" in prompt
+    assert "<image2>、<image3>" in prompt
     assert prompt.count("人物「小林」") == 1
 
 
@@ -589,7 +599,7 @@ def test_anchor_payload_keeps_base_first_and_follow_size() -> None:
     assert "width" not in payload and "height" not in payload
     assert payload["images"][0]["data"].startswith("data:image/png;base64,")
     assert len(payload["images"]) == 3
-    assert "图2" in payload["prompt"] and "图3" in payload["prompt"]
+    assert "<image2>" in payload["prompt"] and "<image3>" in payload["prompt"]
 
 
 def test_asset_payload_is_t2i_and_square() -> None:
@@ -612,8 +622,8 @@ def test_scene_anchor_uses_scene_as_image1() -> None:
     assert payload["size_mode"] == "follow"
     assert payload["images"][0]["data"].startswith("data:image/png;base64,")
     assert len(payload["images"]) == 2
-    assert "图1为场景底图" in payload["prompt"]
-    assert "图2" in payload["prompt"] and "小林" in payload["prompt"]
+    assert "<image1>" in payload["prompt"]
+    assert "<image2>" in payload["prompt"] and "小林" in payload["prompt"]
     assert "低头查看设备" in payload["prompt"]
 
 
@@ -624,8 +634,8 @@ def test_previous_anchor_uses_previous_frame_as_image1() -> None:
     refs = [{"id": "e1", "kind": "character", "name": "小林", "desc": "短发", "data": b"hero"}]
     payload = images.build_previous_anchor_payload(project, shot, b"prev", refs, seed=3)
     assert payload["images"][0]["data"].startswith("data:image/png;base64,")
-    assert "图1为上一镜画面" in payload["prompt"]
-    assert "图2" in payload["prompt"]
+    assert "<image1>" in payload["prompt"]
+    assert "<image2>" in payload["prompt"]
     assert payload["meta"]["anchor"] == "previous"
 
 

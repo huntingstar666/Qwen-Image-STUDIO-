@@ -296,10 +296,15 @@ def _coerce(spec: dict[str, Any], value: Any, path: str) -> Any:
             refs = item.get("refImages")
             if not isinstance(refs, list):
                 refs = []
+            aliases = item.get("aliases")
+            if not isinstance(aliases, list):
+                aliases = []
             out.append({
                 "id": str(item.get("id") or f"e{index + 1}")[:32],
                 "kind": kind,
                 "name": str(item.get("name") or "")[:40],
+                "aliases": [str(entry).strip()[:20] for entry in aliases[:6]
+                            if str(entry or "").strip()],
                 "desc": str(item.get("desc") or "")[:400],
                 # 资产设定图：人物三视图 / 场景定场图，生图时做身份与场景锚定
                 "refImages": [str(entry)[:512] for entry in refs[:4] if str(entry or "").strip()],
@@ -381,8 +386,12 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
     # 老资产卡没有参考图字段：补空数组，避免前端读到 undefined
     content = ((project.get("locks") or {}).get("content") or {})
     for entity in content.get("entities") or []:
-        if isinstance(entity, dict) and not isinstance(entity.get("refImages"), list):
+        if not isinstance(entity, dict):
+            continue
+        if not isinstance(entity.get("refImages"), list):
             entity["refImages"] = []
+        if not isinstance(entity.get("aliases"), list):
+            entity["aliases"] = []
 
     for shot in project.get("shots") or []:
         shot.setdefault("description", "")

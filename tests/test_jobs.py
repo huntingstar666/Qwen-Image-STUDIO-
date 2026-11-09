@@ -165,6 +165,32 @@ def test_interrupted_jobs_marked_on_load():
         assert finished is not None and finished.status == "done"
 
 
+def test_history_file_order_survives_reload():
+    with _tmpdir() as tmp:
+        q = jobs.JobQueue(history_limit=10)
+        q._history_path = os.path.join(tmp, "history.json")
+        with q._lock:
+            q._jobs = {}
+            q._order = []
+            for index in range(3):
+                job = jobs.Job(id=f"j{index}", kind="t2i", prompt=str(index))
+                job.status = "done"
+                q._jobs[job.id] = job
+                q._order.append(job.id)
+            q._save_history()
+        with open(q._history_path, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        assert [item["id"] for item in saved] == ["j2", "j1", "j0"]
+
+        q2 = jobs.JobQueue(history_limit=10)
+        q2._history_path = q._history_path
+        with q2._lock:
+            q2._jobs = {}
+            q2._order = []
+        q2._load_history()
+        assert [item["id"] for item in q2.history(limit=10)] == ["j2", "j1", "j0"]
+
+
 def test_delete_single_history():
     with _tmpdir() as tmp:
         q = _queue(tmp)

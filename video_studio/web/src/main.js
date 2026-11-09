@@ -2871,6 +2871,9 @@ function entityRow(section, entity, index) {
         <input class="input" data-entity="name" placeholder="名称（台词里怎么称呼）" value="${escapeHtml(entity.name || "")}" />
       </div>
       <input class="input" data-entity="desc" placeholder="固定外观描述（会拼进每段提示词）" value="${escapeHtml(entity.desc || "")}" />
+      <input class="input" data-entity="aliases" data-entity-list="1"
+        placeholder="别名，逗号分隔（如：林工、他）"
+        value="${escapeHtml((entity.aliases || []).join("、"))}" />
       <div class="entity-refs">
         ${refs.map((file, refIndex) => `
           <span class="entity-ref" title="设定图 ${refIndex + 1}">
@@ -2885,14 +2888,17 @@ function entityRow(section, entity, index) {
       </div>
     </div>`;
   row.querySelectorAll("[data-entity]").forEach((input) => {
-    input.addEventListener("input", () => {
-      entity[input.dataset.entity] = input.value;
+    const write = () => {
+      if (input.dataset.entityList) {
+        entity.aliases = input.value.split(/[，,、]/).map((item) => item.trim())
+          .filter(Boolean);
+      } else {
+        entity[input.dataset.entity] = input.value;
+      }
       drawerDraft[section].content.entities[index] = entity;
-    });
-    input.addEventListener("change", () => {
-      entity[input.dataset.entity] = input.value;
-      drawerDraft[section].content.entities[index] = entity;
-    });
+    };
+    input.addEventListener("input", write);
+    input.addEventListener("change", write);
   });
   row.querySelector("[data-generate]").addEventListener("click", () => {
     generateAssetImage(entity);

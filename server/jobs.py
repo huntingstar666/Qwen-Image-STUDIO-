@@ -382,7 +382,9 @@ class JobQueue:
         try:
             with self._lock:
                 payload = []
-                for jid in self._order:
+                # 文件统一「最新在前」；_order 是「最旧在前」，落盘时反过来。
+                # 以前写 _order、读时再 reversed，重启奇数次后历史顺序会整体颠倒。
+                for jid in reversed(self._order):
                     job = self._jobs.get(jid)
                     if job is None:
                         continue

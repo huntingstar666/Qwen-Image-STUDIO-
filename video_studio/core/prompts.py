@@ -65,11 +65,27 @@ def entity_prompt(entity: dict[str, Any]) -> str:
 
 
 def detect_entities(text: str, entities: list[dict[str, Any]]) -> list[str]:
-    """按名字在台词里找已登记实体（模板降级与审计共用）。"""
+    """按名称/别名在台词里找已登记实体。
+
+    场景名允许「部分命中」：登记「夜班车间」，台词说「走进车间」也算命中；
+    角色只认全名和用户填的别名，避免「小林」误命中「林」这种单字。
+    """
     found = []
     for entity in entities:
         name = str(entity.get("name") or "").strip()
-        if name and name in text:
+        kind = str(entity.get("kind") or "character")
+        aliases = [str(item).strip() for item in (entity.get("aliases") or [])
+                   if str(item or "").strip()]
+        terms = [item for item in [name, *aliases] if item]
+        matched = any(item in text for item in terms)
+        if not matched and kind == "location" and len(name) >= 3:
+            # 场景名取最长可命中的片段（>=2 字），例如「夜班车间」→「车间」
+            for size in range(min(8, len(name)), 1, -1):
+                if any(name[start:start + size] in text
+                       for start in range(0, len(name) - size + 1)):
+                    matched = True
+                    break
+        if matched:
             found.append(str(entity.get("id") or ""))
     return [item for item in found if item]
 

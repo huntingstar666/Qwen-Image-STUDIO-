@@ -350,7 +350,7 @@ def anchor_plan(project: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any]
 
 
 def _asset_lines(refs: list[dict[str, Any]], *, start: int = 2) -> list[str]:
-    """把资产映射成「图2、图3：人物小林」；同一资产的多张设定图合并。"""
+    """把资产映射成「<image2>、<image3>：人物小林」；同一资产的多张设定图合并。"""
     groups: list[dict[str, Any]] = []
     for index, ref in enumerate(refs, start=start):
         if groups and groups[-1]["id"] == ref["id"]:
@@ -364,7 +364,7 @@ def _asset_lines(refs: list[dict[str, Any]], *, start: int = 2) -> list[str]:
         desc = str(ref.get("desc") or "").strip()
         detail = f"（固定外观：{desc}）" if desc else ""
         features = KIND_FEATURES.get(str(ref.get("kind")), "外观特征")
-        labels = "、".join(f"图{index}" for index in group["images"])
+        labels = "、".join(f"<image{index}>" for index in group["images"])
         lines.append(f"- {labels}：{kind}「{ref['name']}」{detail}，保持{features}一致。")
     return lines
 
@@ -372,15 +372,15 @@ def _asset_lines(refs: list[dict[str, Any]], *, start: int = 2) -> list[str]:
 def build_scene_anchor_prompt(project: dict[str, Any], shot: dict[str, Any],
                              scene: dict[str, Any], refs: list[dict[str, Any]]) -> str:
     lines = [
-        f"以图1为场景底图：保持「{scene['name']}」的空间结构、陈设、材质、光线、"
-        "色调与镜头机位不变。把以下资产放入图1场景中，保持其固定外观：",
+        f"以 <image1> 为场景底图：保持「{scene['name']}」的空间结构、陈设、材质、光线、"
+        "色调与镜头机位不变。把以下资产放入 <image1> 场景中，保持其固定外观：",
     ]
     lines.extend(_asset_lines(refs))
     action = prompts.strip_asset_mentions(
         " ".join(item for item in [shot.get("description"), shot.get("directive")] if item))
     if action:
         lines.append(f"画面内容与动作：{action}")
-    lines.append("人物动作与位置按上面的画面内容决定；不新增图1中不存在的空间结构，"
+    lines.append("人物动作与位置按上面的画面内容决定；不新增 <image1> 中不存在的空间结构，"
                  "不改变画幅与场景布局。")
     return "\n".join(lines)
 
@@ -388,7 +388,7 @@ def build_scene_anchor_prompt(project: dict[str, Any], shot: dict[str, Any],
 def build_previous_anchor_prompt(project: dict[str, Any], shot: dict[str, Any],
                                  refs: list[dict[str, Any]]) -> str:
     lines = [
-        "以图1为上一镜画面：保持它的构图、机位、景别、人物位置与姿态、动作、"
+        "以 <image1> 为上一镜画面：保持它的构图、机位、景别、人物位置与姿态、动作、"
         "光影、背景和所有非主体细节不变。只把人物外观替换为以下资产：",
     ]
     lines.extend(_asset_lines(refs))
@@ -421,7 +421,8 @@ def _edit_payload(project: dict[str, Any], shot: dict[str, Any],
         },
     }
     model = str(image_cfg.get("model") or "").strip()
-    if model:
+    if model and model.lower() != "moss":
+        # 编辑通道不传 MOSS：它只支持文生图，交给主项目按 task=edit 选模型
         payload["model"] = model
     if image_cfg.get("turbo"):
         payload["turbo"] = {"enabled": True}
@@ -455,7 +456,7 @@ def build_previous_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
 def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
     """身份校准指令：底稿不动，只把主体换成参考图里的同一外观。"""
     lines = [
-        "以图1为画面底稿：保持它的构图、机位、景别、内容位置与动作、光影、背景",
+        "以 <image1> 为画面底稿：保持它的构图、机位、景别、内容位置与动作、光影、背景",
         "以及所有非主体细节不变。只做身份校准，让以下主体与对应参考图保持同一外观：",
     ]
     # 同一资产的正面/侧面等多张设定图合并成一条，避免提示词被拆散
@@ -472,7 +473,7 @@ def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
         desc = str(ref.get("desc") or "").strip()
         detail = f"（固定外观：{desc}）" if desc else ""
         features = KIND_FEATURES.get(str(ref.get("kind")), "外观特征")
-        labels = "、".join(f"图{index}" for index in group["images"])
+        labels = "、".join(f"<image{index}>" for index in group["images"])
         lines.append(f"- {labels}：{kind}「{name}」{detail}，保持{features}一致。")
     lines.append("只替换上述主体的身份特征，不新增、不删除任何元素，不改变画幅与画面布局。")
     return "\n".join(lines)
@@ -484,8 +485,8 @@ def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
     """把底稿与资产设定图一起提交给 /api/edit。
 
     参数对应关系（不要改顺序）：
-    - images[0] = 本段底稿，决定画布尺寸与构图，对应提示词里的「图1」；
-    - images[1..] = 资产设定图，按 refs 顺序对应「图2、图3…」；
+    - images[0] = 本段底稿，决定画布尺寸与构图，对应提示词里的 <image1>；
+    - images[1..] = 资产设定图，按 refs 顺序对应 <image2>、<image3>…；
     - size_mode=follow：跟底稿尺寸，不额外传 width/height，避免二次缩放。
     """
     image_cfg = project.get("image") or {}
@@ -508,7 +509,7 @@ def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
         },
     }
     model = str(image_cfg.get("model") or "").strip()
-    if model:
+    if model and model.lower() != "moss":
         payload["model"] = model
     if image_cfg.get("turbo"):
         payload["turbo"] = {"enabled": True}

@@ -739,11 +739,12 @@ export function createImageToolsPage(host) {
                     <button class="chip" type="button" data-wm-kind="image">图片水印</button>
                   </div>
                   <div data-ref="wmTextFields">
-                    <label class="field"><span class="field-label">内容</span><input class="input" type="text" value="© 2026 Studio" data-ref="wmText" /></label>
+                    <label class="field"><span class="field-label">水印文字</span><input class="input" type="text" value="© 2026 Studio" placeholder="输入水印文字，例如 © 2026 Studio" data-ref="wmText" /></label>
                     <label class="field"><span class="field-label">字体</span><select class="select" data-ref="wmFont"></select></label>
                   </div>
                   <div class="hidden" data-ref="wmImageFields">
                     <input type="file" accept="image/*" hidden data-ref="wmMarkInput" aria-label="选择图片水印" />
+                    <div class="field-label">水印图片</div>
                     <button class="btn ghost sm block" type="button" data-ref="wmMarkPick">选择 PNG logo（推荐透明背景）</button>
                     <div class="field-hint" data-ref="wmMarkName">未选择图片</div>
                   </div>
@@ -1309,6 +1310,16 @@ export function createImageToolsPage(host) {
     action.secondary.click();
   });
 
+  function scrollToolIntoView(fold) {
+    if (!fold || !refs.inspectorScroll) return;
+    const scroll = refs.inspectorScroll;
+    const top = Math.max(
+      0,
+      fold.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 8,
+    );
+    scroll.scrollTo({ top, behavior: 'smooth' });
+  }
+
   function syncToolGroups() {
     const panel = host.querySelector('#tool-panel');
     for (const chip of refs.toolRail.querySelectorAll('[data-tool-group]')) {
@@ -1326,6 +1337,8 @@ export function createImageToolsPage(host) {
     }
     // 点击工具轨后，目标面板至少展开第一个折叠区，避免出现空白面板
     if (visible.length && !visible.some((fold) => fold.open)) visible[0].open = true;
+    // 切工具后把目标面板滚到 Inspector 顶部，避免「水印文字」等内容被滚出视口
+    if (visible.length) scrollToolIntoView(visible[0]);
     syncActionBar();
   }
 
@@ -1338,6 +1351,7 @@ export function createImageToolsPage(host) {
           host.querySelectorAll('.tool-fold[data-group="adjust"]').forEach((other) => {
             if (other !== fold) other.open = false;
           });
+          scrollToolIntoView(fold);
         }
         syncActionBar();
       }, 0);
@@ -2360,7 +2374,6 @@ export function createImageToolsPage(host) {
     if (!state.source) return;
     state.tool = 'export';
     syncToolGroups();
-    refs.inspectorScroll.scrollTop = 0;
     refs.format?.focus?.();
   });
 

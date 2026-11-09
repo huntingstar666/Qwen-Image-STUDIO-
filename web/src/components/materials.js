@@ -573,8 +573,9 @@ export function createMaterialsPage(host) {
       }
       openLightbox(previewList, startIndex, {
         title: '素材高清预览',
-        onClose: () => showDetail(item),
-        origin: content.querySelector('[data-main-preview]')?.getBoundingClientRect() || null,
+        // 详情弹窗保持在下层：缩回时直接落回大图，不再重新弹一次
+        originEl: content.querySelector('[data-main-preview]'),
+        originFit: 'contain',
       });
     };
 

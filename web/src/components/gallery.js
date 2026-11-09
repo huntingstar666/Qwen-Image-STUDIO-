@@ -416,9 +416,9 @@ export function createGalleryPage(host) {
         0,
         {
           title: '作品高清预览',
-          onClose: () => showDetail(item),
-          // 详情弹窗里的封面作为共享元素起点；关闭后详情会重新弹出
-          origin: content.querySelector('.gallery-cover.is-large')?.getBoundingClientRect() || null,
+          // 详情弹窗保持在下层：缩回时直接落回封面，不再重新弹一次
+          originEl: content.querySelector('.gallery-cover.is-large'),
+          originFit: 'cover',
         },
       );
     };

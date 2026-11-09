@@ -30,11 +30,19 @@ function usableRect(rect) {
 }
 
 /**
- * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string}>} images
+ * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string,thumb?:string}>} images
  * @param {number} [startIndex]
- * @param {{title?:string, onClose?:Function, origin?:DOMRect}} [options]
+ * @param {{title?:string, onClose?:Function, origin?:DOMRect, originEl?:Element,
+ *          originFit?:'cover'|'contain', stack?:boolean}} [options]
  */
-export function openLightbox(images, startIndex = 0, { title = '高清大图', onClose, origin = null } = {}) {
+export function openLightbox(images, startIndex = 0, {
+  title = '高清大图',
+  onClose,
+  origin = null,
+  originEl = null,
+  originFit = 'contain',
+  stack = true,
+} = {}) {
   const list = (images || []).filter((item) => item?.url);
   if (!list.length) return null;
 
@@ -90,6 +98,18 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     lqip.classList.add('is-on');
   };
   const hideLqip = () => lqip.classList.remove('is-on');
+
+  /**
+   * 来源 rect：优先实时读取（叠层时详情弹窗仍在，打开/关闭都能拿到精确位置），
+   * 元素已移除时退回打开瞬间的快照。
+   */
+  const currentOrigin = () => {
+    if (originEl?.isConnected) {
+      const rect = originEl.getBoundingClientRect();
+      if (rect.width > 2 && rect.height > 2) return rect;
+    }
+    return usableRect(origin);
+  };
 
   /** 平移边界：放大后才允许移动，且不把图片拖出舞台。 */
   const clampPan = () => {
@@ -253,7 +273,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     if (prefersReducedMotion() || typeof img.animate !== 'function') return;
     const target = img.getBoundingClientRect();
     if (!target.width || !target.height) return;
-    const from = usableRect(origin);
+    const from = currentOrigin();
     if (!from) {
       img.animate(
         [
@@ -281,8 +301,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     );
   };
 
-  /**
-   * 关闭动画：把当前图“飞回”来源缩略图位置，遮罩同时淡出。
+  /** 关闭动画：把当前图“飞回”来源缩略图位置，遮罩同时淡出。
    * 用克隆层做位移动画，避免遮罩淡出把图片一起淡化。
    */
   const playExit = () => new Promise((resolve) => {
@@ -294,16 +313,21 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     const finish = () => resolve();
     const backdropAnim = backdrop.animate(
       [{ opacity: 1 }, { opacity: 0 }],
-      { duration: 160, easing: 'ease-in', fill: 'forwards' },
+      { duration: 180, easing: 'ease-in', fill: 'forwards' },
     );
     const target = img.getBoundingClientRect();
-    const from = usableRect(origin);
+    const from = currentOrigin();
     // 放大/平移状态下直接淡出，避免从被裁切的画面硬跳回缩略图。
     if (!from || zoom !== 1 || !target.width || !target.height) {
-      img.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: 'ease-in', fill: 'forwards' });
+      img.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180, easing: 'ease-in', fill: 'forwards' });
       backdropAnim.finished.catch(() => {}).then(finish);
       return;
     }
+    // 落点圆角与来源一致，收起最后一帧不会突然从方角变圆角
+    const radius = originEl ? parseFloat(getComputedStyle(originEl).borderTopLeftRadius) || 0 : 0;
+    // 克隆层接管画面后隐藏原图，避免「大图淡出 + 克隆回缩」重叠成重影
+    img.style.visibility = 'hidden';
+    hideLqip();
     const clone = img.cloneNode();
     clone.style.cssText = [
       'position:fixed',
@@ -313,9 +337,10 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
       `height:${target.height}px`,
       'max-width:none',
       'max-height:none',
-      'object-fit:contain',
+      `object-fit:${originFit}`,
       'z-index:120',
       'pointer-events:none',
+      'visibility:visible',
       'transform-origin:center center',
     ].join(';');
     document.body.append(clone);
@@ -325,13 +350,14 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     const dy = from.top + from.height / 2 - (target.top + target.height / 2);
     const fly = clone.animate(
       [
-        { transform: 'none', opacity: 1 },
+        { transform: 'none', opacity: 1, borderRadius: '0px' },
         {
           transform: `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`,
-          opacity: 0.9,
+          opacity: 0.92,
+          borderRadius: `${radius}px`,
         },
       ],
-      { duration: 200, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
+      { duration: 240, easing: 'cubic-bezier(0.32, 0.72, 0, 1)', fill: 'forwards' },
     );
     Promise.all([backdropAnim.finished.catch(() => {}), fly.finished.catch(() => {})]).then(() => {
       clone.remove();
@@ -360,18 +386,33 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   };
   document.addEventListener('keydown', onKey);
 
+  // 叠层：保留下层详情弹窗，关闭灯箱后直接露出原窗口，避免“重新弹出”的跳变
   modal = openModal({
     title,
     content,
     size: 'lg',
     dialogClass: 'lightbox-modal',
     hideFooter: true,
+    stack,
     exit: playExit,
     onClose: () => {
       document.removeEventListener('keydown', onKey);
       onClose?.();
     },
   });
+
+  // 背景板只做颜色淡入（不淡整个容器），图片 FLIP 期间保持不透明
+  if (!prefersReducedMotion() && typeof stage.animate === 'function') {
+    const panel = modal.root.querySelector('.lightbox-modal');
+    panel?.animate(
+      [{ backgroundColor: 'rgba(15, 18, 20, 0)' }, { backgroundColor: 'rgba(15, 18, 20, 1)' }],
+      { duration: 180, easing: 'ease-out' },
+    );
+    stage.animate(
+      [{ backgroundColor: 'rgba(10, 12, 14, 0)' }, { backgroundColor: 'rgba(10, 12, 14, 1)' }],
+      { duration: 180, easing: 'ease-out' },
+    );
+  }
 
   ref('close').addEventListener('click', () => modal.close());
   ref('prev').addEventListener('click', () => show(index - 1));

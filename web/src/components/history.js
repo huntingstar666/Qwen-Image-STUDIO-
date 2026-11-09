@@ -524,8 +524,9 @@ export function createHistoryPage(host) {
           start,
           {
             title: '历史高清预览',
-            origin: originImg?.getBoundingClientRect() || null,
-            onClose: () => showDetail(item.id),
+            // 详情弹窗留在下层，关闭时图片直接落回原图位置
+            originEl: originImg,
+            originFit: 'contain',
           },
         );
       });

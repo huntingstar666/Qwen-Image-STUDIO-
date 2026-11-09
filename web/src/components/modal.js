@@ -8,6 +8,8 @@ import { ce } from '../utils.js';
 import { toastError } from './toast.js';
 
 let activeModal = null;
+/** 弹窗栈：灯箱等叠层打开时保留下层详情，关闭后直接露出。 */
+const modalStack = [];
 
 /**
  * @param {object} options
@@ -32,8 +34,10 @@ export function openModal({
   hideFooter = false,
   onClose,
   exit,
+  stack = false,
 }) {
-  closeModal();
+  // stack=true 时不关闭下层弹窗：灯箱等「叠加层」需要露出下面的详情窗口。
+  if (!stack) closeModal();
   const host = document.getElementById('modal-root') || document.body;
 
   const body = ce('div', { class: 'modal-body' });
@@ -63,7 +67,9 @@ export function openModal({
     if (!backdrop.isConnected) return;
     backdrop.remove();
     document.removeEventListener('keydown', onKey);
-    if (activeModal === api) activeModal = null;
+    const position = modalStack.indexOf(api);
+    if (position >= 0) modalStack.splice(position, 1);
+    if (activeModal === api) activeModal = modalStack[modalStack.length - 1] || null;
     onClose?.();
   };
 
@@ -91,6 +97,8 @@ export function openModal({
 
   const onKey = (event) => {
     if (event.key === 'Escape') {
+      // 叠层时只有最上层响应 Esc，避免一次按键把下层详情一起关掉
+      if (activeModal !== api) return;
       event.preventDefault();
       close();
     }
@@ -132,9 +140,9 @@ export function openModal({
   document.addEventListener('keydown', onKey);
 
   host.append(backdrop);
-  activeModal = { close };
-
   const api = { close, root: backdrop, body };
+  modalStack.push(api);
+  activeModal = api;
   return api;
 }
 
@@ -143,6 +151,8 @@ export function closeModal() {
     activeModal.close();
     activeModal = null;
   }
+  // 非叠层打开新弹窗时，旧弹窗全部强制清除（含仍在播退场的灯箱）
+  modalStack.length = 0;
   const host = document.getElementById('modal-root');
   if (host) host.innerHTML = '';
 }

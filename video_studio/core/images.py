@@ -51,6 +51,9 @@ def record_image_version(project_id: str, shot: dict[str, Any], file: str, *,
     shot["imageHistory"] = history
     for victim in victims:
         store.delete_media(project_id, victim)
+    # 有新画面了，图片待确认标记自动解除
+    from .segments import clear_review
+    clear_review(shot, ["image"])
 
 
 class MainClient:

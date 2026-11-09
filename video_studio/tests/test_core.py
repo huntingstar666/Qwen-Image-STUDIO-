@@ -307,6 +307,137 @@ def test_continuity_carries_character_to_unnamed_shot() -> None:
     assert project["shots"][2]["usedEntities"] == ["e2"]
 
 
+# --------------------------------------------------------------------------- 合并 / 拆分
+
+
+def _cues() -> list[dict]:
+    return subtitle.normalize_cues([
+        {"startMs": 0, "endMs": 1500, "text": "第一句"},
+        {"startMs": 1700, "endMs": 3000, "text": "第二句"},
+        {"startMs": 3200, "endMs": 5000, "text": "第三句"},
+    ])
+
+
+def _shots_from_cues() -> list[dict]:
+    cues = _cues()
+    return segments.derive(cues, duration_ms=6000, fps=30, merge_gap_ms=0, max_shot_ms=8000)
+
+
+def test_reconcile_texts_follows_cues_after_retime() -> None:
+    shots = _shots_from_cues()
+    # 把第二、三句圈进同一段：自动台词应变成两句
+    shots = segments.retime(shots, shots[1]["id"], {"endMs": 5100}, 6000)
+    segments.reconcile_texts(shots, _cues())
+    assert shots[1]["text"] == "第二句\n第三句"
+    assert shots[1]["textMode"] == "auto"
+
+
+def test_reconcile_texts_skips_manual_and_warns_missing() -> None:
+    shots = _shots_from_cues()
+    shots[1]["textMode"] = "manual"
+    shots[1]["text"] = "我自己写的台词"
+    segments.reconcile_texts(shots, _cues())
+    assert shots[1]["text"] == "我自己写的台词"
+    # 手动段不参与自动重算；自动段没有 cue 时保留原文并警告
+    assert "本段没有覆盖字幕" not in shots[1]["warnings"]
+
+
+def test_merge_shots_keeps_duration_and_text() -> None:
+    shots = _shots_from_cues()
+    shots[0]["image"] = "images/s1.png"
+    shots[0]["status"] = "ready"
+    shots[0]["imageHistory"] = [{"file": "images/s1.png", "at": "2026-11-09 10:00:00"}]
+    shots[1]["image"] = "images/s2.png"
+    shots[1]["status"] = "ready"
+    shots[1]["imageHistory"] = [{"file": "images/s2.png", "at": "2026-11-09 10:01:00"}]
+    merged = segments.merge_shots(shots, [shots[0]["id"], shots[1]["id"]],
+                                  duration_ms=6000, fps=30, cues=_cues())
+    assert len(merged) == 2
+    assert merged[0]["startMs"] == 0
+    assert merged[0]["endMs"] == shots[1]["endMs"]
+    assert merged[1]["endMs"] == 6000
+    assert merged[0]["text"] == "第一句\n第二句"
+    assert merged[0]["image"] == "images/s1.png"
+    assert merged[0]["status"] == "ready"
+    assert merged[0]["review"]["prompt"] is True
+    assert merged[0]["review"]["image"] is True
+    # 图片历史迁移，当前图仍在历史里
+    files = [item["file"] for item in merged[0]["imageHistory"]]
+    assert "images/s1.png" in files and "images/s2.png" in files
+
+
+def test_merge_shots_rejects_gap() -> None:
+    from video_studio.core.errors import StudioError
+    shots = _shots_from_cues()
+    with pytest.raises(StudioError):
+        segments.merge_shots(shots, [shots[0]["id"], shots[2]["id"]],
+                             duration_ms=6000, fps=30, cues=_cues())
+
+
+def test_split_at_keeps_total_and_does_not_split_text() -> None:
+    shots = _shots_from_cues()
+    source = shots[1]
+    original_text = source["text"]
+    total = sum(shot["endMs"] - shot["startMs"] for shot in shots)
+    result = segments.split_shot_at(shots, source["id"], 2400,
+                                    duration_ms=6000, fps=30, cues=_cues())
+    assert len(result) == 4
+    assert sum(shot["endMs"] - shot["startMs"] for shot in result) == total
+    for left, right in zip(result, result[1:]):
+        assert left["endMs"] == right["startMs"]
+    left, right = result[1], result[2]
+    assert left["text"] == original_text and right["text"] == original_text
+    assert right["image"] == "" and right["status"] == "pending"
+    assert right["review"]["image"] is True
+    assert left["review"]["prompt"] is True
+
+
+def test_split_snaps_to_cue_boundary_and_recomputes_text() -> None:
+    shots = [
+        schema.new_shot(0, 0, 3200, "第一句\n第二句"),
+        schema.new_shot(1, 3200, 6000, "第三句"),
+    ]
+    result = segments.split_shot_at(shots, "s1", 1460,
+                                    duration_ms=6000, fps=30, cues=_cues(),
+                                    snap_window_ms=120)
+    left, right = result[0], result[1]
+    assert left["endMs"] == right["startMs"] == 1500
+    assert left["textMode"] == "auto" and right["textMode"] == "auto"
+    assert left["text"] == "第一句" and right["text"] == "第二句"
+
+
+def test_split_parts_numbers_beats_and_keeps_duration() -> None:
+    shots = _shots_from_cues()
+    source = shots[1]
+    total = sum(shot["endMs"] - shot["startMs"] for shot in shots)
+    result = segments.split_shot_parts(shots, source["id"], 3, duration_ms=6000, fps=30)
+    group = result[1:4]
+    assert [item["beat"]["index"] for item in group] == [1, 2, 3]
+    assert all(item["beat"]["count"] == 3 for item in group)
+    assert group[0]["text"] == source["text"]
+    assert all(item["text"] == source["text"] for item in group)
+    assert group[0]["startMs"] == source["startMs"]
+    assert group[-1]["endMs"] == source["endMs"]
+    assert sum(shot["endMs"] - shot["startMs"] for shot in result) == total
+
+
+def test_review_mark_and_clear() -> None:
+    shot = schema.new_shot(0, 0, 1000, "台词")
+    segments.mark_review(shot, prompt=True, image=True, reason="split")
+    assert shot["review"]["prompt"] is True and shot["review"]["image"] is True
+    assert shot["review"]["reason"] == "split"
+    segments.clear_review(shot, ["prompt"])
+    assert "prompt" not in shot["review"] and shot["review"]["image"] is True
+    segments.clear_review(shot, ["image"])
+    assert "review" not in shot
+
+
+def test_new_shot_has_text_mode_and_beat() -> None:
+    shot = schema.new_shot(0, 0, 1000, "台词")
+    assert shot["textMode"] == "auto" and shot["beat"] is None
+    assert "review" not in shot
+
+
 # --------------------------------------------------------------------------- 注册表
 
 

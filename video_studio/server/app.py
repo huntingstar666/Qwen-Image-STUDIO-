@@ -8,9 +8,10 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import Body, FastAPI, File, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +27,14 @@ MAX_IMAGE_BYTES = 32 * 1024 * 1024
 config.ensure_dirs()
 
 app = FastAPI(title="video_studio", version="0.1.0")
+
+# 主项目内嵌时需要用 fetch 探活（跨端口），只放行本机页面读取
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -78,6 +87,31 @@ def _shot_of(project: dict[str, Any], shot_id: str) -> dict[str, Any]:
     if shot is None:
         raise StudioError(f"镜头段不存在：{shot_id}", code="not_found", status=404)
     return shot
+
+
+def _shifted_cues(project: dict[str, Any]) -> list[dict[str, Any]]:
+    """字幕 cue 平移到音频时间轴（与自动分段同一套偏移规则）。"""
+    offset = int((project.get("audio") or {}).get("offsetMs") or 0)
+    return [{**cue,
+             "startMs": int(cue["startMs"]) + offset,
+             "endMs": int(cue["endMs"]) + offset}
+            for cue in ((project.get("subtitle") or {}).get("cues") or [])]
+
+
+def _fps(project: dict[str, Any]) -> int:
+    return int((project.get("canvas") or {}).get("fps") or config.FPS)
+
+
+def _duration(project: dict[str, Any]) -> int:
+    return int((project.get("audio") or {}).get("durationMs") or 0)
+
+
+def _refresh_prompts(project: dict[str, Any], shot_ids: Iterable[str]) -> None:
+    """结构变化后只重拼受影响段落的提示词（不调用 LLM）。"""
+    wanted = {str(item) for item in shot_ids}
+    for shot in project.get("shots") or []:
+        if str(shot.get("id")) in wanted:
+            shot["prompt"], shot["negative"] = prompts.assemble_prompt(project, shot)
 
 
 def _silences(project: dict[str, Any]) -> list[tuple[int, int]]:
@@ -294,12 +328,17 @@ def _derive(project: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, 
     offset = int(audio.get("offsetMs") or 0)
     shifted = [{**cue, "startMs": int(cue["startMs"]) + offset,
                 "endMs": int(cue["endMs"]) + offset} for cue in cues]
+    # 0 是合法值（按停顿分段），不能用 or 兜底
+    raw_gap = payload.get("mergeGapMs")
+    raw_max = payload.get("maxShotMs")
+    merge_gap_ms = int(config.MERGE_GAP_MS if raw_gap is None else raw_gap)
+    max_shot_ms = int(config.MAX_SHOT_MS if raw_max is None else raw_max)
     return segments.derive(
         shifted,
         duration_ms=duration,
         fps=int((project.get("canvas") or {}).get("fps") or config.FPS),
-        merge_gap_ms=int(payload.get("mergeGapMs") or config.MERGE_GAP_MS),
-        max_shot_ms=int(payload.get("maxShotMs") or config.MAX_SHOT_MS),
+        merge_gap_ms=merge_gap_ms,
+        max_shot_ms=max_shot_ms,
         silences=_silences(project),
     )
 
@@ -356,9 +395,11 @@ def api_segments_apply(project_id: str, payload: dict[str, Any] = Body(default={
                     if old.get(key):
                         shot[key] = old[key]
         project["shots"] = shots
+        raw_gap = payload.get("mergeGapMs")
+        raw_max = payload.get("maxShotMs")
         project["segments"] = {
-            "mergeGapMs": int(payload.get("mergeGapMs") or config.MERGE_GAP_MS),
-            "maxShotMs": int(payload.get("maxShotMs") or config.MAX_SHOT_MS),
+            "mergeGapMs": int(config.MERGE_GAP_MS if raw_gap is None else raw_gap),
+            "maxShotMs": int(config.MAX_SHOT_MS if raw_max is None else raw_max),
             "applied": True,
         }
         prompts.assemble_all(project)
@@ -379,9 +420,12 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
         if shot is None:
             raise StudioError(f"镜头段不存在：{shot_id}", code="not_found", status=404)
 
-        if "startMs" in patch or "endMs" in patch:
-            shots = segments.retime(shots, shot_id, patch, int((project.get("audio") or {}).get("durationMs") or 0),
-                                    int((project.get("canvas") or {}).get("fps") or config.FPS))
+        retimed = "startMs" in patch or "endMs" in patch
+        before = {str(item.get("id")): max(0, int(item["endMs"]) - int(item["startMs"]))
+                  for item in shots}
+        before_texts = {str(item.get("id")): str(item.get("text") or "") for item in shots}
+        if retimed:
+            shots = segments.retime(shots, shot_id, patch, _duration(project), _fps(project))
             shot = next(item for item in shots if item.get("id") == shot_id)
         old_prompt = str(shot.get("prompt") or "")
         for key, value in patch.items():
@@ -393,16 +437,117 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
                 shot["transition"] = {**(shot.get("transition") or {}), **value}
             else:
                 shot[key] = value
+        # 手改台词即转为手动模式；显式传 textMode 时以传入值为准
+        if "text" in patch and "textMode" not in patch:
+            shot["textMode"] = "manual"
+
+        auto_reset = "textMode" in patch and str(patch["textMode"]) == "auto"
+        if retimed or auto_reset:
+            segments.reconcile_texts(shots, _shifted_cues(project))
+            # 台词跟着边界变了，受影响段的提示词要一起重拼
+            for item in shots:
+                if str(item.get("text") or "") != before_texts.get(str(item.get("id"))):
+                    item["prompt"], item["negative"] = prompts.assemble_prompt(project, item)
+
+        if retimed:
+            # 边界变化只影响相邻段：时长长的按比例判断是否需要换图
+            for item in shots:
+                old = int(before.get(str(item.get("id"))) or 0)
+                new = max(0, int(item["endMs"]) - int(item["startMs"]))
+                if old == new:
+                    continue
+                changed = abs(new - old) > max(500, old * 0.1)
+                segments.mark_review(item, prompt=True, image=changed, reason="retime")
+
         if "prompt" in patch and patch["prompt"] != old_prompt:
             history = shot.setdefault("promptHistory", [])
             history.insert(0, {"at": schema.now_text(), "text": patch["prompt"], "source": "manual"})
             del history[10:]
-        if "description" in patch or "text" in patch or "usedEntities" in patch:
+        if retimed or auto_reset or {"description", "text", "usedEntities"} & set(patch):
             shot["prompt"], shot["negative"] = prompts.assemble_prompt(project, shot)
+        if "text" in patch and not retimed:
+            segments.mark_review(shot, image=True, reason="text")
         project["shots"] = shots
         store.save(project)
         return {"shot": store.public_view(project)["shots"][
             next(i for i, item in enumerate(shots) if item.get("id") == shot_id)]}
+
+
+@app.post("/api/projects/{project_id}/shots/merge")
+def api_shots_merge(project_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """合并连续镜头段：只改画面，字幕 cues 完全不动。"""
+    shot_ids = payload.get("shotIds")
+    if not isinstance(shot_ids, list) or len(shot_ids) < 2:
+        raise StudioError("shotIds 至少包含两个连续镜头段", code="bad_payload")
+    wanted = [str(item) for item in shot_ids]
+    with _lock(project_id):
+        project = store.load(project_id)
+        existing = project.get("shots") or []
+        order = {str(item.get("id")): index for index, item in enumerate(existing)}
+        first_id = min(wanted, key=lambda sid: order.get(sid, 10 ** 9))
+        shots = segments.merge_shots(
+            existing, wanted,
+            duration_ms=_duration(project), fps=_fps(project),
+            cues=_shifted_cues(project),
+        )
+        project["shots"] = shots
+        _refresh_prompts(project, [str(first_id)])
+        store.save(project)
+        return _view(project)
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/split")
+def api_shot_split(project_id: str, shot_id: str,
+                   payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """在播放头拆分（atMs）或均分为 N 个画面（parts）；不拆台词。"""
+    with _lock(project_id):
+        project = store.load(project_id)
+        shots = project.get("shots") or []
+        current = next((item for item in shots if item.get("id") == shot_id), None)
+        if current is None:
+            raise StudioError(f"镜头段不存在：{shot_id}", code="not_found", status=404)
+        if payload.get("parts") is not None:
+            result = segments.split_shot_parts(
+                shots, shot_id, int(payload.get("parts") or 0),
+                duration_ms=_duration(project), fps=_fps(project),
+            )
+        else:
+            try:
+                at_ms = int(payload.get("atMs") or 0)
+            except (TypeError, ValueError):
+                raise StudioError("atMs 必须是数字", code="bad_payload") from None
+            result = segments.split_shot_at(
+                shots, shot_id, at_ms,
+                duration_ms=_duration(project), fps=_fps(project),
+                cues=_shifted_cues(project),
+                snap_window_ms=0 if payload.get("snapCues") is False else 120,
+            )
+        project["shots"] = result
+        # 只重拼被拆的段与新建的段，别动以前遗留的待处理标记
+        before_ids = {str(item.get("id")) for item in shots}
+        touched = [str(item.get("id")) for item in result
+                   if str(item.get("id")) == shot_id or str(item.get("id")) not in before_ids]
+        _refresh_prompts(project, touched)
+        store.save(project)
+        return _view(project)
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/review/clear")
+def api_shot_review_clear(project_id: str, shot_id: str,
+                          payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """用户手动「标记已处理」：逐项清除待复核标记。"""
+    fields = payload.get("fields") or ["prompt", "image"]
+    if not isinstance(fields, list):
+        raise StudioError("fields 必须是数组", code="bad_payload")
+    wanted = [str(item) for item in fields if str(item) in ("prompt", "image")]
+    if not wanted:
+        raise StudioError("fields 只能是 prompt / image", code="bad_payload")
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        segments.clear_review(shot, wanted)
+        store.save(project)
+        return _view(project)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/image")
@@ -459,6 +604,7 @@ def api_shot_version_use(project_id: str, shot_id: str,
         shot["seed"] = int(entry.get("seed") or 0)
         shot["width"] = int(entry.get("width") or 0)
         shot["height"] = int(entry.get("height") or 0)
+        segments.clear_review(shot, ["image"])
         store.save(project)
         return _view(project)
 

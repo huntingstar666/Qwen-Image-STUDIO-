@@ -30,6 +30,8 @@ TRANSITIONS = ("cut", "fade", "fadeblack")
 #: 镜头语言：固定 / 慢推 / 慢拉 / 横移 / 纵摇 / 对角推
 MOTIONS = ("none", "push", "pull", "left", "right", "up", "down", "diag")
 SHOT_STATUS = ("pending", "generating", "ready", "failed")
+#: 台词来源：auto = 跟随覆盖到的字幕；manual = 用户手改或合并/拆分写入
+TEXT_MODES = ("auto", "manual")
 SUBTITLE_POSITIONS = ("bottom", "middle", "top")
 WATERMARK_POSITIONS = (
     "top-left", "top-center", "top-right",
@@ -169,6 +171,7 @@ SHOT_FIELDS: dict[str, dict[str, Any]] = {
     "description": {"type": "text", "max_len": 2000},
     "prompt": {"type": "text", "max_len": 4000},
     "negative": {"type": "text", "max_len": 2000},
+    "textMode": {"type": "enum", "options": list(TEXT_MODES)},
     "image": {"type": "str", "max_len": 512},
     "seed": {"type": "int", "min": 0, "max": 2147483647},
     "status": {"type": "enum", "options": list(SHOT_STATUS)},
@@ -359,6 +362,10 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
         for key, value in shot_defaults().items():
             if not isinstance(shot.get(key), dict):
                 shot[key] = copy.deepcopy(value)
+        shot.setdefault("textMode", "auto")
+        shot.setdefault("beat", None)
+        if not isinstance(shot.get("review"), dict):
+            shot.pop("review", None)
         motion = shot.get("motion") or {}
         if str(motion.get("type") or "") == "kenburns":
             motion["type"] = "push"
@@ -422,6 +429,8 @@ def new_shot(index: int, start_ms: int, end_ms: int, text: str) -> dict[str, Any
         "seed": 0,
         "width": 0,
         "height": 0,
+        "textMode": "auto",
+        "beat": None,
         "status": "pending",
         "attempts": 0,
         **copy.deepcopy(shot_defaults()),

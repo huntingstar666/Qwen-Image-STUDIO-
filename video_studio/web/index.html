@@ -14,6 +14,13 @@
       // 主题预设必须早于样式解析，避免深色模式先闪一帧白底
       (function () {
         try {
+          var params = new URLSearchParams(location.search);
+          if (params.get("embed") === "1") document.documentElement.dataset.embed = "1";
+          var fromUrl = params.get("theme");
+          if (fromUrl === "light" || fromUrl === "dark") {
+            document.documentElement.setAttribute("data-theme", fromUrl);
+            return;
+          }
           var saved = localStorage.getItem("videoStudio.theme");
           var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
           var dark = saved === "dark" || (saved !== "light" && prefersDark);
@@ -193,31 +200,65 @@
         <div class="tl-toolbar">
           <div class="tl-left">
             <button class="btn" id="btnSegment">自动分段</button>
-            <label class="mini-field">合并间隔
-              <input type="number" id="mergeGap" min="0" max="3000" step="50" value="350" />
-              <span>ms</span>
-            </label>
-            <label class="mini-field">单段上限
-              <input type="number" id="maxShot" min="500" max="60000" step="500" value="8000" />
-              <span>ms</span>
-            </label>
+            <div class="seg-mode">
+              <button class="btn ghost" id="btnSegmentMode" aria-expanded="false" data-tip="分段方式">
+                <span id="segModeLabel">按句分段</span><span class="caret">▾</span>
+              </button>
+              <div class="seg-popover" id="segmentPopover" hidden>
+                <div class="seg-presets" role="group" aria-label="分段预设">
+                  <button type="button" class="active" data-preset="sentence">按句</button>
+                  <button type="button" data-preset="pause">按停顿</button>
+                  <button type="button" data-preset="long">长镜头</button>
+                  <button type="button" data-preset="custom">自定义</button>
+                </div>
+                <label class="seg-field">相邻两句间隔小于
+                  <span class="seg-input"><input type="number" id="mergeGap" min="0" max="3000" step="50" value="350" /><em>ms</em></span>
+                  就并到一个画面</label>
+                <label class="seg-field">单个画面最长
+                  <span class="seg-input"><input type="number" id="maxShot" min="500" max="60000" step="500" value="8000" /><em>ms</em></span>
+                  超过自动切成两个画面</label>
+                <div class="seg-hint" id="segPreview">预计 — 段</div>
+                <div class="seg-actions">
+                  <button class="btn" type="button" id="segCancel">取消</button>
+                  <button class="btn primary" type="button" id="segApply">应用分段</button>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="tl-meta" id="tlMeta">0 段 · 00:00.00</div>
           <div class="tl-right">
+            <button class="btn ghost review-chip" id="btnReview" hidden>待处理 0</button>
             <label class="mini-field">缩放
               <input type="range" id="zoom" min="8" max="160" step="2" value="36" />
             </label>
           </div>
         </div>
-        <div class="tl-scroll" id="tlScroll">
-          <div class="tl-inner" id="tlInner">
-            <div class="tl-ruler" id="tlRuler"></div>
-            <div class="tl-row wave"><canvas id="wave"></canvas></div>
-            <div class="tl-row shots" id="tlShots"></div>
-            <div class="tl-row subs" id="tlSubs"></div>
-            <div class="tl-row bgm" id="tlBgm"></div>
-            <div class="tl-playhead" id="playhead"></div>
-            <div class="tl-empty" id="tlEmpty">上传音频与字幕，点「自动分段」开始</div>
+        <div class="tl-context" id="tlContext" hidden>
+          <span class="ctx-info" id="ctxInfo"></span>
+          <span class="ctx-actions">
+            <button class="mini-btn" type="button" data-ctx="split">在播放头拆分</button>
+            <button class="mini-btn" type="button" data-ctx="mergePrev">与上段合并</button>
+            <button class="mini-btn" type="button" data-ctx="mergeNext">与下段合并</button>
+          </span>
+        </div>
+        <div class="tl-body">
+          <div class="tl-gutter" aria-hidden="true">
+            <div class="g-ruler">时间</div>
+            <div class="g-wave">音频</div>
+            <div class="g-shots">画面</div>
+            <div class="g-subs">字幕</div>
+            <div class="g-bgm">音乐</div>
+          </div>
+          <div class="tl-scroll" id="tlScroll">
+            <div class="tl-inner" id="tlInner">
+              <div class="tl-ruler" id="tlRuler"></div>
+              <div class="tl-row wave"><canvas id="wave"></canvas></div>
+              <div class="tl-row shots" id="tlShots"></div>
+              <div class="tl-row subs" id="tlSubs"></div>
+              <div class="tl-row bgm" id="tlBgm"></div>
+              <div class="tl-playhead" id="playhead"></div>
+              <div class="tl-empty" id="tlEmpty">上传音频与字幕，点「自动分段」开始</div>
+            </div>
           </div>
         </div>
       </section>
@@ -230,11 +271,17 @@
             <button class="seg" type="button" data-filter="todo" role="tab" aria-selected="false">待生成</button>
             <button class="seg" type="button" data-filter="failed" role="tab" aria-selected="false">失败</button>
             <button class="seg" type="button" data-filter="ready" role="tab" aria-selected="false">已就绪</button>
+            <button class="seg" type="button" data-filter="review" role="tab" aria-selected="false">待处理</button>
           </div>
           <label class="search-field">
             <svg class="icon"><use href="#i-search"></use></svg>
             <input id="sbSearch" type="search" placeholder="搜索台词或提示词" autocomplete="off" />
           </label>
+          <span class="sb-bulk" id="sbBulk" hidden>
+            已选 <b id="sbBulkCount">0</b> 段
+            <button class="mini-btn" type="button" id="sbMerge">合并所选</button>
+            <button class="mini-btn ghost" type="button" id="sbClearSel">取消</button>
+          </span>
           <span class="sb-count" id="sbCount">0 段</span>
         </div>
         <div class="sb-list" id="sbList"></div>
@@ -259,6 +306,41 @@
         <button class="btn primary" id="preflightGo">忽略并继续</button>
       </footer>
     </div>
+    <div class="split-backdrop" id="splitBackdrop" hidden></div>
+    <div class="split-dialog" id="splitDialog" hidden>
+      <header class="split-head">
+        <h2>拆分画面</h2>
+        <button class="icon-btn" id="splitClose" title="关闭" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"></use></svg>
+        </button>
+      </header>
+      <div class="split-body">
+        <p class="split-tip">字幕不拆：两个画面共用这一整句台词，只在切点处换图。</p>
+        <div class="split-cut">
+          <button class="mini-btn" type="button" data-nudge="-1000">−1s</button>
+          <button class="mini-btn" type="button" data-nudge="-100">−0.1s</button>
+          <strong id="splitTime">00:00.00</strong>
+          <button class="mini-btn" type="button" data-nudge="100">＋0.1s</button>
+          <button class="mini-btn" type="button" data-nudge="1000">＋1s</button>
+        </div>
+        <div class="split-preview">
+          <button class="btn" type="button" id="splitPlay">试听切点附近</button>
+          <label class="switch"><input type="checkbox" id="splitSnap" checked /><span>吸附字幕边界</span></label>
+        </div>
+        <div class="split-parts">
+          <span>快速均分</span>
+          <button class="mini-btn" type="button" data-parts="2">2 个画面</button>
+          <button class="mini-btn" type="button" data-parts="3">3 个画面</button>
+          <button class="mini-btn" type="button" data-parts="4">4 个画面</button>
+        </div>
+        <div class="split-hint" id="splitHint"></div>
+      </div>
+      <footer class="split-foot">
+        <button class="btn" type="button" id="splitCancel">取消</button>
+        <button class="btn primary" type="button" id="splitConfirm">在切点拆分</button>
+      </footer>
+    </div>
+
     <aside class="drawer" id="drawer" hidden>
       <header class="drawer-head">
         <h2>项目设置</h2>

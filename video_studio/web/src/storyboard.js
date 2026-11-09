@@ -34,6 +34,7 @@ export class Storyboard {
     this.filter = "all";
     this.query = "";
     this.expanded = new Set();
+    this.checked = new Set();
     this._searchTimer = 0;
     this._pendingCommit = Promise.resolve();
     this._bind();
@@ -77,6 +78,11 @@ export class Storyboard {
     const list = this.refs.list;
     if (!list) return;
     const scrollTop = list.scrollTop;
+    const ids = new Set(((this.project && this.project.shots) || []).map((shot) => shot.id));
+    [...this.checked].forEach((id) => {
+      if (!ids.has(id)) this.checked.delete(id);
+    });
+    this._syncBulk();
 
     if (!this.project) {
       list.innerHTML = `<div class="sb-empty">
@@ -133,6 +139,7 @@ export class Storyboard {
       if (this.filter === "ready" && status !== "ready") return false;
       if (this.filter === "failed" && status !== "failed") return false;
       if (this.filter === "todo" && !["pending", "generating"].includes(status)) return false;
+      if (this.filter === "review" && !(shot.review && (shot.review.prompt || shot.review.image))) return false;
       if (!query) return true;
       return [shot.id, shot.text, shot.prompt, shot.description]
         .some((value) => String(value || "").toLowerCase().includes(query));
@@ -145,20 +152,31 @@ export class Storyboard {
     const prompt = shot.prompt || "";
     const versionCount = (shot.imageHistory || []).length;
     const durationSec = Math.max(0, shot.endMs - shot.startMs) / 1000;
+    const checked = this.checked.has(shot.id);
+    const review = shot.review || {};
+    const hasReview = Boolean(review.prompt || review.image);
     const thumb = shot.imageUrl
       ? `<img class="sb-thumb is-loading" src="${escapeHtml(shot.imageUrl)}" alt="${escapeHtml(shot.id)}" loading="lazy" />`
       : `<div class="sb-thumb empty"><svg class="icon"><use href="#i-image"></use></svg><span>待生成</span></div>`;
 
-    return `<article class="sb-row status-${escapeHtml(status)}${shot.id === this.selectedId ? " selected" : ""}"
+    return `<article class="sb-row status-${escapeHtml(status)}${shot.id === this.selectedId ? " selected" : ""}${checked ? " checked" : ""}${hasReview ? " has-review" : ""}"
       data-id="${escapeHtml(shot.id)}" tabindex="0" aria-label="镜头段 ${escapeHtml(shot.id)}">
       <div class="sb-media">
         ${thumb}
         <span class="sb-num">${escapeHtml(shot.id)}</span>
+        <label class="sb-check" title="选中用于合并">
+          <input type="checkbox" data-check="1" ${checked ? "checked" : ""} aria-label="选择 ${escapeHtml(shot.id)}" />
+        </label>
       </div>
       <div class="sb-main">
         <div class="sb-top">
           <span class="sb-time">${formatMs(shot.startMs)} – ${formatMs(shot.endMs)}</span>
           <span class="sb-dur">${durationSec.toFixed(1)}s</span>
+          ${hasReview
+            ? `<span class="sb-review" title="${escapeHtml([
+              review.prompt ? "提示词需复核" : "", review.image ? "图片需确认" : "",
+            ].filter(Boolean).join(" / "))}">待处理</span>`
+            : ""}
           <span class="sb-status">${escapeHtml(statusText(shot))}</span>
         </div>
         <label class="sb-field">
@@ -232,6 +250,31 @@ export class Storyboard {
       : `${shots.length} 段 · ${ready} 段就绪`);
   }
 
+  /** 勾选只用于「合并所选」，与当前选中段互不影响。 */
+  _syncBulk() {
+    const { bulk, bulkCount, merge } = this.refs;
+    if (!bulk) return;
+    const order = ((this.project && this.project.shots) || []).map((shot) => shot.id);
+    const indexes = [...this.checked]
+      .map((id) => order.indexOf(id))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b);
+    bulk.hidden = indexes.length === 0;
+    if (bulkCount) bulkCount.textContent = String(indexes.length);
+    if (merge) {
+      const contiguous = indexes.length >= 2
+        && indexes.every((value, offset) => value === indexes[0] + offset);
+      merge.disabled = !contiguous;
+      merge.title = contiguous ? "把选中的连续段合并成一个画面" : "只能合并时间上连续的镜头段";
+    }
+  }
+
+  clearChecked() {
+    if (!this.checked.size) return;
+    this.checked.clear();
+    this.render();
+  }
+
   // ---------------------------------------------------------------- 交互
 
   _bind() {
@@ -298,6 +341,31 @@ export class Storyboard {
       const shot = this._shot(row.dataset.id);
       this.handlers.onSelect(row.dataset.id, shot);
     });
+
+    // 勾选只用于合并，不会改变当前选中段
+    list.addEventListener("change", (event) => {
+      const input = event.target.closest("[data-check]");
+      if (!input) return;
+      const row = input.closest(".sb-row");
+      if (!row) return;
+      if (input.checked) this.checked.add(row.dataset.id);
+      else this.checked.delete(row.dataset.id);
+      row.classList.toggle("checked", input.checked);
+      this._syncBulk();
+    });
+
+    if (this.refs.merge) {
+      this.refs.merge.addEventListener("click", () => {
+        const order = ((this.project && this.project.shots) || []).map((shot) => shot.id);
+        const ids = [...this.checked]
+          .sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        if (ids.length < 2 || !this.handlers.onMerge) return;
+        this.handlers.onMerge(ids);
+      });
+    }
+    if (this.refs.bulkClear) {
+      this.refs.bulkClear.addEventListener("click", () => this.clearChecked());
+    }
 
     list.addEventListener("keydown", (event) => {
       const row = event.target.closest(".sb-row");
@@ -414,6 +482,10 @@ export class Storyboard {
     }
     const statusEl = row.querySelector(".sb-status");
     if (statusEl) statusEl.textContent = statusText(shot);
-    row.className = `sb-row status-${shot.status || "pending"}${shot.id === this.selectedId ? " selected" : ""}`;
+    const hasReview = Boolean(shot.review && (shot.review.prompt || shot.review.image));
+    row.className = `sb-row status-${shot.status || "pending"}`
+      + `${shot.id === this.selectedId ? " selected" : ""}`
+      + `${this.checked.has(shot.id) ? " checked" : ""}`
+      + `${hasReview ? " has-review" : ""}`;
   }
 }

@@ -56,6 +56,10 @@ let lastStageKey = "";
 let rafId = 0;
 /** 双击镜头块后的试听区间（ms），播到段尾自动停。 */
 let playRange = null;
+/** 拆分弹窗里的 ±2s 循环试听区间。 */
+let splitLoop = null;
+/** 拆分弹窗状态：{shotId, atMs, snap} */
+let splitState = null;
 
 // --------------------------------------------------------------------------- 工具
 
@@ -128,6 +132,7 @@ async function boot() {
       onRetime: (id, patch) => retimeShot(id, patch),
       onPlayRange: (shot) => playShot(shot),
       onCueText: (index, text) => editCue(index, text),
+      onMerge: (ids) => mergeShotsByIds(ids),
     },
   );
 
@@ -137,6 +142,9 @@ async function boot() {
   bindDrawer();
   bindPreflight();
   bindSidePanel();
+  bindSegmentMode();
+  bindSplitDialog();
+  bindContextBar();
 
   storyboard = new Storyboard(
     {
@@ -144,6 +152,10 @@ async function boot() {
       count: $("sbCount"),
       filter: $("sbFilter"),
       search: $("sbSearch"),
+      bulk: $("sbBulk"),
+      bulkCount: $("sbBulkCount"),
+      merge: $("sbMerge"),
+      bulkClear: $("sbClearSel"),
     },
     {
       onSelect: (id, shot) => {
@@ -165,6 +177,7 @@ async function boot() {
       onUploadSubtitle: () => $("fileSubtitle").click(),
       onUseVersion: (id, file) => useShotVersion(file, id),
       onDeleteVersion: (id, file) => deleteShotVersion(file, id),
+      onMerge: (ids) => mergeShotsByIds(ids),
     },
   );
 
@@ -255,6 +268,13 @@ const THEME_ICON = { auto: "#i-auto", light: "#i-sun", dark: "#i-moon" };
 let themeMode = "auto";
 
 function initTheme() {
+  // 主项目内嵌时用 ?theme= 跟随主项目主题，不覆盖本机的主题偏好
+  const fromUrl = new URLSearchParams(location.search).get("theme");
+  if (["light", "dark"].includes(fromUrl)) {
+    themeMode = fromUrl;
+    applyTheme();
+    return;
+  }
   const saved = localStorage.getItem("videoStudio.theme") || "auto";
   themeMode = ["light", "dark"].includes(saved) ? saved : "auto";
   applyTheme();
@@ -344,6 +364,7 @@ function renderAll() {
   renderSide();
   syncSegmentInputs();
   updateMeta();
+  renderContextBar();
   updateTransport();
   if (state.project && timeline) {
     timeline.setProject(state.project, state.selectedId, state.pxPerSec);
@@ -358,9 +379,32 @@ function syncSegmentInputs() {
   const project = getState().project;
   if (!project) return;
   const config = project.segments || {};
-  $("mergeGap").value = config.mergeGapMs || 350;
-  $("maxShot").value = config.maxShotMs || 8000;
+  const gap = Number(config.mergeGapMs ?? 350);
+  const max = Number(config.maxShotMs ?? 8000);
+  $("mergeGap").value = gap;
+  $("maxShot").value = max;
+  $("btnSegment").textContent = (project.shots || []).length ? "重新分段" : "自动分段";
+  $("segModeLabel").textContent =
+    `分段方式 · 合并 ${(gap / 1000).toFixed(2)}s · 上限 ${(max / 1000).toFixed(1)}s`;
+  let matched = false;
+  document.querySelectorAll("#segmentPopover [data-preset]").forEach((button) => {
+    const preset = SEGMENT_PRESETS[button.dataset.preset];
+    const active = Boolean(preset
+      && preset.mergeGapMs === gap && preset.maxShotMs === max);
+    button.classList.toggle("active", active);
+    if (active) matched = true;
+  });
+  if (!matched) {
+    const custom = document.querySelector('#segmentPopover [data-preset="custom"]');
+    if (custom) custom.classList.add("active");
+  }
 }
+
+const SEGMENT_PRESETS = {
+  sentence: { mergeGapMs: 350, maxShotMs: 8000 },
+  pause: { mergeGapMs: 0, maxShotMs: 6000 },
+  long: { mergeGapMs: 800, maxShotMs: 10000 },
+};
 
 /** 切换「时间线 / 分镜表」：两块共用 selectedId，只有渲染入口不同。 */
 function setView(view) {
@@ -496,7 +540,11 @@ function loop() {
     rafId = 0;
     return;
   }
-  if (playRange && currentMs() >= playRange.endMs) {
+  if (splitLoop && currentMs() >= splitLoop.endMs) {
+    audioEl.currentTime = splitLoop.startMs / 1000;
+    audioEl.play().catch(() => {});
+  }
+  if (!splitLoop && playRange && currentMs() >= playRange.endMs) {
     const stop = playRange.endMs;
     playRange = null;
     audioEl.pause();
@@ -524,6 +572,7 @@ function selectFollow(ms) {
   timeline && timeline.setSelected(shot.id);
   storyboard && storyboard.setSelected(shot.id, false);
   renderInspector(refs.inspector, getState(), shotHandlers());
+  renderContextBar();
 }
 
 function togglePlay() {
@@ -624,7 +673,13 @@ function selectShot(id) {
   renderInspector(refs.inspector, getState(), shotHandlers());
   timeline && timeline.setSelected(id);
   storyboard && storyboard.setSelected(id, true);
+  renderContextBar();
   renderStage();
+}
+
+function selectedShot() {
+  const project = getState().project;
+  return ((project && project.shots) || []).find((shot) => shot.id === getState().selectedId) || null;
 }
 
 function shotHandlers() {
@@ -635,6 +690,10 @@ function shotHandlers() {
     clearImage: () => clearShotImage(),
     useVersion: (file) => useShotVersion(file),
     deleteVersion: (file) => deleteShotVersion(file),
+    splitShot: () => openSplitDialog(),
+    mergeShot: (direction) => mergeWithNeighbor(direction),
+    setTextMode: (mode) => setShotTextMode(mode),
+    clearReview: (fields) => clearShotReview(fields),
   };
 }
 
@@ -657,6 +716,8 @@ async function patchShotById(shotId, patch) {
     setState({ project: { ...state.project, shots } });
     updateMeta();
     timeline && timeline.setProject(getState().project, getState().selectedId, getState().pxPerSec);
+    storyboard && storyboard.setProject(getState().project, getState().selectedId);
+    renderContextBar();
     renderStage();
     if (shotId === getState().selectedId) {
       const active = document.activeElement;
@@ -687,6 +748,360 @@ async function retimeShot(shotId, patch) {
   } catch (err) {
     toast(err.message, "bad");
     renderAll();
+  }
+}
+
+// --------------------------------------------------------------------------- 分段方式
+
+function bindSegmentMode() {
+  const popover = $("segmentPopover");
+  const trigger = $("btnSegmentMode");
+  const open = (value) => {
+    popover.hidden = !value;
+    trigger.setAttribute("aria-expanded", value ? "true" : "false");
+    if (value) {
+      syncSegmentInputs();
+      refreshSegmentPreview();
+    }
+  };
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    open(popover.hidden);
+  });
+  $("segCancel").addEventListener("click", () => open(false));
+  $("segApply").addEventListener("click", () => {
+    open(false);
+    applySegmentation();
+  });
+  popover.addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", () => {
+    if (!popover.hidden) open(false);
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !popover.hidden) open(false);
+  });
+
+  popover.querySelectorAll("[data-preset]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const preset = SEGMENT_PRESETS[button.dataset.preset];
+      if (preset) {
+        $("mergeGap").value = preset.mergeGapMs;
+        $("maxShot").value = preset.maxShotMs;
+        syncSegmentInputs();
+      }
+      popover.querySelectorAll("[data-preset]").forEach((item) =>
+        item.classList.toggle("active", item === button));
+      refreshSegmentPreview();
+    });
+  });
+  ["mergeGap", "maxShot"].forEach((id) => {
+    $(id).addEventListener("input", () => {
+      popover.querySelectorAll("[data-preset]").forEach((item) => item.classList.remove("active"));
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(refreshSegmentPreview, 260);
+    });
+  });
+}
+
+let previewTimer = 0;
+
+/** 分段参数改动后实时预览段数，让用户知道两个数字到底影响什么。 */
+async function refreshSegmentPreview() {
+  const project = getState().project;
+  const hint = $("segPreview");
+  if (!project || !hint) return;
+  if (!(project.subtitle || {}).cues || !((project.subtitle || {}).cues || []).length) {
+    hint.textContent = "还没有字幕，无法预览分段";
+    return;
+  }
+  try {
+    const result = await api.post(`/api/projects/${project.id}/segments/preview`, {
+      mergeGapMs: Number($("mergeGap").value) || 0,
+      maxShotMs: Number($("maxShot").value) || 8000,
+    });
+    hint.textContent = `预计 ${result.summary.count} 段 · ${formatMs(result.summary.durationMs)}`;
+  } catch (err) {
+    hint.textContent = err.message;
+  }
+}
+
+async function applySegmentation() {
+  const project = getState().project;
+  if (!project) return;
+  const shots = project.shots || [];
+  if (shots.length) {
+    const manual = shots.filter((shot) => shot.textMode === "manual" || shot.beat || shot.review).length;
+    const images = shots.filter((shot) => shot.image).length;
+    const facts = [manual ? `${manual} 个手动调整段` : "", images ? `${images} 张已生成图片` : ""]
+      .filter(Boolean);
+    const extra = facts.length ? `将覆盖 ${facts.join("、")}。` : "";
+    if (!window.confirm(`按字幕重新切开全片。${extra}确定继续？`)) return;
+  }
+  pushUndo();
+  try {
+    await api.post(`/api/projects/${project.id}/segments/apply`, {
+      mergeGapMs: Number($("mergeGap").value) || 0,
+      maxShotMs: Number($("maxShot").value) || 8000,
+      preserveImages: false,
+    });
+    await loadProject(project.id);
+    toast("已完成分段", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+/** 选中段落上下文操作条 + 待处理计数入口。 */
+function bindContextBar() {
+  $("tlContext").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-ctx]");
+    if (!button) return;
+    const shot = selectedShot();
+    if (!shot) return;
+    if (button.dataset.ctx === "split") openSplitDialog(shot.id, currentMs());
+    if (button.dataset.ctx === "mergePrev") mergeWithNeighbor("prev");
+    if (button.dataset.ctx === "mergeNext") mergeWithNeighbor("next");
+  });
+  $("btnReview").addEventListener("click", () => {
+    setView("storyboard");
+    storyboard && storyboard.setFilter("review");
+  });
+}
+
+// --------------------------------------------------------------------------- 合并 / 拆分
+
+function renderContextBar() {
+  const bar = $("tlContext");
+  if (!bar) return;
+  const project = getState().project;
+  const shot = selectedShot();
+  if (!project || !shot) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const shots = project.shots || [];
+  const index = shots.findIndex((item) => item.id === shot.id);
+  const cues = (project.subtitle && project.subtitle.cues) || [];
+  const cueCount = cues.filter((cue) => cue.endMs > shot.startMs && cue.startMs < shot.endMs).length;
+  const durationSec = Math.max(0, shot.endMs - shot.startMs) / 1000;
+  $("ctxInfo").textContent =
+    `${shot.id} · ${formatMs(shot.startMs)} – ${formatMs(shot.endMs)} · ${durationSec.toFixed(1)}s · ${cueCount ? `含 ${cueCount} 句` : "无字幕"}`;
+  const prev = bar.querySelector('[data-ctx="mergePrev"]');
+  const next = bar.querySelector('[data-ctx="mergeNext"]');
+  if (prev) prev.disabled = index <= 0;
+  if (next) next.disabled = index < 0 || index >= shots.length - 1;
+}
+
+/** 合并连续镜头段：字幕不动，只换画面。 */
+async function mergeShotsByIds(shotIds) {
+  const project = getState().project;
+  if (!project || !shotIds || shotIds.length < 2) return;
+  const order = (project.shots || []).map((shot) => shot.id);
+  const ids = [...shotIds].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  pushUndo();
+  try {
+    const updated = await api.post(`/api/projects/${project.id}/shots/merge`, { shotIds: ids });
+    setState({ project: updated, selectedId: ids[0] });
+    storyboard && storyboard.clearChecked();
+    renderAll();
+    toast(`已合并 ${ids.length} 个画面，提示词与图片待复核`, "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+function mergeWithNeighbor(direction) {
+  const project = getState().project;
+  const shot = selectedShot();
+  if (!project || !shot) return;
+  const shots = project.shots || [];
+  const index = shots.findIndex((item) => item.id === shot.id);
+  const neighbor = direction === "prev" ? shots[index - 1] : shots[index + 1];
+  if (!neighbor) {
+    toast(direction === "prev" ? "已经是第一段" : "已经是最后一段");
+    return;
+  }
+  mergeShotsByIds(direction === "prev" ? [neighbor.id, shot.id] : [shot.id, neighbor.id]);
+}
+
+async function setShotTextMode(mode) {
+  const project = getState().project;
+  const shot = selectedShot();
+  if (!project || !shot) return;
+  pushUndo();
+  try {
+    await api.patch(`/api/projects/${project.id}/shots/${shot.id}`, { textMode: mode });
+    const updated = await api.get(`/api/projects/${project.id}`);
+    setState({ project: updated });
+    renderAll();
+    toast(mode === "auto" ? "台词已恢复为跟随字幕" : "台词已转为手动", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+async function clearShotReview(fields) {
+  const project = getState().project;
+  const shot = selectedShot();
+  if (!project || !shot) return;
+  pushUndo();
+  try {
+    const updated = await api.post(
+      `/api/projects/${project.id}/shots/${shot.id}/review/clear`, { fields });
+    setState({ project: updated });
+    renderAll();
+    toast("已标记处理", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 拆分弹窗
+
+function bindSplitDialog() {
+  $("splitClose").addEventListener("click", closeSplitDialog);
+  $("splitCancel").addEventListener("click", closeSplitDialog);
+  $("splitBackdrop").addEventListener("click", closeSplitDialog);
+  $("splitSnap").addEventListener("change", () => {
+    if (splitState) splitState.snap = $("splitSnap").checked;
+    syncSplitDialog();
+  });
+  $("splitDialog").addEventListener("click", (event) => {
+    const nudge = event.target.closest("[data-nudge]");
+    if (nudge && splitState) {
+      nudgeSplit(Number(nudge.dataset.nudge));
+      return;
+    }
+    const parts = event.target.closest("[data-parts]");
+    if (parts) splitIntoParts(Number(parts.dataset.parts));
+  });
+  $("splitPlay").addEventListener("click", startSplitPreview);
+  $("splitConfirm").addEventListener("click", confirmSplit);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("splitDialog").hidden) closeSplitDialog();
+  });
+}
+
+/** 打开拆分弹窗：默认从播放头取切点，太靠边时退到段落中点。 */
+function openSplitDialog(shotId = getState().selectedId, atMs = currentMs()) {
+  const project = getState().project;
+  if (!project) return;
+  const shot = (project.shots || []).find((item) => item.id === shotId);
+  if (!shot) {
+    toast("先选一个镜头段", "bad");
+    return;
+  }
+  const frame = 1000 / Number((project.canvas || {}).fps || 30);
+  let cut = Math.round(Number(atMs) || 0);
+  if (cut < shot.startMs + frame || cut > shot.endMs - frame) {
+    cut = Math.round((shot.startMs + shot.endMs) / 2);
+  }
+  splitState = { shotId: shot.id, atMs: cut, snap: $("splitSnap").checked };
+  $("splitBackdrop").hidden = false;
+  $("splitDialog").hidden = false;
+  playRange = null;
+  syncSplitDialog();
+}
+
+function closeSplitDialog() {
+  $("splitDialog").hidden = true;
+  $("splitBackdrop").hidden = true;
+  splitState = null;
+  splitLoop = null;
+  audioEl.pause();
+}
+
+function syncSplitDialog() {
+  if (!splitState) return;
+  const project = getState().project;
+  const shot = (project.shots || []).find((item) => item.id === splitState.shotId);
+  if (!shot) return;
+  const frame = 1000 / Number((project.canvas || {}).fps || 30);
+  const minimum = shot.startMs + Math.round(frame);
+  const maximum = shot.endMs - Math.round(frame);
+  splitState.atMs = Math.max(minimum, Math.min(maximum, Math.round(splitState.atMs)));
+  $("splitTime").textContent = formatMs(splitState.atMs);
+  const before = (splitState.atMs - shot.startMs) / 1000;
+  const after = (shot.endMs - splitState.atMs) / 1000;
+  $("splitHint").textContent = splitState.atMs <= minimum || splitState.atMs >= maximum
+    ? "切点太靠近段落边缘，至少留 1 帧"
+    : `前半 ${before.toFixed(2)}s · 后半 ${after.toFixed(2)}s${splitState.snap ? " · 会自动吸附字幕边界" : ""}`;
+  seekNoSelect(splitState.atMs);
+}
+
+function seekNoSelect(ms) {
+  const total = duration();
+  const value = Math.max(0, Math.min(total || 0, ms));
+  if (audioEl.src) audioEl.currentTime = value / 1000;
+  timeline && timeline.setPlayhead(value);
+  updateTransport();
+  renderStage();
+}
+
+function nudgeSplit(delta) {
+  if (!splitState) return;
+  const project = getState().project;
+  const shot = (project.shots || []).find((item) => item.id === splitState.shotId);
+  if (!shot) return;
+  const frame = 1000 / Number((project.canvas || {}).fps || 30);
+  splitState.atMs = Math.max(shot.startMs + frame, Math.min(shot.endMs - frame,
+    splitState.atMs + delta));
+  syncSplitDialog();
+}
+
+function startSplitPreview() {
+  if (!splitState || !audioEl.src) {
+    toast("还没有音频", "bad");
+    return;
+  }
+  const project = getState().project;
+  const shot = (project.shots || []).find((item) => item.id === splitState.shotId);
+  if (!shot) return;
+  const start = Math.max(shot.startMs, splitState.atMs - 2000);
+  const end = Math.min(shot.endMs, splitState.atMs + 2000);
+  splitLoop = { startMs: start, endMs: end };
+  audioEl.currentTime = start / 1000;
+  audioEl.play().then(() => {
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }).catch((err) => toast(err.message, "bad"));
+}
+
+async function confirmSplit() {
+  if (!splitState) return;
+  const project = getState().project;
+  if (!project) return;
+  const shotId = splitState.shotId;
+  const atMs = splitState.atMs;
+  const snapCues = splitState.snap;
+  closeSplitDialog();
+  pushUndo();
+  try {
+    const updated = await api.post(
+      `/api/projects/${project.id}/shots/${shotId}/split`, { atMs, snapCues });
+    setState({ project: updated, selectedId: shotId });
+    renderAll();
+    toast("已拆分为两个画面，右段待补图", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+async function splitIntoParts(parts) {
+  if (!splitState) return;
+  const project = getState().project;
+  if (!project) return;
+  const shotId = splitState.shotId;
+  closeSplitDialog();
+  pushUndo();
+  try {
+    const updated = await api.post(
+      `/api/projects/${project.id}/shots/${shotId}/split`, { parts });
+    setState({ project: updated, selectedId: shotId });
+    renderAll();
+    toast(`已均分为 ${parts} 个画面，请复核提示词`, "ok");
+  } catch (err) {
+    toast(err.message, "bad");
   }
 }
 
@@ -1174,15 +1589,7 @@ async function pipelineAction(action) {
 
   try {
     if (action === "segment") {
-      const hasImages = (project.shots || []).some((shot) => shot.image);
-      if (hasImages && !window.confirm("重新分段会丢弃已生成的画面，确定继续？")) return;
-      await api.post(`/api/projects/${project.id}/segments/apply`, {
-        mergeGapMs: Number($("mergeGap").value) || 350,
-        maxShotMs: Number($("maxShot").value) || 8000,
-        preserveImages: false,
-      });
-      await loadProject(project.id);
-      toast("已完成分段", "ok");
+      await applySegmentation();
       return;
     }
     if (action === "prompts") {
@@ -1697,13 +2104,21 @@ async function saveDrawer() {
 
 function updateMeta() {
   const project = getState().project;
+  const reviewButton = $("btnReview");
   if (!project) {
     refs.tlMeta.textContent = "0 段 · 00:00.00";
+    if (reviewButton) reviewButton.hidden = true;
     return;
   }
   const shots = project.shots || [];
   const ready = shots.filter((shot) => shot.status === "ready").length;
+  const review = shots.filter((shot) =>
+    shot.review && (shot.review.prompt || shot.review.image)).length;
   refs.tlMeta.textContent = `${shots.length} 段 · ${formatMs(duration())} · ${ready} 段就绪`;
+  if (reviewButton) {
+    reviewButton.hidden = review === 0;
+    reviewButton.textContent = `待处理 ${review}`;
+  }
 }
 
 boot().catch((err) => {

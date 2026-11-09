@@ -142,11 +142,13 @@ export class Timeline {
     const host = this.refs.shots;
     host.innerHTML = "";
     const shots = this.project.shots || [];
-    shots.forEach((shot) => {
+    shots.forEach((shot, index) => {
       const left = (shot.startMs / 1000) * this.pxPerSec;
       const width = Math.max(3, ((shot.endMs - shot.startMs) / 1000) * this.pxPerSec);
+      const review = shot.review || {};
+      const hasReview = Boolean(review.prompt || review.image);
       const block = document.createElement("div");
-      block.className = `shot-block status-${shot.status || "pending"}${shot.id === this.selectedId ? " selected" : ""}`;
+      block.className = `shot-block status-${shot.status || "pending"}${shot.id === this.selectedId ? " selected" : ""}${hasReview ? " has-review" : ""}`;
       block.style.left = `${left}px`;
       block.style.width = `${width}px`;
       block.dataset.id = shot.id;
@@ -161,10 +163,28 @@ export class Timeline {
         veil.className = "veil";
         block.appendChild(veil);
       }
+
+      const badges = document.createElement("div");
+      badges.className = "badges";
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = shot.id;
-      block.appendChild(badge);
+      badges.appendChild(badge);
+      const lines = String(shot.text || "").split("\n").filter((line) => line.trim());
+      if (lines.length > 1) {
+        const chip = document.createElement("span");
+        chip.className = "meta-chip";
+        chip.textContent = `含 ${lines.length} 句`;
+        badges.appendChild(chip);
+      }
+      const beat = shot.beat || null;
+      if (beat && Number(beat.count) > 1) {
+        const chip = document.createElement("span");
+        chip.className = "meta-chip";
+        chip.textContent = `同句 ${beat.index}/${beat.count}`;
+        badges.appendChild(chip);
+      }
+      block.appendChild(badges);
 
       const transition = shot.transition || {};
       if (transition.type && transition.type !== "cut") {
@@ -186,6 +206,14 @@ export class Timeline {
       label.textContent = (shot.text || "").replace(/\n/g, " ") || "（无台词）";
       block.appendChild(label);
 
+      if (hasReview) {
+        const dot = document.createElement("span");
+        dot.className = "review-dot";
+        dot.title = `待处理：${[review.prompt ? "提示词需复核" : "", review.image ? "图片需确认" : ""]
+          .filter(Boolean).join(" / ")}`;
+        block.appendChild(dot);
+      }
+
       const handleLeft = document.createElement("div");
       handleLeft.className = "handle left";
       handleLeft.dataset.edge = "left";
@@ -196,6 +224,17 @@ export class Timeline {
       block.appendChild(handleRight);
 
       host.appendChild(block);
+
+      if (index > 0) {
+        const gap = document.createElement("button");
+        gap.type = "button";
+        gap.className = "merge-gap";
+        gap.style.left = `${left}px`;
+        gap.textContent = "合并";
+        gap.title = `把 ${shots[index - 1].id} 与 ${shot.id} 合并成一个画面`;
+        gap.dataset.merge = `${shots[index - 1].id},${shot.id}`;
+        host.appendChild(gap);
+      }
     });
   }
 
@@ -247,6 +286,8 @@ export class Timeline {
     scroll.addEventListener("pointerdown", (event) => {
       // 字幕块单击进入文案编辑，不触发跳转
       if (event.target.closest(".sub-block")) return;
+      // 段间「合并」胶囊自己处理点击
+      if (event.target.closest(".merge-gap")) return;
       const handle = event.target.closest(".shot-block .handle");
       if (handle) {
         event.preventDefault();
@@ -274,8 +315,16 @@ export class Timeline {
       if (shot) this.handlers.onPlayRange(shot);
     });
 
-    // 字幕块单击 = 就地改文案
+    // 字幕块单击 = 就地改文案；段间胶囊 = 合并相邻两段
     scroll.addEventListener("click", (event) => {
+      const gap = event.target.closest(".merge-gap");
+      if (gap) {
+        event.preventDefault();
+        event.stopPropagation();
+        const ids = String(gap.dataset.merge || "").split(",").filter(Boolean);
+        if (ids.length === 2 && this.handlers.onMerge) this.handlers.onMerge(ids);
+        return;
+      }
       const block = event.target.closest(".sub-block");
       if (!block || !this.handlers.onCueText) return;
       this._startCueEdit(block);

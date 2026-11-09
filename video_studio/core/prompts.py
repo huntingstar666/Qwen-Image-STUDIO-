@@ -149,8 +149,13 @@ def template_description(project: dict[str, Any], shot: dict[str, Any]) -> str:
              if str(item.get("name") or "") and str(item.get("name")) in text]
     if names:
         who = "、".join(names)
-        return f"电影感写实剧照，{who}正在对话，画面内容围绕：{text}"
-    return f"电影感写实剧照，对话场景，画面内容围绕：{text}"
+        base = f"电影感写实剧照，{who}正在对话，画面内容围绕：{text}"
+    else:
+        base = f"电影感写实剧照，对话场景，画面内容围绕：{text}"
+    beat = shot.get("beat")
+    if isinstance(beat, dict) and int(beat.get("index") or 1) > 1:
+        base += "；同一句台词的另一个画面，换一个机位或细节"
+    return base
 
 
 # --------------------------------------------------------------------------- LLM
@@ -208,13 +213,20 @@ def _build_client(profile: dict[str, Any]) -> Any:
         raise StudioError(f"提示词服务不可用：{exc}", code="llm_unavailable") from exc
 
 
+def _beat_tag(shot: dict[str, Any]) -> str:
+    beat = shot.get("beat")
+    if isinstance(beat, dict) and int(beat.get("count") or 0) > 1:
+        return f"[同句 {int(beat.get('index') or 1)}/{int(beat.get('count') or 1)}]"
+    return ""
+
+
 def _context_text(shots: list[dict[str, Any]], index: int, span: int = 1) -> str:
     start = max(0, index - span)
     end = min(len(shots), index + span + 1)
     lines = []
     for j in range(start, end):
         marker = "当前" if j == index else ("前一段" if j < index else "后一段")
-        lines.append(f"[{marker}] {shots[j].get('text') or ''}")
+        lines.append(f"[{marker}]{_beat_tag(shots[j])} {shots[j].get('text') or ''}")
     return "\n".join(lines)
 
 
@@ -373,6 +385,10 @@ def generate(project: dict[str, Any], *, span: int = 1) -> dict[str, Any]:
     fill_continuity(project)
     for shot in shots:
         shot["prompt"], shot["negative"] = assemble_prompt(project, shot)
+        if str(shot.get("description") or "").strip():
+            # 提示词已经重新产出，待复核标记自动解除
+            from .segments import clear_review
+            clear_review(shot, ["prompt"])
 
     project["prompts"] = {
         "at": _now(),

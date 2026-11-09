@@ -64,6 +64,13 @@ export function renderInspector(host, state, handlers) {
   const statusText = {
     pending: "待生成", generating: "生成中", ready: "已就绪", failed: "生成失败",
   }[shot.status] || shot.status || "待生成";
+  const shots = project.shots || [];
+  const position = shots.findIndex((item) => item.id === shot.id);
+  const cues = (project.subtitle && project.subtitle.cues) || [];
+  const cueCount = cues.filter((cue) => cue.endMs > shot.startMs && cue.startMs < shot.endMs).length;
+  const review = shot.review || {};
+  const hasReview = Boolean(review.prompt || review.image);
+  const beat = shot.beat || null;
 
   host.innerHTML = `
     <div class="shot-head">
@@ -71,6 +78,29 @@ export function renderInspector(host, state, handlers) {
       <span class="shot-time">${formatMs(shot.startMs)} – ${formatMs(shot.endMs)}</span>
       <span class="tag" style="margin-left:auto">${escapeHtml(statusText)}</span>
     </div>
+    <div class="shot-meta">
+      <span class="tag">${cueCount ? `含 ${cueCount} 句字幕` : "无字幕"}</span>
+      ${beat && Number(beat.count) > 1
+        ? `<span class="tag">同句 ${Number(beat.index) || 1}/${Number(beat.count)}</span>`
+        : ""}
+      <span class="tag">台词：${shot.textMode === "manual" ? "手动" : "自动"}</span>
+      ${shot.textMode === "manual"
+        ? '<button class="mini-btn ghost" type="button" data-action="textAuto">恢复自动</button>'
+        : ""}
+    </div>
+    ${hasReview ? `<div class="review-panel">
+      <strong>待处理</strong>
+      ${review.prompt
+        ? `<div class="review-row"><span>提示词需复核</span>
+            <button class="mini-btn" type="button" data-action="regen">重新生成</button>
+            <button class="mini-btn ghost" type="button" data-action="reviewPrompt">标记已处理</button></div>`
+        : ""}
+      ${review.image
+        ? `<div class="review-row"><span>图片需确认</span>
+            <button class="mini-btn" type="button" data-action="regen">重新生图</button>
+            <button class="mini-btn ghost" type="button" data-action="reviewImage">标记已处理</button></div>`
+        : ""}
+    </div>` : ""}
     ${shot.imageUrl
       ? `<img class="shot-thumb" src="${escapeHtml(shot.imageUrl)}" alt="${escapeHtml(shot.id)}" />`
       : '<div class="shot-thumb empty">还没有画面</div>'}
@@ -78,6 +108,11 @@ export function renderInspector(host, state, handlers) {
       <button class="btn" data-action="regen">重新生成</button>
       <button class="btn" data-action="upload">上传图片</button>
       <button class="btn ghost" data-action="clear" ${shot.imageUrl ? "" : "disabled"}>清除画面</button>
+    </div>
+    <div class="row-actions">
+      <button class="btn ghost" data-action="split">拆分本段…</button>
+      <button class="btn ghost" data-action="mergePrev" ${position > 0 ? "" : "disabled"}>合并到上段</button>
+      <button class="btn ghost" data-action="mergeNext" ${position >= 0 && position < shots.length - 1 ? "" : "disabled"}>合并到下段</button>
     </div>
 
     ${(shot.imageHistory || []).length
@@ -184,6 +219,12 @@ function bindFields(host, handlers) {
       if (action === "regen") handlers.regenerate();
       if (action === "upload") handlers.uploadImage();
       if (action === "clear") handlers.clearImage();
+      if (action === "textAuto") handlers.setTextMode("auto");
+      if (action === "split") handlers.splitShot();
+      if (action === "mergePrev") handlers.mergeShot("prev");
+      if (action === "mergeNext") handlers.mergeShot("next");
+      if (action === "reviewPrompt") handlers.clearReview(["prompt"]);
+      if (action === "reviewImage") handlers.clearReview(["image"]);
     });
   });
 }

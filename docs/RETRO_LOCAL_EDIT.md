@@ -464,3 +464,26 @@
 
 - 本文所有问题在动手前**先跑一次最小复现**（payload 快照或 API 调用），确认成立再改；不成立的在本文档标注"未复现"。
 - 每项改动独立提交，附验收数据；触发回滚条件（尺寸不一致、`outside_max_abs>0`、payload 多字段）立即回退。
+
+### 17.8 跨页共享设置一致性（第二轮审计）
+
+审计范围：文生图（`t2i`）、图像编辑（`edit`）、图片精修（`studio` 的 `aiPanel`）三页，逐条比对
+「生图服务预设默认值 ←→ 用户设置（`settings.edit`）←→ 提交 payload ←→ `presets.merge`」。
+文生图页不使用编辑预设（只有步数档位与 `/api/options` 默认值），链路单一、未发现问题；
+问题集中在编辑 / 精修两页共享同一份 `settings.edit` 的读写顺序上。
+
+| # | 问题 | 证据 | 修法 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| P1-11 | 打开图片精修页会清空图生图页的临时覆盖项 | `aiPanel` 的 `appliedPreset` 固定从 `''` 起步，未读 `settings.edit.appliedPreset`；首次挂载即判定「切过预设」，`resetDefinedOverrides` 删掉预设已定义键上的全部覆盖并写盘 | 初始化读共享 `appliedPreset`；`persistEdit()` 回写该字段 | 预置 `overrides={local.crop_floor:768}` + `appliedPreset=mask_edit`，打开精修页后 localStorage 仍为 768（修复前被清空） | **已修复** |
+| P1-12 | 精修页切预设后，图生图页仍用旧采样提交 | 精修页只写 `preset/overrides/consistency`，采样与 Turbo 不落共享设置；图生图页的采样输入是 DOM 值，切回后仍是旧值，提交时作为显式字段把新预设覆盖掉 | 精修页 `applyPresetDefaults` 同步写 `steps/cfg/sampler/scheduler/denoise/turbo/turboProfile/turboUser`；图生图页 `onShow` 按共享指纹回显（预设变了重放默认值，否则只回显覆盖项/一致性/采样） | 精修页选「元素移除」→ 图生图页预设卡=remove、步数 25、最小裁剪窗 1024；在图生图页把裁剪窗改 512 → 切精修再切回仍为 512，预设不被重置 | **已修复** |
+| P1-13 | `local.enabled` 由页面代判，与预设有遮罩时冲突 | `edit.js` 预设模式恒发 `local.enabled=有无遮罩`；`payload.js` 不发。同一自定义预设（`local.enabled=false`）+ 同一遮罩，两页一个局部、一个整图 | 有遮罩时交给预设 / 覆盖项决定；无遮罩时两页都显式 `enabled=false`（质量报告才不会把整图编辑显示成局部编辑） | payload 快照：有遮罩无 `enabled` 键；无遮罩 `enabled:false`；`presets.merge` 快照确认显式 false 优先 | **已修复** |
+| P2-10 | 高级设置「对齐倍数」只读文案写死 32，与预设真实值不符 | `advanced.js` 的 readonly 分支固定返回「32 倍数」；自定义搭配允许 8~256 | 显示实际生效值 | 选 `multiple=16` 的搭配，界面显示「16 倍数」 | **已修复** |
+
+**过程中发现并一并修正的顺序问题**：精修页先写采样再写 `preset` 时，`store` 订阅者会在
+「store 里还是旧预设、内存里已是新预设」的瞬间误判为"外部切预设"并把预设回滚。现在固定为
+先 `persistEdit()`（preset + appliedPreset + overrides）再写采样 / Turbo，订阅者看到的预设始终一致。
+
+**复核结论**：除上述四条外，`scheme / feather / expand_pct / crop_* / blend_pixels / color_strength /
+preprocess.* / panorama.* / task / consistency / steps / cfg / sampler / scheduler / denoise`
+均为「预设 → 页面控件 → overrides → 按差异回传」单链路；保护开关（色彩 / 零偏移）见 P1-10，
+不再有独立状态。

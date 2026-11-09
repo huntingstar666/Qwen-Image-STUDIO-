@@ -16,9 +16,6 @@ if (typeof window !== 'undefined') {
   });
 }
 
-/** 两个保护开关的默认值：只要在图片精修页编辑，默认都开（用户可关）。 */
-export const PROTECTION_DEFAULTS = { color: true, zeroShift: true };
-
 export function normalizeProtection(value) {
   const src = value && typeof value === 'object' ? value : {};
   return {

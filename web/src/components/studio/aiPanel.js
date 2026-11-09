@@ -317,7 +317,9 @@ export function mountAiPanel(host, ctx) {
     presets: [],
     presetVersion: 1,
     presetId: String(editSettings.preset || ''),
-    appliedPreset: '',
+    // 同一份 settings.edit 里记录「上次真正套用过默认值的预设」：
+    // 首次打开本页时若与当前预设一致，就保留页面临时覆盖，不再重放默认值。
+    appliedPreset: String(editSettings.appliedPreset || ''),
     overrides: { ...(editSettings.overrides || {}) },
     consistencyOn: editSettings.consistency !== false,
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
@@ -477,6 +479,8 @@ export function mountAiPanel(host, ctx) {
     patchSettings({
       edit: {
         preset: state.presetId,
+        // 两个页面共用这一份「已套用预设」标记，切页后才知道要不要重放默认值。
+        appliedPreset: state.appliedPreset,
         overrides: state.overrides,
         consistency: state.consistencyOn,
         consistencyStrength: state.consistencyStrength,
@@ -624,7 +628,27 @@ export function mountAiPanel(host, ctx) {
     renderCustomLoras();
     state.appliedPreset = preset.id;
     guards.sync(protectionOf(preset, state.overrides));
+    // 先落 preset / appliedPreset，再同步采样：顺序反了的话，
+    // store 订阅者会在「preset 还是旧值、state.presetId 已是新值」时误判成外部切换并被回滚。
     persistEdit();
+    // 采样 / Turbo 也是「切预设重建」的一部分：写回共享 settings.edit，
+    // 图生图页与精修页才不会一个用新预设、一个还停在旧采样值。
+    const sampling = params.sampling || {};
+    const shared = {};
+    const steps = Number(sampling.steps);
+    if (Number.isFinite(steps) && steps > 0) shared.steps = steps;
+    const cfg = Number(sampling.cfg);
+    if (Number.isFinite(cfg) && cfg >= 0) shared.cfg = cfg;
+    if (sampling.sampler) shared.sampler = String(sampling.sampler);
+    if (sampling.scheduler) shared.scheduler = String(sampling.scheduler);
+    const denoise = Number(sampling.denoise);
+    if (Number.isFinite(denoise)) shared.denoise = denoise;
+    if (state.turboProfiles.length) {
+      shared.turbo = Boolean(state.turboId);
+      shared.turboProfile = state.turboId || '';
+      shared.turboUser = false;
+    }
+    if (Object.keys(shared).length) patchSettings({ edit: shared });
     notifyPersist();
     syncSamplingInfo();
     renderMeta();
@@ -806,6 +830,15 @@ export function mountAiPanel(host, ctx) {
     const strength = Number(edit.consistencyStrength);
     if (Number.isFinite(strength) && Math.abs(strength - state.consistencyStrength) > 1e-6) {
       setStrength(strength);
+    }
+    // Turbo 也走共享设置：图生图页手动改过后本页跟随；预设默认值仍由 applyPresetTurbo 负责。
+    if (edit.turboUser) {
+      const turboId = String(edit.turboProfile || '');
+      if (turboId !== state.turboId || !state.turboUser) {
+        state.turboId = turboId;
+        state.turboUser = true;
+        syncTurboUi();
+      }
     }
   });
 
@@ -1632,6 +1665,14 @@ export function mountAiPanel(host, ctx) {
   refs.turbo.addEventListener('change', () => {
     state.turboId = refs.turbo.value;
     state.turboUser = true;
+    // Turbo 也是两页共享的编辑设置：写回 settings.edit，图生图页切回时按同一值提交。
+    patchSettings({
+      edit: {
+        turbo: Boolean(state.turboId),
+        turboProfile: state.turboId || '',
+        turboUser: true,
+      },
+    });
     syncSamplingInfo();
     notifyPersist();
   });

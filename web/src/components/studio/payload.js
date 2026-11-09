@@ -268,6 +268,9 @@ export function buildEditPayload({
   delete payload.denoise;
   const extra = nestOverrides(overrides);
   const localExtra = { ...(extra.local || {}) };
+  // 没有遮罩时显式关闭局部编辑：与图生图页一致，也避免质量报告把整图编辑显示成局部编辑。
+  // 有遮罩时交给预设 / 覆盖项决定，页面不代判。
+  if (!hasMask) localExtra.enabled = false;
   // 任务训练约定优先于预设文案：移除必须填洞 + 绿提示，扩图必须灰提示。
   if (task === 'remove') {
     localExtra.fills = true;

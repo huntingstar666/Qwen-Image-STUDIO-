@@ -137,7 +137,7 @@ function fmtNumber(field, value) {
 function display(field, value) {
   if (field.type === 'readonly') {
     if (field.key === 'local.hint') return HINT_LABELS[value] || String(value ?? 'none');
-    if (field.key === 'preprocess.multiple') return '32 倍数';
+    if (field.key === 'preprocess.multiple') return `${value} 倍数`;
     return '';
   }
   if (field.type === 'select' && field.options) {

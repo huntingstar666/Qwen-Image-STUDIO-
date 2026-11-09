@@ -1609,7 +1609,7 @@ export function createEditPage(host) {
     onChange(next) {
       edit.overrides = applyProtection(currentPreset(), edit.overrides || {}, next);
       patchSettings({ edit: { overrides: edit.overrides } });
-      advanced.refresh();
+      renderAdvanced();
       renderPresets();
       syncGuardNote();
     },
@@ -1638,6 +1638,68 @@ export function createEditPage(host) {
       renderPresets();
     },
   });
+
+  /**
+   * 本页最后渲染时的共享设置指纹（预设 / 是否已套用 / 覆盖项 / 一致性）。
+   * 图片精修页改的是同一份 settings.edit，切回本页要据此决定是否回显，
+   * 否则界面显示会停留在旧值，而提交用的是 store 里的新值。
+   */
+  let renderedState = '';
+  let renderedPresetId = '';
+
+  function sharedFingerprint() {
+    return JSON.stringify([
+      String(edit.preset || ''),
+      String(edit.appliedPreset || ''),
+      edit.overrides || {},
+      edit.consistency,
+      edit.consistencyStrength,
+      edit.consistencyLora,
+    ]);
+  }
+
+  /** 高级参数重绘后同步指纹（本页修改、别页修改都走这里）。 */
+  function renderAdvanced() {
+    advanced.refresh();
+    renderedPresetId = String(edit.preset || '');
+    renderedState = sharedFingerprint();
+  }
+
+  /**
+   * 从共享的 settings.edit 回显另一个页面（图片精修）做过的修改。
+   * - 预设被切走：按新预设重放默认值（采样 / Turbo / 一致性 / 覆盖项）；
+   * - 同一预设：只回显覆盖项与共享参数，保留本页的临时值。
+   * 只在切回本页时调用，避免输入过程中被重绘打断。
+   */
+  function syncFromOtherPage() {
+    const preset = currentPreset();
+    if (!preset) return;
+    const presetId = String(edit.preset || '');
+    if (renderedState && renderedState === sharedFingerprint()) return;
+    if (renderedState && presetId !== renderedPresetId) {
+      applyPresetDefaults(preset);
+      renderPresets();
+      renderAdvanced();
+      return;
+    }
+    refs.steps.value = String(edit.steps);
+    refs.cfg.value = String(edit.cfg);
+    refs.denoise.value = String(edit.denoise);
+    if ([...refs.sampler.options].some((item) => item.value === edit.sampler)) {
+      refs.sampler.value = edit.sampler;
+    }
+    if ([...refs.scheduler.options].some((item) => item.value === edit.scheduler)) {
+      refs.scheduler.value = edit.scheduler;
+    }
+    renderTurbo();
+    renderConsistency();
+    renderLoras();
+    syncLocalControls();
+    guards.sync(protectionOf(preset, edit.overrides || {}));
+    syncGuardNote();
+    renderPresets();
+    renderAdvanced();
+  }
 
   panoramaPanel = mountPanoramaPanel(refs.panoramaHost, {
     getSize: () => {
@@ -1688,7 +1750,7 @@ export function createEditPage(host) {
     renderTaskMode();
     renderPresets();
     syncLocalControls();
-    advanced.refresh();
+    renderAdvanced();
   });
 
   function renderPresets() {
@@ -1833,7 +1895,7 @@ export function createEditPage(host) {
     });
     applyPresetDefaults(preset);
     renderPresets();
-    advanced.refresh();
+    renderAdvanced();
   }
 
   if (refs.customPickHost) {
@@ -2283,7 +2345,7 @@ export function createEditPage(host) {
       renderTaskMode();
     }
     renderPresets();
-    advanced.refresh();
+    renderAdvanced();
   }
 
   // 预设摘要异步加载：先迁移旧字段，再回显预设生效值
@@ -2441,8 +2503,10 @@ export function createEditPage(host) {
       payload.preset = presetId;
       const extra = nestOverrides(edit.overrides || {});
       const localExtra = { ...(extra.local || {}) };
-      // 局部编辑开关是页面上的显式选择：必须回传，否则预设里的 local.enabled=true 会把它盖掉
-      localExtra.enabled = localEnabled;
+      // 有遮罩时由预设 / 覆盖项决定是否局部编辑，页面不再代判；
+      // 没遮罩时显式关闭，避免质量报告把整图编辑显示成局部编辑。
+      // 精修页走同一套 payload，两页对同一预设的行为保持一致。
+      if (!localEnabled) localExtra.enabled = false;
       // 色彩校准 / 零偏移已经通过 overrides 里的 local.color_match / zero_shift.enabled 下发，
       // 不再另算一份 protection（两套状态会让界面与预设打架）。
       // 任务训练约定优先于预设文案
@@ -2925,7 +2989,7 @@ export function createEditPage(host) {
       renderPresets();
       renderTaskMode();
       syncLocalControls();
-      advanced.refresh();
+      renderAdvanced();
     };
     const modal = openModal({
       title: '扩图 / 外补画布',
@@ -3090,7 +3154,7 @@ export function createEditPage(host) {
         patchSettings({ edit: { prompt: result.prompt, preset: 'mask_edit', taskMode: 'auto' } });
         renderPresets();
         syncLocalControls();
-        advanced.refresh();
+        renderAdvanced();
         updateMaskStatus();
         toastSuccess(
           `扩图已准备：新画布 ${width} × ${height}，${result.maskDataUrl ? '已生成新增区域遮罩，可点 ✂ 微调' : '遮罩生成失败，请点 ✂ 手动涂抹'}`,
@@ -3288,7 +3352,7 @@ export function createEditPage(host) {
     renderPresets();
     renderTaskMode();
     syncLocalControls();
-    advanced.refresh();
+    renderAdvanced();
     guards.sync(protectionOf(currentPreset(), edit.overrides || {}));
     syncGuardNote();
     updateMaskStatus();
@@ -3366,7 +3430,7 @@ export function createEditPage(host) {
       renderTaskMode();
       renderPresets();
       syncLocalControls();
-      advanced.refresh();
+      renderAdvanced();
       updateMaskStatus();
       toastSuccess(payload.toast || '已接收图像处理结果');
     } catch (err) {
@@ -3376,6 +3440,9 @@ export function createEditPage(host) {
 
   return {
     onShow() {
+      // 图片精修页改的是同一份 settings.edit：切回本页时按 store 回显，
+      // 避免界面显示旧预设/旧采样值，提交却用新值（或反过来）。
+      syncFromOtherPage();
       renderHealthHint();
       updateMaskStatus();
       applyHandoff();

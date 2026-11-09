@@ -27,6 +27,22 @@ MAX_IMAGE_BYTES = 32 * 1024 * 1024
 
 config.ensure_dirs()
 
+#: 前端构建标识：文件一变，主项目内嵌页切回时会自动重载 iframe
+def _build_id() -> str:
+    """按前端文件最后修改时间算构建号；每次请求现算，改完前端不用重启服务。"""
+    try:
+        stamps = (
+            [path.stat().st_mtime for path in (WEB_DIR / "src").glob("*.js")]
+            + [path.stat().st_mtime for path in (WEB_DIR / "assets").glob("*.css")]
+            + [(WEB_DIR / "index.html").stat().st_mtime]
+        )
+        return str(int(max(stamps)))
+    except (OSError, ValueError):
+        return "0"
+
+
+BUILD_ID = _build_id()
+
 app = FastAPI(title="video_studio", version="0.1.0")
 
 # 主项目内嵌时需要用 fetch 探活（跨端口），只放行本机页面读取
@@ -159,6 +175,7 @@ def api_health() -> dict[str, Any]:
     return {
         "ok": True,
         "version": app.version,
+        "build": _build_id(),
         "ffmpeg": ffmpeg_ok,
         "main": main_info,
         "llm": prompts.llm_options(),
@@ -190,7 +207,7 @@ def api_styles() -> dict[str, Any]:
             "name": str(item.get("name") or ""),
             "category": str(item.get("category") or ""),
             "prompt": str(item.get("prompt") or ""),
-            "preview": str(item.get("preview") or ""),
+            "preview": _main_url(str(item.get("preview") or "")),
         })
     _STYLE_CACHE.update({"at": time.time(), "data": items})
     return {"styles": items, "cached": False}

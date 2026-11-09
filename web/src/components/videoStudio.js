@@ -7,10 +7,12 @@
  */
 
 const VIDEO_BASE = "http://127.0.0.1:8730";
+let currentBuild = "";
 
 function iframeUrl() {
   const dark = document.documentElement.dataset.theme === "dark";
-  return `${VIDEO_BASE}/?embed=1&theme=${dark ? "dark" : "light"}`;
+  const build = currentBuild ? `&build=${encodeURIComponent(currentBuild)}` : "";
+  return `${VIDEO_BASE}/?embed=1&theme=${dark ? "dark" : "light"}${build}`;
 }
 
 export function createVideoStudioPage(host) {
@@ -63,14 +65,28 @@ export function createVideoStudioPage(host) {
   frame.addEventListener("load", () => {
     status.textContent = "已连接 · 127.0.0.1:8730";
   });
+  const applyHealth = (health) => {
+    if (health && health.build) currentBuild = String(health.build);
+    load();
+  };
   host.querySelector('[data-ref="reload"]').addEventListener("click", () => {
-    probe().then(load).catch(showOffline);
+    probe().then(applyHealth).catch(showOffline);
   });
 
   // 服务不在时 iframe 会停在浏览器错误页，先探活再加载，给出人话提示
-  probe().then(load).catch(showOffline);
+  probe().then(applyHealth).catch(showOffline);
 
   return {
+    onShow() {
+      // 工作台前端有更新时，切回本页自动重载 iframe，避免一直跑旧脚本
+      probe().then((health) => {
+        const build = String((health && health.build) || "");
+        if (build && build !== currentBuild) {
+          currentBuild = build;
+          load();
+        }
+      }).catch(() => {});
+    },
     destroy() {
       frame.src = "about:blank";
     },

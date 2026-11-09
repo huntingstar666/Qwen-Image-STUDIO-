@@ -340,6 +340,7 @@ async function boot() {
   ]);
   setState({ health, schema, projects: projects.projects || [] });
   renderChips();
+  watchBuild(health);
 
   let projectId = localStorage.getItem("videoStudio.project") || "";
   if (!stateProjects().some((item) => item.id === projectId)) {
@@ -409,6 +410,29 @@ async function boot() {
       event.preventDefault();
       seek(duration());
     }
+  });
+}
+
+/**
+ * 内嵌页防旧脚本：主项目加载时会在 iframe 地址带 `build`；
+ * 服务端前端更新后，切回本页即换到新 build，不用用户手动刷新。
+ */
+function watchBuild(health) {
+  const apply = (latest) => {
+    const latestBuild = String(latest || "");
+    if (!latestBuild) return;
+    const url = new URL(location.href);
+    const loaded = url.searchParams.get("build") || "";
+    if (!loaded || loaded === latestBuild) return;
+    url.searchParams.set("build", latestBuild);
+    location.replace(url.toString());
+  };
+  apply(health && health.build);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    api.get("/api/health")
+      .then((next) => apply(next && next.build))
+      .catch(() => {});
   });
 }
 
@@ -921,6 +945,11 @@ function playShot(shot) {
 function bindTransport() {
   refs.play.addEventListener("click", togglePlay);
   refs.canvasTag.addEventListener("click", () => openDrawer());
+  // 双击预览画面 = 打开当前时间所在段落的详情
+  refs.stage.addEventListener("dblclick", () => {
+    const shot = shotAt(currentMs());
+    if (shot) openShotDetail(shot.id);
+  });
   refs.seek.addEventListener("input", () => {
     playRange = null;
     seek((Number(refs.seek.value) / 1000) * duration());
@@ -2516,6 +2545,7 @@ async function openDrawer() {
   const llmModel = refs.drawerBody.querySelector('[data-path="llm.model"]');
   if (llmModel && models.length) llmModel.setAttribute("list", "llmModels");
   if (styles.length) enhanceStylePicker(styles);
+  enhanceSuffixPresets(refs.drawerBody.querySelector('[data-path="locks.style.suffix"]'));
   enhanceCanvasPresets();
   bindDrawerFields();
   refs.drawer.hidden = false;
@@ -2579,37 +2609,197 @@ function enhanceCanvasPresets() {
 }
 
 /** 把风格预设的纯文本输入升级成带分组的风格库下拉，选中即填入风格描述。 */
+const TEXTURE_PRESETS = [
+  "电影感 35mm 胶片", "细腻颗粒", "柔光人像", "高对比硬光", "冷色调",
+  "暖色调", "超写实", "赛博霓虹", "水墨质感", "定格动画",
+];
+
+function splitStylePrompt(prompt) {
+  const lines = String(prompt || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return { prefix: lines[0] || "", suffix: lines.slice(1).join("，") };
+}
+
+/** 把风格库升级成可视化卡片：带预览图、分类、搜索，一次同时写入风格描述与质感词。 */
 function enhanceStylePicker(styles) {
   const input = refs.drawerBody.querySelector('[data-path="locks.style.styleId"]');
-  if (!input) return;
-  const groups = new Map();
-  styles.forEach((item) => {
-    const key = item.category || "其他";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
+  if (!input || !styles.length) return;
+  const field = input.closest(".field");
+  if (!field) return;
+  field.innerHTML = "";
+  const label = document.createElement("label");
+  label.textContent = "风格预设";
+  field.appendChild(label);
+
+  const host = document.createElement("div");
+  host.className = "style-picker";
+  host.innerHTML = `
+    <div class="style-current">
+      <img class="style-thumb" data-style-thumb alt="" hidden />
+      <div class="style-current-main">
+        <strong data-style-name>自定义风格</strong>
+        <span data-style-cat>从主项目风格库选择，或直接手写</span>
+      </div>
+      <button class="btn" type="button" data-style-toggle>更换风格</button>
+    </div>
+    <div class="style-panel" hidden>
+      <div class="style-toolbar">
+        <input class="input" data-style-search placeholder="搜索风格名称（共 ${styles.length} 个）" />
+        <span class="style-count" data-style-count></span>
+      </div>
+      <div class="style-cats" data-style-cats></div>
+      <div class="style-grid" data-style-grid></div>
+    </div>`;
+  field.appendChild(host);
+  input.hidden = true;
+  input.type = "hidden";
+  host.appendChild(input);
+  const tip = document.createElement("div");
+  tip.className = "hint";
+  tip.style.marginTop = "6px";
+  tip.textContent = "风格来自主项目风格库；选中后会自动写入风格描述与画面质感词。";
+  field.appendChild(tip);
+
+  const prefix = refs.drawerBody.querySelector('[data-path="locks.style.prefix"]');
+  const suffix = refs.drawerBody.querySelector('[data-path="locks.style.suffix"]');
+  const thumb = host.querySelector("[data-style-thumb]");
+  const nameEl = host.querySelector("[data-style-name]");
+  const catEl = host.querySelector("[data-style-cat]");
+  const panel = host.querySelector(".style-panel");
+  const grid = host.querySelector("[data-style-grid]");
+  const cats = host.querySelector("[data-style-cats]");
+  const search = host.querySelector("[data-style-search]");
+  const count = host.querySelector("[data-style-count]");
+  let activeCat = "全部";
+  let keyword = "";
+
+  const syncCurrent = () => {
+    const item = styles.find((entry) => entry.id === input.value);
+    if (item) {
+      thumb.hidden = false;
+      thumb.src = item.preview || "";
+      nameEl.textContent = item.name || item.id;
+      catEl.textContent = item.category || "风格库";
+    } else {
+      thumb.hidden = true;
+      thumb.removeAttribute("src");
+      nameEl.textContent = "自定义风格";
+      catEl.textContent = "从主项目风格库选择，或直接手写";
+    }
+  };
+
+  const applyStyle = (item) => {
+    input.value = item.id;
+    drawerDraft.locks.style.styleId = item.id;
+    const parts = splitStylePrompt(item.prompt);
+    if (prefix) {
+      prefix.value = parts.prefix;
+      drawerDraft.locks.style.prefix = parts.prefix;
+    }
+    if (suffix) {
+      suffix.value = parts.suffix;
+      drawerDraft.locks.style.suffix = parts.suffix;
+      markTextureChips();
+    }
+    syncCurrent();
+    panel.hidden = true;
+    toast(`已套用风格「${item.name || item.id}」`, "ok");
+  };
+
+  const categories = ["全部", ...new Set(styles.map((item) => item.category || "其他"))];
+  cats.innerHTML = categories.map((category) =>
+    `<button type="button" class="style-cat${category === "全部" ? " active" : ""}" data-cat="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join("");
+
+  const renderGrid = () => {
+    const list = styles.filter((item) => {
+      if (activeCat !== "全部" && (item.category || "其他") !== activeCat) return false;
+      if (!keyword) return true;
+      return `${item.name || ""} ${item.category || ""} ${item.prompt || ""}`
+        .toLowerCase().includes(keyword);
+    });
+    count.textContent = `${list.length} 个`;
+    grid.innerHTML = list.length ? list.map((item) => `
+      <button type="button" class="style-card${item.id === input.value ? " active" : ""}"
+        data-style-id="${escapeHtml(item.id)}" title="${escapeHtml(item.name || item.id)}">
+        <span class="style-card-thumb">${item.preview
+          ? `<img src="${escapeHtml(item.preview)}" loading="lazy" alt="" />` : ""}</span>
+        <span class="style-card-main">
+          <strong>${escapeHtml(item.name || item.id)}</strong>
+          <em>${escapeHtml(item.category || "")}</em>
+        </span>
+      </button>`).join("") : '<div class="style-empty">没有匹配的风格</div>';
+  };
+
+  host.querySelector("[data-style-toggle]").addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      renderGrid();
+      search.focus();
+    }
   });
-  const select = document.createElement("select");
-  select.className = "select";
-  select.dataset.path = "locks.style.styleId";
-  select.dataset.kind = "string";
-  select.innerHTML = `<option value="">自定义（手写风格描述）</option>` + [...groups.entries()].map(([category, items]) =>
-    `<optgroup label="${escapeHtml(category)}">${items.map((item) =>
-      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)}</option>`).join("")}</optgroup>`).join("");
-  select.value = (drawerDraft.locks.style.styleId || "");
-  select.addEventListener("change", () => {
-    const item = styles.find((entry) => entry.id === select.value);
-    drawerDraft.locks.style.styleId = item ? item.id : "";
-    if (!item) return;
-    const prefix = refs.drawerBody.querySelector('[data-path="locks.style.prefix"]');
-    if (prefix) prefix.value = item.prompt;
-    drawerDraft.locks.style.prefix = item.prompt;
+  cats.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cat]");
+    if (!button) return;
+    activeCat = button.dataset.cat;
+    cats.querySelectorAll(".style-cat").forEach((item) =>
+      item.classList.toggle("active", item === button));
+    renderGrid();
   });
-  input.replaceWith(select);
-  const hint = document.createElement("div");
-  hint.className = "hint";
-  hint.style.margin = "-4px 0 10px";
-  hint.textContent = `已载入主项目风格库 ${styles.length} 条；选中后会把官方风格描述写进「风格描述」，仍可再改。`;
-  select.insertAdjacentElement("afterend", hint);
+  search.addEventListener("input", () => {
+    keyword = search.value.trim().toLowerCase();
+    renderGrid();
+  });
+  grid.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-style-id]");
+    if (!card) return;
+    const item = styles.find((entry) => entry.id === card.dataset.styleId);
+    if (item) applyStyle(item);
+  });
+
+  syncCurrent();
+  markTextureChips();
+}
+
+/** 画面质感词的快捷选项：点一下追加到「画面质感词」字段。 */
+function enhanceSuffixPresets(suffix) {
+  if (!suffix) return;
+  const field = suffix.closest(".field");
+  if (!field || field.querySelector(".texture-chips")) return;
+  const chips = document.createElement("div");
+  chips.className = "texture-chips";
+  chips.innerHTML = TEXTURE_PRESETS.map((value) =>
+    `<button type="button" class="texture-chip" data-texture="${escapeHtml(value)}">${escapeHtml(value)}</button>`).join("");
+  const tip = document.createElement("div");
+  tip.className = "hint";
+  tip.style.marginTop = "6px";
+  tip.textContent = "点选常用质感词会追加到上面的字段，再点一次取消。";
+  field.appendChild(chips);
+  field.appendChild(tip);
+  chips.addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-texture]");
+    if (!chip) return;
+    const value = chip.dataset.texture;
+    const parts = String(suffix.value || "").split(/[，,]/).map((item) => item.trim()).filter(Boolean);
+    const at = parts.indexOf(value);
+    if (at >= 0) parts.splice(at, 1);
+    else parts.push(value);
+    suffix.value = parts.join("，");
+    drawerDraft.locks.style.suffix = suffix.value;
+    chip.classList.toggle("active", at < 0);
+  });
+  window.__markTextureChips = markTextureChips;
+
+  function markTextureChips() {
+    const parts = String(suffix.value || "").split(/[，,]/).map((item) => item.trim());
+    chips.querySelectorAll("[data-texture]").forEach((chip) => {
+      const value = chip.dataset.texture;
+      chip.classList.toggle("active", parts.includes(value) || String(suffix.value || "").includes(value));
+    });
+  }
+  markTextureChips();
+}
+
+function markTextureChips() {
+  if (window.__markTextureChips) window.__markTextureChips();
 }
 
 function bindDrawerFields() {

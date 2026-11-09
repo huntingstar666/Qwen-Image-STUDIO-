@@ -430,6 +430,7 @@ export function createImageToolsPage(host) {
   let watermarkPreviewRect = null;
   let watermarkPreviewStamp = { width: 0, height: 0 };
   let workCanvas = null;
+  let mirrorPreviewCanvas = null;
   let renderToken = 0;
   let currentWorkDims = { width: 0, height: 0 };
   let drag = null;
@@ -637,7 +638,7 @@ export function createImageToolsPage(host) {
                     <button class="btn primary sm" type="button" data-ref="mirrorApply">应用镜像</button>
                     <button class="btn ghost sm" type="button" data-ref="mirrorReset">重置区域</button>
                   </div>
-                  <div class="field-hint">在画布上拖出矩形选择区域；拖动虚线调整对称轴。以选中的一侧为准，镜像到另一侧。</div>
+                  <div class="field-hint">调整参数时画布实时预览；在画布上拖出矩形选择区域，拖动虚线调整对称轴。以选中的一侧为准，镜像到另一侧。</div>
                 </div>
               </details>
 
@@ -1515,6 +1516,10 @@ export function createImageToolsPage(host) {
             if (other !== fold) other.open = false;
           });
           scrollToolIntoView(fold);
+          drawOverlay();
+        } else if (fold.dataset.section === 'mirror') {
+          // 收起镜像面板时立即清掉实时预览
+          drawOverlay();
         }
         syncActionBar();
       }, 0);
@@ -1955,6 +1960,14 @@ export function createImageToolsPage(host) {
     ictx.drawImage(workCanvas, 0, 0, displayStamp.width, displayStamp.height);
   }
 
+  function mirrorSectionActive() {
+    return (
+      state.tool === 'adjust' &&
+      adjustSection === 'mirror' &&
+      Boolean(refs.mirrorApply?.closest('details')?.open)
+    );
+  }
+
   function drawOverlay() {
     if (!displayStamp.width) return;
     const octx = refs.overlayCanvas.getContext('2d');
@@ -1963,12 +1976,43 @@ export function createImageToolsPage(host) {
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, displayStamp);
     else if (state.tool === 'watermark') drawWatermarkPreview(octx, displayStamp);
     else if (state.tool === 'adjust' && adjustSection === 'crop') drawCropOverlay(octx, displayStamp);
-    else if (state.tool === 'adjust' && adjustSection === 'mirror') drawMirrorOverlay(octx, displayStamp);
+    else if (mirrorSectionActive()) {
+      drawMirrorPreview(octx, displayStamp);
+      drawMirrorOverlay(octx, displayStamp);
+    }
     const cropMode = state.tool === 'adjust' && adjustSection === 'crop';
-    const mirrorMode = state.tool === 'adjust' && adjustSection === 'mirror';
+    const mirrorMode = mirrorSectionActive();
     const wmCustom =
       state.tool === 'watermark' && refs.wmPosition.value === 'custom' && !refs.wmTile.checked;
     refs.overlayCanvas.style.cursor = wmCustom ? 'move' : cropMode || mirrorMode ? 'crosshair' : 'default';
+  }
+
+  /** 镜像实时预览：把当前工作画布按显示尺寸复制后，套用同一套镜像参数。 */
+  function drawMirrorPreview(ctx, display) {
+    if (!workCanvas || !display.width || !display.height) return;
+    if (
+      !mirrorPreviewCanvas ||
+      mirrorPreviewCanvas.width !== Math.round(display.width) ||
+      mirrorPreviewCanvas.height !== Math.round(display.height)
+    ) {
+      mirrorPreviewCanvas = document.createElement('canvas');
+      mirrorPreviewCanvas.width = Math.round(display.width);
+      mirrorPreviewCanvas.height = Math.round(display.height);
+    }
+    const pctx = mirrorPreviewCanvas.getContext('2d');
+    pctx.clearRect(0, 0, display.width, display.height);
+    pctx.imageSmoothingQuality = 'high';
+    pctx.drawImage(workCanvas, 0, 0, display.width, display.height);
+    const rect = state.mirror.rect
+      ? clampRect(state.mirror.rect, display)
+      : { x: 0, y: 0, width: display.width, height: display.height };
+    const preview = mirrorCanvas(mirrorPreviewCanvas, {
+      axis: state.mirror.axis,
+      position: state.mirror.position,
+      side: state.mirror.side,
+      rect,
+    });
+    ctx.drawImage(preview, 0, 0, display.width, display.height);
   }
 
   function syncStageReadouts() {
@@ -2634,7 +2678,7 @@ export function createImageToolsPage(host) {
       drag = { type: 'watermark', size: display };
       return;
     }
-    if (state.tool === 'adjust' && adjustSection === 'mirror') {
+    if (mirrorSectionActive()) {
       if (!kit) return;
       const display = currentDisplaySize();
       const rect = state.mirror.rect
@@ -2731,7 +2775,7 @@ export function createImageToolsPage(host) {
       }
       return;
     }
-    if (state.tool === 'adjust' && adjustSection === 'mirror') {
+    if (mirrorSectionActive()) {
       if (!kit) return;
       const display = currentDisplaySize();
       if (drag?.type === 'mirror-axis') {

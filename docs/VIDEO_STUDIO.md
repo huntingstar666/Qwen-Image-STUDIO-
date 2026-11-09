@@ -4,7 +4,8 @@
 
 独立服务，不修改主项目代码：生图、风格库、LLM 客户端都通过 HTTP / 只读方式复用。
 
-> 后续优化（分镜表、图片版本、任务中心、UI 对齐）见 [PLAN_VIDEO_STUDIO_OPTIMIZE.md](PLAN_VIDEO_STUDIO_OPTIMIZE.md)。
+> 优化项（分镜表、图片版本、任务中心、历史图库、主题与导出体检）已全部落地，实施记录见
+> [PLAN_VIDEO_STUDIO_OPTIMIZE.md](PLAN_VIDEO_STUDIO_OPTIMIZE.md)。
 
 ---
 
@@ -29,10 +30,20 @@ python -m video_studio.serve --open       # 默认 http://127.0.0.1:8730/
 2. **上传字幕**（SRT / VTT / ASS，必须带时间戳）。
 3. **自动分段**：按字幕边界合并成镜头段，边界向静音中点吸附，再对齐到视频帧。
 4. **生成分镜提示词**：LLM 只写“画面内容”，风格前缀、角色卡、镜头语言由代码拼装。
-5. **批量生图**：串行提交主项目，断点续跑；单段可重生成 / 手动上传图片。
-6. **导出成片**：分段渲染 → 拼接（硬切 / 淡入淡出 / 黑场）→ 字幕水印叠加 → 原声 + BGM 混音。
+5. **批量生图**：串行提交主项目，断点续跑；单段可重生成 / 手动上传图片，每段保留最近 8 个版本。
+6. **导出成片**：先做导出前体检（缺图 / 空提示词 / 字幕溢出 / 音量过低），再分段渲染 → 拼接（硬切 / 淡入淡出 / 黑场）→ 字幕水印叠加 → 原声 + BGM 混音。
 
-时间线上可拖动镜头边界、点击跳转、缩放；右侧检查器编辑台词、画面描述、提示词、运镜与转场。
+工作区有两种视图：**时间线**（拖边界、看波形、双击试听单段）与**分镜表**（一屏通读所有段的
+台词、缩略图、提示词，可直接改文案、重新生图、切换图片版本）。两者共用同一选中段。
+
+顶栏「任务」浮层能看到排队 / 进行 / 完成 / 失败，支持取消与重试；侧栏「历史」页读主项目
+最近产物，可一键把某张图用到当前镜头段。
+
+快捷键：`空格` 播放/暂停、`←/→` ±0.1s、`Shift+←/→` ±1s、`Home/End` 跳首尾、
+`Ctrl/⌘+Z` 撤销、`Shift+Ctrl/⌘+Z` 重做、`Esc` 关闭弹层。
+
+时间线上可拖动镜头边界、点击跳转、缩放；单击字幕条可直接改字幕文案。
+右侧检查器编辑台词、画面描述、提示词、运镜与转场。
 
 ---
 
@@ -138,12 +149,17 @@ BGM 支持循环铺满、音量、`sidechaincompress` 原声闪避。
 | POST | `/api/projects/{id}/segments/preview` | 预览分段（不落库） |
 | POST | `/api/projects/{id}/segments/apply` | 应用分段 |
 | PATCH | `/api/projects/{id}/shots/{shotId}` | 改时间 / 提示词 / 运镜 / 转场 |
-| POST | `/api/projects/{id}/shots/{shotId}/image` | 手动替换图片 |
+| POST | `/api/projects/{id}/shots/{shotId}/image` | 手动替换图片（自动递增版本） |
+| GET/POST/DELETE | `/api/projects/{id}/shots/{shotId}/versions` | 图片版本列表 / 切换 / 删除 |
+| POST | `/api/projects/{id}/shots/{shotId}/image/from-history` | 取主项目历史图写入该段 |
+| PATCH | `/api/projects/{id}/subtitle/cues` | 就地改字幕文案 |
+| POST | `/api/projects/{id}/restore` | 撤销/重做时整段恢复 shots |
 | POST | `/api/projects/{id}/prompts` | 生成分镜提示词（任务） |
 | POST | `/api/projects/{id}/images` | 批量生图（任务） |
 | POST | `/api/projects/{id}/images/{shotId}` | 单段重生成（任务） |
 | POST | `/api/projects/{id}/render` | 导出（任务） |
-| GET | `/api/tasks/{id}` · POST `/api/tasks/{id}/cancel` | 任务进度 / 取消 |
+| GET | `/api/tasks` · `/api/tasks/{id}` · POST `/api/tasks/{id}/cancel` | 任务列表 / 进度 / 取消 |
+| GET | `/api/main/queue` · `/api/main/history` | 主项目队列与历史（只读代理） |
 
 ---
 
@@ -173,6 +189,8 @@ python -m pytest video_studio/tests -q     # 23 passed
 
 - 首版只接受带时间轴的 SRT / VTT / ASS，不做语音识别；无时间轴需要先转录。
 - 转场时长会向上取整到整帧（例如 420ms @30fps → 13 帧 / 433ms），界面填的毫秒只是目标值。
-- 导出默认长边 1920，可在设置里改（480–2048）；比例以项目画布为准，出图统一按同比例。
-- 后台任务单 worker 串行：生图与导出不会并发抢显存，但也意味着大项目要排队。
+- 导出默认长边 1920，可在设置里选 720p / 1080p / 4K 或自定义（480–3840）；比例以项目画布为准，出图统一按同比例。
+- 后台任务单 worker 串行：生图与导出不会并发抢显存，但也意味着大项目要排队；任务记录落盘保留最近 100 条。
+- 图片版本每段保留最近 8 版，超出自动删最旧；删除版本不可恢复。
+- 撤销/重做只覆盖镜头段数据（最多 20 步），画布与全局设置改动不进入撤销栈。
 - 浏览器端播放依赖音频解码；无声卡/自动化环境（headless）里 `currentTime` 不前进，属环境限制。

@@ -39,6 +39,28 @@ const NEUTRAL_ADJUST = Object.freeze({
 
 const FORMAT_LABEL = { png: 'PNG（无损，可透明）', jpeg: 'JPEG（体积小，无透明）' };
 
+const TOOL_ICONS = {
+  adjust:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h9M18 7h2M4 17h4M13 17h7"/><circle cx="15.5" cy="7" r="2"/><circle cx="10.5" cy="17" r="2"/></svg>',
+  size:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/><path d="M9 12h6M12 9v6"/></svg>',
+  watermark:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c2.6 3 5 6.2 5 8.8a5 5 0 0 1-10 0C7 9.2 9.4 6 12 3Z"/><path d="M9.5 14.5c.6.9 1.5 1.4 2.5 1.4"/></svg>',
+  gif:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.5-2.8L10 9.2Z"/></svg>',
+  upscale:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V4h6M20 14v6h-6M14 4h6v6M10 20H4v-6"/><path d="m10 14 4-4"/></svg>',
+  export:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>',
+  outpaint:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M12 8v8M8 12h8"/></svg>',
+  tagger:
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5 13.5 20 4 10.5V4h6.5L20 13.5Z"/><circle cx="8.2" cy="8.2" r="1.1"/></svg>',
+};
+
+const toolIcon = (name) =>
+  `<span class="tool-icon" aria-hidden="true">${TOOL_ICONS[name] || ''}</span>`;
+
 const RESULT_KIND_LABEL = {
   process: '处理',
   grid: '宫格',
@@ -388,30 +410,30 @@ export function createImageToolsPage(host) {
   host.innerHTML = `
     <div class="page page-tools">
       <div class="tools-layout">
-        <nav class="tools-rail" data-ref="toolRail" aria-label="工具">
-          <button class="tools-rail-btn active" type="button" data-tool-group="adjust" title="调整">
-            <span class="glyph">◐</span><span class="lbl">调整</span>
+        <nav class="tools-rail" data-ref="toolRail" aria-label="图像处理工具" role="tablist" aria-orientation="vertical">
+          <button class="tools-rail-btn active" type="button" data-tool-group="adjust" id="tool-tab-adjust" role="tab" aria-selected="true" aria-controls="tool-panel" tabindex="0" title="调整">
+            ${toolIcon('adjust')}<span class="lbl">调整</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="size" title="尺寸">
-            <span class="glyph">⇲</span><span class="lbl">尺寸</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="size" id="tool-tab-size" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="尺寸">
+            ${toolIcon('size')}<span class="lbl">尺寸</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="watermark" title="水印">
-            <span class="glyph">©</span><span class="lbl">水印</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="watermark" id="tool-tab-watermark" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="水印">
+            ${toolIcon('watermark')}<span class="lbl">水印</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="gif" title="动图">
-            <span class="glyph">▶</span><span class="lbl">动图</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="gif" id="tool-tab-gif" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="动图">
+            ${toolIcon('gif')}<span class="lbl">动图</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="upscale" title="放大">
-            <span class="glyph">⤢</span><span class="lbl">放大</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="upscale" id="tool-tab-upscale" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="放大">
+            ${toolIcon('upscale')}<span class="lbl">放大</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="export" title="导出">
-            <span class="glyph">↓</span><span class="lbl">导出</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="export" id="tool-tab-export" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="导出">
+            ${toolIcon('export')}<span class="lbl">导出</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="outpaint" title="扩图">
-            <span class="glyph">⬚</span><span class="lbl">扩图</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="outpaint" id="tool-tab-outpaint" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="扩图">
+            ${toolIcon('outpaint')}<span class="lbl">扩图</span>
           </button>
-          <button class="tools-rail-btn" type="button" data-tool-group="tagger" title="反推">
-            <span class="glyph">⌗</span><span class="lbl">反推</span>
+          <button class="tools-rail-btn" type="button" data-tool-group="tagger" id="tool-tab-tagger" role="tab" aria-selected="false" aria-controls="tool-panel" tabindex="-1" title="反推">
+            ${toolIcon('tagger')}<span class="lbl">反推</span>
           </button>
         </nav>
 
@@ -442,7 +464,7 @@ export function createImageToolsPage(host) {
             </div>
           </section>
 
-          <section class="panel">
+          <section class="panel" id="tool-panel" role="tabpanel" aria-labelledby="tool-tab-adjust" tabindex="0">
             <div class="panel-head"><div class="panel-title">工具 <span class="panel-sub">即时预览 · 可撤销</span></div></div>
             <div class="panel-body tool-stack">
               <details class="fold tool-fold" data-group="adjust" data-section="crop" open>
@@ -1282,8 +1304,13 @@ export function createImageToolsPage(host) {
   });
 
   function syncToolGroups() {
+    const panel = host.querySelector('#tool-panel');
     for (const chip of refs.toolRail.querySelectorAll('[data-tool-group]')) {
-      chip.classList.toggle('active', chip.dataset.toolGroup === state.tool);
+      const active = chip.dataset.toolGroup === state.tool;
+      chip.classList.toggle('active', active);
+      chip.setAttribute('aria-selected', active ? 'true' : 'false');
+      chip.tabIndex = active ? 0 : -1;
+      if (active && panel) panel.setAttribute('aria-labelledby', chip.id);
     }
     const visible = [];
     for (const fold of host.querySelectorAll('.tool-fold[data-group]')) {
@@ -1317,6 +1344,31 @@ export function createImageToolsPage(host) {
     state.tool = chip.dataset.toolGroup;
     syncToolGroups();
     if (state.source) render();
+  });
+
+  refs.toolRail.addEventListener('keydown', (event) => {
+    const nextKeys = ['ArrowDown', 'ArrowRight'];
+    const prevKeys = ['ArrowUp', 'ArrowLeft'];
+    if (!nextKeys.includes(event.key) && !prevKeys.includes(event.key) && !['Home', 'End'].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const tabs = [...refs.toolRail.querySelectorAll('[data-tool-group]')];
+    const current = Math.max(
+      0,
+      tabs.findIndex((tab) => tab.dataset.toolGroup === state.tool),
+    );
+    let next = current;
+    if (nextKeys.includes(event.key)) next = (current + 1) % tabs.length;
+    if (prevKeys.includes(event.key)) next = (current - 1 + tabs.length) % tabs.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = tabs.length - 1;
+    const tab = tabs[next];
+    if (!tab) return;
+    state.tool = tab.dataset.toolGroup;
+    syncToolGroups();
+    if (state.source) render();
+    tab.focus();
   });
   syncToolGroups();
 

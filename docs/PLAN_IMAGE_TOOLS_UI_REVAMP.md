@@ -1118,10 +1118,9 @@ results       已落盘结果（url/thumb/尺寸/类型/时间）
 
 ### 11.4 尚未完成（Phase 1+）
 
-- 76px SVG 图标工具轨、工具分组与中文文案收敛；
+- 工具分组与中文文案收敛；
 - 画布缩放/平移/100%/前后对比/透明棋盘；
 - IndexedDB 草稿、离开确认、清空/重置确认；
-- 工具轨 `role=tablist` / `aria-selected` / 方向键切换；
 - 统一任务中心、Toast 位置与数量控制；
 - 结果持久化、版本、批量操作收敛；
 - 尺寸/水印/导出预设，批量处理；
@@ -1133,6 +1132,39 @@ results       已落盘结果（url/thumb/尺寸/类型/时间）
 - 本轮只改前端，未改后端接口、算法或模型。
 - 第一轮审计中“应用裁剪后画布 header 为 847×846”的记录已修正：修复前 header 仍显示源图 941×1,672，状态栏才是 847×846；本次已让 header 跟随当前工作尺寸。
 - 静态资源按现有 no-cache 策略提供，回归使用全新浏览器上下文，避免旧缓存。
+
+---
+
+## 12. Phase 1 实施记录
+
+### 12.1 工具轨：76px SVG 图标 + tab 语义（2026-11-09）
+
+**改动文件**
+
+- `web/src/components/imageTools.js`
+- `web/assets/css/tools.css`
+
+**内容**
+
+- 工具轨从 58px 加宽到 76px，标签字号 10px → 11px；
+- 8 个 Unicode 字形替换为统一 22px 线性 SVG 图标（currentColor，跟随主题）；
+- 选中项增加左侧 3px accent 指示条，保留 active 背景；
+- 增加 `role="tablist"` / `role="tab"` / `aria-selected` / `aria-controls` / `aria-labelledby`；
+- 采用 roving tabindex：当前 tab `tabIndex=0`，其余 `-1`；
+- 支持 ArrowUp/Down/Left/Right、Home、End 切换并移动焦点；
+- 增加 `:focus-visible` 2px accent 焦点环；
+- 窄屏横向工具轨隐藏左侧指示条，按钮保持横向布局。
+
+**回归**
+
+| 场景 | 结果 |
+|---|---|
+| 1600×950 | 工具轨宽 76px，8 个 SVG 图标；`docH=950`、结果条 bottom=936 |
+| 1280×800 | 工具轨宽 76px；`docH=800`、结果条 bottom=786 |
+| 900×800 | 横向工具轨高 56px、top=132px，8 个图标完整 |
+| 键盘 | 焦点在「调整」按 ArrowDown → 切到「尺寸」，焦点与 `aria-selected` 同步，主操作变为「应用缩放」 |
+| ARIA | `#tool-panel` role=tabpanel，`aria-labelledby` 随激活 tab 更新 |
+| 控制台 | 0 error |
 
 ---
 

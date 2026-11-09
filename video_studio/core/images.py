@@ -247,19 +247,20 @@ def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any]) -> list[dict
         elif not name or name not in text:
             continue
         files = [str(item) for item in (entity.get("refImages") or []) if str(item or "")]
-        if not files:
-            continue
-        try:
-            data = store.read_media(project["id"], files[0]).read_bytes()
-        except (StudioError, OSError):
-            continue
-        refs.append({
-            "id": entity_id,
-            "kind": str(entity.get("kind") or "character"),
-            "name": name or entity_id,
-            "desc": str(entity.get("desc") or ""),
-            "data": data,
-        })
+        for file in files:
+            if len(refs) >= ANCHOR_MAX_REFS:
+                break
+            try:
+                data = store.read_media(project["id"], file).read_bytes()
+            except (StudioError, OSError):
+                continue
+            refs.append({
+                "id": entity_id,
+                "kind": str(entity.get("kind") or "character"),
+                "name": name or entity_id,
+                "desc": str(entity.get("desc") or ""),
+                "data": data,
+            })
         if len(refs) >= ANCHOR_MAX_REFS:
             break
     return refs
@@ -271,13 +272,22 @@ def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
         "以图1为画面底稿：保持它的构图、机位、景别、内容位置与动作、光影、背景",
         "以及所有非主体细节不变。只做身份校准，让以下主体与对应参考图保持同一外观：",
     ]
+    # 同一资产的正面/侧面等多张设定图合并成一条，避免提示词被拆散
+    groups: list[dict[str, Any]] = []
     for index, ref in enumerate(refs, start=2):
+        if groups and groups[-1]["id"] == ref["id"]:
+            groups[-1]["images"].append(index)
+        else:
+            groups.append({"id": ref["id"], "ref": ref, "images": [index]})
+    for group in groups:
+        ref = group["ref"]
         kind = KIND_LABEL.get(str(ref.get("kind")), "主体")
         name = str(ref.get("name") or ref.get("id") or "")
         desc = str(ref.get("desc") or "").strip()
         detail = f"（固定外观：{desc}）" if desc else ""
         features = KIND_FEATURES.get(str(ref.get("kind")), "外观特征")
-        lines.append(f"- 图{index}：{kind}「{name}」{detail}，保持{features}一致。")
+        labels = "、".join(f"图{index}" for index in group["images"])
+        lines.append(f"- {labels}：{kind}「{name}」{detail}，保持{features}一致。")
     lines.append("只替换上述主体的身份特征，不新增、不删除任何元素，不改变画幅与画面布局。")
     return "\n".join(lines)
 
@@ -301,7 +311,7 @@ def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
             "anchor": True,
             "projectId": project.get("id"),
             "shotId": shot.get("id"),
-            "entities": [ref["id"] for ref in refs],
+            "entities": list(dict.fromkeys(ref["id"] for ref in refs)),
         },
     }
     if image_cfg.get("turbo"):

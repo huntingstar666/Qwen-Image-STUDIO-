@@ -513,3 +513,13 @@ def test_build_anchor_payload_uses_base_and_assets() -> None:
     assert payload["meta"]["anchor"] is True
     assert "图2" in payload["prompt"]
     assert "小林" in payload["prompt"]
+
+
+def test_anchor_prompt_groups_multiple_refs_of_same_asset() -> None:
+    refs = [
+        {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"a"},
+        {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"b"},
+    ]
+    prompt = images.build_anchor_prompt(refs)
+    assert "图2、图3" in prompt
+    assert prompt.count("人物「小林」") == 1

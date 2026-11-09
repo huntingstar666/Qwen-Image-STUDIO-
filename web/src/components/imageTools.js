@@ -1,6 +1,6 @@
 /**
  * 「图像处理」页面（新）。
- * 定位：本地图片工作台 —— 裁剪 / 宫格 / 旋转翻转 / 缩放 / 调色 / 格式导出 / 扩图 / 送入图生图。
+ * 定位：本地图片工作台 —— 裁剪 / 宫格 / 旋转翻转 / 缩放 / 调色 / 格式导出 / 扩图 / 送入图像编辑。
  *
  * 实现要点：
  * 1. 几何操作（crop / rotate / flip / resize / pad32）在前端 Canvas 里即时预览；
@@ -332,6 +332,9 @@ export function createImageToolsPage(host) {
   let kit = null;
   let disposed = false;
   let sourceImage = null;
+  let watermarkMarkImage = null;
+  let watermarkPreviewRect = null;
+  let watermarkPreviewStamp = { width: 0, height: 0 };
   let workCanvas = null;
   let renderToken = 0;
   let currentWorkDims = { width: 0, height: 0 };
@@ -623,7 +626,7 @@ export function createImageToolsPage(host) {
               </details>
 
               <details class="fold tool-fold" data-group="outpaint">
-                <summary>扩图（outpaint）</summary>
+                <summary>扩图</summary>
                 <div class="fold-body">
                   <div class="field">
                     <span class="field-label">全景比例 <span class="tag-hint">自动算方向与幅度</span></span>
@@ -725,7 +728,7 @@ export function createImageToolsPage(host) {
                   <textarea class="input mono" rows="4" readonly placeholder="识别结果会出现在这里" aria-label="反推标签结果" data-ref="taggerResult"></textarea>
                   <div class="row hidden" data-ref="taggerActions">
                     <button class="btn ghost sm" type="button" data-ref="taggerToT2i">→ 文生图</button>
-                    <button class="btn ghost sm" type="button" data-ref="taggerToEdit">→ 图生图</button>
+                    <button class="btn ghost sm" type="button" data-ref="taggerToEdit">→ 图像编辑</button>
                   </div>
                   <div class="field-hint" data-ref="taggerStatus">首次使用会自动下载所选模型（约 300MB～1GB），请保持网络畅通。</div>
                 </div>
@@ -841,11 +844,11 @@ export function createImageToolsPage(host) {
                     <button class="btn ghost sm hidden" type="button" data-ref="gifCancel">取消</button>
                   </div>
                   <button class="btn ghost sm block" type="button" data-ref="gifSplit">把当前 GIF 拆帧</button>
-                  <div class="field-hint" data-ref="gifHint">图片序列走全局调色板；视频走 ffmpeg 两遍调色板。结果进入右侧「结果」。</div>
+                  <div class="field-hint" data-ref="gifHint">图片序列与视频都会自动统一调色；结果进入右侧「结果」。</div>
                 </div>
               </details>
 
-              <button class="btn ghost block" type="button" data-ref="sendEdit">→ 送入图生图</button>
+              <button class="btn ghost block" type="button" data-ref="sendEdit">→ 送入图像编辑</button>
             </div>
           </section>
 
@@ -1784,9 +1787,12 @@ export function createImageToolsPage(host) {
     octx.setTransform(displayStamp.dpr, 0, 0, displayStamp.dpr, 0, 0);
     octx.clearRect(0, 0, displayStamp.width, displayStamp.height);
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, displayStamp);
-    else if (state.tool === 'watermark') {
-      if (refs.wmPosition.value === 'custom' && !refs.wmTile.checked) drawWatermarkOverlay(octx, displayStamp);
-    } else if (state.tool !== 'tagger') drawCropOverlay(octx, displayStamp);
+    else if (state.tool === 'watermark') drawWatermarkPreview(octx, displayStamp);
+    else if (state.tool === 'adjust' && adjustSection === 'crop') drawCropOverlay(octx, displayStamp);
+    const cropMode = state.tool === 'adjust' && adjustSection === 'crop';
+    const wmCustom =
+      state.tool === 'watermark' && refs.wmPosition.value === 'custom' && !refs.wmTile.checked;
+    refs.overlayCanvas.style.cursor = wmCustom ? 'move' : cropMode ? 'crosshair' : 'default';
   }
 
   function syncStageReadouts() {
@@ -1961,6 +1967,13 @@ export function createImageToolsPage(host) {
 
   /** 水印拖动把手（近似尺寸；真实尺寸以服务端渲染为准）。 */
   function watermarkHandleRect(display) {
+    if (
+      watermarkPreviewRect &&
+      watermarkPreviewStamp.width === display.width &&
+      watermarkPreviewStamp.height === display.height
+    ) {
+      return { ...watermarkPreviewRect };
+    }
     const side = Math.min(display.width, display.height);
     const scale = (Number(refs.wmScale.value) || 6) / 100;
     let width = side * scale * 4;
@@ -1989,21 +2002,136 @@ export function createImageToolsPage(host) {
     return value;
   }
 
-  function drawWatermarkOverlay(ctx, display) {
-    const rect = watermarkHandleRect(display);
+  function watermarkAnchor(display, width, height) {
+    const side = Math.min(display.width, display.height);
+    const margin = ((Number(refs.wmMargin.value) || 0) / 100) * side;
+    const position = refs.wmPosition.value;
+    let x = display.width / 2;
+    let y = display.height / 2;
+    if (position === 'custom') {
+      x = state.watermark.x * display.width;
+      y = state.watermark.y * display.height;
+    } else {
+      if (position.includes('left')) x = margin + width / 2;
+      else if (position.includes('right')) x = display.width - margin - width / 2;
+      if (position.includes('top')) y = margin + height / 2;
+      else if (position.includes('bottom')) y = display.height - margin - height / 2;
+    }
+    x = Math.max(width / 2 + 2, Math.min(display.width - width / 2 - 2, x));
+    y = Math.max(height / 2 + 2, Math.min(display.height - height / 2 - 2, y));
+    return { x, y };
+  }
+
+  function drawWatermarkText(ctx, text, x, y, fontSize, family, color, rotation, stroke, side) {
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width, rect.height);
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(255,255,255,0.96)';
-    ctx.font = '11px -apple-system, sans-serif';
+    ctx.translate(x, y);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.font = `600 ${fontSize}px ${family}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('水印', rect.x + rect.width / 2, rect.y + rect.height / 2);
+    if (stroke > 0) {
+      ctx.lineWidth = Math.max(1, side * (stroke / 1000));
+      ctx.strokeStyle = '#000000';
+      ctx.strokeText(text, 0, 0);
+    }
+    ctx.fillStyle = color;
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  function drawWatermarkPreview(ctx, display) {
+    const side = Math.min(display.width, display.height);
+    const scale = (Number(refs.wmScale.value) || 6) / 100;
+    const opacity = (Number(refs.wmOpacity.value) || 55) / 100;
+    const rotation = Number(refs.wmRotation.value) || 0;
+    const color = refs.wmColor.value || '#ffffff';
+    const stroke = Number(refs.wmStroke.value) || 0;
+    const shadow = refs.wmShadow.checked;
+    const tile = refs.wmTile.checked;
+    const position = refs.wmPosition.value;
+    const fontLabel = refs.wmFont.selectedOptions?.[0]?.textContent || '默认字体';
+    const family =
+      fontLabel === '默认字体'
+        ? '"Microsoft YaHei", "PingFang SC", sans-serif'
+        : `"${fontLabel}", "Microsoft YaHei", sans-serif`;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    if (shadow) {
+      ctx.shadowColor = 'rgba(0,0,0,0.55)';
+      ctx.shadowBlur = Math.max(2, side * 0.008);
+      ctx.shadowOffsetX = Math.max(1, side * 0.003);
+      ctx.shadowOffsetY = Math.max(1, side * 0.003);
+    }
+
+    let rect = null;
+    if (state.watermark.kind === 'text') {
+      const text = refs.wmText.value.trim() || '水印';
+      const fontSize = Math.max(10, side * scale);
+      ctx.font = `600 ${fontSize}px ${family}`;
+      const width = Math.max(8, ctx.measureText(text).width);
+      const height = fontSize * 1.25;
+      if (tile) {
+        const gapX = ((Number(refs.wmGapX.value) || 20) / 100) * side;
+        const gapY = ((Number(refs.wmGapY.value) || 12) / 100) * side;
+        const stepX = width + gapX;
+        const stepY = height + gapY;
+        ctx.save();
+        ctx.translate(display.width / 2, display.height / 2);
+        ctx.rotate(((Number(refs.wmTileAngle.value) || -24) * Math.PI) / 180);
+        for (let y = -display.height; y <= display.height; y += stepY) {
+          for (let x = -display.width; x <= display.width; x += stepX) {
+            drawWatermarkText(ctx, text, x, y, fontSize, family, color, 0, stroke, side);
+          }
+        }
+        ctx.restore();
+        watermarkPreviewRect = null;
+        ctx.restore();
+        return;
+      }
+      const anchor = watermarkAnchor(display, width, height);
+      drawWatermarkText(ctx, text, anchor.x, anchor.y, fontSize, family, color, rotation, stroke, side);
+      rect = { x: anchor.x - width / 2, y: anchor.y - height / 2, width, height };
+    } else if (watermarkMarkImage) {
+      const width = Math.max(24, side * scale * 4);
+      const height = Math.max(16, width * (watermarkMarkImage.height / watermarkMarkImage.width));
+      const anchor = watermarkAnchor(display, width, height);
+      ctx.save();
+      ctx.translate(anchor.x, anchor.y);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.drawImage(watermarkMarkImage, -width / 2, -height / 2, width, height);
+      ctx.restore();
+      rect = { x: anchor.x - width / 2, y: anchor.y - height / 2, width, height };
+    } else {
+      const width = Math.max(40, side * scale * 4);
+      const height = Math.max(24, side * scale * 1.6);
+      const anchor = watermarkAnchor(display, width, height);
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(anchor.x - width / 2, anchor.y - height / 2, width, height);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = '11px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('选择 logo', anchor.x, anchor.y);
+      ctx.restore();
+      rect = { x: anchor.x - width / 2, y: anchor.y - height / 2, width, height };
+    }
+
+    if (rect && position === 'custom') {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width, rect.height);
+      ctx.restore();
+    }
+    watermarkPreviewRect = rect;
+    watermarkPreviewStamp = { width: display.width, height: display.height };
     ctx.restore();
   }
 
@@ -2176,6 +2304,7 @@ export function createImageToolsPage(host) {
       drag = { type: 'watermark', size: display };
       return;
     }
+    if (state.tool !== 'adjust' || adjustSection !== 'crop') return;
     if (!kit) return;
     const handle = state.crop.rect ? kit.hitCrop(state.crop.rect, point) : null;
     event.preventDefault();
@@ -2226,6 +2355,10 @@ export function createImageToolsPage(host) {
       } else {
         refs.overlayCanvas.style.cursor = 'default';
       }
+      return;
+    }
+    if (state.tool !== 'adjust' || adjustSection !== 'crop') {
+      refs.overlayCanvas.style.cursor = 'default';
       return;
     }
     if (!kit) return;
@@ -2888,9 +3021,13 @@ export function createImageToolsPage(host) {
       (item) => item.name === state.tagger.model,
     );
     if (current?.installed) {
-      setTaggerStatus(`模型目录：${current.dir}`);
+      setTaggerStatus(`已安装 · ${fmtNum(current.size_mb)} MB，可直接反推。`);
     } else {
-      setTaggerStatus(`首次反推会下载到 ${state.tagger.models?.dir || '模型目录'}（约 300MB～1GB）。`);
+      setTaggerStatus(
+        current?.size_mb
+          ? `首次反推会下载所选模型（约 ${fmtNum(current.size_mb)} MB），请保持网络畅通。`
+          : '首次反推会下载所选模型（约 300MB～1GB），请保持网络畅通。',
+      );
     }
   }
 
@@ -3025,6 +3162,26 @@ export function createImageToolsPage(host) {
     renderResults();
   }
 
+  function loadWatermarkMark() {
+    watermarkMarkImage = null;
+    const data = state.watermark.markData;
+    if (!data) {
+      scheduleOverlay();
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (disposed) return;
+      watermarkMarkImage = img;
+      scheduleOverlay();
+    };
+    img.onerror = () => {
+      watermarkMarkImage = null;
+      scheduleOverlay();
+    };
+    img.src = data;
+  }
+
   function syncWatermarkKind() {
     const isText = state.watermark.kind === 'text';
     refs.wmTextFields.classList.toggle('hidden', !isText);
@@ -3032,6 +3189,8 @@ export function createImageToolsPage(host) {
     for (const chip of refs.wmKinds.querySelectorAll('[data-wm-kind]')) {
       chip.classList.toggle('active', chip.dataset.wmKind === state.watermark.kind);
     }
+    if (!isText) loadWatermarkMark();
+    scheduleOverlay();
   }
   refs.wmKinds.addEventListener('click', (event) => {
     const chip = event.target.closest('[data-wm-kind]');
@@ -3076,10 +3235,21 @@ export function createImageToolsPage(host) {
   for (const [input, label, suffix] of wmRangeLabels) {
     const sync = () => { label.textContent = `${input.value}${suffix}`; };
     input.addEventListener('input', sync);
+    input.addEventListener('input', scheduleOverlay);
     sync();
   }
+  refs.wmText.addEventListener('input', () => {
+    state.watermark.text = refs.wmText.value;
+    scheduleOverlay();
+  });
+  refs.wmColor.addEventListener('input', scheduleOverlay);
+  refs.wmFont.addEventListener('change', scheduleOverlay);
+  refs.wmRotation.addEventListener('input', scheduleOverlay);
+  refs.wmShadow.addEventListener('change', scheduleOverlay);
+  refs.wmTileAngle.addEventListener('input', scheduleOverlay);
   refs.wmTile.addEventListener('change', () => {
     refs.wmTileFields.classList.toggle('hidden', !refs.wmTile.checked);
+    scheduleOverlay();
   });
   refs.wmMarkPick.addEventListener('click', () => refs.wmMarkInput.click());
   refs.wmMarkInput.addEventListener('change', async () => {
@@ -3088,6 +3258,7 @@ export function createImageToolsPage(host) {
     state.watermark.markData = await fileToDataUrl(file);
     state.watermark.markName = file.name;
     refs.wmMarkName.textContent = file.name;
+    loadWatermarkMark();
   });
 
   api.watermarkFonts()
@@ -3098,9 +3269,11 @@ export function createImageToolsPage(host) {
         ? fonts.map((font, index) => `<option value="${escapeHtml(font.id)}"${index === 0 ? ' selected' : ''}>${escapeHtml(font.label)}</option>`).join('')
         : '<option value="">默认字体</option>';
       if (fonts.length) state.watermark.font = fonts[0].id;
+      scheduleOverlay();
     })
     .catch(() => {
       refs.wmFont.innerHTML = '<option value="">默认字体</option>';
+      scheduleOverlay();
     });
 
   function watermarkSpec() {
@@ -3924,7 +4097,7 @@ export function createImageToolsPage(host) {
   });
 
   /* ============================================================
-   * 送入图生图
+   * 送入图像编辑
    * ============================================================ */
   refs.sendEdit.addEventListener('click', async () => {
     if (!state.source) {
@@ -3950,7 +4123,7 @@ export function createImageToolsPage(host) {
       });
       goToEditPage();
     } catch (err) {
-      toastError(err, '送入图生图失败');
+      toastError(err, '送入图像编辑失败');
     } finally {
       button.disabled = false;
       button.textContent = original;

@@ -92,8 +92,9 @@ export function goToT2IPage() {
 /* ---------------------------------------------------------------- 图片精修 */
 
 /**
- * 把一张图片交给图片精修工作台打开。
- * @param {{url:string, name?:string, title?:string, toast?:string}} payload
+ * 把一张图片交给图片精修工作台。
+ * mode: 'project' = 新建工程打开（默认）；'layer' = 作为图层加入当前工程（D23.12）
+ * @param {{url:string, name?:string, title?:string, mode?:'project'|'layer', toast?:string}} payload
  */
 export function setStudioHandoff(payload = {}) {
   const url = String(payload.url || '').trim();
@@ -102,7 +103,8 @@ export function setStudioHandoff(payload = {}) {
     url,
     name: String(payload.name || '').trim(),
     title: String(payload.title || '').trim(),
-    toast: payload.toast || '已在图片精修中打开',
+    mode: payload.mode === 'layer' ? 'layer' : 'project',
+    toast: payload.toast || (payload.mode === 'layer' ? '已作为新图层加入当前工程' : '已在图片精修中打开'),
   };
 }
 

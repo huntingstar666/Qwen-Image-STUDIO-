@@ -460,7 +460,11 @@ export function createMaterialsPage(host) {
     }
   }
 
-  function openInStudio(item) {
+  /**
+   * 送到图片精修：mode='project' 新建工程打开；mode='layer' 作为图层加入当前工程。
+   * 具体如何落地由精修页消费交接时决定（D23.12）。
+   */
+  function openInStudio(item, mode = 'project') {
     const image = item.image || {};
     if (!image.url) {
       toastWarn('这件素材没有可打开的图片');
@@ -471,6 +475,7 @@ export function createMaterialsPage(host) {
         url: image.url,
         name: image.filename || `${item.title || 'material'}.png`,
         title: item.title,
+        mode,
       });
       closeModal();
       goToStudioPage();
@@ -622,10 +627,16 @@ export function createMaterialsPage(host) {
           },
         },
         {
-          label: '在图片精修中打开',
+          label: '在图片精修中打开（新建工程）',
           kind: 'ghost',
           close: false,
-          onClick: () => openInStudio(item),
+          onClick: () => openInStudio(item, 'project'),
+        },
+        {
+          label: '作为图层加入当前工程',
+          kind: 'ghost',
+          close: false,
+          onClick: () => openInStudio(item, 'layer'),
         },
         {
           label: '发送到文生图',

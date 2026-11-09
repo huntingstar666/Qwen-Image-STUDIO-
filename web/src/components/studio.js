@@ -9527,14 +9527,56 @@ export function createStudioPage(host) {
   });
   resizeObserver.observe(stageEl);
 
-  function applyStudioHandoff() {
-    const payload = consumeStudioHandoff();
-    if (!payload) return false;
-    void openUrl(payload.url, payload.name || 'material.png').then((ok) => {
-      if (ok) toastSuccess(payload.toast);
-      else void maybeRestore();
+  /**
+   * 消费「素材仓库 → 图片精修」的交接（D23.12）。
+   * - project：新建工程打开；已有工程时先确认（旧工程已自动保存，可在历史项目找回）。
+   * - layer：作为叠加层加入当前工程；当前没有工程时降级为新工程。
+   */
+  async function applyStudioHandoff(payload) {
+    const mode = payload.mode === 'layer' ? 'layer' : 'project';
+    try {
+      if (mode === 'layer' && doc) {
+        const layer = await addMaterialLayer(payload.url, payload.name);
+        if (!layer) return false;
+        toastSuccess(payload.toast || '已作为新图层加入当前工程');
+        return true;
+      }
+      if (mode === 'layer') toast('当前没有打开的工程，改为新建工程打开');
+      if (doc && doc.layers.length) {
+        const confirmed = await confirmDialog({
+          title: '新建工程打开',
+          message: `当前工程「${doc.name}」已自动保存（可在「历史项目」找回）。要用这张素材新建工程打开吗？`,
+          confirmText: '新建工程',
+        });
+        if (!confirmed) return false;
+      }
+      const ok = await openUrl(payload.url, payload.name || 'material.png');
+      if (ok) {
+        toastSuccess(payload.toast || '已在图片精修中打开');
+        return true;
+      }
+      toastWarn('素材图片读取失败，可能已被删除');
+      return false;
+    } catch (err) {
+      toastError(err, '打开素材失败');
+      return false;
+    }
+  }
+
+  /** 取素材文件后作为叠加层加入当前工程（按主图 60% 居中适配）。 */
+  async function addMaterialLayer(url, name) {
+    if (!doc) return null;
+    const blob = await fetchBlob(url);
+    if (!blob) {
+      toastWarn('素材图片读取失败，可能已被删除');
+      return null;
+    }
+    const file = new File([blob], name || 'material.png', { type: blob.type || 'image/png' });
+    return addOverlayFile(file, {
+      name: file.name,
+      center: { x: doc.size.width / 2, y: doc.size.height / 2 },
+      focusSticker: true,
     });
-    return true;
   }
   // 页面刚创建时画布还没有尺寸，先初始化一次
   requestAnimationFrame(() => {
@@ -9557,6 +9599,13 @@ export function createStudioPage(host) {
         void openProjectById(pending);
         return;
       }
+      // 素材仓库的交接必须在「已有工程」判断之前消费，
+      // 否则恢复上的工程会让交接一直留在内存槽里（D23.12）。
+      const handoff = consumeStudioHandoff();
+      if (handoff) {
+        void applyStudioHandoff(handoff);
+        return;
+      }
       if (doc) {
         // 切走再回来只兜底「画面丢了」的情况；否则保留用户当前的缩放与平移
         // （旧实现无条件 fitView，切一次页签就把 100% 拉回适应，像被打断操作）。
@@ -9566,13 +9615,11 @@ export function createStudioPage(host) {
         });
         return;
       }
-      // 有素材仓库交接时优先打开交接图，否则尝试恢复上次未完成的工程。
-      if (!applyStudioHandoff()) {
-        void maybeRestore().then(() => {
-          // 顺带清理超过 7 天或排名 10 名之外的旧工程，正在被其他标签编辑的跳过。
-          void cleanupProjects({ keep: 10, maxAgeDays: 7, keepId: projectId, tabId: tabId() });
-        });
-      }
+      // 没有交接：尝试恢复上次未完成的工程。
+      void maybeRestore().then(() => {
+        // 顺带清理超过 7 天或排名 10 名之外的旧工程，正在被其他标签编辑的跳过。
+        void cleanupProjects({ keep: 10, maxAgeDays: 7, keepId: projectId, tabId: tabId() });
+      });
     },
     /** 页面被移除时统一解绑，避免全局监听器与观察器在旧实例上累积。 */
     destroy() {

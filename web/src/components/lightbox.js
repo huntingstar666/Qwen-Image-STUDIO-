@@ -132,9 +132,9 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     });
   };
 
-  const show = (nextIndex) => {
-    if (!list.length) return;
-    index = (nextIndex + list.length) % list.length;
+  /** 真正切换 DOM 与所有状态（不含过渡动画）。 */
+  const applyImage = (nextIndex) => {
+    index = nextIndex;
     const item = list[index];
     img.src = item.url;
     resetView();
@@ -145,6 +145,66 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     film.querySelectorAll('[data-thumb]').forEach((button) => {
       button.classList.toggle('active', Number(button.dataset.thumb) === index);
     });
+  };
+
+  /** 预解码令牌：连续快速切图时只让最后一次生效。 */
+  let swapToken = 0;
+
+  const show = (nextIndex) => {
+    if (!list.length) return;
+    const total = list.length;
+    const target = ((nextIndex % total) + total) % total;
+    // 首次渲染：直接落图，交给打开动画处理。
+    if (!entered) {
+      applyImage(target);
+      return;
+    }
+    if (target === index) return;
+    const forward = (target - index + total) % total <= total / 2;
+    const dir = forward ? 1 : -1;
+    const token = ++swapToken;
+
+    const commit = () => {
+      if (token !== swapToken) return;
+      if (prefersReducedMotion() || typeof img.animate !== 'function') {
+        applyImage(target);
+        return;
+      }
+      const out = img.animate(
+        [
+          { opacity: 1, transform: 'translateX(0)' },
+          { opacity: 0, transform: `translateX(${-14 * dir}px)` },
+        ],
+        { duration: 90, easing: 'ease-in', fill: 'forwards' },
+      );
+      out.finished
+        .catch(() => {})
+        .then(() => {
+          if (token !== swapToken) {
+            out.cancel();
+            return;
+          }
+          out.cancel();
+          applyImage(target);
+          img.animate(
+            [
+              { opacity: 0, transform: `translateX(${20 * dir}px)` },
+              { opacity: 1, transform: 'translateX(0)' },
+            ],
+            { duration: 150, easing: ENTER_EASING },
+          );
+        });
+    };
+
+    // 先解码再替换：避免新图首帧白闪，也避免解码耗时造成旧图先消失。
+    const probe = new Image();
+    probe.src = list[target].url;
+    if (typeof probe.decode === 'function') {
+      probe.decode().then(commit).catch(commit);
+    } else {
+      probe.onload = commit;
+      probe.onerror = commit;
+    }
   };
 
   let modal = null;

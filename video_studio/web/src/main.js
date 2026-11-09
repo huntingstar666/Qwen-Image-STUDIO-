@@ -304,7 +304,7 @@ async function boot() {
       deleteVersion: (shotId, file) => deleteShotVersion(file, shotId),
       setTextMode: (shotId) => setShotTextMode("auto", shotId),
       clearReview: (shotId, fields) => clearShotReview(fields, shotId),
-      polish: (shotId, directive) => polishShot(shotId, directive),
+      polish: (shotId, directive, refAssets) => polishShot(shotId, directive, refAssets),
       listMaterials: (q) => api.get(`/api/main/materials?limit=60&q=${encodeURIComponent(q || "")}`),
       useMaterial: (shotId, url) => useMaterialImage(shotId, url),
       onNavigate: (shotId) => {
@@ -1312,13 +1312,14 @@ async function clearShotReview(fields, shotId = getState().selectedId) {
   }
 }
 
-/** 按用户指令让 LLM 重写本段画面描述。 */
-async function polishShot(shotId, directive) {
+/** 按用户指令让 LLM 重写本段画面描述；refAssets 会随参考图一起发给视觉模型。 */
+async function polishShot(shotId, directive, refAssets = []) {
   const project = getState().project;
   if (!project || !shotId) throw new Error("先选一个镜头段");
   pushUndo();
   const data = await api.post(
-    `/api/projects/${project.id}/shots/${shotId}/polish`, { directive });
+    `/api/projects/${project.id}/shots/${shotId}/polish`,
+    { directive, refAssets });
   setState({ project: data, selectedId: shotId });
   renderAll();
   return data.polish;
@@ -2820,17 +2821,24 @@ function bindDrawerFields() {
   });
 }
 
+/** 正在生成设定图的资产 id：按钮显示生成中并禁用重复提交。 */
+const assetGenerating = new Set();
+
 function entityRow(section, entity, index) {
   const row = document.createElement("div");
   row.className = "entity-row";
   const refs = Array.isArray(entity.refImages) ? entity.refImages : [];
   const urls = Array.isArray(entity.refUrls) ? entity.refUrls : [];
+  const generating = assetGenerating.has(String(entity.id));
   const kindLabel = entity.kind === "location" ? "场景" : entity.kind === "prop" ? "道具" : "角色";
   row.innerHTML = `
     <div class="entity-cover">
       ${urls[0]
         ? `<img src="${escapeHtml(urls[0])}" alt="${escapeHtml(entity.name || kindLabel)}" />`
         : `<span class="entity-cover-empty">${kindLabel}<em>无设定图</em></span>`}
+      <button type="button" class="entity-cover-btn primary" data-generate ${generating ? "disabled" : ""}>
+        ${generating ? "生成中…" : "生成"}
+      </button>
       <button type="button" class="entity-cover-btn" data-upload>上传</button>
       <button type="button" class="entity-cover-btn ghost" data-material>素材库</button>
     </div>
@@ -2865,6 +2873,9 @@ function entityRow(section, entity, index) {
       entity[input.dataset.entity] = input.value;
       drawerDraft[section].content.entities[index] = entity;
     });
+  });
+  row.querySelector("[data-generate]").addEventListener("click", () => {
+    generateAssetImage(entity);
   });
   row.querySelector("[data-upload]").addEventListener("click", () => {
     const picker = row.querySelector("[data-asset-file]");
@@ -2921,6 +2932,50 @@ async function uploadAssetRef(entity, file) {
   } catch (err) {
     toast(err.message, "bad");
   }
+}
+
+/** 用文字直接生成资产设定图；任务完成后自动刷新资产卡。 */
+async function generateAssetImage(entity) {
+  const project = getState().project;
+  if (!project) return;
+  if (!String(entity.name || "").trim() && !String(entity.desc || "").trim()) {
+    toast("先填资产名称或外观描述，再生成设定图", "bad");
+    return;
+  }
+  if (assetGenerating.has(String(entity.id))) return;
+  assetGenerating.add(String(entity.id));
+  bindDrawerFields();
+  try {
+    await persistAssetsDraft();
+    const { taskId } = await api.post(
+      `/api/projects/${project.id}/assets/${encodeURIComponent(entity.id)}/generate`);
+    toast("已提交资产设定图，生成完成后自动填入", "ok");
+    const task = await waitTask(project.id, taskId);
+    if (task.status !== "done") throw new Error(task.error || "资产设定图生成失败");
+    const updated = await api.get(`/api/projects/${project.id}`);
+    if (getState().project && getState().project.id === project.id) {
+      setState({ project: updated });
+      syncAssetRefs(updated);
+    }
+    toast("资产设定图已生成", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  } finally {
+    assetGenerating.delete(String(entity.id));
+    bindDrawerFields();
+  }
+}
+
+async function waitTask(projectId, taskId, timeoutMs = 300000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await sleep(2000);
+    const data = await api.get(`/api/tasks?projectId=${projectId}&limit=30`);
+    const task = (data.tasks || []).find((item) => item.id === taskId);
+    if (!task) continue;
+    if (["done", "error", "canceled"].includes(task.status)) return task;
+  }
+  throw new Error("资产设定图生成超时");
 }
 
 async function deleteAssetRef(entity, file) {

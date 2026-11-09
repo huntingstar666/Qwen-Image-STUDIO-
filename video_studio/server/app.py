@@ -490,7 +490,8 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
             history = shot.setdefault("promptHistory", [])
             history.insert(0, {"at": schema.now_text(), "text": patch["prompt"], "source": "manual"})
             del history[10:]
-        if retimed or auto_reset or {"description", "text", "usedEntities", "directive"} & set(patch):
+        if retimed or auto_reset or {"description", "text", "usedEntities", "directive",
+                                     "refAssets"} & set(patch):
             shot["prompt"], shot["negative"] = prompts.assemble_prompt(project, shot)
         if "text" in patch and not retimed:
             segments.mark_review(shot, image=True, reason="text")
@@ -509,6 +510,12 @@ def api_shot_polish(project_id: str, shot_id: str,
         project = store.load(project_id)
         shot = _shot_of(project, shot_id)
         shot["directive"] = directive
+        if isinstance(payload.get("refAssets"), list):
+            try:
+                shot["refAssets"] = schema.validate_fields(
+                    schema.SHOT_FIELDS, {"refAssets": payload["refAssets"]})["refAssets"]
+            except ValueError:
+                pass
         result = prompts.polish(project, shot, directive)
         store.save(project)
         return {**_view(project), "polish": result}
@@ -678,6 +685,32 @@ def api_asset_image_delete(project_id: str, entity_id: str,
         store.save(project)
         store.delete_media(project_id, file)
         return _view(project)
+
+
+@app.post("/api/projects/{project_id}/assets/{entity_id}/generate")
+def api_asset_generate(project_id: str, entity_id: str) -> dict[str, Any]:
+    """用文字直接生成资产设定图（文生图），完成后自动加入参考图。"""
+    def run(task) -> dict[str, Any]:
+        with _lock(project_id):
+            project = store.load(project_id)
+            entity = _entity_of(project, entity_id)
+        task.set_progress(5, "准备资产设定图")
+        client = images.MainClient()
+        try:
+            images.generate_asset(
+                project, entity, client,
+                cancel=task.canceled,
+                progress=lambda value, label: task.set_progress(value, label),
+            )
+        finally:
+            with _lock(project_id):
+                store.save(project)
+        task.set_progress(100, "完成")
+        return {"entityId": entity_id}
+
+    task = task_manager().submit(
+        "asset", project_id, run, title=f"生成资产设定图 {entity_id}")
+    return {"taskId": task.id}
 
 
 @app.get("/api/projects/{project_id}/shots/{shot_id}/versions")

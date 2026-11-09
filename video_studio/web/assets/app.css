@@ -912,7 +912,7 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 
 /* 资产卡左侧：设定图封面 + 上传入口 */
 .entity-cover {
-  position: relative; width: 92px; min-height: 122px;
+  position: relative; width: 92px; min-height: 148px;
   display: flex; flex-direction: column; justify-content: flex-end; gap: 4px;
   padding: 5px; border-radius: 10px; overflow: hidden;
   border: 1px solid var(--line-soft); background: var(--panel-3);
@@ -922,7 +922,7 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
   object-fit: cover; display: block;
 }
 .entity-cover-empty {
-  position: absolute; inset: 0 0 58px;
+  position: absolute; inset: 0 0 84px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px; font-size: 11px; color: var(--muted);
 }
@@ -936,6 +936,11 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 }
 .entity-cover-btn:hover { border-color: var(--accent); color: var(--accent); }
 .entity-cover-btn.ghost { background: color-mix(in srgb, var(--panel-2) 90%, transparent); }
+.entity-cover-btn.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+}
+.entity-cover-btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--accent-ink); }
+.entity-cover-btn:disabled { opacity: 0.55; cursor: default; }
 
 .entity-fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .entity-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -961,6 +966,53 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 .entity-row .asset-file {
   position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0;
 }
+
+/* 用户指令富文本：@ 资产 chip */
+.rt-editor {
+  min-height: 76px; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); color: var(--text);
+  font-size: 13px; line-height: 1.65;
+  white-space: pre-wrap; word-break: break-word;
+  outline: none; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.rt-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.rt-editor:empty::before { content: attr(data-placeholder); color: var(--dim); pointer-events: none; }
+.rt-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: 0 2px; padding: 1px 5px 1px 2px;
+  border-radius: 999px; background: var(--accent-dim);
+  color: var(--accent); font-size: 12px; line-height: 1.5;
+  vertical-align: middle; user-select: none;
+}
+.rt-chip img { width: 17px; height: 17px; border-radius: 50%; object-fit: cover; display: block; }
+.rt-chip b { font-weight: 500; }
+.rt-chip-del {
+  width: 14px; height: 14px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--accent); font-size: 12px; line-height: 13px;
+}
+.rt-chip-del:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.rt-map { min-height: 16px; margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.rt-map:empty { display: none; }
+.rt-menu {
+  position: fixed; z-index: 80; width: 268px; max-height: 292px; overflow: auto;
+  padding: 6px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow-float);
+}
+.rt-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 7px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--text); text-align: left; font-size: 12.5px;
+}
+.rt-menu-item:hover, .rt-menu-item:focus-visible { background: var(--panel-2); }
+.rt-menu-item img, .rt-menu-noimg {
+  width: 28px; height: 28px; flex: none; border-radius: 7px;
+  object-fit: cover; background: var(--panel-3);
+}
+.rt-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-menu-item em { font-style: normal; font-size: 10.5px; color: var(--muted); }
+.rt-menu-empty { padding: 16px; text-align: center; color: var(--muted); font-size: 12px; }
 
 /* 素材仓库选图 */
 .asset-picker-backdrop {

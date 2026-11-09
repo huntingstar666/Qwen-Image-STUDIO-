@@ -11,11 +11,13 @@ LLM 不可用（没配模型 / 超时 / 返回不可解析）时降级为模板�
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 from typing import Any, Iterable
 
 from .. import config
+from . import store
 from .errors import StudioError
 from .schema import MOTIONS
 
@@ -71,14 +73,39 @@ def detect_entities(text: str, entities: list[dict[str, Any]]) -> list[str]:
     return [item for item in found if item]
 
 
+def used_entity_ids(project: dict[str, Any], shot: dict[str, Any]) -> list[str]:
+    """本段实际引用的实体，按「@ 显式引用 → 模型判定 → 台词命中」排序。
+
+    @ 的顺序就是生图参考图顺序：图1 底稿、图2..N 按这里依次对应，
+    因此提示词装配和锚定提交必须共用这一份顺序。
+    """
+    content = (project.get("locks") or {}).get("content") or {}
+    entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
+    ordered: list[str] = []
+    sources = [
+        shot.get("refAssets") or [],
+        shot.get("usedEntities") or [],
+        detect_entities(str(shot.get("text") or ""), list(entities.values())),
+    ]
+    for source in sources:
+        for item in source:
+            entity_id = str(item or "")
+            if entity_id in entities and entity_id not in ordered:
+                ordered.append(entity_id)
+    return ordered
+
+
+def strip_asset_mentions(text: str) -> str:
+    """去掉 @ 符号，只留资产名；生图模型不认识 @ 语法。"""
+    return re.sub(r"@(?=[^\s@])", "", str(text or ""))
+
+
 def assemble_prompt(project: dict[str, Any], shot: dict[str, Any]) -> tuple[str, str]:
     """按固定顺序拼出最终提示词与负面词。"""
     style = (project.get("locks") or {}).get("style") or {}
     content = (project.get("locks") or {}).get("content") or {}
     entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
-    used = [str(item) for item in (shot.get("usedEntities") or []) if str(item) in entities]
-    if not used:
-        used = detect_entities(str(shot.get("text") or ""), list(entities.values()))
+    used = used_entity_ids(project, shot)
 
     style_on = bool(style.get("enabled", True))
     content_on = bool(content.get("enabled", True))
@@ -89,7 +116,7 @@ def assemble_prompt(project: dict[str, Any], shot: dict[str, Any]) -> tuple[str,
         parts.extend(entity_prompt(entities[item]) for item in used)
     parts.append(str(shot.get("description") or ""))
     parts.append(str(shot.get("note") or ""))
-    parts.append(str(shot.get("directive") or ""))
+    parts.append(strip_asset_mentions(str(shot.get("directive") or "")))
     if style_on:
         parts.append(str(style.get("suffix") or ""))
     prompt = _join(parts)
@@ -403,7 +430,50 @@ def generate(project: dict[str, Any], *, span: int = 1) -> dict[str, Any]:
     return {"source": source, "model": model, "error": error, "warnings": warnings}
 
 
+#: 资产设定图的取景约定：和分镜画面区分开，避免直接生成剧情镜头
+ASSET_FRAMING = {
+    "character": "角色设定图：单人，正面半身，中性表情，五官清晰，服装完整，纯净浅灰背景，无文字",
+    "location": "场景定场图：广角，无人物，空间结构完整，材质与光线清晰，无文字",
+    "prop": "道具设定图：单一物件居中，纯净浅灰背景，材质与磨损细节清晰，无文字",
+}
+
+
+def asset_prompt(project: dict[str, Any], entity: dict[str, Any]) -> str:
+    """用文字直接生成资产设定图的提示词（不含分镜台词）。"""
+    style = (project.get("locks") or {}).get("style") or {}
+    style_on = bool(style.get("enabled", True))
+    kind = str(entity.get("kind") or "character")
+    parts = []
+    if style_on:
+        parts.append(str(style.get("prefix") or ""))
+    parts.append(entity_prompt(entity))
+    parts.append(ASSET_FRAMING.get(kind, ASSET_FRAMING["character"]))
+    if style_on:
+        parts.append(str(style.get("suffix") or ""))
+    return _join(parts)
+
+
+def asset_negative(project: dict[str, Any], entity: dict[str, Any]) -> str:
+    style = (project.get("locks") or {}).get("style") or {}
+    negatives = [DEFAULT_NEGATIVE]
+    if str(style.get("negative") or "").strip():
+        negatives.insert(0, str(style.get("negative") or ""))
+    if str(entity.get("kind") or "character") == "character":
+        negatives.append("多人，重复人物，变形的手指")
+    return _join(negatives)
+
+
+#: 资产设定图比例：人物/道具方形，场景 16:9
+ASSET_SIZE = {"character": (1024, 1024), "prop": (1024, 1024), "location": (1280, 720)}
+
+
+def asset_size(entity: dict[str, Any]) -> tuple[int, int]:
+    return ASSET_SIZE.get(str(entity.get("kind") or "character"), (1024, 1024))
+
+
 POLISH_SYSTEM = """你是电影分镜师。用户会给你一个镜头段：台词、上下文、当前画面描述和用户指令。
+如果附带参考图：图1 可能是当前画面底稿，其后的图依次是角色/场景资产设定图；写描述时必须保持
+参考图里的脸型、发型、服装、场景结构等固定外观，但不要照搬参考图的背景和构图。
 请按用户指令的意图，把「画面描述」重写成一句适合文生图的描述（40~120 字）：
 1. 只写画面内容：场景、人物动作与表情、环境细节、光线氛围；
 2. 不要写景别、机位、构图；不要复述台词；不要出现文字、字幕、logo；
@@ -436,12 +506,48 @@ def polish(project: dict[str, Any], shot: dict[str, Any], directive: str = "") -
     if entities:
         lines.append("【已登记角色/场景】")
         lines.extend(f"- {entity_prompt(item)}" for item in entities[:20])
+    # 参考图：图1=当前画面（有图时），其后按 used_entity_ids 顺序放资产设定图
+    refs: list[dict[str, Any]] = []
+    try:
+        from . import images as images_mod
+        refs = images_mod.shot_anchor_refs(project, shot, respect_anchor=False)
+    except Exception:  # noqa: BLE001 - 读不到设定图不影响文字润色
+        refs = []
+    attachments: list[bytes] = []
+    labels: list[str] = []
+    if str(shot.get("image") or "").strip():
+        try:
+            attachments.append(store.read_media(project["id"], str(shot["image"])).read_bytes())
+            labels.append("图1=当前画面底稿")
+        except (StudioError, OSError):
+            pass
+    kind_label = {"character": "角色", "location": "场景", "prop": "道具"}
+    for ref in refs:
+        attachments.append(ref["data"])
+        labels.append(f"图{len(attachments)}={kind_label.get(ref['kind'], '资产')}"
+                      f"「{ref['name']}」设定图")
+    if labels:
+        lines.append("【参考图对应】" + "；".join(labels))
+
     try:
         client = _build_client(profile)
+        vision = False
+        if attachments:
+            try:
+                vision = bool(client.supports_vision(model))
+            except Exception:  # noqa: BLE001 - 不支持探测就按纯文本处理
+                vision = False
+        if attachments and not vision:
+            lines.append("【说明】当前提示词模型不支持读图，以上参考图只能按文字外观描述参考。")
+        message: dict[str, Any] = {
+            "role": "user",
+            "content": "\n".join(item for item in lines if item),
+        }
+        if attachments and vision:
+            message["images"] = [base64.b64encode(data).decode("ascii") for data in attachments]
         raw = client.chat(
             model,
-            [{"role": "system", "content": POLISH_SYSTEM},
-             {"role": "user", "content": "\n".join(item for item in lines if item)}],
+            [{"role": "system", "content": POLISH_SYSTEM}, message],
             temperature=float(llm_cfg.get("temperature") or 0.7),
             num_predict=800,
             format="json",
@@ -475,6 +581,8 @@ def polish(project: dict[str, Any], shot: dict[str, Any], directive: str = "") -
         "prompt": shot["prompt"],
         "model": model,
         "profileId": profile_id,
+        "vision": bool(attachments and vision),
+        "refImages": len(attachments),
     }
 
 

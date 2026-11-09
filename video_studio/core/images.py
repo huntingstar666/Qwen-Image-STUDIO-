@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config
-from . import store
+from . import prompts, store
 from .errors import CanceledError, MainProjectError, StudioError
 
 TERMINAL = ("done", "error", "canceled")
@@ -226,25 +226,22 @@ def _data_url(data: bytes) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any]) -> list[dict[str, Any]]:
-    """收集本段引用且有设定图的资产，返回 [{id,kind,name,desc,data}]。"""
+def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any], *,
+                     respect_anchor: bool = True) -> list[dict[str, Any]]:
+    """收集本段引用且有设定图的资产，返回 [{id,kind,name,desc,data}]。
+
+    顺序与 ``prompts.used_entity_ids`` 一致，保证「图2..N」在提示词、
+    身份校准和 LLM 读图三处完全对应。
+    """
     content = (project.get("locks") or {}).get("content") or {}
-    if not content.get("enabled", True) or not content.get("imageAnchor", True):
+    if respect_anchor and (not content.get("enabled", True)
+                           or not content.get("imageAnchor", True)):
         return []
-    entities = content.get("entities") or []
-    used = {str(item) for item in (shot.get("usedEntities") or [])}
-    text = f"{shot.get('text') or ''} {shot.get('prompt') or ''}"
+    entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
     refs: list[dict[str, Any]] = []
-    for entity in entities:
-        entity_id = str(entity.get("id") or "")
-        if not entity_id:
-            continue
-        name = str(entity.get("name") or "")
-        # 老项目没有 usedEntities 时按名字回退匹配
-        if used:
-            if entity_id not in used:
-                continue
-        elif not name or name not in text:
+    for entity_id in prompts.used_entity_ids(project, shot):
+        entity = entities.get(entity_id)
+        if not entity:
             continue
         files = [str(item) for item in (entity.get("refImages") or []) if str(item or "")]
         for file in files:
@@ -257,7 +254,7 @@ def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any]) -> list[dict
             refs.append({
                 "id": entity_id,
                 "kind": str(entity.get("kind") or "character"),
-                "name": name or entity_id,
+                "name": str(entity.get("name") or "") or entity_id,
                 "desc": str(entity.get("desc") or ""),
                 "data": data,
             })
@@ -295,7 +292,13 @@ def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
 def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
                          base_image: bytes, refs: list[dict[str, Any]],
                          *, seed: int = 0) -> dict[str, Any]:
-    """把底稿与资产设定图一起提交给 /api/edit。"""
+    """把底稿与资产设定图一起提交给 /api/edit。
+
+    参数对应关系（不要改顺序）：
+    - images[0] = 本段底稿，决定画布尺寸与构图，对应提示词里的「图1」；
+    - images[1..] = 资产设定图，按 refs 顺序对应「图2、图3…」；
+    - size_mode=follow：跟底稿尺寸，不额外传 width/height，避免二次缩放。
+    """
     image_cfg = project.get("image") or {}
     images_payload = [{"data": _data_url(base_image)}]
     images_payload.extend({"data": _data_url(ref["data"])} for ref in refs)
@@ -303,6 +306,7 @@ def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
         "prompt": build_anchor_prompt(refs),
         "negative_prompt": str(shot.get("negative") or "").strip(),
         "images": images_payload,
+        "size_mode": "follow",
         "seed": int(seed or 0),
         "steps": int(image_cfg.get("steps") or 8),
         "cfg": float(image_cfg.get("cfg") or 1.0),
@@ -314,9 +318,78 @@ def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
             "entities": list(dict.fromkeys(ref["id"] for ref in refs)),
         },
     }
+    model = str(image_cfg.get("model") or "").strip()
+    if model:
+        payload["model"] = model
     if image_cfg.get("turbo"):
         payload["turbo"] = {"enabled": True}
     return payload
+
+
+def build_asset_payload(project: dict[str, Any], entity: dict[str, Any], *,
+                        attempt: int = 0) -> dict[str, Any]:
+    """资产设定图走纯文生图：不传 images，避免把分镜底稿带进来。"""
+    image_cfg = project.get("image") or {}
+    style = (project.get("locks") or {}).get("style") or {}
+    width, height = prompts.asset_size(entity)
+    seed_base = int(style.get("seedBase") or 0)
+    entity_id = str(entity.get("id") or "asset")
+    seed = (seed_base + sum(ord(ch) for ch in entity_id) + attempt * 13) % 2147483647
+    payload: dict[str, Any] = {
+        "prompt": prompts.asset_prompt(project, entity),
+        "negative_prompt": prompts.asset_negative(project, entity),
+        "width": width,
+        "height": height,
+        "seed": seed,
+        "steps": int(image_cfg.get("steps") or 8),
+        "cfg": float(image_cfg.get("cfg") or 1.0),
+        "batch": 1,
+        "meta": {
+            "source": "video_studio",
+            "asset": True,
+            "projectId": project.get("id"),
+            "entityId": entity_id,
+        },
+    }
+    model = str(image_cfg.get("model") or "").strip()
+    if model:
+        payload["model"] = model
+    if image_cfg.get("turbo"):
+        payload["turbo"] = {"enabled": True}
+    return payload
+
+
+def generate_asset(project: dict[str, Any], entity: dict[str, Any], client: MainClient, *,
+                   attempt: int = 0, cancel: CancelFn | None = None,
+                   progress: ProgressFn | None = None) -> str:
+    """用文字生成一张资产设定图，追加到该资产并返回相对路径。"""
+    payload = build_asset_payload(project, entity, attempt=attempt)
+    if not payload["prompt"]:
+        raise StudioError("该资产还没有名称或外观描述，无法生成设定图",
+                          code="empty_asset")
+    job_id = client.generate(payload)
+    job = _wait(client, job_id, cancel=cancel, progress=progress)
+    status = str(job.get("status") or "")
+    if status == "canceled":
+        raise CanceledError()
+    if status != "done":
+        raise StudioError(str(job.get("error") or "资产设定图生成失败"),
+                          code="asset_generate_failed")
+    items = job.get("images") or []
+    if not items:
+        raise StudioError("主项目没有返回资产图片", code="asset_generate_failed")
+    meta = items[0]
+    data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
+    suffix = Path(str(meta.get("filename") or "asset.png")).suffix or ".png"
+    relpath = store.save_asset_image(
+        project["id"], str(entity.get("id") or "asset"), data, suffix)
+    refs = entity.setdefault("refImages", [])
+    if relpath not in refs:
+        refs.append(relpath)
+    while len(refs) > 4:
+        victim = refs.pop(0)
+        store.delete_media(project["id"], victim)
+    return relpath
 
 
 def _anchor_shot(project: dict[str, Any], shot: dict[str, Any], client: MainClient,

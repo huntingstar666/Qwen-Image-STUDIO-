@@ -63,6 +63,8 @@ export class ShotDialog {
     this.polishing = false;
     this.polishOn = true;
     this._timers = new Map();
+    this._menu = null;
+    this._assetRange = null;
     this._bind();
   }
 
@@ -95,6 +97,7 @@ export class ShotDialog {
   close() {
     this._timers.forEach((timer) => clearTimeout(timer));
     this._timers.clear();
+    this._closeAssetMenu();
     this.refs.dialog.hidden = true;
     this.refs.backdrop.hidden = true;
     this.shotId = "";
@@ -163,6 +166,89 @@ export class ShotDialog {
     }).join("");
   }
 
+  _chipHtml(entity, name) {
+    const url = (entity.refUrls || [])[0] || "";
+    return `<span class="rt-chip" contenteditable="false"
+      data-asset-id="${escapeHtml(entity.id)}" data-asset-name="${escapeHtml(name)}">
+      ${url ? `<img src="${escapeHtml(url)}" alt="" />` : ""}
+      <b>${escapeHtml(name)}</b>
+      <button type="button" class="rt-chip-del" data-chip-del="1" title="移除引用">×</button>
+    </span>`;
+  }
+
+  /** 把 directive 里的 @资产名 还原成带缩略图的 chip。 */
+  _richHtml(shot, entities) {
+    const text = String(shot.directive || "");
+    const named = entities
+      .filter((entity) => String(entity.name || "").trim())
+      .sort((a, b) => String(b.name).length - String(a.name).length);
+    if (!named.length) return escapeHtml(text).replace(/\n/g, "<br>");
+    const pattern = new RegExp(
+      "@(" + named.map((entity) => String(entity.name)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "g");
+    let html = "";
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      html += escapeHtml(text.slice(last, match.index)).replace(/\n/g, "<br>");
+      const entity = named.find((item) => String(item.name) === match[1]);
+      html += entity ? this._chipHtml(entity, match[1]) : escapeHtml(match[0]);
+      last = match.index + match[0].length;
+    }
+    return html + escapeHtml(text.slice(last)).replace(/\n/g, "<br>");
+  }
+
+  /** 生图参考顺序说明：图1=底稿，图2.. 按 @ 顺序对应资产。 */
+  _refMapText(shot, entities) {
+    const withImage = new Set(entities
+      .filter((entity) => (entity.refImages || []).length)
+      .map((entity) => String(entity.id)));
+    const ordered = [];
+    for (const source of [shot.refAssets || [], shot.usedEntities || []]) {
+      for (const id of source) {
+        const key = String(id);
+        if (withImage.has(key) && !ordered.includes(key)) ordered.push(key);
+      }
+    }
+    if (!ordered.length) return "";
+    const names = ordered.map((id, index) => {
+      const entity = entities.find((item) => String(item.id) === id);
+      return `图${index + 2}=${escapeHtml((entity && entity.name) || id)}`;
+    });
+    return `生图参考：图1=画面底稿 · ${names.join(" · ")}`;
+  }
+
+  /** 读取富文本：纯文本 + 按出现顺序的资产 id。 */
+  _readRich(editor) {
+    let text = "";
+    const ids = [];
+    const walk = (node) => {
+      node.childNodes.forEach((child) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          text += child.textContent;
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          if (child.dataset && child.dataset.assetId) {
+            text += "@" + (child.dataset.assetName || "");
+            if (!ids.includes(child.dataset.assetId)) ids.push(child.dataset.assetId);
+          } else if (child.tagName === "BR") {
+            text += "\n";
+          } else if (child.tagName !== "BUTTON") {
+            walk(child);
+          }
+        }
+      });
+    };
+    walk(editor);
+    return { text: text.replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").trim(), ids };
+  }
+
+  _updateRefMap(shot) {
+    const map = this.refs.body.querySelector("[data-ref-map]");
+    if (!map || !this.project) return;
+    const entities = ((this.project.locks || {}).content || {}).entities || [];
+    map.innerHTML = this._refMapText(shot, entities);
+  }
+
   _bodyHtml(shot, project) {
     const motion = shot.motion || {};
     const transition = shot.transition || {};
@@ -224,9 +310,13 @@ export class ShotDialog {
             placeholder="人物、动作、环境、光线">${escapeHtml(shot.description || "")}</textarea>
         </div>
         <div class="sd-group">
-          <label>用户指令 <span class="hint">会拼进最终提示词；也可让模型按指令重写描述</span></label>
-          <textarea class="textarea" data-field="directive" data-kind="text"
-            placeholder="例如：让雨更大，人物不要看镜头，镜头更贴近手部">${escapeHtml(shot.directive || "")}</textarea>
+          <label>用户指令
+            <span class="hint">输入 @ 引用资产图；会参与提示词与润色</span>
+            <button class="mini-btn ghost" type="button" data-act="assetRef">@ 引用资产</button>
+          </label>
+          <div class="rt-editor" contenteditable="true" data-rich="directive" spellcheck="false"
+            data-placeholder="例如：让 @小林 转身看向门口，雨更大一些">${this._richHtml(shot, entities)}</div>
+          <div class="rt-map" data-ref-map>${this._refMapText(shot, entities)}</div>
           <div class="sd-directive-actions">
             <label class="sd-polish">
               <input type="checkbox" data-polish-toggle ${this.polishOn ? "checked" : ""} />
@@ -285,6 +375,16 @@ export class ShotDialog {
     this.refs.next.addEventListener("click", () => this._navigate(1));
 
     this.refs.body.addEventListener("click", (event) => {
+      const chipDel = event.target.closest("[data-chip-del]");
+      if (chipDel) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chip = chipDel.closest(".rt-chip");
+        const editor = chip && chip.closest("[data-rich]");
+        if (chip) chip.remove();
+        if (editor) this._queueCommit(editor, 0);
+        return;
+      }
       const versionDel = event.target.closest("[data-ver-del]");
       if (versionDel) {
         event.stopPropagation();
@@ -308,6 +408,11 @@ export class ShotDialog {
 
     this.refs.body.addEventListener("input", (event) => {
       const target = event.target;
+      if (target.matches("[data-rich]")) {
+        this._queueCommit(target, 700);
+        this._syncAssetMenu(target);
+        return;
+      }
       if (target.matches("[data-material-search]")) {
         this.materialQuery = target.value;
         clearTimeout(this.materialTimer);
@@ -339,8 +444,20 @@ export class ShotDialog {
 
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !this.isOpen()) return;
+      if (this._menu) {
+        event.preventDefault();
+        this._closeAssetMenu();
+        return;
+      }
       event.preventDefault();
       this.close();
+    });
+
+    document.addEventListener("pointerdown", (event) => {
+      if (!this._menu) return;
+      if (this._menu.contains(event.target)) return;
+      if (event.target.closest && event.target.closest("[data-rich]")) return;
+      this._closeAssetMenu();
     });
   }
 
@@ -368,7 +485,141 @@ export class ShotDialog {
       if (this.materialOpen) this._loadMaterials();
       return;
     }
+    if (name === "assetRef") {
+      const editor = this.refs.body.querySelector('[data-rich="directive"]');
+      if (!editor) return;
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      this._openAssetMenu(editor, "", range);
+      return;
+    }
     if (name === "polish") return this._polish();
+  }
+
+  _syncAssetMenu(editor) {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.anchorNode
+        || !editor.contains(selection.anchorNode)) {
+      this._closeAssetMenu();
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const node = range.startContainer;
+    if (node.nodeType !== Node.TEXT_NODE) {
+      this._closeAssetMenu();
+      return;
+    }
+    const before = node.textContent.slice(0, range.startOffset);
+    const match = before.match(/@([^\s@]{0,20})$/);
+    if (!match) {
+      this._closeAssetMenu();
+      return;
+    }
+    this._openAssetMenu(editor, match[1], range.cloneRange());
+  }
+
+  _openAssetMenu(editor, query = "", range = null) {
+    const project = this.project;
+    if (!project) return;
+    const entities = (((project.locks || {}).content || {}).entities) || [];
+    const named = entities.filter((entity) => String(entity.name || "").trim());
+    if (!named.length) {
+      this._closeAssetMenu();
+      this.handlers.toast("先在设置里登记角色 / 场景，再 @ 引用", "bad");
+      return;
+    }
+    this._closeAssetMenu();
+    this._assetRange = range;
+    const keyword = String(query || "").trim().toLowerCase();
+    const list = named.filter((entity) =>
+      !keyword || String(entity.name).toLowerCase().includes(keyword));
+
+    const rect = range && range.getBoundingClientRect
+      ? range.getBoundingClientRect() : editor.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, rect.left || editor.getBoundingClientRect().left),
+      window.innerWidth - 288);
+    const top = Math.min((rect.bottom || editor.getBoundingClientRect().bottom) + 6,
+      window.innerHeight - 260);
+    const menu = document.createElement("div");
+    menu.className = "rt-menu";
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.innerHTML = list.length ? list.map((entity) => {
+      const url = (entity.refUrls || [])[0] || "";
+      const kind = entity.kind === "location" ? "场景" : entity.kind === "prop" ? "道具" : "角色";
+      return `<button type="button" class="rt-menu-item" data-asset-id="${escapeHtml(entity.id)}">
+        ${url ? `<img src="${escapeHtml(url)}" alt="" />` : '<span class="rt-menu-noimg"></span>'}
+        <span class="rt-menu-name">${escapeHtml(entity.name)}</span>
+        <em>${kind}</em>
+      </button>`;
+    }).join("") : '<div class="rt-menu-empty">没有匹配的资产</div>';
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-asset-id]");
+      if (!item) return;
+      const entity = named.find((entry) => String(entry.id) === item.dataset.assetId);
+      const saved = this._assetRange;
+      this._closeAssetMenu();
+      if (entity) this._insertAssetChip(editor, entity, saved);
+    });
+    document.body.appendChild(menu);
+    this._menu = menu;
+  }
+
+  _closeAssetMenu() {
+    if (this._menu) {
+      this._menu.remove();
+      this._menu = null;
+    }
+  }
+
+  _insertAssetChip(editor, entity, range) {
+    editor.focus();
+    let target = range;
+    if (!target || !editor.contains(target.startContainer)) {
+      target = document.createRange();
+      target.selectNodeContents(editor);
+      target.collapse(false);
+    }
+    // 把已经敲出来的 "@小林" 查询词删掉，再插入 chip
+    const node = target.startContainer;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const before = node.textContent.slice(0, target.startOffset);
+      const match = before.match(/@[^\s@]*$/);
+      if (match) {
+        const start = target.startOffset - match[0].length;
+        const cut = document.createRange();
+        cut.setStart(node, start);
+        cut.setEnd(node, target.startOffset);
+        cut.deleteContents();
+        target = document.createRange();
+        target.setStart(node, start);
+        target.collapse(true);
+      }
+    }
+    const chip = document.createElement("span");
+    chip.className = "rt-chip";
+    chip.contentEditable = "false";
+    chip.dataset.assetId = entity.id;
+    chip.dataset.assetName = entity.name || entity.id;
+    const url = (entity.refUrls || [])[0] || "";
+    chip.innerHTML = `${url ? `<img src="${escapeHtml(url)}" alt="" />` : ""}
+      <b>${escapeHtml(entity.name || entity.id)}</b>
+      <button type="button" class="rt-chip-del" data-chip-del="1" title="移除引用">×</button>`;
+    target.insertNode(chip);
+    const space = document.createTextNode("\u00a0");
+    chip.parentNode.insertBefore(space, chip.nextSibling);
+    const after = document.createRange();
+    after.setStartAfter(space);
+    after.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(after);
+    this._assetRange = null;
+    this._queueCommit(editor, 0);
   }
 
   async _loadMaterials() {
@@ -410,9 +661,18 @@ export class ShotDialog {
   }
 
   async _polish() {
-    const directive = this.refs.body.querySelector('[data-field="directive"]');
-    const value = directive ? directive.value.trim() : "";
-    if (!value) {
+    const editor = this.refs.body.querySelector('[data-rich="directive"]');
+    let value = "";
+    let refAssets = [];
+    if (editor) {
+      const rich = this._readRich(editor);
+      value = rich.text;
+      refAssets = rich.ids;
+    } else {
+      const directive = this.refs.body.querySelector('[data-field="directive"]');
+      value = directive ? directive.value.trim() : "";
+    }
+    if (!value && !refAssets.length) {
       this.handlers.toast("先填写用户指令，再润色", "bad");
       return;
     }
@@ -424,10 +684,14 @@ export class ShotDialog {
       button.textContent = "润色中…";
     }
     try {
-      await this.handlers.polish(this.shotId, value);
+      const result = await this.handlers.polish(this.shotId, value, refAssets);
       this.polishing = false;
       this.render();
-      this.handlers.toast("已按指令重写画面描述", "ok");
+      this.handlers.toast(
+        result && result.vision
+          ? `已读 ${result.refImages || 0} 张参考图并重写画面描述`
+          : "已按指令重写画面描述",
+        "ok");
     } catch (err) {
       this.polishing = false;
       this.render();
@@ -436,13 +700,24 @@ export class ShotDialog {
   }
 
   _queueCommit(element, delay = 650) {
-    const path = element.dataset.field;
+    const path = element.dataset.field || element.dataset.rich;
     if (!path) return;
     clearTimeout(this._timers.get(path));
     this._timers.set(path, setTimeout(() => this._commit(element), delay));
   }
 
   async _commit(element) {
+    if (element.dataset.rich) {
+      const { text, ids } = this._readRich(element);
+      const shot = await this.handlers.patch(this.shotId, { directive: text, refAssets: ids });
+      if (!shot) return;
+      this._updateRefMap(shot);
+      const prompt = this.refs.body.querySelector('[data-field="prompt"]');
+      const negative = this.refs.body.querySelector('[data-field="negative"]');
+      if (prompt && document.activeElement !== prompt) prompt.value = shot.prompt || "";
+      if (negative && document.activeElement !== negative) negative.value = shot.negative || "";
+      return;
+    }
     const path = element.dataset.field;
     if (!path) return;
     let value = element.value;

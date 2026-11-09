@@ -523,3 +523,82 @@ def test_anchor_prompt_groups_multiple_refs_of_same_asset() -> None:
     prompt = images.build_anchor_prompt(refs)
     assert "图2、图3" in prompt
     assert prompt.count("人物「小林」") == 1
+
+
+def test_used_entities_follow_ref_assets_order() -> None:
+    project = _project()
+    shot = schema.new_shot(0, 0, 1000, "小林推开门")
+    shot["usedEntities"] = ["e2", "e1"]
+    shot["refAssets"] = ["e1"]
+    assert prompts.used_entity_ids(project, shot)[:2] == ["e1", "e2"]
+
+
+def test_ref_assets_roundtrip() -> None:
+    patch = schema.validate_fields(schema.SHOT_FIELDS,
+                                   {"refAssets": ["e1", "e2", "e1"]})
+    assert patch["refAssets"] == ["e1", "e2"]
+
+
+def test_anchor_payload_keeps_base_first_and_follow_size() -> None:
+    project = schema.default_project("锚定")
+    shot = {"id": "s1", "negative": ""}
+    refs = [
+        {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"one"},
+        {"id": "e2", "kind": "location", "name": "车间", "desc": "", "data": b"two"},
+    ]
+    payload = images.build_anchor_payload(project, shot, b"base", refs, seed=1)
+    assert payload["size_mode"] == "follow"
+    assert "width" not in payload and "height" not in payload
+    assert payload["images"][0]["data"].startswith("data:image/png;base64,")
+    assert len(payload["images"]) == 3
+    assert "图2" in payload["prompt"] and "图3" in payload["prompt"]
+
+
+def test_asset_payload_is_t2i_and_square() -> None:
+    project = schema.default_project("资产")
+    entity = {"id": "e1", "kind": "character", "name": "小林", "desc": "黑色短发"}
+    payload = images.build_asset_payload(project, entity)
+    assert "images" not in payload
+    assert payload["width"] == 1024 and payload["height"] == 1024
+    assert "角色设定图" in payload["prompt"]
+    assert payload["meta"]["asset"] is True
+
+
+def test_polish_sends_asset_images_to_vision_model() -> None:
+    class FakeClient:
+        def __init__(self):
+            self.messages = None
+
+        def supports_vision(self, model):
+            return True
+
+        def chat(self, model, messages, **kwargs):
+            self.messages = messages
+            return '{"description":"小林站在灯下，短发被顶灯照亮","note":"中景"}'
+
+    client = FakeClient()
+    original_resolve = prompts._resolve_profile
+    original_build = prompts._build_client
+    original_refs = images.shot_anchor_refs
+    prompts._resolve_profile = lambda cfg, profile_id: (
+        {"id": "fake", "model": "qwen2.5vl:7b"}, "fake")
+    prompts._build_client = lambda profile: client
+    images.shot_anchor_refs = lambda project, shot, **kwargs: [{
+        "id": "e1", "kind": "character", "name": "小林", "desc": "短发", "data": b"img",
+    }]
+    try:
+        project = _project()
+        shot = schema.new_shot(0, 0, 1000, "小林把灯打开")
+        shot["refAssets"] = ["e1"]
+        shot["description"] = "人物站在门口"
+        result = prompts.polish(project, shot, "让他转身")
+    finally:
+        prompts._resolve_profile = original_resolve
+        prompts._build_client = original_build
+        images.shot_anchor_refs = original_refs
+    assert result["vision"] is True
+    assert result["refImages"] == 1
+    user_message = client.messages[1]
+    assert user_message["images"] and isinstance(user_message["images"][0], str)
+    assert "图1=角色「小林」设定图" in user_message["content"]
+    assert "小林站在灯下" in shot["description"]

@@ -171,6 +171,7 @@ SHOT_FIELDS: dict[str, dict[str, Any]] = {
     "text": {"type": "text", "max_len": 2000},
     "description": {"type": "text", "max_len": 2000},
     "directive": {"type": "text", "max_len": 1000},
+    "refAssets": {"type": "str_list", "max_items": 8},
     "prompt": {"type": "text", "max_len": 4000},
     "negative": {"type": "text", "max_len": 2000},
     "textMode": {"type": "enum", "options": list(TEXT_MODES)},
@@ -259,6 +260,16 @@ def _coerce(spec: dict[str, Any], value: Any, path: str) -> Any:
         if len(text) > limit:
             raise ValueError(f"{path} 超过长度上限 {limit}")
         return text
+    if kind == "str_list":
+        if not isinstance(value, list):
+            raise ValueError(f"{path} 必须是数组")
+        items: list[str] = []
+        limit = int(spec.get("max_items") or 12)
+        for index, entry in enumerate(value[:limit]):
+            text = str(entry or "").strip()[:64]
+            if text and text not in items:
+                items.append(text)
+        return items
     if kind == "entity_list":
         if not isinstance(value, list):
             raise ValueError(f"{path} 必须是数组")
@@ -378,6 +389,8 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
         shot.setdefault("textMode", "auto")
         shot.setdefault("beat", None)
         shot.setdefault("directive", "")
+        if not isinstance(shot.get("refAssets"), list):
+            shot["refAssets"] = []
         if not isinstance(shot.get("review"), dict):
             shot.pop("review", None)
         motion = shot.get("motion") or {}
@@ -433,6 +446,7 @@ def new_shot(index: int, start_ms: int, end_ms: int, text: str) -> dict[str, Any
         "text": text,
         "description": "",
         "directive": "",
+        "refAssets": [],
         "prompt": "",
         "negative": "",
         "usedEntities": [],

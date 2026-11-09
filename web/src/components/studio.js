@@ -1864,23 +1864,51 @@ export function createStudioPage(host) {
       toastWarn('调整图层没有可保存的画面');
       return false;
     }
-    try {
-      const canvas = makeCanvas(doc.size.width, doc.size.height);
-      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
-      const blob = await canvasToBlob(canvas, 'image/png');
-      await favoriteImage({
-        image: await readFileAsDataURL(blob),
-        kind: 'studio',
-        category: '图层',
-        title: `${baseName(doc.name || 'studio')} · ${layer.name || '图层'}`,
-        source: 'studio',
-        sourceRef: projectId || '',
-      });
-      return true;
-    } catch (err) {
-      toastError(err, '存入素材仓库失败');
+    const { blob, raw } = await bakeLayerToPng(layer);
+    if (!blob) {
+      toastWarn('这个图层没有可保存的画面（可能已隐藏或损坏）');
       return false;
     }
+    await favoriteImage({
+      image: await readFileAsDataURL(blob),
+      kind: 'studio',
+      category: '图层',
+      title: `${baseName(doc.name || 'studio')} · ${layer.name || '图层'}`,
+      source: 'studio',
+      sourceRef: projectId || '',
+    });
+    if (raw) toast('图层不在画布内，已按原始像素保存');
+    return true;
+  }
+
+  /**
+   * D25.3：图层 → 透明 PNG（画布尺寸）。
+   * 导出的是「图层内容」而不是画布所见：隐藏层 / 不透明度 0 也会临时按可见绘制，
+   * 否则会存出一张全透明图（用户反馈的「存到素材仓库变成空蒙版」就是这个）。
+   * 画面全空时兜底导出图层原始位图；仍然为空则返回 null，由调用方提示。
+   */
+  async function bakeLayerToPng(layer) {
+    const drawOnce = async () => {
+      const canvas = makeCanvas(doc.size.width, doc.size.height);
+      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
+      if (!canvasHasPixels(canvas)) return null;
+      return canvasToBlob(canvas, 'image/png');
+    };
+    const prevVisible = layer.visible;
+    const prevOpacity = layer.opacity;
+    layer.visible = true;
+    if (!(layer.opacity > 0)) layer.opacity = 1;
+    try {
+      const blob = await drawOnce();
+      if (blob) return { blob, raw: false };
+    } catch {
+      /* 落到位图兜底 */
+    } finally {
+      layer.visible = prevVisible;
+      layer.opacity = prevOpacity;
+    }
+    const raw = await layerBlobFor(layer).catch(() => null);
+    return raw ? { blob: raw, raw: true } : { blob: null, raw: false };
   }
 
   /** 复制选中图层到内存缓冲（限图片图层；文字/形状/调整层暂不支持）。 */
@@ -8379,8 +8407,8 @@ export function createStudioPage(host) {
     }
   }
 
-  /** 抠图结果是否还有可见像素（选区被裁剪框完全排除时会是全透明）。 */
-  function cutoutHasPixels(canvas) {
+  /** 画布上还有没有可见像素（全透明 = 空图，抠图与图层存素材都用它兜底）。 */
+  function canvasHasPixels(canvas) {
     if (!canvas) return false;
     try {
       const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
@@ -8414,7 +8442,7 @@ export function createStudioPage(host) {
       const { canvas, raw, rect, target } = built;
       // 选区可能被裁剪框完全排除（先选区再裁剪），此时输出全透明；
       // 继续建层只会得到「只有选框、看不见内容」的空图层。
-      if (!cutoutHasPixels(raw)) {
+      if (!canvasHasPixels(raw)) {
         toastWarn('选区里没有可抠出的像素（可能已被裁剪到画面外），请重新圈选');
         return;
       }

@@ -21,27 +21,15 @@ function prefersReducedMotion() {
   return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 }
 
-/** 只接受有实际尺寸的 rect，避免 0 尺寸导致从左上角飞入。 */
-function usableRect(rect) {
-  if (!rect) return null;
-  const { left, top, width, height } = rect;
-  if (![left, top, width, height].every((value) => Number.isFinite(value))) return null;
-  return width > 2 && height > 2 ? rect : null;
-}
-
 /**
  * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string,thumb?:string}>} images
  * @param {number} [startIndex]
- * @param {{title?:string, onClose?:Function, origin?:DOMRect, originEl?:Element,
- *          originFit?:'cover'|'contain', stack?:boolean}} [options]
+ * @param {{title?:string, originEl?:Element, originFit?:'cover'|'contain'}} [options]
  */
 export function openLightbox(images, startIndex = 0, {
   title = '高清大图',
-  onClose,
-  origin = null,
   originEl = null,
   originFit = 'contain',
-  stack = true,
 } = {}) {
   const list = (images || []).filter((item) => item?.url);
   if (!list.length) return null;
@@ -100,15 +88,13 @@ export function openLightbox(images, startIndex = 0, {
   const hideLqip = () => lqip.classList.remove('is-on');
 
   /**
-   * 来源 rect：优先实时读取（叠层时详情弹窗仍在，打开/关闭都能拿到精确位置），
-   * 元素已移除时退回打开瞬间的快照。
+   * 来源 rect：实时读取（叠层时详情弹窗仍在，打开/关闭都能拿到精确位置），
+   * 元素已移除或尚无尺寸时返回 null，调用方退化为淡入/淡出。
    */
   const currentOrigin = () => {
-    if (originEl?.isConnected) {
-      const rect = originEl.getBoundingClientRect();
-      if (rect.width > 2 && rect.height > 2) return rect;
-    }
-    return usableRect(origin);
+    if (!originEl?.isConnected) return null;
+    const rect = originEl.getBoundingClientRect();
+    return rect.width > 2 && rect.height > 2 ? rect : null;
   };
 
   /** 平移边界：放大后才允许移动，且不把图片拖出舞台。 */
@@ -393,12 +379,9 @@ export function openLightbox(images, startIndex = 0, {
     size: 'lg',
     dialogClass: 'lightbox-modal',
     hideFooter: true,
-    stack,
+    stack: true,
     exit: playExit,
-    onClose: () => {
-      document.removeEventListener('keydown', onKey);
-      onClose?.();
-    },
+    onClose: () => document.removeEventListener('keydown', onKey),
   });
 
   // 背景板只做颜色淡入（不淡整个容器），图片 FLIP 期间保持不透明

@@ -226,7 +226,7 @@
 3. 克隆层接管画面后隐藏灯箱原图（`visibility:hidden`）并收起模糊占位，避免「大图淡出 + 克隆回缩」叠成重影。
 4. 来源 rect 改为实时读取 `originEl.getBoundingClientRect()`（叠层下元素仍在，打开/关闭都能拿到精确位置），不再依赖打开瞬间的快照。
 5. 打开时只对面板与舞台做 180ms 背景色淡入，图片 FLIP 期间保持不透明，避免整块容器二次淡入。
-6. 三条调用点（画廊 / 素材仓库 / 历史）统一传 `originEl` + `originFit`，去掉 `onClose` 重建详情。
+6. 三条调用点（画廊 / 素材仓库 / 历史）统一传 `originEl` + `originFit`，去掉 `onClose` 重建详情；灯箱可选参数随之精简为 `{ title, originEl, originFit }`，移除不再使用的 `origin` 快照与 `onClose` 回调。
 
 **验证**（Playwright，1440×900）：
 

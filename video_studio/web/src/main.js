@@ -43,6 +43,8 @@ const refs = {
   preflight: $("preflight"),
   preflightBackdrop: $("preflightBackdrop"),
   preflightList: $("preflightList"),
+  btnSide: $("btnSide"),
+  sideBackdrop: $("sideBackdrop"),
 };
 
 let timeline = null;
@@ -134,6 +136,7 @@ async function boot() {
   bindTransport();
   bindDrawer();
   bindPreflight();
+  bindSidePanel();
 
   storyboard = new Storyboard(
     {
@@ -261,6 +264,8 @@ function applyTheme() {
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const dark = themeMode === "dark" || (themeMode === "auto" && prefersDark);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#131619" : "#faf8f4");
   updateThemeButton();
 }
 
@@ -268,7 +273,7 @@ function updateThemeButton() {
   const icon = $("themeIcon");
   if (!icon || !refs.btnTheme) return;
   icon.setAttribute("href", THEME_ICON[themeMode]);
-  refs.btnTheme.title = `主题：${THEME_LABEL[themeMode]}（点击切换）`;
+  refs.btnTheme.dataset.tip = `主题：${THEME_LABEL[themeMode]}`;
 }
 
 function cycleTheme() {
@@ -1307,6 +1312,34 @@ function bindPreflight() {
   });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !refs.preflight.hidden) closePreflight();
+  });
+}
+
+function bindSidePanel() {
+  const app = document.querySelector(".app");
+  const open = () => {
+    app.classList.add("side-open");
+    if (refs.sideBackdrop) refs.sideBackdrop.hidden = false;
+    if (refs.btnSide) refs.btnSide.setAttribute("aria-expanded", "true");
+  };
+  const close = () => {
+    app.classList.remove("side-open");
+    if (refs.sideBackdrop) refs.sideBackdrop.hidden = true;
+    if (refs.btnSide) refs.btnSide.setAttribute("aria-expanded", "false");
+  };
+  if (refs.btnSide) {
+    refs.btnSide.setAttribute("aria-expanded", "false");
+    refs.btnSide.addEventListener("click", () => {
+      if (app.classList.contains("side-open")) close();
+      else open();
+    });
+  }
+  if (refs.sideBackdrop) refs.sideBackdrop.addEventListener("click", close);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && app.classList.contains("side-open")) close();
+  });
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 1080) close();
   });
 }
 

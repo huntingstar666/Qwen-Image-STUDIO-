@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#faf8f4" />
     <title>视频工作台 · video_studio</title>
     <link
       rel="icon"
@@ -79,6 +80,10 @@
         <circle cx="12" cy="12" r="8" />
         <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" />
       </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect x="3.6" y="5" width="16.8" height="14" rx="2.6" />
+        <path d="M14.4 5v14" />
+      </symbol>
     </svg>
 
     <div class="app" data-view="timeline">
@@ -89,27 +94,27 @@
         </div>
         <div class="project-picker">
           <select id="projectSelect" aria-label="切换项目"></select>
-          <button class="icon-btn" id="btnNewProject" title="新建项目" aria-label="新建项目">
+          <button class="icon-btn" id="btnNewProject" data-tip="新建项目" aria-label="新建项目">
             <svg class="icon"><use href="#i-plus"></use></svg>
           </button>
         </div>
         <div class="top-actions">
           <span class="chip" id="chipMain" title="主项目状态">主项目</span>
           <span class="chip" id="chipFfmpeg" title="ffmpeg 状态">ffmpeg</span>
-          <button class="btn" id="btnAudio" title="上传音频">
+          <button class="btn" id="btnAudio" data-tip="上传音频">
             <svg class="icon"><use href="#i-audio"></use></svg><span class="btn-label">上传音频</span>
           </button>
-          <button class="btn" id="btnSubtitle" title="上传字幕">
+          <button class="btn" id="btnSubtitle" data-tip="上传字幕">
             <svg class="icon"><use href="#i-caption"></use></svg><span class="btn-label">上传字幕</span>
           </button>
-          <button class="icon-btn" id="btnTheme" title="主题：跟随系统" aria-label="切换主题">
+          <button class="icon-btn" id="btnTheme" data-tip="主题：跟随系统" aria-label="切换主题">
             <svg class="icon"><use id="themeIcon" href="#i-auto"></use></svg>
           </button>
-          <button class="btn" id="btnSettings" title="项目设置">
+          <button class="btn" id="btnSettings" data-tip="项目设置">
             <svg class="icon"><use href="#i-settings"></use></svg><span class="btn-label">设置</span>
           </button>
           <div class="task-wrap">
-            <button class="btn" id="btnTasks" aria-expanded="false" title="任务中心">
+            <button class="btn" id="btnTasks" aria-expanded="false" data-tip="任务中心">
               <svg class="icon"><use href="#i-tasks"></use></svg><span class="btn-label">任务</span>
               <span class="task-badge" id="taskBadge" hidden>0</span>
             </button>
@@ -121,7 +126,7 @@
               <div class="tc-list" id="tcList"></div>
             </div>
           </div>
-          <button class="btn primary" id="btnExport" title="导出成片">
+          <button class="btn primary" id="btnExport" data-tip="导出成片">
             <svg class="icon"><use href="#i-export"></use></svg><span class="btn-label">导出成片</span>
           </button>
         </div>
@@ -136,6 +141,9 @@
               <button class="seg" type="button" data-view="storyboard" role="tab" aria-selected="false">分镜表</button>
             </div>
             <span class="stage-hint" id="stageHint">点镜头块看画面，双击只播这一段</span>
+            <button class="icon-btn side-toggle" id="btnSide" data-tip="打开侧栏" aria-label="打开侧栏">
+              <svg class="icon"><use href="#i-panel"></use></svg>
+            </button>
           </div>
           <div class="stage-area">
             <div class="stage" id="stage">
@@ -231,6 +239,8 @@
         </div>
         <div class="sb-list" id="sbList"></div>
       </section>
+
+      <div class="side-backdrop" id="sideBackdrop" hidden></div>
     </div>
 
     <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
@@ -268,7 +278,7 @@
     <input type="file" id="fileBgm" accept="audio/*" hidden />
     <input type="file" id="fileShotImage" accept="image/png,image/jpeg,image/webp" hidden />
     <audio id="audio" preload="auto"></audio>
-    <div class="toast-root" id="toastRoot"></div>
+    <div class="toast-root" id="toastRoot" role="status" aria-live="polite"></div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -110,7 +110,9 @@ export class HistoryGallery {
     const meta = [size, seed].filter(Boolean).join(" · ");
     const studio = item.projectId ? '<span class="hg-tag">本工作台</span>' : "";
     return `<figure class="hg-card" data-job="${escapeHtml(item.id)}" data-index="${image.index || 0}">
-      <img src="${escapeHtml(image.thumbUrl || image.url || "")}" alt="" loading="lazy" />
+      <img src="${escapeHtml(image.thumbUrl || image.url || "")}"
+        data-full="${escapeHtml(image.url || image.thumbUrl || "")}"
+        onerror="this.onerror=null;this.src=this.dataset.full" alt="" loading="lazy" />
       <figcaption>
         <div class="hg-line">
           <span class="hg-kind">${escapeHtml(KIND_LABEL[item.kind] || item.kind || "生成")}</span>

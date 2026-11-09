@@ -621,6 +621,7 @@ export function createImageToolsPage(host) {
                     <input class="input" type="color" value="#ffffff" data-ref="exportBg" />
                   </label>
                   <div class="size-summary"><span>预计体积</span><span class="mono" data-ref="estimate">—</span></div>
+                  <div class="field-hint hidden" data-ref="exportPending"></div>
                   <button class="btn primary block" type="button" data-ref="processApply">处理并保存</button>
                 </div>
               </details>
@@ -1045,6 +1046,7 @@ export function createImageToolsPage(host) {
     qualityVal: ref('qualityVal'),
     qualityField: ref('qualityField'),
     estimate: ref('estimate'),
+    exportPending: ref('exportPending'),
     processApply: ref('processApply'),
     outpaintDirs: ref('outpaintDirs'),
     outpaintPano: ref('outpaintPano'),
@@ -2275,6 +2277,12 @@ export function createImageToolsPage(host) {
     }
     const bytes = width * heightPx * bytesPerPixel;
     refs.estimate.textContent = `约 ${(bytes / 1024 / 1024).toFixed(2)} MB（${state.format.toUpperCase()}，估算）`;
+    if (refs.exportPending) {
+      refs.exportPending.textContent = pixel
+        ? `会同时应用当前裁剪 ${fmtNum(pixel.width)}×${fmtNum(pixel.height)}；如需只保存已应用操作，请回到「调整 → 裁剪」重置选框。`
+        : '';
+      refs.exportPending.classList.toggle('hidden', !pixel);
+    }
   }
 
   /* ============================================================
@@ -2423,6 +2431,8 @@ export function createImageToolsPage(host) {
     state.stagedOps.push({ ...op, label });
     if (state.stagedOps.length > 40) state.stagedOps.shift();
     state.crop.rect = null;
+    // 应用任何操作后都不再自动生成待裁剪框，避免隐藏的二次裁切
+    state.crop.suppressed = true;
     renderOps();
     render();
   }

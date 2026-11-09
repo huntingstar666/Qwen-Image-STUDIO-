@@ -2478,7 +2478,7 @@ function drawerFieldsMarkup(fields, values, prefix) {
       return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
         <select class="select" data-path="${path}" data-kind="string">
           ${(spec.options || []).map((option) =>
-            `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+            `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? "selected" : ""}>${escapeHtml((spec.labels || {})[option] || option)}</option>`).join("")}
         </select></div>`;
     }
     if (spec.type === "entity_list") {

@@ -263,6 +263,195 @@ def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any], *,
     return refs
 
 
+def _used_locations(project: dict[str, Any], shot: dict[str, Any]) -> set[str]:
+    content = (project.get("locks") or {}).get("content") or {}
+    entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
+    return {
+        entity_id for entity_id in prompts.used_entity_ids(project, shot)
+        if str(entities.get(entity_id, {}).get("kind") or "") == "location"
+    }
+
+
+def _previous_base(project: dict[str, Any], shot: dict[str, Any]) -> bytes | None:
+    """上一镜有画面且与本段同场景时，可作为单段锚定的图1（锁动作）。"""
+    shots = project.get("shots") or []
+    index = next((i for i, item in enumerate(shots) if item.get("id") == shot.get("id")), -1)
+    if index <= 0:
+        return None
+    previous = shots[index - 1]
+    if not str(previous.get("image") or "").strip():
+        return None
+    current_locations = _used_locations(project, shot)
+    if current_locations:
+        previous_locations = _used_locations(project, previous)
+        if not (current_locations & previous_locations):
+            return None
+    try:
+        return store.read_media(project["id"], str(previous["image"])).read_bytes()
+    except (StudioError, OSError):
+        return None
+
+
+def _scene_ref(project: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any] | None:
+    """本段引用的场景资产 + 第一张定场图，用作单段锚定的图1。"""
+    content = (project.get("locks") or {}).get("content") or {}
+    entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
+    for entity_id in prompts.used_entity_ids(project, shot):
+        entity = entities.get(entity_id) or {}
+        if str(entity.get("kind") or "") != "location":
+            continue
+        files = [str(item) for item in (entity.get("refImages") or []) if str(item or "")]
+        if not files:
+            continue
+        try:
+            data = store.read_media(project["id"], files[0]).read_bytes()
+        except (StudioError, OSError):
+            continue
+        return {
+            "id": entity_id,
+            "kind": "location",
+            "name": str(entity.get("name") or "") or entity_id,
+            "desc": str(entity.get("desc") or ""),
+            "data": data,
+        }
+    return None
+
+
+def anchor_plan(project: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any]:
+    """选锚定方式。
+
+    - previous：图1=上一镜，动作/机位继承，只换脸（只适合同机位延续，显式选择）；
+    - scene：图1=场景定场图，图2..=人物，单段合成，动作按文字；
+    - two-pass：先文生图定动作，再做身份校准，最稳但慢；
+    - auto：有场景定场图就走 scene，否则 two-pass（不自动用上一镜，避免每镜同机位）。
+    """
+    content = (project.get("locks") or {}).get("content") or {}
+    if not content.get("enabled", True) or not content.get("imageAnchor", True):
+        return {"mode": "none", "refs": []}
+    refs = shot_anchor_refs(project, shot)
+    if not refs:
+        return {"mode": "none", "refs": []}
+    subjects = [ref for ref in refs if ref["kind"] != "location"]
+    if not subjects:
+        return {"mode": "none", "refs": refs}
+    mode = str(content.get("anchorMode") or "auto")
+    if mode not in ("auto", "scene", "previous", "two-pass"):
+        mode = "auto"
+    if mode == "previous":
+        base = _previous_base(project, shot)
+        if base:
+            return {"mode": "previous", "base": base, "refs": subjects}
+        mode = "auto"
+    if mode in ("auto", "scene"):
+        scene = _scene_ref(project, shot)
+        if scene:
+            return {"mode": "scene", "scene": scene, "refs": subjects}
+    return {"mode": "two-pass", "refs": refs}
+
+
+def _asset_lines(refs: list[dict[str, Any]], *, start: int = 2) -> list[str]:
+    """把资产映射成「图2、图3：人物小林」；同一资产的多张设定图合并。"""
+    groups: list[dict[str, Any]] = []
+    for index, ref in enumerate(refs, start=start):
+        if groups and groups[-1]["id"] == ref["id"]:
+            groups[-1]["images"].append(index)
+        else:
+            groups.append({"id": ref["id"], "ref": ref, "images": [index]})
+    lines: list[str] = []
+    for group in groups:
+        ref = group["ref"]
+        kind = KIND_LABEL.get(str(ref.get("kind")), "主体")
+        desc = str(ref.get("desc") or "").strip()
+        detail = f"（固定外观：{desc}）" if desc else ""
+        features = KIND_FEATURES.get(str(ref.get("kind")), "外观特征")
+        labels = "、".join(f"图{index}" for index in group["images"])
+        lines.append(f"- {labels}：{kind}「{ref['name']}」{detail}，保持{features}一致。")
+    return lines
+
+
+def build_scene_anchor_prompt(project: dict[str, Any], shot: dict[str, Any],
+                             scene: dict[str, Any], refs: list[dict[str, Any]]) -> str:
+    lines = [
+        f"以图1为场景底图：保持「{scene['name']}」的空间结构、陈设、材质、光线、"
+        "色调与镜头机位不变。把以下资产放入图1场景中，保持其固定外观：",
+    ]
+    lines.extend(_asset_lines(refs))
+    action = prompts.strip_asset_mentions(
+        " ".join(item for item in [shot.get("description"), shot.get("directive")] if item))
+    if action:
+        lines.append(f"画面内容与动作：{action}")
+    lines.append("人物动作与位置按上面的画面内容决定；不新增图1中不存在的空间结构，"
+                 "不改变画幅与场景布局。")
+    return "\n".join(lines)
+
+
+def build_previous_anchor_prompt(project: dict[str, Any], shot: dict[str, Any],
+                                 refs: list[dict[str, Any]]) -> str:
+    lines = [
+        "以图1为上一镜画面：保持它的构图、机位、景别、人物位置与姿态、动作、"
+        "光影、背景和所有非主体细节不变。只把人物外观替换为以下资产：",
+    ]
+    lines.extend(_asset_lines(refs))
+    action = prompts.strip_asset_mentions(
+        " ".join(item for item in [shot.get("description"), shot.get("directive")] if item))
+    if action:
+        lines.append(f"如果本段需要动作/表情变化，按此小幅调整：{action}；"
+                     "但不要改变镜头机位与场景。")
+    lines.append("只替换人物身份特征，不新增、不删除任何元素，不改变画幅。")
+    return "\n".join(lines)
+
+
+def _edit_payload(project: dict[str, Any], shot: dict[str, Any],
+                  images_payload: list[dict[str, Any]], prompt: str,
+                  *, seed: int = 0, mode: str = "anchor") -> dict[str, Any]:
+    image_cfg = project.get("image") or {}
+    payload: dict[str, Any] = {
+        "prompt": prompt,
+        "negative_prompt": str(shot.get("negative") or "").strip(),
+        "images": images_payload,
+        "size_mode": "follow",
+        "seed": int(seed or 0),
+        "steps": int(image_cfg.get("steps") or 8),
+        "cfg": float(image_cfg.get("cfg") or 1.0),
+        "meta": {
+            "source": "video_studio",
+            "anchor": mode,
+            "projectId": project.get("id"),
+            "shotId": shot.get("id"),
+        },
+    }
+    model = str(image_cfg.get("model") or "").strip()
+    if model:
+        payload["model"] = model
+    if image_cfg.get("turbo"):
+        payload["turbo"] = {"enabled": True}
+    return payload
+
+
+def build_scene_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
+                               scene: dict[str, Any], refs: list[dict[str, Any]],
+                               *, seed: int = 0) -> dict[str, Any]:
+    images_payload = [{"data": _data_url(scene["data"])}]
+    images_payload.extend({"data": _data_url(ref["data"])} for ref in refs)
+    payload = _edit_payload(
+        project, shot, images_payload,
+        build_scene_anchor_prompt(project, shot, scene, refs), seed=seed, mode="scene")
+    payload["meta"]["entities"] = [scene["id"], *dict.fromkeys(ref["id"] for ref in refs)]
+    return payload
+
+
+def build_previous_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
+                                  base_image: bytes, refs: list[dict[str, Any]],
+                                  *, seed: int = 0) -> dict[str, Any]:
+    images_payload = [{"data": _data_url(base_image)}]
+    images_payload.extend({"data": _data_url(ref["data"])} for ref in refs)
+    payload = _edit_payload(
+        project, shot, images_payload,
+        build_previous_anchor_prompt(project, shot, refs), seed=seed, mode="previous")
+    payload["meta"]["entities"] = list(dict.fromkeys(ref["id"] for ref in refs))
+    return payload
+
+
 def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
     """身份校准指令：底稿不动，只把主体换成参考图里的同一外观。"""
     lines = [
@@ -392,12 +581,10 @@ def generate_asset(project: dict[str, Any], entity: dict[str, Any], client: Main
     return relpath
 
 
-def _anchor_shot(project: dict[str, Any], shot: dict[str, Any], client: MainClient,
-                 base_image: bytes, refs: list[dict[str, Any]], *, seed: int,
-                 cancel: CancelFn | None,
-                 progress: ProgressFn | None) -> tuple[bytes, dict[str, Any], str]:
-    """拿底稿 + 资产设定图再跑一次身份校准。"""
-    payload = build_anchor_payload(project, shot, base_image, refs, seed=seed)
+def _run_edit(client: MainClient, payload: dict[str, Any], *,
+              cancel: CancelFn | None,
+              progress: ProgressFn | None) -> tuple[bytes, dict[str, Any], str]:
+    """提交 /api/edit 并等结果，返回 (图片字节, job 图片元数据, job_id)。"""
     job_id = client.edit(payload)
     job = _wait(client, job_id, cancel=cancel, progress=progress)
     status = str(job.get("status") or "")
@@ -411,6 +598,15 @@ def _anchor_shot(project: dict[str, Any], shot: dict[str, Any], client: MainClie
     meta = items[0]
     data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
     return data, meta, job_id
+
+
+def _anchor_shot(project: dict[str, Any], shot: dict[str, Any], client: MainClient,
+                 base_image: bytes, refs: list[dict[str, Any]], *, seed: int,
+                 cancel: CancelFn | None,
+                 progress: ProgressFn | None) -> tuple[bytes, dict[str, Any], str]:
+    """拿底稿 + 资产设定图再跑一次身份校准。"""
+    payload = build_anchor_payload(project, shot, base_image, refs, seed=seed)
+    return _run_edit(client, payload, cancel=cancel, progress=progress)
 
 
 def _wait(client: MainClient, job_id: str, *, cancel: CancelFn | None = None,
@@ -447,12 +643,48 @@ def generate_shot(project: dict[str, Any], shot: dict[str, Any], client: MainCli
                           code="empty_prompt")
     shot["status"] = "generating"
     shot["attempts"] = int(shot.get("attempts") or 0) + 1
+    seed = int(payload.get("seed") or 0)
 
     def stage_progress(start: int, span: int) -> ProgressFn:
         def report(value: int, label: str) -> None:
             if progress is not None:
                 progress(start + int(value * span / 100), label)
         return report
+
+    # 单段锚定：场景底图 / 上一镜画面直接当图1，只跑一次图生图
+    plan = anchor_plan(project, shot)
+    if plan["mode"] in ("scene", "previous"):
+        label = "场景锚定" if plan["mode"] == "scene" else "上一镜延续"
+        if progress is not None:
+            progress(2, label)
+        try:
+            if plan["mode"] == "scene":
+                edit_payload = build_scene_anchor_payload(
+                    project, shot, plan["scene"], plan["refs"], seed=seed)
+            else:
+                edit_payload = build_previous_anchor_payload(
+                    project, shot, plan["base"], plan["refs"], seed=seed)
+            data, meta, job_id = _run_edit(
+                client, edit_payload, cancel=cancel, progress=stage_progress(0, 100))
+            suffix = Path(str(meta.get("filename") or "shot.png")).suffix or ".png"
+            relpath = store.save_shot_image(
+                project["id"], str(shot.get("id") or "shot"), data, suffix)
+            shot["image"] = relpath
+            shot["status"] = "ready"
+            shot["seed"] = seed
+            shot["width"] = int(meta.get("width") or 0)
+            shot["height"] = int(meta.get("height") or 0)
+            record_image_version(
+                project["id"], shot, relpath,
+                seed=seed, width=shot["width"], height=shot["height"],
+                job_id=job_id, source=f"anchor-{plan['mode']}",
+            )
+            return shot
+        except CanceledError:
+            shot["status"] = "pending"
+            raise
+        except (StudioError, OSError) as exc:
+            shot.setdefault("warnings", []).append(f"{label}失败，已回退两段式：{exc}")
 
     job_id = client.generate(payload)
     job = _wait(client, job_id, cancel=cancel, progress=stage_progress(0, 58))
@@ -469,7 +701,6 @@ def generate_shot(project: dict[str, Any], shot: dict[str, Any], client: MainCli
     meta = images[0]
     data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
     suffix = Path(str(meta.get("filename") or "shot.png")).suffix or ".png"
-    seed = int(payload.get("seed") or 0)
 
     # 底稿先落一版：锚定失败或不启用时，用户至少还有纯文本生图
     relpath = store.save_shot_image(project["id"], str(shot.get("id") or "shot"), data, suffix)

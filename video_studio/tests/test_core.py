@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from video_studio import config  # noqa: E402
 from video_studio.core import images, prompts, schema, segments, subtitle  # noqa: E402
 
 
@@ -562,6 +564,121 @@ def test_asset_payload_is_t2i_and_square() -> None:
     assert payload["width"] == 1024 and payload["height"] == 1024
     assert "角色设定图" in payload["prompt"]
     assert payload["meta"]["asset"] is True
+
+
+def test_scene_anchor_uses_scene_as_image1() -> None:
+    project = schema.default_project("场景锚定")
+    shot = schema.new_shot(0, 0, 1000, "小林推开门")
+    shot["description"] = "小林低头查看设备"
+    scene = {"id": "e2", "kind": "location", "name": "车间", "desc": "", "data": b"scene"}
+    refs = [{"id": "e1", "kind": "character", "name": "小林", "desc": "短发", "data": b"hero"}]
+    payload = images.build_scene_anchor_payload(project, shot, scene, refs, seed=9)
+    assert payload["size_mode"] == "follow"
+    assert payload["images"][0]["data"].startswith("data:image/png;base64,")
+    assert len(payload["images"]) == 2
+    assert "图1为场景底图" in payload["prompt"]
+    assert "图2" in payload["prompt"] and "小林" in payload["prompt"]
+    assert "低头查看设备" in payload["prompt"]
+
+
+def test_previous_anchor_uses_previous_frame_as_image1() -> None:
+    project = schema.default_project("上一镜")
+    shot = schema.new_shot(1, 1000, 2000, "他继续拧螺丝")
+    shot["description"] = "继续低头拧螺丝"
+    refs = [{"id": "e1", "kind": "character", "name": "小林", "desc": "短发", "data": b"hero"}]
+    payload = images.build_previous_anchor_payload(project, shot, b"prev", refs, seed=3)
+    assert payload["images"][0]["data"].startswith("data:image/png;base64,")
+    assert "图1为上一镜画面" in payload["prompt"]
+    assert "图2" in payload["prompt"]
+    assert payload["meta"]["anchor"] == "previous"
+
+
+def test_anchor_plan_prefers_previous_then_scene() -> None:
+    project = _project()
+    shot = schema.new_shot(1, 1000, 2000, "小林继续工作")
+    hero = {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"x"}
+    scene = {"id": "e2", "kind": "location", "name": "车间", "desc": "", "data": b"y"}
+    original_refs = images.shot_anchor_refs
+    original_prev = images._previous_base
+    original_scene = images._scene_ref
+    try:
+        images.shot_anchor_refs = lambda p, s: [hero]
+        images._previous_base = lambda p, s: b"prev"
+        images._scene_ref = lambda p, s: scene
+        # auto 不自动用上一镜，避免每镜同机位；有场景图优先 scene
+        assert images.anchor_plan(project, shot)["mode"] == "scene"
+        project["locks"]["content"]["anchorMode"] = "previous"
+        assert images.anchor_plan(project, shot)["mode"] == "previous"
+        images._previous_base = lambda p, s: None
+        assert images.anchor_plan(project, shot)["mode"] == "scene"
+        images._scene_ref = lambda p, s: None
+        assert images.anchor_plan(project, shot)["mode"] == "two-pass"
+    finally:
+        images.shot_anchor_refs = original_refs
+        images._previous_base = original_prev
+        images._scene_ref = original_scene
+
+
+def test_generate_shot_single_pass_previous() -> None:
+    class FakeClient:
+        def __init__(self):
+            self.edits = []
+
+        def edit(self, payload):
+            self.edits.append(payload)
+            return "job-1"
+
+        def generate(self, payload):
+            raise AssertionError("单段上一镜模式不应该再走文生图")
+
+        def job(self, job_id):
+            return {
+                "status": "done",
+                "images": [{"url": "/x.png", "filename": "x.png",
+                            "width": 1024, "height": 576}],
+            }
+
+        def download(self, url):
+            return b"\x89PNG\r\n\x1a\nresult"
+
+        def cancel(self, job_id):
+            return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original = config.PROJECTS_DIR
+        config.PROJECTS_DIR = Path(tmp)
+        try:
+            project = schema.default_project("单段")
+            project_dir = Path(tmp) / project["id"]
+            (project_dir / "images").mkdir(parents=True)
+            (project_dir / "assets").mkdir(parents=True)
+            (project_dir / "images" / "s1.png").write_bytes(b"\x89PNG\r\n\x1a\ns1")
+            (project_dir / "assets" / "e1_v1.png").write_bytes(b"\x89PNG\r\n\x1a\ne1")
+            project["locks"]["content"]["entities"] = [{
+                "id": "e1", "kind": "character", "name": "小林", "desc": "短发",
+                "refImages": ["assets/e1_v1.png"],
+            }]
+            project["locks"]["content"]["anchorMode"] = "previous"
+            first = schema.new_shot(0, 0, 1000, "开场")
+            first["image"] = "images/s1.png"
+            first["status"] = "ready"
+            first["usedEntities"] = ["e1"]
+            second = schema.new_shot(1, 1000, 2000, "继续工作")
+            second["usedEntities"] = ["e1"]
+            second["description"] = "继续低头拧螺丝"
+            second["prompt"] = "夜晚的车间里，小林低头工作"
+            project["shots"] = [first, second]
+
+            client = FakeClient()
+            shot = images.generate_shot(project, second, client)
+        finally:
+            config.PROJECTS_DIR = original
+
+    assert len(client.edits) == 1
+    assert client.edits[0]["meta"]["anchor"] == "previous"
+    assert client.edits[0]["images"][0]["data"].startswith("data:image/png;base64,")
+    assert shot["image"].startswith("images/")
+    assert shot["imageHistory"][0]["source"] == "anchor-previous"
 
 
 def test_polish_sends_asset_images_to_vision_model() -> None:

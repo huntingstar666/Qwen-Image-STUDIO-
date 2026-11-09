@@ -84,6 +84,18 @@ SCHEMA: dict[str, dict[str, Any]] = {
                     "enabled": {"type": "bool", "default": True, "label": "启用内容锁"},
                     "strict": {"type": "bool", "default": True, "label": "严格模式"},
                     "imageAnchor": {"type": "bool", "default": True, "label": "参考图锚定"},
+                    "anchorMode": {
+                        "type": "enum",
+                        "options": ["auto", "scene", "previous", "two-pass"],
+                        "default": "auto",
+                        "label": "锚定方式",
+                        "labels": {
+                            "auto": "自动（优先单段）",
+                            "scene": "场景锚定（单段 · 快）",
+                            "previous": "上一镜延续（单段 · 动作稳）",
+                            "two-pass": "两段式（构图最稳 · 慢）",
+                        },
+                    },
                     "entities": {
                         "type": "entity_list", "default": [], "label": "角色与场景",
                         "kinds": ["character", "location", "prop"],

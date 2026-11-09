@@ -5107,7 +5107,9 @@ export function createStudioPage(host) {
       } else if (refs.canvas.style.cursor) {
         refs.canvas.style.cursor = '';
       }
-      if (MASK_TOOLS.has(tool)) scheduleDraw();
+      // 悬停时也要重绘：这些工具的画布光标是「画上去的圆圈」而不是 CSS 光标
+      // （canvas 的 cursor 是 none），不重绘就等于鼠标指针消失（D27.4）。
+      if (MASK_TOOLS.has(tool) || BRUSH_PARAM_TOOLS.has(tool)) scheduleDraw();
       return;
     }
     if (drag.mode === 'pan') {

@@ -1228,6 +1228,11 @@ DOM 结构：
   - 实测（headless 1440×900，2400×3200）：30 次 move 同步耗时 **376ms → 12~18ms**（含一笔开始的取样合成），第二笔 **12.3ms**；带 1 个图层 **3.6ms**。剩下的慢调用都只在一笔开始/结束各一次（`renderSample()` 取样合成 ≈4ms、`snapshot()` 复制蒙版/修复层各 ≈4ms），不再随移动次数增长。
   - 已清理临时埋点（`window.__diag` / `window.__stampLog`）；`node --test web/tests/studio/*.test.mjs` **139 passed**。
 
+- **D27.4 仿制图章「鼠标放不进画布」：悬停不重绘，画出来的光标圆圈根本不出现（已修复）** —— 性能修完后用户仍反馈鼠标像进不了画布。
+  - 根因：画布的原生光标是关掉的（`.studio-canvas { cursor: none }`），画笔圆圈靠 `draw()` 里「画上去的圆环」充当光标。而 `pointermove` 的悬停分支只对 `MASK_TOOLS`（画笔/橡皮/矩形/椭圆/套索）调 `scheduleDraw()`，仿制图章 / 修复画笔 / 涂抹 / 磨皮 / 液化 / 马赛克 / 图案图章这些 `BRUSH_PARAM_TOOLS` 悬停时**一帧都不重绘**——于是鼠标一进画布就什么光标都没有，看起来就是「鼠标放不进画布」「工具用不了」。
+  - 改法：悬停分支改为 `MASK_TOOLS.has(tool) || BRUSH_PARAM_TOOLS.has(tool)` 时都 `scheduleDraw()`（仍是 rAF 合帧，一次 move 最多画一次）。
+  - 实测（headless 1440×900，2400×3200）：悬停 12 次 pointermove 的重绘次数 **0 → 12**（画笔工具同为 12）；圆环像素确认已画出（半径 = `brush.size/2 × view.scale`）；一笔 60 次 move 的同步耗时 31.3ms（0.52ms/move）；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D25.5 「项目历史」两份列表实现（已去重）** —— Dock 书脊浮层（`refreshProjectList`）与顶栏「历史项目…」弹窗（`openProjectHistoryDialog`）各自写了一份工程行 HTML 和删除逻辑，且「编辑中」表现不一致（浮层用角标，弹窗改按钮文案）。
   - 抽出 `projectRowHtml(project, tab)`（缩略图 / 名称 / 尺寸·时间 / 「当前」「编辑中」角标 / 打开·删除）与 `deleteProjectById(id, name)`（同一份确认文案与「先关当前工程再清库」顺序）；两个入口只保留一处渲染、一处删除。
   - 统一后两个入口表现一致：都有「当前」「编辑中」角标，锁定工程的打开按钮置灰。
@@ -1794,6 +1799,7 @@ DOM 结构：
 | D27.1 | 仿制图章卡顿 + 换工程后画不出来 | 已完成 | 本次提交 | 修复层移出「干净底图」缓存，落笔只 `invalidateRepair()`；笔刷画布复用；换工程清取样点并显示取样状态；详见 §12.11 |
 | D27.2 | 修复类笔触增量写入 underlay（根治每帧重建） | 已完成 | 本次提交 | `repairPaint()` 落笔后把同一笔触同步进缓存的 underlay（`stampRepairLive`），不再逐帧重建整张底图；2400×3200 无图层 40fps→60fps；详见 §12.11 |
 | D27.3 | 仿制图章「鼠标放不进画布」 | 已完成 | 本次提交 | `clampPoint()` 不再调 `renderBase()` 取尺寸（改读 `doc.size`），每个 pointermove 少了整图重合成；2400×3200 30 次 move 376ms→12~18ms；详见 §12.11 |
+| D27.4 | 画笔类工具悬停时没有光标（画出来的圆圈不重绘） | 已完成 | 本次提交 | 悬停分支对 `BRUSH_PARAM_TOOLS` 也 `scheduleDraw()`；仿制图章等工具的圆圈光标恢复，悬停 12 次 move 重绘 0→12；详见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

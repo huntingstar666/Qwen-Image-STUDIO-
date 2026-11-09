@@ -94,7 +94,9 @@ export function goToT2IPage() {
 /**
  * 把一张图片交给图片精修工作台。
  * mode: 'project' = 新建工程打开（默认）；'layer' = 作为图层加入当前工程（D23.12）
- * @param {{url:string, name?:string, title?:string, mode?:'project'|'layer', toast?:string}} payload
+ * sidecar: 图层素材的 { kind, props, docW, docH }，置入时按类型重建（D26.1）
+ * @param {{url:string, name?:string, title?:string, mode?:'project'|'layer',
+ *          sidecar?:object|null, toast?:string}} payload
  */
 export function setStudioHandoff(payload = {}) {
   const url = String(payload.url || '').trim();
@@ -104,6 +106,7 @@ export function setStudioHandoff(payload = {}) {
     name: String(payload.name || '').trim(),
     title: String(payload.title || '').trim(),
     mode: payload.mode === 'layer' ? 'layer' : 'project',
+    sidecar: payload.sidecar && typeof payload.sidecar === 'object' ? payload.sidecar : null,
     toast: payload.toast || (payload.mode === 'layer' ? '已作为新图层加入当前工程' : '已在图片精修中打开'),
   };
 }

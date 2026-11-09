@@ -476,6 +476,8 @@ export function createMaterialsPage(host) {
         name: image.filename || `${item.title || 'material'}.png`,
         title: item.title,
         mode,
+        // D26.1：图层素材带着 kind/props，精修页据此重建可编辑图层。
+        sidecar: mode === 'layer' ? item.params?.layer || null : null,
       });
       closeModal();
       goToStudioPage();

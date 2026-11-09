@@ -110,6 +110,8 @@ function materialCandidates(data) {
         name: item.title || item.prompt || '仓库素材',
         width: Number(item.image.width) || 0,
         height: Number(item.image.height) || 0,
+        // D26.1：图层素材带 sidecar（kind/props），置入时可重建为文字/形状图层。
+        params: item.params || null,
         source: 'warehouse',
       })),
   );
@@ -340,7 +342,15 @@ export function openImportPicker({
           }
         }
         if (picked.some((entry) => entry.src === src)) continue;
-        picked.push({ name: item.name || 'image.png', src, width, height, source: item.source });
+        // D26.1：保留素材自带的图层 sidecar（kind/props），置入时才能重建可编辑图层。
+        picked.push({
+          name: item.name || 'image.png',
+          src,
+          width,
+          height,
+          source: item.source,
+          params: item.params || null,
+        });
       } catch (err) {
         toastError(err, `读取「${item.name || '图片'}」失败`);
       }

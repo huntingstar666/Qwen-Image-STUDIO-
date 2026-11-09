@@ -1197,6 +1197,15 @@ DOM 结构：
   - **追加修复（用户反馈「抠图后存素材变成空蒙版，导入也是空的」）**：`drawLayers` 对隐藏层（`visible=false`）与 `opacity=0` 的层会直接跳过，于是存出一张全透明 PNG。改为导出的是「图层内容」而不是画布所见：烘焙时临时置 `visible=true`、`opacity<=0` 时按 1 绘制（临时改动只包住一次同步绘制，避免自动保存写脏），结束后还原；画布仍全透明时兜底导出图层原始位图（并 toast 说明）；两者都为空才提示「没有可保存的画面」，不再写入空素材。
   - 复现与验证：同一张 `mat-20261107-211619-7c8d3b`（941×1672）抠图层，隐藏后再点「☆ 素材」——修复前存出 941×1672 全零像素（ratio 0），修复后 ratio 0.065（与选区 6.3% 一致），且保存后图层仍是隐藏状态；正常可见层、裁剪后的层、刷新恢复后的层均保持 ratio 0.065。
 
+- **D26.1~D26.4 图层类素材的导入导出补齐（已实施）** —— 之前位图置入只保留像素、文字/形状置入后变图片、图层库对文字/形状直接拒绝。
+  - 抽出 `layerPropsFor(layer)`（工程保存 / 素材 sidecar / 图层库共用一份字段）与 `addLayerFromSidecar(sidecar, {blob, name, flattened})`（按 `kind` 重建：text → `addTextLayer`，shape → `addShapeLayer`，overlay 按原几何或按画布尺寸铺回）。工程保存改用同一份 props，字段不会再漂移。
+  - **D26.1 素材 sidecar**：存素材时把 `{v, kind, props, docW, docH}` 写进 `favoriteImage({ params:{ layer } })`；`setStudioHandoff` 增加 `sidecar`，素材详情「作为图层加入当前工程」透传 `item.params.layer`；素材选择器的候选与 `confirmSelection` 也保留 `params`（否则中途被裁掉，实测踩到这个坑）。
+  - **D26.2 几何还原**：sidecar 里带 `x/y/scale/rotation/flip/blend/opacity/quad`；置入时按 `min(目标宽/源宽, 目标高/源高)` 等比缩放，素材的合成 PNG 按 0,0 铺回并按 `docW/docH` 缩放。
+  - **D26.3 图层库**：文字/形状不再要求位图（存 props + 用 `drawLayers` 渲染 32px 缩略图），位图层额外存 `maskBlob`，「置入」时按类型重建并贴回蒙版；旧记录（只有 blob）仍按 60% 居中置入。
+  - **D26.4 批量导出**：图层栏「导出」改为菜单——当前图层 PNG / 所有可见图层（逐个 PNG，超过 5 个先确认）/ 当前图层 + 蒙版。
+  - 顺带修复：`afterLayerAdded()` 只同步了图层属性，导入文字层后「文字」分页仍显示上一个图层——现在四个分页一起同步。
+  - 实测（1440×900，headless）：文字层「☆ 素材」→ 新记录 `params.layer.kind=text`、`props.text=测试文字D26`、`docW/H=941/1672`；经图层栏「＋ → 从素材仓库」置入后图层数 +1、文字分页立即显示原文案；「存入图层库 → 置入」同样得到可编辑文字层；导出菜单三项齐全；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D25.5 「项目历史」两份列表实现（已去重）** —— Dock 书脊浮层（`refreshProjectList`）与顶栏「历史项目…」弹窗（`openProjectHistoryDialog`）各自写了一份工程行 HTML 和删除逻辑，且「编辑中」表现不一致（浮层用角标，弹窗改按钮文案）。
   - 抽出 `projectRowHtml(project, tab)`（缩略图 / 名称 / 尺寸·时间 / 「当前」「编辑中」角标 / 打开·删除）与 `deleteProjectById(id, name)`（同一份确认文案与「先关当前工程再清库」顺序）；两个入口只保留一处渲染、一处删除。
   - 统一后两个入口表现一致：都有「当前」「编辑中」角标，锁定工程的打开按钮置灰。
@@ -1756,10 +1765,10 @@ DOM 结构：
 | D25.3 | 选中图层存入素材仓库 | 已完成 | 本次提交 | 图层栏底部新增「☆ 素材」：按画布尺寸烘透明 PNG（含蒙版/变换/文字/形状）→ `favoriteImage(kind=studio, category=图层)`；调整层提示无画面；隐藏层/opacity 0 也能导出（不再存出空图）；详见 §12.11 |
 | D25.4 | 图层属性可折叠 / 快照区收进抽屉 | 已完成 | 本次提交 | 两块都改「32px 折叠头 + 可收起正文」；属性展开状态记 `localStorage`，快照抽屉本会话有效；AI 分页可见区 208.5→409.5px；顺带补 `addOverlayFile()` 漏掉的 `syncLayerProps()`；详见 §12.11 |
 | D25.5 | 项目历史双实现去重 | 已完成 | 本次提交 | 抽出 `projectRowHtml()` + `deleteProjectById()`，浮层与弹窗共用；「当前/编辑中」表现统一；详见 §12.11 |
-| D26.1 | 图层素材带「类型 + 参数」，文字/形状可编辑回流 | 待确认 | — | 素材 `params.layer` 与图层库记录增加 `kind/props`；导入时按类型重建 `addTextLayer` / `addShapeLayer`；盘点见 §22.10 |
-| D26.2 | 位图层素材保留几何与外观 | 待确认 | — | 存 `x/y/scale/rotation/flip/blend/opacity`，置入时按原参数还原而不是固定 60% 居中；方案见 §22.10 |
-| D26.3 | 图层库支持文字 / 形状 / 蒙版 | 待确认 | — | 现在 `layerBlobFor()` 对文字/形状返回 null，图层库直接拒绝；改为存 props（+ maskBlob）即可 |
-| D26.4 | 图层批量导出 | 待确认 | — | 现在只能单层导出 PNG；补「导出所有可见图层」（逐个 PNG）与「导出图层 + 蒙版」 |
+| D26.1 | 图层素材带「类型 + 参数」，文字/形状可编辑回流 | 已完成 | 本次提交 | `layerPropsFor()` + `addLayerFromSidecar()`；素材 `params.layer` / handoff `sidecar` / 选择器保留 params；实测文字层存素材再置入仍可改文案；详见 §12.11 |
+| D26.2 | 位图层素材保留几何与外观 | 已完成 | 本次提交 | sidecar 带 `x/y/scale/rotation/flip/blend/opacity/quad` 与 `docW/docH`，置入按画布比还原；详见 §12.11 |
+| D26.3 | 图层库支持文字 / 形状 / 蒙版 | 已完成 | 本次提交 | 文字/形状存 props + 32px 缩略图，位图额外存 `maskBlob`；置入按类型重建并贴回蒙版；旧记录兼容；详见 §12.11 |
+| D26.4 | 图层批量导出 | 已完成 | 本次提交 | 图层栏「导出」改菜单：当前图层 / 所有可见图层（>5 个先确认）/ 当前图层 + 蒙版；详见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 
@@ -3642,9 +3651,11 @@ mergeLayers(ids, { keepBase = false }):
 | D25.4 图层属性折叠 + 快照抽屉 | 已实施（两块改折叠头，AI 分页可见区 208.5→409.5px） |
 | D25.5 项目历史去重 | 已实施（`projectRowHtml` + `deleteProjectById` 共用） |
 
-### 22.10 图层类素材的导入导出盘点（D26，待确认）
+### 22.10 图层类素材的导入导出盘点（D26，已实施）
 
 > 背景：D25.3 只解决了「位图层 → 素材仓库」。其余图层类型（贴纸 / 文字 / 形状 / 智能对象 / 组 / 蒙版）在导入导出上并不对等，这里逐项盘点并给出建议。
+>
+> **状态：D26.1~D26.4 均已实施**，实测记录见 §12.11。下面保留实施前的盘点，便于后续对照。
 
 #### 22.10.1 现状盘点
 
@@ -3664,23 +3675,23 @@ mergeLayers(ids, { keepBase = false }):
 
 #### 22.10.2 建议（D26.1~D26.4）
 
-**D26.1 图层素材带「类型 + 参数」（收益最大）**
+**D26.1 图层素材带「类型 + 参数」（收益最大，已完成）**
 - 存素材时把 `{ kind, props }`（复用 `collectProject` 的 props 生成逻辑，抽成 `layerPropsFor(layer)`）写进 `favoriteImage({ params: { layer: {...} } })`；图层库记录同样加 `kind/props/maskBlob`。
 - 置入时先看 sidecar：`kind === 'text'` → `addTextLayer(props)`；`kind === 'shape'` → `addShapeLayer(props)`；`kind === 'overlay'` → 按 D26.2 还原位图；都没有才退回现在的「60% 居中位图」。
 - 效果：文字图层存进素材仓库后，**下次置入仍可改文案/字体**；形状层可继续改填充/圆角。
 - 验收：文字层 → 素材 → 新工程置入 → 图层面板显示为文字层，改文案生效；形状层同理；旧素材（无 sidecar）行为不变。
 
-**D26.2 位图层素材保留几何与外观**
+**D26.2 位图层素材保留几何与外观（已完成）**
 - `params.layer.props` 里带上 `x/y/scale/rotation/flipH/flipV/blend/opacity/quad`；置入时若目标画布尺寸与来源一致（`props.docW/docH` 相同）按原参数落位，否则等比折算。
 - 蒙版无法随 `params` 传图，可在素材仓库用 `params.layer.mask` 存一个 dataURL（会撑大 JSON，建议只在图层库支持蒙版；素材仓库先保留 alpha 版位图）。
 - 验收：在 A 工程把贴纸旋转 30°、混合「正片叠底」、缩到 40% → 存素材 → 在 A 工程置入，参数与原来一致；在尺寸不同的工程置入时按比例缩放且不越界。
 
-**D26.3 图层库支持文字 / 形状 / 蒙版**
+**D26.3 图层库支持文字 / 形状 / 蒙版（已完成）**
 - `saveSelectedToLibraryAction()` 去掉「必须有位图」的限制：位图层存 blob，文字/形状存 props + 缩略图（用 `drawLayers` 画一张 96px 缩略），蒙版存 `maskBlob`。
 - `insertLayerFromLibraryAction()` 按 `kind` 走 D26.1 的重建分支。
 - 验收：文字层「存入图层库」不再提示无位图；「置入」后是可编辑文字；带蒙版的位图层置入后蒙版仍在（缩略图上可见）。
 
-**D26.4 图层批量导出**
+**D26.4 图层批量导出（已完成）**
 - 图层栏「合并」旁边加「导出…」菜单：`当前图层 PNG` / `所有可见图层（逐个 PNG）` / `图层 + 蒙版`。
 - 批量导出按图层名命名文件；浏览器会连续触发多次下载，超过 5 个时先确认，避免被拦截。
 - 验收：3 个可见层 + 1 个隐藏层 → 批量导出得到 3 个 PNG，隐藏层跳过；文件名与图层名一致。

@@ -1193,6 +1193,13 @@ export function createStudioPage(host) {
     }
     const layer = doc.addOverlay(image, { name: file.name || '叠加图', ...placement });
     layerBlobs.set(layer.id, file);
+    afterLayerAdded(layer, { focusSticker });
+    return layer;
+  }
+
+  /** 新图层加入后的统一收尾：选中、同步面板、存盘、重绘、展开图层栏并滚到新行。 */
+  function afterLayerAdded(layer, { focusSticker = false } = {}) {
+    if (!layer) return;
     selectedLayerId = layer.id;
     editingLayerMaskId = '';
     setTool('move');
@@ -1204,6 +1211,12 @@ export function createStudioPage(host) {
     }
     syncLayerProps();
     updateHistoryUi();
+    // 新层可能是文字 / 形状 / 位图，四个分页都同步一次；否则导入文字层后
+    // 「文字」分页仍显示上一个图层的内容（D26.1 实测踩到）。
+    syncAdjustInputs();
+    syncTextPane();
+    syncStickerPane();
+    syncShapePane();
     scheduleDraw();
     scheduleSave();
     ai?.refresh();
@@ -1212,10 +1225,9 @@ export function createStudioPage(host) {
     syncLayersPanel();
     requestAnimationFrame(() => {
       refs.layerColumn
-        .querySelector(`.studio-layer[data-layer="${layer.id}"]`)
+        ?.querySelector(`.studio-layer[data-layer="${layer.id}"]`)
         ?.scrollIntoView({ block: 'nearest' });
     });
-    return layer;
   }
 
   /* ============================================================
@@ -1298,7 +1310,24 @@ export function createStudioPage(host) {
       const hit = layerThumbs.get(key);
       if (hit !== undefined) return hit;
       const source = layer.maskedImage ? layer.maskedImage() : layer.image;
-      if (!source) return '';
+      if (!source) {
+        // D26.3：文字 / 形状没有位图，按外框直接把图层画进 32px 缩略图。
+        const box = layer.bounds?.();
+        if (!box || box.width < 1 || box.height < 1) return '';
+        const k = Math.min(32 / box.width, 32 / box.height);
+        const canvas = makeCanvas(32, 32);
+        const ctx2 = canvas.getContext('2d');
+        ctx2.save();
+        ctx2.translate((32 - box.width * k) / 2, (32 - box.height * k) / 2);
+        ctx2.scale(k, k);
+        ctx2.translate(-box.x, -box.y);
+        drawLayers(ctx2, [layer], { crop: null });
+        ctx2.restore();
+        const url = canvas.toDataURL('image/webp', 0.7);
+        if (layerThumbs.size > 120) layerThumbs.clear();
+        layerThumbs.set(key, url);
+        return url;
+      }
       const nw = source.naturalWidth || source.width || 1;
       const nh = source.naturalHeight || source.height || 1;
       const k = Math.min(32 / nw, 32 / nh);
@@ -1832,26 +1861,6 @@ export function createStudioPage(host) {
     return true;
   }
 
-  /** 单层导出 PNG：画布尺寸 = doc.size，透明区域保留。 */
-  async function exportLayerAction(id) {
-    if (!doc) return false;
-    const layer = doc.findLayer(id);
-    if (!layer) return false;
-    const canvas = makeCanvas(doc.size.width, doc.size.height);
-    drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
-    try {
-      const blob = await canvasToBlob(canvas, 'image/png');
-      const url = URL.createObjectURL(blob);
-      downloadUrl(url, `${baseName(doc.name || 'studio')}-${layer.name || '图层'}.png`);
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      toastSuccess(`已导出图层「${layer.name}」`);
-      return true;
-    } catch (err) {
-      toastError(err, '导出图层失败');
-      return false;
-    }
-  }
-
   /** D25.3：把选中图层烘成画布尺寸 PNG 存进素材仓库（含蒙版/变换/文字/形状）。 */
   async function saveSelectedToMaterialsAction(id) {
     if (!doc) return false;
@@ -1869,16 +1878,111 @@ export function createStudioPage(host) {
       toastWarn('这个图层没有可保存的画面（可能已隐藏或损坏）');
       return false;
     }
+    const props = layerPropsFor(layer);
+    // 蒙版没法跟着 params 传图，位图已经烘进 alpha，这里不再标记 hasMask。
+    const sidecar = {
+      v: 1,
+      kind: props.kind,
+      props: { ...props, hasMask: false, maskVisible: true },
+      docW: doc.size.width,
+      docH: doc.size.height,
+    };
     await favoriteImage({
       image: await readFileAsDataURL(blob),
       kind: 'studio',
       category: '图层',
       title: `${baseName(doc.name || 'studio')} · ${layer.name || '图层'}`,
+      params: { layer: sidecar },
       source: 'studio',
       sourceRef: projectId || '',
     });
     if (raw) toast('图层不在画布内，已按原始像素保存');
     return true;
+  }
+
+  /**
+   * D26.1：按图层 sidecar 在当前工程重建图层（素材仓库 / 图层库共用）。
+   * - text / shape：重建为可继续编辑的图层（尺寸不同时按画布比缩放几何）；
+   * - overlay + flattened：blob 是「画布尺寸的合成 PNG」，按 0,0 铺回；
+   * - overlay：blob 是图层原位图，按原几何还原。
+   */
+  async function addLayerFromSidecar(sidecar, { blob = null, name = '', flattened = false, focusSticker = false } = {}) {
+    if (!doc || !sidecar?.props) return null;
+    const props = sidecar.props;
+    const srcW = Number(sidecar.docW) || doc.size.width;
+    const srcH = Number(sidecar.docH) || doc.size.height;
+    const factor = Math.min(
+      doc.size.width / Math.max(1, srcW),
+      doc.size.height / Math.max(1, srcH),
+    );
+    const scaled = (value) => Math.round((Number(value) || 0) * factor);
+    const label = name || props.name || '图层';
+    if (props.kind === 'text') {
+      const layer = doc.addTextLayer(
+        { ...props, fontSize: (Number(props.fontSize) || 16) * factor },
+        { name: label, x: scaled(props.x), y: scaled(props.y) },
+      );
+      afterLayerAdded(layer, { focusSticker });
+      return layer;
+    }
+    if (props.kind === 'shape') {
+      const layer = doc.addShapeLayer(
+        {
+          shape: props.shape,
+          fill: props.fill,
+          stroke: props.stroke,
+          strokeWidth: (Number(props.shapeStrokeWidth) || 0) * factor,
+          radius: (Number(props.radius) || 0) * factor,
+          opacity: props.opacity,
+          blend: props.blend,
+          clipped: props.clipped,
+          style: props.style,
+        },
+        {
+          name: label,
+          x: scaled(props.x),
+          y: scaled(props.y),
+          width: scaled(props.width),
+          height: scaled(props.height),
+        },
+      );
+      afterLayerAdded(layer, { focusSticker });
+      return layer;
+    }
+    if (!blob) return null;
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = await loadImage(url);
+      const layer = flattened
+        ? doc.addOverlay(image, {
+            name: label,
+            x: 0,
+            y: 0,
+            scale: factor,
+            // 合成 PNG 里已经乘过不透明度，这里不再重复。
+            opacity: 1,
+            blend: props.blend || 'source-over',
+          })
+        : doc.addOverlay(image, {
+            name: label,
+            x: scaled(props.x),
+            y: scaled(props.y),
+            scale: (Number(props.scale) || 1) * factor,
+            opacity: props.opacity,
+            rotation: props.rotation,
+            flipH: props.flipH,
+            flipV: props.flipV,
+            blend: props.blend,
+            clipped: props.clipped,
+            quad: props.quad,
+            locked: props.locked,
+          });
+      layerBlobs.set(layer.id, blob);
+      afterLayerAdded(layer, { focusSticker });
+      return layer;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 
   /**
@@ -1909,6 +2013,81 @@ export function createStudioPage(host) {
     }
     const raw = await layerBlobFor(layer).catch(() => null);
     return raw ? { blob: raw, raw: true } : { blob: null, raw: false };
+  }
+
+  /** 导出文件名里不能出现路径分隔符等字符。 */
+  function safeFilePart(value, fallback = '图层') {
+    const text = String(value || '')
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .trim();
+    return text || fallback;
+  }
+
+  /**
+   * D26.4：图层导出。
+   * current = 当前图层 PNG；visible = 所有可见图层逐个 PNG；with-mask = 当前图层 + 蒙版。
+   */
+  async function exportLayersAction(mode = 'current') {
+    if (!doc) return false;
+    const name = baseName(doc.name || 'studio');
+    const bake = (layer) => {
+      const canvas = makeCanvas(doc.size.width, doc.size.height);
+      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
+      return canvasToBlob(canvas, 'image/png');
+    };
+    const save = async (blob, filename) => {
+      const url = URL.createObjectURL(blob);
+      downloadUrl(url, filename);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    };
+
+    if (mode === 'visible') {
+      const list = (doc.layers || []).filter(
+        (layer) => layer.kind !== 'base' && !layer.isAdjustment && layer.visible !== false,
+      );
+      if (!list.length) {
+        toastWarn('没有可见图层可以导出');
+        return false;
+      }
+      if (list.length > 5) {
+        const ok = await confirmDialog({
+          title: '导出所有可见图层',
+          message: `将连续下载 ${list.length} 个 PNG，浏览器可能询问是否允许下载多个文件。继续？`,
+          confirmText: '开始导出',
+        });
+        if (!ok) return false;
+      }
+      try {
+        for (const layer of list) {
+          await save(await bake(layer), `${name}-${safeFilePart(layer.name)}.png`);
+        }
+        toastSuccess(`已导出 ${list.length} 个图层`);
+        return true;
+      } catch (err) {
+        toastError(err, '批量导出失败');
+        return false;
+      }
+    }
+
+    const layer = doc.findLayer(selectedLayerId);
+    if (!layer) {
+      toastWarn('请先选中一个图层');
+      return false;
+    }
+    try {
+      await save(await bake(layer), `${name}-${safeFilePart(layer.name)}.png`);
+      if (mode === 'with-mask' && layer.mask) {
+        await save(await canvasToBlob(layer.mask, 'image/png'), `${name}-${safeFilePart(layer.name)}-mask.png`);
+      } else if (mode === 'with-mask') {
+        toast('该图层没有蒙版，只导出了图层');
+      }
+      toastSuccess(mode === 'with-mask' ? '已导出图层与蒙版' : `已导出图层「${layer.name}」`);
+      return true;
+    } catch (err) {
+      toastError(err, '导出图层失败');
+      return false;
+    }
   }
 
   /** 复制选中图层到内存缓冲（限图片图层；文字/形状/调整层暂不支持）。 */
@@ -2001,21 +2180,37 @@ export function createStudioPage(host) {
     const layer = doc.findLayer(selectedLayerId);
     if (!layer) return null;
     if (layer.isAdjustment) {
-      toastWarn('调整图层没有位图，不能存入图层库');
+      toastWarn('调整图层没有画面，不能存入图层库');
       return null;
     }
-    const blob = await layerBlobFor(layer);
-    if (!blob) {
+    const props = layerPropsFor(layer);
+    // D26.3：文字 / 形状没有位图，存 props 即可，置入时重建为可编辑图层。
+    const vector = layer.isText || layer.isShape;
+    const blob = vector ? null : await layerBlobFor(layer);
+    if (!vector && !blob) {
       toastWarn('该图层没有可保存的位图');
       return null;
+    }
+    let maskBlob = null;
+    if (layer.mask) {
+      try {
+        maskBlob = await canvasToBlob(layer.mask, 'image/png');
+      } catch {
+        maskBlob = null;
+      }
     }
     const asset = {
       id: `la-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       name: layer.name || '图层',
+      kind: props.kind,
+      props,
+      docW: doc.size.width,
+      docH: doc.size.height,
       width: Math.round(layer.width || 0),
       height: Math.round(layer.height || 0),
       thumbUrl: layerThumbFor(layer),
       blob,
+      maskBlob,
       createdAt: Date.now(),
       meta: { source: 'layer', projectId },
     };
@@ -2030,11 +2225,52 @@ export function createStudioPage(host) {
     }
   }
 
+  /** 把图层库里的蒙版贴回新图层（D26.3）。 */
+  async function restoreLibraryMask(layer, asset) {
+    if (!asset?.maskBlob || !layer?.ensureMask) return;
+    let url = '';
+    try {
+      url = URL.createObjectURL(asset.maskBlob);
+      const image = await loadImage(url);
+      const mask = layer.ensureMask();
+      const mctx = mask.getContext('2d');
+      mctx.clearRect(0, 0, mask.width, mask.height);
+      mctx.drawImage(image, 0, 0, mask.width, mask.height);
+      layer.maskVisible = asset.props?.maskVisible !== false;
+      layer.touchMask?.();
+      scheduleDraw();
+      scheduleSave();
+    } catch {
+      /* 蒙版恢复失败不影响图层本身 */
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
+
   async function insertLayerFromLibraryAction(id) {
     if (!doc || !id) return null;
     const assets = await fetchLayerAssetsAction();
     const asset = assets.find((item) => item.id === id);
-    if (!asset?.blob) {
+    if (!asset) {
+      toastWarn('该图层素材已失效');
+      return null;
+    }
+    // D26.3：带 props 的记录按类型重建（含几何 / 混合 / 文字或形状参数）。
+    if (asset.props) {
+      const layer = await addLayerFromSidecar(
+        { v: 1, kind: asset.kind || asset.props.kind, props: asset.props, docW: asset.docW, docH: asset.docH },
+        { blob: asset.blob, name: asset.name },
+      );
+      if (!layer) {
+        toastWarn('该图层素材已失效');
+        return null;
+      }
+      await restoreLibraryMask(layer, asset);
+      toastSuccess(`已置入「${asset.name || '图层库素材'}」`);
+      return layer;
+    }
+    // 旧记录：只有位图，按 60% 居中置入。
+    if (!asset.blob) {
       toastWarn('该图层素材已失效');
       return null;
     }
@@ -2044,17 +2280,7 @@ export function createStudioPage(host) {
       const fit = Math.min(1, (doc.size.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
       const layer = doc.addOverlay(image, { name: asset.name || '图层库素材', scale: fit });
       layerBlobs.set(layer.id, asset.blob);
-      selectedLayerIds.clear();
-      selectedLayerIds.add(layer.id);
-      selectedLayerId = layer.id;
-      syncAdjustInputs();
-      syncStickerPane();
-      syncShapePane();
-      syncLayerProps();
-      updateHistoryUi();
-      scheduleSave();
-      scheduleDraw();
-      ai?.refresh?.();
+      afterLayerAdded(layer);
       toastSuccess(`已置入「${asset.name || '图层库素材'}」`);
       return layer;
     } catch (err) {
@@ -2711,8 +2937,9 @@ export function createStudioPage(host) {
     mergeLayers(mode) {
       return mergeLayersAction(mode);
     },
-    exportLayer(id) {
-      return exportLayerAction(id);
+    /* D26.4：导出菜单（当前 / 所有可见 / 当前+蒙版） */
+    exportLayers(mode) {
+      return exportLayersAction(mode);
     },
     saveSelectedToMaterials(id) {
       return saveSelectedToMaterialsAction(id);
@@ -2754,7 +2981,10 @@ export function createStudioPage(host) {
           void (async () => {
             let added = 0;
             for (const item of items) {
-              const layer = await addMaterialLayer(item.src, item.name, { focusSticker: false });
+              const layer = await addMaterialLayer(item.src, item.name, {
+                focusSticker: false,
+                sidecar: item.params?.layer || null,
+              });
               if (layer) added += 1;
             }
             if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加到画布');
@@ -6318,6 +6548,63 @@ export function createStudioPage(host) {
     }
   }
 
+  /**
+   * D26.1：图层 → 可持久化 props。工程保存、素材 sidecar、图层库共用这一份，
+   * 保证「存进去」和「置入时重建」的字段永远对得上。
+   */
+  function layerPropsFor(layer) {
+    return {
+      kind: layer.isAdjustment ? 'adjustment' : layer.isText ? 'text' : layer.isShape ? 'shape' : 'overlay',
+      name: layer.name,
+      x: layer.x ?? 0,
+      y: layer.y ?? 0,
+      scale: layer.scale ?? 1,
+      opacity: layer.opacity,
+      rotation: layer.rotation ?? 0,
+      flipH: Boolean(layer.flipH),
+      flipV: Boolean(layer.flipV),
+      blend: layer.blend || 'source-over',
+      clipped: Boolean(layer.clipped),
+      groupId: layer.groupId || '',
+      smart: Boolean(layer.smart),
+      quad: layer.quad ? layer.quad.map((point) => ({ ...point })) : null,
+      locked: layer.locked,
+      visible: layer.visible !== false,
+      hasMask: Boolean(layer.mask),
+      maskVisible: layer.maskVisible,
+      ...(layer.isAdjustment ? { params: { ...layer.params }, local: { ...layer.local } } : {}),
+      ...(layer.isText
+        ? {
+            text: layer.text,
+            fontFamily: layer.fontFamily,
+            fontSize: layer.fontSize,
+            fontWeight: layer.fontWeight,
+            color: layer.color,
+            lineHeight: layer.lineHeight,
+            strokeWidth: layer.strokeWidth,
+            strokeColor: layer.strokeColor,
+            shadowBlur: layer.shadowBlur,
+            shadowX: layer.shadowX,
+            shadowY: layer.shadowY,
+            shadowColor: layer.shadowColor,
+            arc: layer.arc,
+          }
+        : {}),
+      ...(layer.isShape
+        ? {
+            width: layer.width,
+            height: layer.height,
+            shape: layer.shape,
+            fill: layer.fill,
+            stroke: layer.stroke,
+            shapeStrokeWidth: layer.strokeWidth,
+            radius: layer.radius,
+            style: layer.style,
+          }
+        : {}),
+    };
+  }
+
   async function collectProject() {
     const current = doc;
     if (!current) return null;
@@ -6385,56 +6672,7 @@ export function createStudioPage(host) {
       }
       layers.push({
         id: layer.id,
-        props: {
-          kind: layer.isAdjustment ? 'adjustment' : layer.isText ? 'text' : layer.isShape ? 'shape' : 'overlay',
-          name: layer.name,
-          x: layer.x ?? 0,
-          y: layer.y ?? 0,
-          scale: layer.scale ?? 1,
-          opacity: layer.opacity,
-          rotation: layer.rotation ?? 0,
-          flipH: Boolean(layer.flipH),
-          flipV: Boolean(layer.flipV),
-          blend: layer.blend || 'source-over',
-          clipped: Boolean(layer.clipped),
-          groupId: layer.groupId || '',
-          smart: Boolean(layer.smart),
-          quad: layer.quad ? layer.quad.map((point) => ({ ...point })) : null,
-          locked: layer.locked,
-          visible: layer.visible !== false,
-          hasMask: Boolean(layer.mask),
-          maskVisible: layer.maskVisible,
-          ...(layer.isAdjustment ? { params: { ...layer.params }, local: { ...layer.local } } : {}),
-          ...(layer.isText
-            ? {
-                text: layer.text,
-                fontFamily: layer.fontFamily,
-                fontSize: layer.fontSize,
-                fontWeight: layer.fontWeight,
-                color: layer.color,
-                lineHeight: layer.lineHeight,
-                strokeWidth: layer.strokeWidth,
-                strokeColor: layer.strokeColor,
-                shadowBlur: layer.shadowBlur,
-                shadowX: layer.shadowX,
-                shadowY: layer.shadowY,
-                shadowColor: layer.shadowColor,
-                arc: layer.arc,
-              }
-            : {}),
-          ...(layer.isShape
-            ? {
-                width: layer.width,
-                height: layer.height,
-                shape: layer.shape,
-                fill: layer.fill,
-                stroke: layer.stroke,
-                shapeStrokeWidth: layer.strokeWidth,
-                radius: layer.radius,
-                style: layer.style,
-              }
-            : {}),
-        },
+        props: layerPropsFor(layer),
         blob,
         maskBlob: layerMaskBlob,
       });
@@ -9350,7 +9588,10 @@ export function createStudioPage(host) {
     if (doc) {
       let added = 0;
       for (const item of list) {
-        const layer = await addMaterialLayer(item.src, item.name, { focusSticker: false });
+        const layer = await addMaterialLayer(item.src, item.name, {
+          focusSticker: false,
+          sidecar: item.params?.layer || null,
+        });
         if (layer) added += 1;
       }
       if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加到画布');
@@ -9710,7 +9951,7 @@ export function createStudioPage(host) {
     const mode = payload.mode === 'layer' ? 'layer' : 'project';
     try {
       if (mode === 'layer' && doc) {
-        const layer = await addMaterialLayer(payload.url, payload.name);
+        const layer = await addMaterialLayer(payload.url, payload.name, { sidecar: payload.sidecar });
         if (!layer) return false;
         toastSuccess(payload.toast || '已作为新图层加入当前工程');
         return true;
@@ -9737,13 +9978,23 @@ export function createStudioPage(host) {
     }
   }
 
-  /** 取素材文件后作为叠加层加入当前工程（按主图 60% 居中适配）。 */
-  async function addMaterialLayer(url, name, { focusSticker = true } = {}) {
+  /**
+   * 取素材文件后作为图层加入当前工程。
+   * D26.1：素材带图层 sidecar 时按类型重建（文字/形状可继续编辑，位图按原几何还原），
+   * 没有 sidecar 的旧素材仍按主图 60% 居中。
+   */
+  async function addMaterialLayer(url, name, { focusSticker = true, sidecar = null } = {}) {
     if (!doc) return null;
+    if (sidecar?.props?.kind === 'text' || sidecar?.props?.kind === 'shape') {
+      return addLayerFromSidecar(sidecar, { name, focusSticker });
+    }
     const blob = await fetchBlob(url);
     if (!blob) {
       toastWarn('素材图片读取失败，可能已被删除');
       return null;
+    }
+    if (sidecar?.props) {
+      return addLayerFromSidecar(sidecar, { blob, name, flattened: true, focusSticker });
     }
     const file = new File([blob], name || 'material.png', { type: blob.type || 'image/png' });
     return addOverlayFile(file, {

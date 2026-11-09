@@ -53,7 +53,7 @@ export function createLayerColumn(host, ctx) {
       <button type="button" data-lc-act="bottom" title="置底（Ctrl/Cmd + Shift + [）"><span class="glyph">⤓</span><span class="label">置底</span></button>
       <button type="button" data-lc-act="copy" title="复制图层（Ctrl/Cmd + J）"><span class="glyph">⧉</span><span class="label">复制</span></button>
       <button type="button" data-lc-act="del" title="删除图层（Delete）"><span class="glyph">✕</span><span class="label">删除</span></button>
-      <button type="button" data-lc-act="export" title="把选中图层导出为 PNG（画布尺寸）"><span class="glyph">⭳</span><span class="label">导出</span></button>
+      <button type="button" data-lc-act="export" title="导出图层" aria-haspopup="menu" aria-expanded="false"><span class="glyph">⭳</span><span class="label">导出</span></button>
       <button type="button" data-lc-act="material" title="把选中图层存入素材仓库（PNG，画布尺寸、透明底）"><span class="glyph">☆</span><span class="label">素材</span></button>
       <button type="button" data-lc-act="group" title="把选中图层编成一个组（组可整体显隐 / 调不透明度 / 改混合）"><span class="glyph">▣</span><span class="label">成组</span></button>
       <button type="button" data-lc-act="ungroup" title="解散选中图层所在的组"><span class="glyph">▢</span><span class="label">解组</span></button>
@@ -63,6 +63,11 @@ export function createLayerColumn(host, ctx) {
         <button type="button" role="menuitem" data-lc-merge="down">向下合并（Ctrl/Cmd + E）</button>
         <button type="button" role="menuitem" data-lc-merge="visible">合并可见（Ctrl/Cmd + Shift + E）</button>
         <button type="button" role="menuitem" data-lc-merge="flatten">拼合图像（Ctrl/Cmd + Alt + Shift + E）</button>
+      </div>
+      <div class="studio-merge-menu" data-lc-export-menu role="menu" hidden>
+        <button type="button" role="menuitem" data-lc-export="current">当前图层 PNG</button>
+        <button type="button" role="menuitem" data-lc-export="visible">所有可见图层（逐个 PNG）</button>
+        <button type="button" role="menuitem" data-lc-export="with-mask">当前图层 + 蒙版</button>
       </div>
     </div>
     <button class="studio-layers-spine" type="button" data-lc-spine title="展开图层栏" aria-label="展开图层栏">
@@ -80,6 +85,8 @@ export function createLayerColumn(host, ctx) {
     foot: host.querySelector('.studio-layers-foot'),
     mergeMenu: host.querySelector('[data-lc-merge-menu]'),
     mergeBtn: host.querySelector('[data-lc-act="merge"]'),
+    exportMenu: host.querySelector('[data-lc-export-menu]'),
+    exportBtn: host.querySelector('[data-lc-act="export"]'),
     lib: host.querySelector('[data-lc-lib]'),
     libList: host.querySelector('[data-lc-lib-list]'),
     libEmpty: host.querySelector('[data-lc-lib-empty]'),
@@ -104,8 +111,24 @@ export function createLayerColumn(host, ctx) {
   const toggleMergeMenu = () => {
     if (!refs.mergeMenu) return;
     const open = refs.mergeMenu.hidden;
+    closeExportMenu();
     refs.mergeMenu.hidden = !open;
     refs.mergeBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  /** D26.4：导出菜单（当前图层 / 所有可见图层 / 当前图层 + 蒙版）。 */
+  const closeExportMenu = () => {
+    if (!refs.exportMenu || refs.exportMenu.hidden) return;
+    refs.exportMenu.hidden = true;
+    refs.exportBtn?.setAttribute('aria-expanded', 'false');
+  };
+
+  const toggleExportMenu = () => {
+    if (!refs.exportMenu) return;
+    const open = refs.exportMenu.hidden;
+    closeMergeMenu();
+    refs.exportMenu.hidden = !open;
+    refs.exportBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
   };
 
   async function refreshLibrary() {
@@ -289,6 +312,7 @@ export function createLayerColumn(host, ctx) {
       const act = button.dataset.lcAct;
       // 「合并」菜单里的「合并可见 / 拼合」不需要选中层，只要求有图层。
       if (act === 'merge') button.disabled = !hasLayers;
+      else if (act === 'export') button.disabled = !hasLayers;
       else if (act === 'group') button.disabled = !(selected || selectedIds.length);
       else if (act === 'ungroup') button.disabled = !inAnyGroup;
       else if (act === 'up' || act === 'top') button.disabled = !canEdit || atTop;
@@ -330,11 +354,21 @@ export function createLayerColumn(host, ctx) {
     if (!event.target.closest('.studio-merge-menu') && !event.target.closest('[data-lc-act="merge"]')) {
       closeMergeMenu();
     }
+    if (!event.target.closest('[data-lc-export-menu]') && !event.target.closest('[data-lc-act="export"]')) {
+      closeExportMenu();
+    }
     if (!event.target.closest('.studio-library') && !event.target.closest('[data-lc-library]')) {
       setLibraryOpen(false);
     }
     if (!event.target.closest('[data-lc-add-menu]') && !event.target.closest('[data-lc-add]')) {
       setAddMenuOpen(false);
+    }
+    // D26.4：导出菜单项。
+    const exportItem = event.target.closest('[data-lc-export]');
+    if (exportItem) {
+      closeExportMenu();
+      void ctx.exportLayers?.(exportItem.dataset.lcExport);
+      return;
     }
     // D25.2：添加图层菜单。
     const addBtn = event.target.closest('[data-lc-add]');
@@ -463,6 +497,10 @@ export function createLayerColumn(host, ctx) {
         toggleMergeMenu();
         return;
       }
+      if (action === 'export') {
+        toggleExportMenu();
+        return;
+      }
       if (action === 'group') {
         ctx.createGroupFromSelection?.();
         return;
@@ -479,7 +517,6 @@ export function createLayerColumn(host, ctx) {
       else if (action === 'bottom') ctx.moveLayerEdge?.(id, 'bottom');
       else if (action === 'copy') ctx.cloneLayer?.(id);
       else if (action === 'del') ctx.removeLayer?.(id);
-      else if (action === 'export') void ctx.exportLayer?.(id);
       else if (action === 'material') void ctx.saveSelectedToMaterials?.(id);
     }
   });

@@ -447,7 +447,8 @@ export function createImageToolsPage(host) {
   const state = {
     source: null, // {dataUrl,name,width,height}
     stagedOps: [],
-    crop: { rect: null, ratioLabel: 'Free', grid: false, rows: 2, columns: 2, rowGap: 0, columnGap: 0 },
+    crop: { rect: null, ratioLabel: 'Free' },
+    grid: { selected: null },
     mirror: { axis: 'vertical', position: 0.5, side: 'start', rect: null },
     adjust: { ...NEUTRAL_ADJUST },
     resize: { width: 0, height: 0, lock: true, fit: 'contain' },
@@ -580,18 +581,25 @@ export function createImageToolsPage(host) {
                     <button class="btn ghost sm" type="button" data-ref="cropReset">重置选框</button>
                   </div>
                   <div class="size-summary"><span>裁剪输出</span><span class="mono" data-ref="cropSize">—</span></div>
-                  <label class="switch">
-                    <input type="checkbox" data-ref="gridEnabled" />
-                    <span class="switch-track"></span>
-                    <span class="switch-label">宫格切分<small>一次输出多张（最多 64 块）</small></span>
-                  </label>
-                  <div class="grid-2 hidden" data-ref="gridOptions">
+                </div>
+              </details>
+
+              <details class="fold tool-fold" data-group="adjust" data-section="grid">
+                <summary>宫格切分</summary>
+                <div class="fold-body">
+                  <div class="grid-2">
                     <label class="field"><span class="field-label">行数</span><input class="input mono" type="number" min="1" max="10" step="1" value="2" data-ref="gridRows" /></label>
                     <label class="field"><span class="field-label">列数</span><input class="input mono" type="number" min="1" max="10" step="1" value="2" data-ref="gridColumns" /></label>
-                    <label class="field"><span class="field-label">行间距 px</span><input class="input mono" type="number" min="0" max="200" step="1" value="0" data-ref="gridRowGap" /></label>
-                    <label class="field"><span class="field-label">列间距 px</span><input class="input mono" type="number" min="0" max="200" step="1" value="0" data-ref="gridColumnGap" /></label>
+                    <label class="field"><span class="field-label">横向间隔 px</span><input class="input mono" type="number" min="0" max="200" step="1" value="0" data-ref="gridRowGap" /></label>
+                    <label class="field"><span class="field-label">竖向间隔 px</span><input class="input mono" type="number" min="0" max="200" step="1" value="0" data-ref="gridColumnGap" /></label>
                   </div>
-                  <button class="btn ghost sm block" type="button" data-ref="gridApply">宫格切分并保存</button>
+                  <div class="size-summary"><span>宫格</span><span class="mono" data-ref="gridSummary">—</span></div>
+                  <div class="grid-2">
+                    <button class="btn ghost sm" type="button" data-ref="gridSelectAll">全选</button>
+                    <button class="btn ghost sm" type="button" data-ref="gridSelectNone">全不选</button>
+                  </div>
+                  <button class="btn primary sm block" type="button" data-ref="gridApply">宫格切分并保存</button>
+                  <div class="field-hint">点击画布里的格子可切换是否导出；有裁剪框时按裁剪区域切分，否则按整图切分。</div>
                 </div>
               </details>
 
@@ -1098,12 +1106,13 @@ export function createImageToolsPage(host) {
     mirrorRegion: ref('mirrorRegion'),
     mirrorApply: ref('mirrorApply'),
     mirrorReset: ref('mirrorReset'),
-    gridEnabled: ref('gridEnabled'),
-    gridOptions: ref('gridOptions'),
     gridRows: ref('gridRows'),
     gridColumns: ref('gridColumns'),
     gridRowGap: ref('gridRowGap'),
     gridColumnGap: ref('gridColumnGap'),
+    gridSummary: ref('gridSummary'),
+    gridSelectAll: ref('gridSelectAll'),
+    gridSelectNone: ref('gridSelectNone'),
     gridApply: ref('gridApply'),
     rotateAngle: ref('rotateAngle'),
     rotateApply: ref('rotateApply'),
@@ -1323,6 +1332,13 @@ export function createImageToolsPage(host) {
 
   const ACTION_MAP = {
     adjust: () => {
+      if (adjustSection === 'grid') {
+        return {
+          primary: refs.gridApply,
+          label: '宫格切分并保存',
+          hint: '按当前行列与间隔导出选中的格子',
+        };
+      }
       if (adjustSection === 'mirror') {
         return {
           primary: refs.mirrorApply,
@@ -1517,8 +1533,8 @@ export function createImageToolsPage(host) {
           });
           scrollToolIntoView(fold);
           drawOverlay();
-        } else if (fold.dataset.section === 'mirror') {
-          // 收起镜像面板时立即清掉实时预览
+        } else if (fold.dataset.section === 'mirror' || fold.dataset.section === 'grid') {
+          // 收起镜像/宫格面板时立即清掉叠加层
           drawOverlay();
         }
         syncActionBar();
@@ -1630,6 +1646,7 @@ export function createImageToolsPage(host) {
     state.mirror.position = 0.5;
     state.mirror.side = 'start';
     state.mirror.axis = 'vertical';
+    state.grid.selected = null;
     state.resize.width = width;
     state.resize.height = height;
     refs.resizeWidth.value = String(width);
@@ -1976,15 +1993,23 @@ export function createImageToolsPage(host) {
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, displayStamp);
     else if (state.tool === 'watermark') drawWatermarkPreview(octx, displayStamp);
     else if (state.tool === 'adjust' && adjustSection === 'crop') drawCropOverlay(octx, displayStamp);
+    else if (state.tool === 'adjust' && adjustSection === 'grid') drawGridOverlay(octx, displayStamp);
     else if (mirrorSectionActive()) {
       drawMirrorPreview(octx, displayStamp);
       drawMirrorOverlay(octx, displayStamp);
     }
     const cropMode = state.tool === 'adjust' && adjustSection === 'crop';
+    const gridMode = state.tool === 'adjust' && adjustSection === 'grid';
     const mirrorMode = mirrorSectionActive();
     const wmCustom =
       state.tool === 'watermark' && refs.wmPosition.value === 'custom' && !refs.wmTile.checked;
-    refs.overlayCanvas.style.cursor = wmCustom ? 'move' : cropMode || mirrorMode ? 'crosshair' : 'default';
+    refs.overlayCanvas.style.cursor = wmCustom
+      ? 'move'
+      : gridMode
+        ? 'pointer'
+        : cropMode || mirrorMode
+          ? 'crosshair'
+          : 'default';
   }
 
   /** 镜像实时预览：把当前工作画布按显示尺寸复制后，套用同一套镜像参数。 */
@@ -2020,6 +2045,7 @@ export function createImageToolsPage(host) {
     updateEstimate();
     updateResizeHint();
     syncMirrorControls();
+    syncGridSummary();
     if (currentWorkDims.width && currentWorkDims.height) {
       refs.stageSub.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)}`;
     }
@@ -2133,30 +2159,6 @@ export function createImageToolsPage(host) {
     ctx.fill('evenodd');
     ctx.restore();
 
-    // 网格线
-    if (state.crop.grid) {
-      const rows = Math.max(1, Math.min(10, Number(refs.gridRows.value) || 2));
-      const columns = Math.max(1, Math.min(10, Number(refs.gridColumns.value) || 2));
-      const rowGap = Math.max(0, Number(refs.gridRowGap.value) || 0);
-      const columnGap = Math.max(0, Number(refs.gridColumnGap.value) || 0);
-      const rects = cropGridRects(rect, display, rows, columns, rowGap, columnGap, 'display');
-      if (rects && rects.length) {
-        ctx.save();
-        // 先画深色打底再画亮线：浅色/深色画面上都能看清真正的切分线
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
-        ctx.lineWidth = 3;
-        for (const cell of rects) {
-          ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width, cell.height);
-        }
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
-        ctx.lineWidth = 1.3;
-        for (const cell of rects) {
-          ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width, cell.height);
-        }
-        ctx.restore();
-      }
-    }
-
     // 裁剪框 + 8 个手柄（白色描边 + 墨绿填充）
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.95)';
@@ -2175,20 +2177,116 @@ export function createImageToolsPage(host) {
       ctx.lineWidth = 1.4;
       ctx.stroke();
     }
-    // 三分线：开启宫格时隐藏，避免和真正的切分线混淆
-    if (!state.crop.grid) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-      ctx.lineWidth = 1;
-      for (let i = 1; i < 3; i += 1) {
-        ctx.beginPath();
-        ctx.moveTo(rect.x + (rect.width * i) / 3, rect.y);
-        ctx.lineTo(rect.x + (rect.width * i) / 3, rect.y + rect.height);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(rect.x, rect.y + (rect.height * i) / 3);
-        ctx.lineTo(rect.x + rect.width, rect.y + (rect.height * i) / 3);
-        ctx.stroke();
+    // 三分线
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 3; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(rect.x + (rect.width * i) / 3, rect.y);
+      ctx.lineTo(rect.x + (rect.width * i) / 3, rect.y + rect.height);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(rect.x, rect.y + (rect.height * i) / 3);
+      ctx.lineTo(rect.x + rect.width, rect.y + (rect.height * i) / 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ---------------- 宫格切分 ---------------- */
+  const GRID_LINE = '#3b82f6';
+
+  function gridCounts() {
+    return {
+      rows: Math.max(1, Math.min(10, Number(refs.gridRows.value) || 2)),
+      columns: Math.max(1, Math.min(10, Number(refs.gridColumns.value) || 2)),
+      rowGap: Math.max(0, Number(refs.gridRowGap.value) || 0),
+      columnGap: Math.max(0, Number(refs.gridColumnGap.value) || 0),
+    };
+  }
+
+  function gridRegion(display) {
+    return state.crop.rect
+      ? clampRect(state.crop.rect, display)
+      : { x: 0, y: 0, width: display.width, height: display.height };
+  }
+
+  function gridCells(display) {
+    const { rows, columns, rowGap, columnGap } = gridCounts();
+    return cropGridRects(gridRegion(display), display, rows, columns, rowGap, columnGap, 'display');
+  }
+
+  function gridSelectedSet() {
+    const total = gridCounts().rows * gridCounts().columns;
+    if (!state.grid.selected) return new Set(Array.from({ length: total }, (_, i) => i + 1));
+    return new Set([...state.grid.selected].filter((n) => n >= 1 && n <= total));
+  }
+
+  function syncGridSummary() {
+    const { rows, columns } = gridCounts();
+    const total = rows * columns;
+    const selected = gridSelectedSet().size;
+    refs.gridSummary.textContent = `${rows} × ${columns} = ${fmtNum(total)} 块 · 已选 ${fmtNum(selected)}`;
+    refs.gridApply.disabled = selected === 0;
+    return { total, selected };
+  }
+
+  /** 宫格叠加层：蓝色切分线 + 单元格编号 + 选中状态。 */
+  function drawGridOverlay(ctx, display) {
+    if (!kit?.gridRects) return;
+    const rect = gridRegion(display);
+    const cells = gridCells(display);
+    if (!cells.length) return;
+    const selected = gridSelectedSet();
+    ctx.save();
+    // 外框：深色打底 + 蓝色实线
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+    ctx.strokeStyle = GRID_LINE;
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+    // 每个格子：未选中压暗，全部带编号
+    cells.forEach((cell, index) => {
+      const active = selected.has(index + 1);
+      if (!active) {
+        ctx.fillStyle = 'rgba(10, 12, 14, 0.55)';
+        ctx.fillRect(cell.x, cell.y, cell.width, cell.height);
       }
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.lineWidth = 2.4;
+      ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width - 1, cell.height - 1);
+      ctx.strokeStyle = active ? GRID_LINE : 'rgba(96, 165, 250, 0.55)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width - 1, cell.height - 1);
+      const label = String(index + 1);
+      ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillText(label, cell.x + 7, cell.y + 7);
+      ctx.fillStyle = active ? '#ffffff' : 'rgba(255, 255, 255, 0.5)';
+      ctx.fillText(label, cell.x + 6, cell.y + 6);
+    });
+    // 外框圆形手柄（视觉锚点，与参考图一致）
+    const points = [
+      [rect.x, rect.y],
+      [rect.x + rect.width / 2, rect.y],
+      [rect.x + rect.width, rect.y],
+      [rect.x, rect.y + rect.height / 2],
+      [rect.x + rect.width, rect.y + rect.height / 2],
+      [rect.x, rect.y + rect.height],
+      [rect.x + rect.width / 2, rect.y + rect.height],
+      [rect.x + rect.width, rect.y + rect.height],
+    ];
+    for (const [hx, hy] of points) {
+      ctx.beginPath();
+      ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = GRID_LINE;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -2678,6 +2776,27 @@ export function createImageToolsPage(host) {
       drag = { type: 'watermark', size: display };
       return;
     }
+    if (state.tool === 'adjust' && adjustSection === 'grid') {
+      const display = currentDisplaySize();
+      const cells = gridCells(display);
+      const index = cells.findIndex(
+        (cell) =>
+          point.x >= cell.x &&
+          point.x <= cell.x + cell.width &&
+          point.y >= cell.y &&
+          point.y <= cell.y + cell.height,
+      );
+      if (index < 0) return;
+      const set = gridSelectedSet();
+      const cellNo = index + 1;
+      if (set.has(cellNo)) set.delete(cellNo);
+      else set.add(cellNo);
+      state.grid.selected = set;
+      syncGridSummary();
+      drawOverlay();
+      event.preventDefault();
+      return;
+    }
     if (mirrorSectionActive()) {
       if (!kit) return;
       const display = currentDisplaySize();
@@ -2773,6 +2892,10 @@ export function createImageToolsPage(host) {
       } else {
         refs.overlayCanvas.style.cursor = 'default';
       }
+      return;
+    }
+    if (state.tool === 'adjust' && adjustSection === 'grid') {
+      refs.overlayCanvas.style.cursor = 'pointer';
       return;
     }
     if (mirrorSectionActive()) {
@@ -3023,6 +3146,7 @@ export function createImageToolsPage(host) {
     state.mirror.position = 0.5;
     state.mirror.side = 'start';
     state.mirror.axis = 'vertical';
+    state.grid.selected = null;
     refs.outpaintGo.disabled = true;
     refs.outpaintCancel.classList.add('hidden');
     syncPanoramaUi();
@@ -3227,10 +3351,32 @@ export function createImageToolsPage(host) {
     syncMirrorControls();
   });
 
-  refs.gridEnabled.addEventListener('change', () => {
-    state.crop.grid = refs.gridEnabled.checked;
-    refs.gridOptions.classList.toggle('hidden', !state.crop.grid);
-    render();
+  /* ---------------- 宫格切分 ---------------- */
+  refs.gridSelectAll.addEventListener('click', () => {
+    state.grid.selected = null;
+    syncGridSummary();
+    drawOverlay();
+  });
+
+  refs.gridSelectNone.addEventListener('click', () => {
+    state.grid.selected = new Set();
+    syncGridSummary();
+    drawOverlay();
+  });
+
+  // 行列变化后编号会重排，重置为全选；间隔变化不影响编号
+  [refs.gridRows, refs.gridColumns].forEach((input) => {
+    input.addEventListener('input', () => {
+      state.grid.selected = null;
+      syncGridSummary();
+      drawOverlay();
+    });
+  });
+  [refs.gridRowGap, refs.gridColumnGap].forEach((input) => {
+    input.addEventListener('input', () => {
+      syncGridSummary();
+      drawOverlay();
+    });
   });
 
   async function applyGrid() {
@@ -3242,16 +3388,27 @@ export function createImageToolsPage(host) {
       toastWarn('图像处理模块未就绪，请稍后重试');
       return;
     }
-    const rows = Math.max(1, Math.min(10, Number(refs.gridRows.value) || 2));
-    const columns = Math.max(1, Math.min(10, Number(refs.gridColumns.value) || 2));
-    const rowGap = Math.max(0, Number(refs.gridRowGap.value) || 0);
-    const columnGap = Math.max(0, Number(refs.gridColumnGap.value) || 0);
+    const { rows, columns, rowGap, columnGap } = gridCounts();
     if (rows * columns > 64) {
       toastWarn('宫格数量过多（最多 64 块）');
       return;
     }
-    const ops = [...state.stagedOps, ...(pendingCropPixelRect() ? [pendingCropPixelRect()] : []), { op: 'grid', rows, columns, row_gap: rowGap, column_gap: columnGap }];
-    await processAndSave(ops, { kind: 'grid', label: `宫格 ${rows}×${columns}`, button: refs.gridApply });
+    const { total, selected } = syncGridSummary();
+    if (selected === 0) {
+      toastWarn('请至少选择一个格子');
+      return;
+    }
+    const gridOp = { op: 'grid', rows, columns, row_gap: rowGap, column_gap: columnGap };
+    if (selected < total) {
+      gridOp.cells = [...gridSelectedSet()].sort((a, b) => a - b);
+    }
+    const pendingCrop = pendingCropPixelRect();
+    const ops = [...state.stagedOps, ...(pendingCrop ? [pendingCrop] : []), gridOp];
+    await processAndSave(ops, {
+      kind: 'grid',
+      label: `宫格 ${rows}×${columns} · ${selected} 张`,
+      button: refs.gridApply,
+    });
   }
 
   refs.gridApply.addEventListener('click', () => {

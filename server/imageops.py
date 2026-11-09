@@ -80,13 +80,27 @@ def op_crop(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
 
 
 def op_grid(image: Image.Image, spec: dict[str, Any]) -> list[Image.Image]:
-    """宫格切分：rows × columns，可带间隔（像素）。"""
+    """宫格切分：rows × columns，可带间隔（像素）与选中的格子序号（1 起，行优先）。"""
     rows = _as_int(spec.get("rows", 1), "rows", minimum=1)
     columns = _as_int(spec.get("columns", 1), "columns", minimum=1)
     row_gap = _as_int(spec.get("row_gap", 0), "row_gap")
     column_gap = _as_int(spec.get("column_gap", 0), "column_gap")
     if rows * columns > 64:
         raise ImageOpsError("宫格数量过多（最多 64 块）")
+
+    wanted: set[int] | None = None
+    raw_cells = spec.get("cells")
+    if raw_cells is not None:
+        if not isinstance(raw_cells, (list, tuple)):
+            raise ImageOpsError("cells 必须是数组")
+        wanted = set()
+        for value in raw_cells:
+            index = _as_int(value, "cells", minimum=1)
+            if index > rows * columns:
+                raise ImageOpsError(f"cells 里的序号超出范围（1~{rows * columns}）")
+            wanted.add(index)
+        if not wanted:
+            raise ImageOpsError("没有选中任何宫格")
 
     cell_w = (image.width - column_gap * (columns - 1)) / columns
     cell_h = (image.height - row_gap * (rows - 1)) / rows
@@ -96,6 +110,9 @@ def op_grid(image: Image.Image, spec: dict[str, Any]) -> list[Image.Image]:
     out: list[Image.Image] = []
     for r in range(rows):
         for c in range(columns):
+            index = r * columns + c + 1
+            if wanted is not None and index not in wanted:
+                continue
             left = int(round(c * (cell_w + column_gap)))
             top = int(round(r * (cell_h + row_gap)))
             right = int(round(left + cell_w))

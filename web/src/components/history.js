@@ -261,6 +261,16 @@ export function createHistoryPage(host) {
     return api.fileUrl(path);
   }
 
+  /** 图片解码完成前先透明，避免白→图的硬切；已加载的直接跳过。 */
+  function fadeInImage(img) {
+    if (!img) return;
+    if (img.complete && img.naturalWidth) return;
+    img.classList.add('is-pending');
+    const done = () => img.classList.remove('is-pending');
+    img.addEventListener('load', done, { once: true });
+    img.addEventListener('error', done, { once: true });
+  }
+
   function kindMeta() {
     return HISTORY_KINDS.find((kind) => kind.id === kindFilter) || HISTORY_KINDS[0];
   }
@@ -330,6 +340,7 @@ export function createHistoryPage(host) {
 
     // 缩略图缺失或加载失败：隐藏图片，不显示破图
     for (const img of refs.grid.querySelectorAll('.history-thumb img')) {
+      fadeInImage(img);
       img.addEventListener('error', () => {
         img.remove();
         const thumb = img.closest('[data-thumb]');
@@ -377,7 +388,9 @@ export function createHistoryPage(host) {
           .map(
             (image, index) => `
             <div class="result-card">
-              <div class="result-img-wrap">
+              <div class="result-img-wrap"${
+                image.width && image.height ? ` style="aspect-ratio:${Number(image.width)}/${Number(image.height)}"` : ''
+              }>
                 <a href="${escapeHtml(imageUrl(image.url))}" target="_blank" rel="noopener" title="打开原图">
                   <img src="${escapeHtml(imageUrl(image.url))}" alt="历史结果 ${index + 1}" loading="lazy" />
                 </a>
@@ -406,6 +419,8 @@ export function createHistoryPage(host) {
         <span class="field-label">参数摘要</span>
         <pre class="result-prompt mono" style="margin:0;font-family:var(--mono)">${escapeHtml(summarizeParams(item.params))}</pre>
       </div>`;
+
+    content.querySelectorAll('.result-img-wrap img').forEach(fadeInImage);
 
     content.querySelectorAll('[data-download-index]').forEach((button) => {
       button.addEventListener('click', () => {

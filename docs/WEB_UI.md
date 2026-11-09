@@ -128,6 +128,7 @@ App Shell（所有页面共享）：
 - `GET /api/history?limit=200`，缩略图网格（优先 `thumb_url`）；分类由 `src/data/historyKinds.js` 注册表生成：全部 / 文生图 / 图像编辑 / 高清放大 / 精修工程，任务卡片与详情标题按 `kind` 显示正确类型（放大不再归为文生图）；
 - 「精修工程」并入分类 chip：选中时只显示工程，其余任务分类只显示对应任务，全部视图同时展示两个区块；
 - 点击卡片查看大图、参数摘要、提示词、`align` / `quality` 标记、时间；
+- 缩略图与详情结果图在解码完成前透明（`.is-pending`），加载后 200ms 淡入；详情结果图按原图宽高比占位（`aspect-ratio`），弹窗高度不随加载跳动；失败时回落到「无预览」；
 - 下载单张 / 全部、复制提示词、导出可复现请求参数 JSON（`/api/jobs/{id}/replay.json`）；
 - **编辑任务一键回退**：详情弹窗对 `kind=edit` 提供「回到图像编辑」——读取 `meta.input_urls` 还原输入图（缺失时降级用结果图）、`meta.mask_url` 还原遮罩（新任务起留档，旧记录按无遮罩处理）、`replay.params` 还原预设 / 覆盖项 / 尺寸 / 采样 / 种子 / Turbo / LoRA / 一致性，经 `handoff.restore` 交接后跳 `#edit`；
   - LoRA 取 `meta.request_loras`（预设合并前的用户原始选择），避免把后端自动挂载的任务 / 一致性 / 加速 LoRA 当成用户 LoRA 回填；文件名会按目录映射回完整 value；

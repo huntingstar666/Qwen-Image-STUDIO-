@@ -2332,6 +2332,17 @@ details.fold > .fold-body {
   object-fit: cover;
 }
 
+/* 解码完成前透明，避免白底→图的硬切；失败时也移除 pending，交给「无预览」兜底 */
+.history-thumb img,
+.history-detail .result-img-wrap img {
+  transition: opacity 0.2s var(--ease);
+}
+
+.history-thumb img.is-pending,
+.history-detail .result-img-wrap img.is-pending {
+  opacity: 0;
+}
+
 .history-info {
   display: flex;
   flex-direction: column;

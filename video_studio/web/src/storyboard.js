@@ -342,6 +342,13 @@ export class Storyboard {
       this.handlers.onSelect(row.dataset.id, shot);
     });
 
+    // 双击一行 = 打开段落详情
+    list.addEventListener("dblclick", (event) => {
+      if (event.target.closest("textarea, input, button, label")) return;
+      const row = event.target.closest(".sb-row");
+      if (row) this.handlers.onOpenDetail?.(row.dataset.id);
+    });
+
     // 勾选只用于合并，不会改变当前选中段
     list.addEventListener("change", (event) => {
       const input = event.target.closest("[data-check]");

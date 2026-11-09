@@ -152,7 +152,7 @@ export class Timeline {
       block.style.left = `${left}px`;
       block.style.width = `${width}px`;
       block.dataset.id = shot.id;
-      block.title = `${shot.id} · 双击只看这一段`;
+      block.title = `${shot.id} · 双击打开详情（Shift+双击试听本段）`;
 
       if (shot.imageUrl) {
         const thumb = document.createElement("div");
@@ -328,12 +328,17 @@ export class Timeline {
       }
     });
 
-    // 双击镜头块 = 只看这一段，方便逐段审画面 / 对台词
+    // 双击镜头块 = 打开段落详情；Shift / Alt + 双击 = 只看这一段（试听）
     scroll.addEventListener("dblclick", (event) => {
       const block = event.target.closest(".shot-block");
-      if (!block || !this.handlers.onPlayRange) return;
+      if (!block) return;
       const shot = (this.project.shots || []).find((item) => item.id === block.dataset.id);
-      if (shot) this.handlers.onPlayRange(shot);
+      if (!shot) return;
+      if (event.shiftKey || event.altKey) {
+        this.handlers.onPlayRange?.(shot);
+        return;
+      }
+      this.handlers.onOpenDetail?.(shot.id);
     });
 
     // 字幕块单击 = 就地改文案；段间胶囊 = 合并；⋯ / BGM = 各自面板

@@ -214,6 +214,7 @@ async function boot() {
       onSelect: (id) => selectShot(id),
       onRetime: (id, patch) => retimeShot(id, patch),
       onPlayRange: (shot) => playShot(shot),
+      onOpenDetail: (shotId) => openShotDetail(shotId),
       onCueText: (index, text) => editCue(index, text),
       onMerge: (ids) => mergeShotsByIds(ids),
       onScrubStart: () => beginScrub(),
@@ -269,6 +270,7 @@ async function boot() {
       onUseVersion: (id, file) => useShotVersion(file, id),
       onDeleteVersion: (id, file) => deleteShotVersion(file, id),
       onMerge: (ids) => mergeShotsByIds(ids),
+      onOpenDetail: (shotId) => openShotDetail(shotId),
     },
   );
 
@@ -569,8 +571,8 @@ function setView(view) {
   refs.timelinePanel.hidden = next !== "timeline";
   refs.storyboardPanel.hidden = next !== "storyboard";
   refs.stageHint.textContent = next === "storyboard"
-    ? "点一行定位画面；台词与提示词可直接改"
-    : "点镜头块看画面，双击只播这一段";
+    ? "点一行定位，双击打开详情；台词可直接改"
+    : "点镜头块看画面，双击打开详情";
   if (viewSwitch) viewSwitch.set(next);
   if (next === "storyboard") {
     storyboard && storyboard.setProject(getState().project, getState().selectedId);
@@ -1335,6 +1337,7 @@ function openShotMenu(shotId, x, y) {
 
   const rows = [
     ["detail", "段落详情…"],
+    ["play", "只看这一段（试听）"],
     ["sep"],
     ["split", playheadInside ? "在播放头拆分" : "在播放头拆分（播放头不在段内）", !playheadInside],
     ["mergePrev", "与上段合并", index <= 0],
@@ -1368,6 +1371,11 @@ function bindShotMenu() {
     closeShotMenu();
     if (!shotId) return;
     if (action === "detail") return openShotDetail(shotId);
+    if (action === "play") {
+      const shot = (getState().project.shots || []).find((item) => item.id === shotId);
+      if (shot) playShot(shot);
+      return;
+    }
     if (action === "split") return openSplitDialog(shotId, currentMs());
     if (action === "mergePrev" || action === "mergeNext") {
       selectShot(shotId);

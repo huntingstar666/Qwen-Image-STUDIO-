@@ -123,6 +123,71 @@ def op_flip(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
     return out if (horizontal or vertical) else image
 
 
+def op_mirror(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
+    """对称镜像：把选区中「基准侧」的内容翻到对称轴另一侧。
+
+    * ``axis``：``vertical``（左右对称）/ ``horizontal``（上下对称）；
+    * ``position``：对称轴在选区内的相对位置，0~1；
+    * ``side``：``start``（左/上为准）/ ``end``（右/下为准）；
+    * ``rect``：可选选区（像素），缺省镜像整图。
+    """
+    axis = str(spec.get("axis") or "vertical").lower()
+    if axis not in ("vertical", "horizontal"):
+        raise ImageOpsError(f"未知的镜像轴：{axis}（支持 vertical/horizontal）")
+    position = _clamp(float(spec.get("position", 0.5)), 0.02, 0.98)
+    side = str(spec.get("side") or "start").lower()
+    if side not in ("start", "end"):
+        side = "start"
+
+    rect = spec.get("rect") or {}
+    left = max(0, _as_int(rect.get("x", 0), "x"))
+    top = max(0, _as_int(rect.get("y", 0), "y"))
+    width = _as_int(rect.get("width", image.width), "width", minimum=1)
+    height = _as_int(rect.get("height", image.height), "height", minimum=1)
+    right = min(image.width, left + width)
+    bottom = min(image.height, top + height)
+    left = min(left, image.width - 1)
+    top = min(top, image.height - 1)
+    width = right - left
+    height = bottom - top
+    if width < 2 or height < 2:
+        raise ImageOpsError("镜像区域过小（至少 2×2）")
+
+    out = image.copy()
+    if axis == "vertical":
+        axis_x = left + round(width * position)
+        if side == "start":
+            src_avail, dest_avail = axis_x - left, right - axis_x
+        else:
+            src_avail, dest_avail = right - axis_x, axis_x - left
+        take = min(src_avail, dest_avail)
+        if take < 1:
+            return out
+        if side == "start":
+            strip = image.crop((axis_x - take, top, axis_x, bottom))
+            out.paste(strip.transpose(Image.FLIP_LEFT_RIGHT), (axis_x, top))
+        else:
+            strip = image.crop((axis_x, top, axis_x + take, bottom))
+            out.paste(strip.transpose(Image.FLIP_LEFT_RIGHT), (axis_x - take, top))
+        return out
+
+    axis_y = top + round(height * position)
+    if side == "start":
+        src_avail, dest_avail = axis_y - top, bottom - axis_y
+    else:
+        src_avail, dest_avail = bottom - axis_y, axis_y - top
+    take = min(src_avail, dest_avail)
+    if take < 1:
+        return out
+    if side == "start":
+        strip = image.crop((left, axis_y - take, right, axis_y))
+        out.paste(strip.transpose(Image.FLIP_TOP_BOTTOM), (left, axis_y))
+    else:
+        strip = image.crop((left, axis_y, right, axis_y + take))
+        out.paste(strip.transpose(Image.FLIP_TOP_BOTTOM), (left, axis_y - take))
+    return out
+
+
 def _resample(name: Any) -> Image.Resampling:
     key = str(name or "lanczos").lower()
     if key not in _RESAMPLE:
@@ -327,6 +392,7 @@ _OP_HANDLERS = {
     "crop": op_crop,
     "rotate": op_rotate,
     "flip": op_flip,
+    "mirror": op_mirror,
     "resize": op_resize,
     "adjust": op_adjust,
     "pad32": op_pad32,

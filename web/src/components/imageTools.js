@@ -169,6 +169,62 @@ function flipCanvas(src, horizontal, vertical) {
   return canvas;
 }
 
+/** 对称镜像：把选区中「以哪侧为准」的一侧翻到另一侧（与后端 op_mirror 对齐）。 */
+function mirrorCanvas(src, op) {
+  const axis = op.axis === 'horizontal' ? 'horizontal' : 'vertical';
+  const position = Math.max(0.02, Math.min(0.98, Number(op.position) || 0.5));
+  const side = op.side === 'end' ? 'end' : 'start';
+  const rect = op.rect || { x: 0, y: 0, width: src.width, height: src.height };
+  const x = Math.max(0, Math.round(rect.x || 0));
+  const y = Math.max(0, Math.round(rect.y || 0));
+  const width = Math.max(1, Math.min(src.width - x, Math.round(rect.width || src.width)));
+  const height = Math.max(1, Math.min(src.height - y, Math.round(rect.height || src.height)));
+  const canvas = document.createElement('canvas');
+  canvas.width = src.width;
+  canvas.height = src.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(src, 0, 0);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, width, height);
+  ctx.clip();
+  if (axis === 'vertical') {
+    const axisX = Math.round(x + width * position);
+    const srcAvail = side === 'start' ? axisX - x : x + width - axisX;
+    const take = Math.min(srcAvail, width - srcAvail);
+    if (take >= 1) {
+      const srcX = side === 'start' ? axisX - take : axisX;
+      const strip = document.createElement('canvas');
+      strip.width = take;
+      strip.height = height;
+      strip.getContext('2d').drawImage(src, srcX, y, take, height, 0, 0, take, height);
+      ctx.save();
+      ctx.translate(axisX, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(strip, side === 'start' ? -take : 0, y, take, height);
+      ctx.restore();
+    }
+  } else {
+    const axisY = Math.round(y + height * position);
+    const srcAvail = side === 'start' ? axisY - y : y + height - axisY;
+    const take = Math.min(srcAvail, height - srcAvail);
+    if (take >= 1) {
+      const srcY = side === 'start' ? axisY - take : axisY;
+      const strip = document.createElement('canvas');
+      strip.width = width;
+      strip.height = take;
+      strip.getContext('2d').drawImage(src, x, srcY, width, take, 0, 0, width, take);
+      ctx.save();
+      ctx.translate(0, axisY);
+      ctx.scale(1, -1);
+      ctx.drawImage(strip, x, side === 'start' ? -take : 0, width, take);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+  return canvas;
+}
+
 /** 与服务端 `op_resize` 对齐的目标尺寸计算（用于前端预览）。 */
 function resizeTargetSize(src, op) {
   const mode = op.mode || 'exact';
@@ -304,6 +360,7 @@ function applyOpsToCanvas(image, ops) {
     if (op.op === 'crop') canvas = cropCanvas(canvas, op);
     else if (op.op === 'rotate') canvas = rotateCanvas(canvas, op.angle);
     else if (op.op === 'flip') canvas = flipCanvas(canvas, Boolean(op.horizontal), Boolean(op.vertical));
+    else if (op.op === 'mirror') canvas = mirrorCanvas(canvas, op);
     else if (op.op === 'resize') canvas = resizeCanvasFit(canvas, op);
     else if (op.op === 'pad32') canvas = pad32Canvas(canvas);
     else if (op.op === 'adjust') continue; // 调色用 CSS filter 预览
@@ -390,6 +447,7 @@ export function createImageToolsPage(host) {
     source: null, // {dataUrl,name,width,height}
     stagedOps: [],
     crop: { rect: null, ratioLabel: 'Free', grid: false, rows: 2, columns: 2, rowGap: 0, columnGap: 0 },
+    mirror: { axis: 'vertical', position: 0.5, side: 'start', rect: null },
     adjust: { ...NEUTRAL_ADJUST },
     resize: { width: 0, height: 0, lock: true, fit: 'contain' },
     format: 'png',
@@ -550,6 +608,36 @@ export function createImageToolsPage(host) {
                     <button class="btn ghost sm" type="button" data-ref="rotateApply">应用角度</button>
                   </div>
                   <div class="field-hint">角度以逆时针为正；任意旋转会扩展画布以保留四角。</div>
+                </div>
+              </details>
+
+              <details class="fold tool-fold" data-group="adjust" data-section="mirror">
+                <summary>镜像</summary>
+                <div class="fold-body">
+                  <div class="field">
+                    <span class="field-label">对称轴</span>
+                    <div class="chips" data-ref="mirrorAxisChips">
+                      <button class="chip active" type="button" data-mirror-axis="vertical">垂直（左右）</button>
+                      <button class="chip" type="button" data-mirror-axis="horizontal">水平（上下）</button>
+                    </div>
+                  </div>
+                  <label class="field">
+                    <span class="field-label">对称轴位置 <span class="tag-hint" data-ref="mirrorPosVal">50%</span></span>
+                    <input class="range" type="range" min="2" max="98" step="1" value="50" data-ref="mirrorPos" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">以哪侧为准</span>
+                    <select class="select" data-ref="mirrorSide">
+                      <option value="start">左侧 → 右侧</option>
+                      <option value="end">右侧 → 左侧</option>
+                    </select>
+                  </label>
+                  <div class="size-summary"><span>镜像区域</span><span class="mono" data-ref="mirrorRegion">整图</span></div>
+                  <div class="row">
+                    <button class="btn primary sm" type="button" data-ref="mirrorApply">应用镜像</button>
+                    <button class="btn ghost sm" type="button" data-ref="mirrorReset">重置区域</button>
+                  </div>
+                  <div class="field-hint">在画布上拖出矩形选择区域；拖动虚线调整对称轴。以选中的一侧为准，镜像到另一侧。</div>
                 </div>
               </details>
 
@@ -1002,6 +1090,13 @@ export function createImageToolsPage(host) {
     cropApply: ref('cropApply'),
     cropReset: ref('cropReset'),
     cropSize: ref('cropSize'),
+    mirrorAxisChips: ref('mirrorAxisChips'),
+    mirrorPos: ref('mirrorPos'),
+    mirrorPosVal: ref('mirrorPosVal'),
+    mirrorSide: ref('mirrorSide'),
+    mirrorRegion: ref('mirrorRegion'),
+    mirrorApply: ref('mirrorApply'),
+    mirrorReset: ref('mirrorReset'),
     gridEnabled: ref('gridEnabled'),
     gridOptions: ref('gridOptions'),
     gridRows: ref('gridRows'),
@@ -1227,6 +1322,15 @@ export function createImageToolsPage(host) {
 
   const ACTION_MAP = {
     adjust: () => {
+      if (adjustSection === 'mirror') {
+        return {
+          primary: refs.mirrorApply,
+          secondary: refs.mirrorReset,
+          label: '应用镜像',
+          secondaryLabel: '重置区域',
+          hint: '以选中一侧为基准，镜像到另一侧',
+        };
+      }
       if (adjustSection === 'rotate') {
         return {
           primary: refs.rotateApply,
@@ -1517,6 +1621,10 @@ export function createImageToolsPage(host) {
     state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
     state.crop.suppressed = false;
+    state.mirror.rect = null;
+    state.mirror.position = 0.5;
+    state.mirror.side = 'start';
+    state.mirror.axis = 'vertical';
     state.resize.width = width;
     state.resize.height = height;
     refs.resizeWidth.value = String(width);
@@ -1855,16 +1963,19 @@ export function createImageToolsPage(host) {
     if (state.outpaint.active && state.outpaint.result) drawOutpaintOverlay(octx, displayStamp);
     else if (state.tool === 'watermark') drawWatermarkPreview(octx, displayStamp);
     else if (state.tool === 'adjust' && adjustSection === 'crop') drawCropOverlay(octx, displayStamp);
+    else if (state.tool === 'adjust' && adjustSection === 'mirror') drawMirrorOverlay(octx, displayStamp);
     const cropMode = state.tool === 'adjust' && adjustSection === 'crop';
+    const mirrorMode = state.tool === 'adjust' && adjustSection === 'mirror';
     const wmCustom =
       state.tool === 'watermark' && refs.wmPosition.value === 'custom' && !refs.wmTile.checked;
-    refs.overlayCanvas.style.cursor = wmCustom ? 'move' : cropMode ? 'crosshair' : 'default';
+    refs.overlayCanvas.style.cursor = wmCustom ? 'move' : cropMode || mirrorMode ? 'crosshair' : 'default';
   }
 
   function syncStageReadouts() {
     updateCropSize();
     updateEstimate();
     updateResizeHint();
+    syncMirrorControls();
     if (currentWorkDims.width && currentWorkDims.height) {
       refs.stageSub.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)}`;
     }
@@ -1882,11 +1993,8 @@ export function createImageToolsPage(host) {
     const display = currentDisplaySize();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (syncCanvasSize(display, dpr)) drawDisplay();
-    if (!state.crop.rect) {
-      syncStageReadouts();
-      return;
-    }
-    state.crop.rect = clampRect(state.crop.rect, displayStamp);
+    if (state.crop.rect) state.crop.rect = clampRect(state.crop.rect, displayStamp);
+    if (state.mirror.rect) state.mirror.rect = clampRect(state.mirror.rect, displayStamp);
     drawOverlay();
     syncStageReadouts();
   }
@@ -1944,7 +2052,9 @@ export function createImageToolsPage(host) {
       state.crop.rect = null;
       if (!state.crop.suppressed) resetCrop();
     }
+    if (state.mirror.rect) state.mirror.rect = clampRect(state.mirror.rect, displayStamp);
     if (!state.crop.rect) {
+      drawOverlay();
       syncStageReadouts();
       syncActionBar();
       return;
@@ -1988,8 +2098,14 @@ export function createImageToolsPage(host) {
       const rects = cropGridRects(rect, display, rows, columns, rowGap, columnGap, 'display');
       if (rects && rects.length) {
         ctx.save();
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-        ctx.lineWidth = 1.2;
+        // 先画深色打底再画亮线：浅色/深色画面上都能看清真正的切分线
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.lineWidth = 3;
+        for (const cell of rects) {
+          ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width, cell.height);
+        }
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+        ctx.lineWidth = 1.3;
         for (const cell of rects) {
           ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.width, cell.height);
         }
@@ -2015,19 +2131,93 @@ export function createImageToolsPage(host) {
       ctx.lineWidth = 1.4;
       ctx.stroke();
     }
-    // 三分线
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-    ctx.lineWidth = 1;
-    for (let i = 1; i < 3; i += 1) {
-      ctx.beginPath();
-      ctx.moveTo(rect.x + (rect.width * i) / 3, rect.y);
-      ctx.lineTo(rect.x + (rect.width * i) / 3, rect.y + rect.height);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(rect.x, rect.y + (rect.height * i) / 3);
-      ctx.lineTo(rect.x + rect.width, rect.y + (rect.height * i) / 3);
-      ctx.stroke();
+    // 三分线：开启宫格时隐藏，避免和真正的切分线混淆
+    if (!state.crop.grid) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 3; i += 1) {
+        ctx.beginPath();
+        ctx.moveTo(rect.x + (rect.width * i) / 3, rect.y);
+        ctx.lineTo(rect.x + (rect.width * i) / 3, rect.y + rect.height);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(rect.x, rect.y + (rect.height * i) / 3);
+        ctx.lineTo(rect.x + rect.width, rect.y + (rect.height * i) / 3);
+        ctx.stroke();
+      }
     }
+    ctx.restore();
+  }
+
+  /** 镜像叠加层：选区 + 可拖动的对称轴。 */
+  function drawMirrorOverlay(ctx, display) {
+    const rect = state.mirror.rect
+      ? clampRect(state.mirror.rect, display)
+      : { x: 0, y: 0, width: display.width, height: display.height };
+    const custom = Boolean(state.mirror.rect);
+    if (custom) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(30, 33, 38, 0.42)';
+      ctx.beginPath();
+      ctx.rect(0, 0, display.width, display.height);
+      ctx.rect(rect.x, rect.y, rect.width, rect.height);
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
+    if (custom) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      for (const [hx, hy] of [
+        [rect.x, rect.y],
+        [rect.x + rect.width, rect.y],
+        [rect.x, rect.y + rect.height],
+        [rect.x + rect.width, rect.y + rect.height],
+      ]) {
+        ctx.fillRect(hx - 4, hy - 4, 8, 8);
+      }
+      ctx.restore();
+    }
+    const vertical = state.mirror.axis === 'vertical';
+    const axisX = rect.x + rect.width * state.mirror.position;
+    const axisY = rect.y + rect.height * state.mirror.position;
+    const [x1, y1, x2, y2] = vertical
+      ? [axisX, rect.y, axisX, rect.y + rect.height]
+      : [rect.x, axisY, rect.x + rect.width, axisY];
+    ctx.save();
+    ctx.lineCap = 'round';
+    // 深色打底 + 亮色虚线，保证在任何画面上都能看清
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.strokeStyle = '#34d399';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 中点把手
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(18, 22, 26, 0.88)';
+    ctx.fill();
+    ctx.strokeStyle = '#34d399';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.fillStyle = '#eafff5';
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(vertical ? '↔' : '↕', cx, cy + 0.5);
     ctx.restore();
   }
 
@@ -2444,6 +2634,50 @@ export function createImageToolsPage(host) {
       drag = { type: 'watermark', size: display };
       return;
     }
+    if (state.tool === 'adjust' && adjustSection === 'mirror') {
+      if (!kit) return;
+      const display = currentDisplaySize();
+      const rect = state.mirror.rect
+        ? clampRect(state.mirror.rect, display)
+        : { x: 0, y: 0, width: display.width, height: display.height };
+      const vertical = state.mirror.axis === 'vertical';
+      const axisCoord = vertical
+        ? rect.x + rect.width * state.mirror.position
+        : rect.y + rect.height * state.mirror.position;
+      const nearAxis = vertical
+        ? Math.abs(point.x - axisCoord) <= 9 &&
+          point.y >= rect.y - 9 &&
+          point.y <= rect.y + rect.height + 9
+        : Math.abs(point.y - axisCoord) <= 9 &&
+          point.x >= rect.x - 9 &&
+          point.x <= rect.x + rect.width + 9;
+      event.preventDefault();
+      try {
+        refs.overlayCanvas.setPointerCapture?.(event.pointerId);
+      } catch {
+        /* 合成事件 / 已释放的 pointer 可能没有可捕获的指针 */
+      }
+      refs.overlayCanvas.focus?.();
+      if (nearAxis) {
+        drag = { type: 'mirror-axis', rect, size: display };
+        return;
+      }
+      const handle = state.mirror.rect ? kit.hitCrop(rect, point) : null;
+      if (handle && handle !== 'move') {
+        drag = { type: 'mirror-resize', handle, start: point, origin: { ...rect }, size: display };
+        return;
+      }
+      if (handle === 'move') {
+        drag = { type: 'mirror-move', start: point, origin: { ...rect }, size: display };
+        return;
+      }
+      // 空白处拖出新选区；单击（几乎无位移）会在 pointerup 时恢复整图
+      drag = { type: 'mirror-create', start: point, size: display };
+      state.mirror.rect = kit.createCrop(point, point, display, null);
+      syncMirrorControls();
+      scheduleOverlay();
+      return;
+    }
     if (state.tool !== 'adjust' || adjustSection !== 'crop') return;
     if (!kit) return;
     const handle = state.crop.rect ? kit.hitCrop(state.crop.rect, point) : null;
@@ -2497,6 +2731,69 @@ export function createImageToolsPage(host) {
       }
       return;
     }
+    if (state.tool === 'adjust' && adjustSection === 'mirror') {
+      if (!kit) return;
+      const display = currentDisplaySize();
+      if (drag?.type === 'mirror-axis') {
+        const rect = drag.rect;
+        const vertical = state.mirror.axis === 'vertical';
+        const raw = vertical
+          ? (point.x - rect.x) / Math.max(1, rect.width)
+          : (point.y - rect.y) / Math.max(1, rect.height);
+        state.mirror.position = Math.max(0.02, Math.min(0.98, raw));
+        syncMirrorControls();
+        scheduleOverlay();
+        return;
+      }
+      if (drag?.type === 'mirror-create') {
+        state.mirror.rect = kit.createCrop(drag.start, point, drag.size, null);
+        syncMirrorControls();
+        scheduleOverlay();
+        return;
+      }
+      if (drag?.type === 'mirror-move') {
+        state.mirror.rect = kit.moveCrop(
+          drag.origin,
+          { x: point.x - drag.start.x, y: point.y - drag.start.y },
+          drag.size,
+        );
+        syncMirrorControls();
+        scheduleOverlay();
+        return;
+      }
+      if (drag?.type === 'mirror-resize') {
+        state.mirror.rect = kit.resizeCrop(drag.origin, drag.handle, point, drag.size, null);
+        syncMirrorControls();
+        scheduleOverlay();
+        return;
+      }
+      // 无拖动时按悬停位置给出光标反馈
+      const rect = state.mirror.rect
+        ? clampRect(state.mirror.rect, display)
+        : { x: 0, y: 0, width: display.width, height: display.height };
+      const vertical = state.mirror.axis === 'vertical';
+      const axisCoord = vertical
+        ? rect.x + rect.width * state.mirror.position
+        : rect.y + rect.height * state.mirror.position;
+      const nearAxis = vertical
+        ? Math.abs(point.x - axisCoord) <= 9 &&
+          point.y >= rect.y - 9 &&
+          point.y <= rect.y + rect.height + 9
+        : Math.abs(point.y - axisCoord) <= 9 &&
+          point.x >= rect.x - 9 &&
+          point.x <= rect.x + rect.width + 9;
+      if (nearAxis) {
+        refs.overlayCanvas.style.cursor = vertical ? 'ew-resize' : 'ns-resize';
+      } else {
+        const handle = state.mirror.rect ? kit.hitCrop(rect, point) : null;
+        refs.overlayCanvas.style.cursor = handle
+          ? handle === 'move'
+            ? 'move'
+            : `${handle}-resize`
+          : 'crosshair';
+      }
+      return;
+    }
     if (state.tool !== 'adjust' || adjustSection !== 'crop') {
       refs.overlayCanvas.style.cursor = 'default';
       return;
@@ -2522,6 +2819,14 @@ export function createImageToolsPage(host) {
   });
 
   function endDrag(event) {
+    // 镜像：几乎没拖动就视为单击，恢复整图选区
+    if (drag?.type === 'mirror-create' && state.mirror.rect) {
+      if (state.mirror.rect.width < 6 || state.mirror.rect.height < 6) {
+        state.mirror.rect = null;
+        syncMirrorControls();
+        drawOverlay();
+      }
+    }
     drag = null;
     if (event?.currentTarget?.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -2557,6 +2862,14 @@ export function createImageToolsPage(host) {
     const prev = state.stagedOps[state.stagedOps.length - 1];
     if (!prev || prev.op !== op.op) return false;
     if (op.op === 'pad32') return true;
+    if (op.op === 'mirror') {
+      return (
+        prev.axis === op.axis &&
+        prev.side === op.side &&
+        Math.abs((Number(prev.position) || 0.5) - (Number(op.position) || 0.5)) < 1e-6 &&
+        JSON.stringify(prev.rect || null) === JSON.stringify(op.rect || null)
+      );
+    }
     if (op.op === 'resize') {
       return [
         'mode',
@@ -2604,6 +2917,7 @@ export function createImageToolsPage(host) {
       rotate: '旋转',
       flip: '翻转',
       resize: '缩放',
+      mirror: '镜像',
       adjust: '调色',
       pad32: '对齐',
       grid: '宫格',
@@ -2661,6 +2975,10 @@ export function createImageToolsPage(host) {
     state.crop.rect = null;
     state.crop.ratioLabel = 'Free';
     state.crop.suppressed = false;
+    state.mirror.rect = null;
+    state.mirror.position = 0.5;
+    state.mirror.side = 'start';
+    state.mirror.axis = 'vertical';
     refs.outpaintGo.disabled = true;
     refs.outpaintCancel.classList.add('hidden');
     syncPanoramaUi();
@@ -2752,6 +3070,109 @@ export function createImageToolsPage(host) {
     renderRatios();
     render();
     toastSuccess('已应用裁剪，裁剪框已重置为整图');
+  });
+
+  /* ---------------- 镜像 ---------------- */
+  const MIRROR_AXIS_LABELS = {
+    vertical: { start: '左侧 → 右侧', end: '右侧 → 左侧' },
+    horizontal: { start: '上侧 → 下侧', end: '下侧 → 上侧' },
+  };
+
+  function syncMirrorControls() {
+    const labels = MIRROR_AXIS_LABELS[state.mirror.axis] || MIRROR_AXIS_LABELS.vertical;
+    if (refs.mirrorSide.options[0]) refs.mirrorSide.options[0].textContent = labels.start;
+    if (refs.mirrorSide.options[1]) refs.mirrorSide.options[1].textContent = labels.end;
+    refs.mirrorSide.value = state.mirror.side;
+    refs.mirrorPosVal.textContent = `${Math.round(state.mirror.position * 100)}%`;
+    refs.mirrorPos.value = String(Math.round(state.mirror.position * 100));
+    refs.mirrorAxisChips.querySelectorAll('[data-mirror-axis]').forEach((chip) => {
+      chip.classList.toggle('active', chip.dataset.mirrorAxis === state.mirror.axis);
+    });
+    const rect = state.mirror.rect;
+    if (!rect) {
+      refs.mirrorRegion.textContent = state.source
+        ? `整图 ${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)}`
+        : '整图';
+      return;
+    }
+    const display = currentDisplaySize();
+    if (!display.width || !display.height || !currentWorkDims.width) {
+      refs.mirrorRegion.textContent = '自定义区域';
+      return;
+    }
+    const width = Math.max(1, Math.round((rect.width / display.width) * currentWorkDims.width));
+    const height = Math.max(1, Math.round((rect.height / display.height) * currentWorkDims.height));
+    refs.mirrorRegion.textContent = `自定义 ${fmtNum(width)} × ${fmtNum(height)}`;
+  }
+
+  refs.mirrorAxisChips.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-mirror-axis]');
+    if (!chip) return;
+    state.mirror.axis = chip.dataset.mirrorAxis === 'horizontal' ? 'horizontal' : 'vertical';
+    state.mirror.side = 'start';
+    syncMirrorControls();
+    drawOverlay();
+  });
+
+  refs.mirrorPos.addEventListener('input', () => {
+    state.mirror.position = Math.max(0.02, Math.min(0.98, Number(refs.mirrorPos.value) / 100));
+    syncMirrorControls();
+    drawOverlay();
+  });
+
+  refs.mirrorSide.addEventListener('change', () => {
+    state.mirror.side = refs.mirrorSide.value === 'end' ? 'end' : 'start';
+    drawOverlay();
+  });
+
+  refs.mirrorReset.addEventListener('click', () => {
+    state.mirror.rect = null;
+    syncMirrorControls();
+    render();
+  });
+
+  refs.mirrorApply.addEventListener('click', () => {
+    if (!state.source) {
+      toastWarn('请先上传图片');
+      return;
+    }
+    if (state.mirror.position >= 0.98 || state.mirror.position <= 0.02) {
+      toastWarn('对称轴太靠近边缘，请调整位置');
+      return;
+    }
+    const display = currentDisplaySize();
+    if (!display.width || !display.height || !currentWorkDims.width) return;
+    const rect = state.mirror.rect;
+    const op = {
+      op: 'mirror',
+      axis: state.mirror.axis,
+      position: state.mirror.position,
+      side: state.mirror.side,
+    };
+    if (rect) {
+      op.rect = {
+        x: Math.round((rect.x / display.width) * currentWorkDims.width),
+        y: Math.round((rect.y / display.height) * currentWorkDims.height),
+        width: Math.max(1, Math.round((rect.width / display.width) * currentWorkDims.width)),
+        height: Math.max(1, Math.round((rect.height / display.height) * currentWorkDims.height)),
+      };
+    }
+    const axisText = state.mirror.axis === 'vertical' ? '垂直轴' : '水平轴';
+    const sideText =
+      state.mirror.side === 'start'
+        ? state.mirror.axis === 'vertical'
+          ? '左侧'
+          : '上侧'
+        : state.mirror.axis === 'vertical'
+          ? '右侧'
+          : '下侧';
+    const label = `镜像（${axisText} ${Math.round(state.mirror.position * 100)}% · ${sideText}）`;
+    if (!pushOp(op, label)) return;
+    // 镜像不改变画布尺寸，选区保留；清掉可能残留的待裁剪框
+    state.crop.suppressed = true;
+    state.crop.rect = null;
+    toastSuccess('已应用镜像');
+    syncMirrorControls();
   });
 
   refs.gridEnabled.addEventListener('change', () => {

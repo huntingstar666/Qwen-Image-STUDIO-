@@ -52,6 +52,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   content.className = 'lb';
   content.innerHTML = `
     <div class="lb-stage" data-ref="stage" tabindex="0">
+      <img class="lb-lqip" data-ref="lqip" alt="" aria-hidden="true" />
       <img class="lb-img" data-ref="img" alt="高清大图" draggable="false" />
       <button class="lb-close" type="button" data-ref="close" title="关闭（Esc）">×</button>
       <button class="lb-nav prev" type="button" data-ref="prev" title="上一张（←）">‹</button>
@@ -74,8 +75,21 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   const ref = (name) => content.querySelector(`[data-ref="${name}"]`);
   const stage = ref('stage');
   const img = ref('img');
+  const lqip = ref('lqip');
   const film = ref('film');
   const counter = ref('counter');
+
+  /** 缩略图占位：和原图同一张时不重复请求，只用它垫底防止白屏。 */
+  const showLqip = (item) => {
+    const thumb = String(item?.thumb || '');
+    if (!thumb || thumb === item?.url) {
+      lqip.classList.remove('is-on');
+      return;
+    }
+    if (lqip.getAttribute('src') !== thumb) lqip.src = thumb;
+    lqip.classList.add('is-on');
+  };
+  const hideLqip = () => lqip.classList.remove('is-on');
 
   const applyTransform = () => {
     img.style.transform = `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`;
@@ -136,6 +150,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   const applyImage = (nextIndex) => {
     index = nextIndex;
     const item = list[index];
+    showLqip(item);
     img.src = item.url;
     resetView();
     counter.textContent = list.length > 1 ? `${index + 1} / ${list.length}` : '';
@@ -405,10 +420,12 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   img.addEventListener('load', () => {
     resetView();
     updateInfo();
+    hideLqip();
     // 等一帧让灯箱布局稳定，再读取目标尺寸做共享元素动画。
     requestAnimationFrame(playEnter);
   });
   img.addEventListener('error', () => {
+    // 失败时保留模糊占位，至少还能看出是哪张图
     ref('info').textContent = '图片加载失败，请稍后重试';
   });
 

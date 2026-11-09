@@ -494,6 +494,7 @@ export class JobRunner {
     const rawImages = Array.isArray(job.images) ? job.images : [];
     const images = rawImages.map((image, index) => ({
       url: api.fileUrl(image.url || image.path || ''),
+      thumb: image.thumb_url ? api.fileUrl(image.thumb_url) : undefined,
       width: image.width,
       height: image.height,
       filename: image.filename || `output-${index + 1}.png`,

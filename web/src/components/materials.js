@@ -550,6 +550,7 @@ export function createMaterialsPage(host) {
     if (image.url) {
       previewList.push({
         url: api.fileUrl(image.url),
+        thumb: image.thumbUrl ? api.fileUrl(image.thumbUrl) : undefined,
         width: image.width || undefined,
         height: image.height || undefined,
         filename: image.filename,
@@ -559,6 +560,7 @@ export function createMaterialsPage(host) {
     for (const ref of item.referenceImages || []) {
       previewList.push({
         url: api.fileUrl(ref.url),
+        thumb: ref.thumbUrl ? api.fileUrl(ref.thumbUrl) : undefined,
         width: ref.width || undefined,
         height: ref.height || undefined,
         label: '参考图',

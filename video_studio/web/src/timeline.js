@@ -33,13 +33,14 @@ export class Timeline {
   // ---------------------------------------------------------------- 数据
 
   async setProject(project, selectedId, pxPerSec) {
-    const audioChanged = !this.project || (project.audio && project.audio.peaksUrl) !== this.peaksUrl;
-    this.project = project;
+    const peaksUrl = (project && project.audio && project.audio.peaksUrl) || "";
+    const audioChanged = !this.project || peaksUrl !== this.peaksUrl;
+    this.project = project || null;
     this.selectedId = selectedId || "";
     this.pxPerSec = pxPerSec || this.pxPerSec;
     if (audioChanged) {
       this.peaks = null;
-      this.peaksUrl = (project.audio && project.audio.peaksUrl) || "";
+      this.peaksUrl = peaksUrl;
       if (this.peaksUrl) {
         try {
           const response = await fetch(this.peaksUrl);

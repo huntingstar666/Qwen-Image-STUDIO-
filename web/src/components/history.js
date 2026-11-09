@@ -409,16 +409,39 @@ export function createHistoryPage(host) {
         if (thumb && !thumb.querySelector('.dim')) thumb.innerHTML = '<span class="dim">无预览</span>';
       });
     }
-    for (const card of refs.grid.querySelectorAll('[data-history-id]')) {
+    const cards = [...refs.grid.querySelectorAll('[data-history-id]')];
+    // 网格列数用于 ↑/↓ 跳一行；取不到时退回 1 列
+    const columns = () => {
+      const template = getComputedStyle(refs.grid.querySelector('.history-grid') || refs.grid).gridTemplateColumns;
+      return Math.max(1, template ? template.split(' ').filter(Boolean).length : 1);
+    };
+    cards.forEach((card, position) => {
       const open = () => showDetail(card.dataset.historyId);
       card.addEventListener('click', open);
       card.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           open();
+          return;
         }
+        if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          const edge = event.key === 'Home' ? cards[0] : cards[cards.length - 1];
+          edge?.focus();
+          return;
+        }
+        const step = {
+          ArrowLeft: -1,
+          ArrowRight: 1,
+          ArrowUp: -columns(),
+          ArrowDown: columns(),
+        }[event.key];
+        if (step == null) return;
+        event.preventDefault();
+        const next = cards[Math.min(cards.length - 1, Math.max(0, position + step))];
+        next?.focus();
       });
-    }
+    });
   }
 
   /* ============================================================

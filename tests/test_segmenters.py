@@ -270,6 +270,49 @@ def test_manager_postprocess_text_cap_and_box_clip():
     assert clipped[0]["box"] == {"x": 5, "y": 5, "width": 25, "height": 25}
 
 
+def test_manager_combined_box_and_points_prompts():
+    """框 + 点组合：两种提示都要原样传给 SAM 3.1，并把结果裁到框内。"""
+    from server.segmenters import manager as manager_module
+
+    manager = SegmentManager()
+    captured: dict = {}
+
+    class FakeEngine:
+        loaded = True
+
+        def segment(self, image, *, mode, box, points, text, multi, progress=None):
+            captured.update(mode=mode, box=box, points=points)
+            prob = np.zeros((40, 40), dtype=np.float32)
+            prob[5:35, 5:35] = 0.9
+            return [{"mask": prob, "score": 0.9}]
+
+    old_get = manager.get
+    old_load = manager_module.app_config.load_config
+    old_pick = registry.pick_model
+    manager.get = lambda spec, cfg: FakeEngine()
+    manager_module.app_config.load_config = lambda: {
+        "segment": {"max_side": 2048, "max_candidates": 8, "timeout_s": 0}}
+    registry.pick_model = lambda cfg, mode, requested=None: {
+        "id": "sam3.1-multiplex", "engine": "sam3", "vram_mb": 100}
+    try:
+        image = Image.new("RGB", (40, 40), "white")
+        result = manager.segment(
+            image, mode="box",
+            box={"x": 2, "y": 2, "width": 20, "height": 20},
+            points=[{"x": 10, "y": 10}, {"x": 12, "y": 12, "label": 0}],
+        )
+        assert captured["mode"] == "box"
+        assert captured["box"] == (2, 2, 22, 22)
+        assert captured["points"] == [(10.0, 10.0, 1), (12.0, 12.0, 0)]
+        # 结果被裁到框内（20×20 的框）
+        assert result["masks"][0]["box"]["width"] <= 20
+        assert result["masks"][0]["box"]["height"] <= 20
+    finally:
+        manager.get = old_get
+        manager_module.app_config.load_config = old_load
+        registry.pick_model = old_pick
+
+
 def test_manager_status_and_idle_unload():
     manager = SegmentManager()
     assert manager.status()["loaded"] == {}

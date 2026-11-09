@@ -210,7 +210,8 @@ class Sam3Engine:
         return {"mask": prob, "score": score}
 
     def _text_detect(self, frame, text: str, multi: bool,
-                     width: int, height: int) -> list[dict[str, Any]]:
+                     width: int, height: int,
+                     geo_points=None, geo_boxes=None) -> list[dict[str, Any]]:
         import torch
         import torch.nn.functional as F
 
@@ -227,7 +228,8 @@ class Sam3Engine:
                     frame,
                     text_embeddings=embeddings,
                     text_mask=attention_mask,
-                    boxes=None,
+                    points=geo_points,
+                    boxes=geo_boxes,
                     threshold=float(self.threshold),
                     orig_size=(height, width),
                 )
@@ -270,18 +272,44 @@ class Sam3Engine:
 
         if progress:
             progress(0.55, "推理中")
+        # SAM 3.1 multiplex：框 / 点 / 文字可以组合成同一组提示。
+        # 送进 detector 的几何提示用归一化坐标；送进 SAM decoder 的用 1008 像素坐标。
+        geo_points = None
+        geo_boxes = None
+        if points:
+            coords = [[[x * sx / SAM3_INPUT, y * sy / SAM3_INPUT]
+                       for x, y, _label in points]]
+            labels = [[label for _x, _y, label in points]]
+            geo_points = (
+                torch.tensor(coords, device=self._device, dtype=self._dtype),
+                torch.tensor(labels, device=self._device, dtype=torch.int32),
+            )
+        if box is not None:
+            x1, y1, x2, y2 = [float(value) for value in box]
+            width_px = max(0.0, (x2 - x1) * sx)
+            height_px = max(0.0, (y2 - y1) * sy)
+            cx = (x1 + x2) / 2 * sx
+            cy = (y1 + y2) / 2 * sy
+            geo_boxes = torch.tensor(
+                [[[cx / SAM3_INPUT, cy / SAM3_INPUT,
+                   width_px / SAM3_INPUT, height_px / SAM3_INPUT]]],
+                device=self._device, dtype=self._dtype)
+
         with torch.inference_mode():
             if mode == "text":
-                return self._text_detect(frame, text, multi, width, height)
-            if mode == "box":
-                x1, y1, x2, y2 = box
+                if not str(text or "").strip():
+                    return []
+                return self._text_detect(frame, text, multi, width, height,
+                                         geo_points=geo_points, geo_boxes=geo_boxes)
+            # 框 / 点 / 两者组合：走 SAM decoder（点可以 Alt 标记为排除点）。
+            box_input = None
+            if box is not None:
+                x1, y1, x2, y2 = [float(value) for value in box]
                 box_input = torch.tensor(
                     [[[x1 * sx, y1 * sy], [x2 * sx, y2 * sy]]],
                     device=self._device, dtype=self._dtype)
-                logit = self._forward_mask(frame, box_inputs=box_input)
-                result = self._mask_from_logit(logit, width, height)
-                return [result] if result else []
-            if mode == "points":
+            point_inputs = None
+            if points:
                 coords = [[[x * sx, y * sy] for x, y, _label in points]]
                 labels = [[label for _x, _y, label in points]]
                 point_inputs = {
@@ -290,10 +318,12 @@ class Sam3Engine:
                     "point_labels": torch.tensor(labels, device=self._device,
                                                  dtype=torch.int32),
                 }
-                logit = self._forward_mask(frame, point_inputs=point_inputs)
-                result = self._mask_from_logit(logit, width, height)
-                return [result] if result else []
-        return []
+            if box_input is None and point_inputs is None:
+                return []
+            logit = self._forward_mask(frame, box_inputs=box_input,
+                                       point_inputs=point_inputs)
+            result = self._mask_from_logit(logit, width, height)
+            return [result] if result else []
 
 
 class BiRefNetEngine:

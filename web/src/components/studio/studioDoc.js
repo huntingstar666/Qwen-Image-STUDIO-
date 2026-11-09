@@ -263,6 +263,9 @@ export class StudioDoc {
     this.rotateMaskRight();
     this.rotateRepairRight();
     this._maskHas = null;
+    // 旋转会改变底图几何：干净底图 / underlay 缓存必须一起丢掉，
+    // 只清 _base 会让 renderBase 仍返回旋转前的整张图（裁剪后尺寸也会对不上）。
+    this.invalidateBase();
     this.snapshot();
   }
 
@@ -274,6 +277,7 @@ export class StudioDoc {
     this.rotateMaskLeft();
     this.rotateRepairLeft();
     this._maskHas = null;
+    this.invalidateBase();
     this.snapshot();
   }
 
@@ -291,7 +295,43 @@ export class StudioDoc {
     this.layers = [];
     this.groups = [];
     this._maskHas = null;
+    this.invalidateBase();
     this.snapshot();
+  }
+
+  /**
+   * 换主图（同一工程内换底图）：只替换底图位图，叠加图层与图层组原样保留。
+   *
+   * 主图级状态（变换 / 调色 / 蒙版 / 修复 / 撤销栈）按“新图”重建；
+   * 图层坐标属于「旋转后未裁剪」空间，由调用方先按尺寸差异做补偿再调用这里。
+   */
+  replaceMainImage(image) {
+    const layers = this.layers.slice();
+    const groups = this.groups.map((group) => ({ ...group }));
+    this.image = image;
+    this.transform = { rotate: 0, flipH: false, flipV: false, crop: null };
+    this.adjust = { ...ADJUST_DEFAULTS };
+    const oriented = this.oriented;
+    this.mask = makeCanvas(oriented.width, oriented.height);
+    this.repair = null;
+    this.baseVisible = true;
+    this._doc.width = oriented.width;
+    this._doc.height = oriented.height;
+    this.layers = layers;
+    this.groups = groups;
+    // 调整层覆盖整幅画面：范围跟随新主图，旧蒙版属于旧坐标，作废。
+    layers.forEach((layer) => {
+      if (!layer?.isAdjustment) return;
+      layer.width = Math.max(1, oriented.width);
+      layer.height = Math.max(1, oriented.height);
+      layer.mask = null;
+    });
+    this._maskHas = null;
+    this._tint = null;
+    this.clearHistory();
+    this.invalidateBase();
+    this.snapshot();
+    return this;
   }
 
   /**
@@ -304,12 +344,16 @@ export class StudioDoc {
     const width = clamp(Math.round(rect.width), 8, oriented.width - x);
     const height = clamp(Math.round(rect.height), 8, oriented.height - y);
     this.transform.crop = { x, y, width, height };
+    // 裁剪改变输出尺寸与底图几何，必须连干净底图 / underlay 一起失效，
+    // 否则 renderBase 仍是裁剪前的整张图（AI 主体选择看到的也是整张图）。
+    this.invalidateBase();
     this.snapshot();
   }
 
   clearCrop() {
     if (!this.transform.crop) return;
     this.transform.crop = null;
+    this.invalidateBase();
     this.snapshot();
   }
 
@@ -322,6 +366,7 @@ export class StudioDoc {
     this.repair = null;
     this.baseVisible = true;
     this._maskHas = null;
+    this.invalidateBase();
     this.snapshot();
   }
 
@@ -533,14 +578,18 @@ export class StudioDoc {
    */
   addOverlay(image, options = {}) {
     const box = this.renderBase();
+    // renderBase 是「裁剪后」的尺寸，而图层坐标存的是未裁剪空间，默认居中要加回裁剪偏移。
+    const crop = this.transform.crop;
+    const offsetX = crop ? crop.x : 0;
+    const offsetY = crop ? crop.y : 0;
     const fit = Math.min(1, (box.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
     const scale = options.scale ?? fit;
     const width = (image.naturalWidth || image.width) * scale;
     const height = (image.naturalHeight || image.height) * scale;
     const layer = new OverlayLayer(image, {
       name: options.name || `叠加 ${layerCount(this._doc) + 2}`,
-      x: options.x ?? Math.round((box.width - width) / 2),
-      y: options.y ?? Math.round((box.height - height) / 2),
+      x: options.x ?? Math.round(offsetX + (box.width - width) / 2),
+      y: options.y ?? Math.round(offsetY + (box.height - height) / 2),
       scale,
       opacity: options.opacity ?? 1,
       rotation: options.rotation ?? 0,
@@ -968,7 +1017,6 @@ export class StudioDoc {
    */
   renderBase() {
     if (this._base) return this._base;
-    // D23.1：主图隐藏时只合成叠加层，导出为透明底（与 PS 背景层隐藏一致）。
     if (this.baseVisible === false) {
       const size = this.size;
       const canvas = makeCanvas(size.width, size.height);
@@ -985,6 +1033,30 @@ export class StudioDoc {
     // 叠加层：画在裁剪之后，坐标仍按「旋转后未裁剪」空间，裁剪时同步偏移（见 renderer.js）
     composite(canvas.getContext('2d'), underlay, this.layers, { crop: this.transform.crop, groups: this.groups });
     this._base = canvas;
+    return canvas;
+  }
+
+  /**
+   * 只渲染指定叠加层（透明底）。
+   * 默认尺寸与画面（裁剪后）一致；传 region 时按「旋转后未裁剪」坐标渲染该区域，
+   * 用来把落在裁剪区之外的图层像素也交给 AI（否则这些像素会被裁掉）。
+   * 调整层没有像素，返回 null。
+   * @param {string} layerId
+   * @param {{region?: {x:number,y:number,width:number,height:number}|null}} [options]
+   */
+  renderLayer(layerId, { region = null } = {}) {
+    const layer = this.findLayer?.(layerId) || (this.layers || []).find((item) => item.id === layerId);
+    if (!layer || layer.isAdjustment) return null;
+    const size = region ? region : this.size;
+    const canvas = makeCanvas(size.width, size.height);
+    const ctx = canvas.getContext('2d');
+    if (region) {
+      // 画布区域原点平移到左上角，图层仍按未裁剪坐标绘制。
+      ctx.translate(-Math.round(region.x || 0), -Math.round(region.y || 0));
+      drawLayers(ctx, [layer], { crop: null, groups: this.groups });
+    } else {
+      drawLayers(ctx, [layer], { crop: this.transform.crop, groups: this.groups });
+    }
     return canvas;
   }
 

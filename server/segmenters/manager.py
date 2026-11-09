@@ -104,13 +104,17 @@ class SegmentManager:
 
         ibox = None
         box_xyxy = None
-        if mode == "box":
+        if box is not None:
             box_xyxy = maskops.validate_box(box, width, height)
             ibox = tuple(value * scale for value in box_xyxy)
         ipts = None
-        if mode == "points":
+        if points:
             pts = maskops.validate_points(points, width, height)
             ipts = [(x * scale, y * scale, label) for x, y, label in pts]
+        if mode == "box" and box_xyxy is None:
+            raise SegmentError("框选模式需要提供 box", code="invalid_field", status=400)
+        if mode == "points" and not ipts:
+            raise SegmentError("点选模式需要提供 points", code="invalid_field", status=400)
         if mode == "text" and not str(text or "").strip():
             raise SegmentError("请填写要选取的主体描述", code="invalid_field", status=400)
 
@@ -165,7 +169,8 @@ class SegmentManager:
         for item in raw or []:
             prob = maskops.resize_float(item.get("mask"), width, height)
             binary = maskops.binarize(prob, 0.5)
-            if mode == "box" and box_xyxy is not None:
+            if box_xyxy is not None:
+                # 框是「范围限制」：文字 / 点选叠加框时也把结果裁到框内。
                 binary = maskops.clip_to_box(binary, box_xyxy)
                 prob = np.where(binary, prob, 0.0).astype(np.float32)
             if not binary.any():

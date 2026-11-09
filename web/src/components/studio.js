@@ -59,6 +59,7 @@ import {
   featherAlpha,
   invertAlpha,
   alphaToCanvas,
+  canvasToAlpha,
   coverageAlpha,
   wandAlpha,
 } from './studio/selection.js';
@@ -165,6 +166,22 @@ const TOOLS = [
     hint: '点一下自动选主体；也可框选 / 点选 / 输入文字描述（D13.1）',
     icon:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l1.7 3.9 3.9 1.7-3.9 1.7L12 14.4l-1.7-3.9-3.9-1.7 3.9-1.7L12 3.2z"/><path d="M18.4 14.2l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8.8-1.9z"/><path d="M5 18.5l4-4"/><path d="M5 15.5v3h3"/></svg>',
+  },
+  {
+    id: 'selbrush',
+    label: '选区画笔',
+    key: 'I',
+    hint: '涂抹增加选区，用来精修 AI 选出来的范围；按住 Alt 临时变成橡皮',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5-8.5 8.5-5-5 8.5-8.5z"/><path d="M6 13l-2 5 5-2"/><path d="M3.2 7.2h1.4"/><path d="M5.3 9.3h.9"/><path d="M19.6 3.4h1.2"/></svg>',
+  },
+  {
+    id: 'seleraser',
+    label: '选区橡皮',
+    key: 'Q',
+    hint: '擦掉多余的选区；按住 Alt 临时变成画笔',
+    icon:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20l-5-5 9-9 5 5-9 9z"/><path d="M12 9l3 3"/><path d="M9 20h11"/><path d="M3.2 6.4h1.2"/><path d="M5 8.4h.9"/></svg>',
   },
   {
     id: 'spot',
@@ -283,18 +300,20 @@ const ADJUST_FIELDS = [
 
 const MASK_TOOLS = new Set(['brush', 'eraser', 'rect', 'ellipse', 'lasso']);
 /** 使用笔刷参数的工具（蒙版涂抹 + 污点修复 + 仿制类，D10） */
-const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern']);
+const BRUSH_PARAM_TOOLS = new Set(['brush', 'eraser', 'spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern', 'selbrush', 'seleraser']);
 /** 仿制图章 / 修复画笔（D10.2） */
 const CLONE_TOOLS = new Set(['clone', 'healbrush']);
 /** 需要笔刷浮条的工具（含修复类，浮条在 is-heal 下精简） */
 const HEAL_TOOLS = new Set(['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern']);
 /** 需要「选区浮条」的工具（魔棒，或有选区时的任意工具）。 */
 const WAND_TOOLS = new Set(['wand']);
+/** 选区画笔 / 橡皮（人工精修选区范围）。 */
+const SELECT_BRUSH_TOOLS = new Set(['selbrush', 'seleraser']);
 
 /** 左栏分组：只影响 DOM 分组，工具行为仍走 setTool。 */
 const TOOL_GROUPS = [
   { id: 'view', title: '查看', tools: ['view'] },
-  { id: 'select', title: '选区', tools: ['wand', 'segment', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
+  { id: 'select', title: '选区', tools: ['wand', 'segment', 'selbrush', 'seleraser', 'brush', 'eraser', 'rect', 'ellipse', 'lasso'] },
   { id: 'repair', title: '修复', tools: ['spot', 'clone', 'healbrush', 'smudge', 'skin', 'liquify', 'mosaic', 'pattern'] },
   { id: 'transform', title: '变换', tools: ['crop', 'move'] },
   { id: 'compose', title: '文字 / 贴纸 / 形状', tools: ['text', 'sticker', 'shape'] },
@@ -353,8 +372,26 @@ export function createStudioPage(host) {
   let selRadius = 8;
   /* D13.1 AI 主体选择：模式、点提示（未裁剪图像坐标）、候选与请求状态 */
   let segMode = 'subject';
+  /** 显式指定的分割模型 id；'' = 自动（点/框/文字走 SAM 3.1，主体回退 BiRefNet）。 */
+  let segModel = '';
+  /** 文字模式下用框限制搜索范围（未裁剪图像坐标）。 */
+  let segBox = null;
+  /** 模型清单只拉一次；失败后允许再次尝试。 */
+  let segModelsLoaded = false;
+  let segModelsLoading = false;
+  /** 最近一次实际使用的模型 id（状态栏显示，确认到底跑了哪个模型）。 */
+  let segLastModel = '';
+  /** AI 主体选择 / 抠图对象：'' = 合成图，__current__ = 当前选中图层，其余为图层 id。 */
+  let aiTargetId = '';
+  /** 用户还没手动改过「对象」时，默认跟随当前选中图层（PS 习惯：选中谁就操作谁）。 */
+  let aiTargetFollow = true;
+  /** 「当前图层」被取消选中后仍可沿用上一次的图层，避免悄悄回退到合成图。 */
+  let aiTargetLastId = '';
   let segPoints = [];
   let segCandidates = [];
+  /** 当前候选蒙版对应的发送区域/来源图层（切换候选时按同一区域回贴）。 */
+  let segRegion = null;
+  let segLayerId = '';
   let segAppliedId = '';
   let segBusy = false;
   let segJob = null;
@@ -580,6 +617,10 @@ export function createStudioPage(host) {
                       <label class="studio-check studio-cut-decon"><input type="checkbox" data-ref="cutDecon" checked /><span>去色边</span></label>
                     </div>
                     <div class="studio-cut-head">
+                      <span>对象</span>
+                      <select class="select studio-cut-select" data-ref="cutTarget" aria-label="抠图对象"></select>
+                    </div>
+                    <div class="studio-cut-head">
                       <span>尺寸</span>
                       <select class="select studio-cut-select" data-ref="cutSize" aria-label="输出尺寸"></select>
                       <input class="studio-cut-num" type="number" min="16" max="8192" data-ref="cutW" hidden />
@@ -605,6 +646,16 @@ export function createStudioPage(host) {
               </div>
               <div class="studio-segbar" data-ref="segbar" hidden>
                 <span class="studio-selbar-title">主体选择</span>
+                <label class="studio-maskbar-field">
+                  <span>对象</span>
+                  <select class="select studio-seg-target" data-ref="segTarget" aria-label="主体选择对象"></select>
+                </label>
+                <label class="studio-maskbar-field">
+                  <span>模型</span>
+                  <select class="select studio-seg-model" data-ref="segModel" aria-label="分割模型">
+                    <option value="">自动</option>
+                  </select>
+                </label>
                 <div class="studio-segmodes" data-ref="segModes"></div>
                 <label class="studio-check"><input type="checkbox" data-ref="segMulti" /><span>多候选</span></label>
                 <label class="studio-maskbar-field">
@@ -1136,12 +1187,15 @@ export function createStudioPage(host) {
     cutEdges: ref('cutEdges'),
     cutDecon: ref('cutDecon'),
     cutSize: ref('cutSize'),
+    cutTarget: ref('cutTarget'),
     cutW: ref('cutW'),
     cutH: ref('cutH'),
     cutTimes: ref('cutTimes'),
     cutSets: ref('cutSets'),
     cutBatch: ref('cutBatch'),
     segbar: ref('segbar'),
+    segTarget: ref('segTarget'),
+    segModel: ref('segModel'),
     segModes: ref('segModes'),
     segMulti: ref('segMulti'),
     segFeather: ref('segFeather'),
@@ -1293,6 +1347,7 @@ export function createStudioPage(host) {
 
   function syncLayersPanel() {
     layersPanel?.render();
+    syncAiTargets();
   }
 
   /** 32px 图层缩略图：位图层用蒙版后的像素，主图用底图合成结果。 */
@@ -1512,16 +1567,33 @@ export function createStudioPage(host) {
     const layer = doc.findLayer(id);
     // 调整图层没有几何，选中时保持当前工具（D9.3）。
     // keepTool：抓手工具下点选图层时保留抓手，避免顺手把工具切走。
-    if (!layer?.isAdjustment && !keepTool) setTool('move');
+    // 用 AI 主体选择时点选图层也不切工具：切换会顺带清空提示并收起主体选择条，
+    // 导致「选图层 → 想框选」时框根本画不出来。
+    const keepSegment = !keepTool && tool === 'segment' && !layer?.isAdjustment;
+    if (!layer?.isAdjustment && !keepTool && !keepSegment) setTool('move');
+    // AI 主体选择下点图层 = 明确指定这一层为对象，并恢复「跟随选择」，
+    // 否则之前手动选过「合成图」后会一直停在合成图，怎么选图层都扣主图。
+    if (keepSegment && layer) {
+      aiTargetFollow = true;
+      aiTargetLastId = layer.id;
+      aiTargetId = '__current__';
+      syncAiTargets();
+    }
     if (layer?.isText) {
-      activeTab = 'text';
-      syncTabs();
+      if (!keepSegment) {
+        activeTab = 'text';
+        syncTabs();
+      }
     } else if (layer?.isShape) {
-      activeTab = 'shape';
-      syncTabs();
+      if (!keepSegment) {
+        activeTab = 'shape';
+        syncTabs();
+      }
     } else if (layer && !layer.isAdjustment) {
-      activeTab = 'sticker';
-      syncTabs();
+      if (!keepSegment) {
+        activeTab = 'sticker';
+        syncTabs();
+      }
     }
     syncAdjustInputs();
     syncTextPane();
@@ -2376,6 +2448,19 @@ export function createStudioPage(host) {
     /** 结果回流：把结果图载入为新底图（蒙版与历史随新文档清空），可继续精修 / 再次扩图。 */
     async adoptResult(url, meta = {}) {
       if (!url) return null;
+      // 换底图会新建文档，当前图层不会带过去；有图层时必须先明确告知。
+      // （历史结果载入前已经确认过，避免连续两个弹窗。）
+      if (meta.task !== 'history' && doc?.layers.length) {
+        const confirmed = await confirmDialog({
+          title: '载入为新底图',
+          message:
+            `当前还有 ${doc.layers.length} 个图层，载入新底图会把它们全部清空，且不能撤销。` +
+            '想保留图层请改用「作为新图层」。是否继续？',
+          confirmText: '清空图层并载入',
+          danger: true,
+        });
+        if (!confirmed) return null;
+      }
       const token = ++openSeq;
       try {
         const image = await loadImage(url);
@@ -3198,11 +3283,15 @@ export function createStudioPage(host) {
         syncTabs();
       }
     }
-    refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next));
+    refs.maskbar.hidden = !(MASK_TOOLS.has(next) || HEAL_TOOLS.has(next) || SELECT_BRUSH_TOOLS.has(next));
     refs.maskbar.classList.toggle('is-heal', HEAL_TOOLS.has(next));
+    refs.maskbar.classList.toggle('is-selection', SELECT_BRUSH_TOOLS.has(next));
     if (refs.segbar) {
       refs.segbar.hidden = next !== 'segment';
-      if (next === 'segment') syncSegUi();
+      if (next === 'segment') {
+        syncSegUi();
+        void loadSegmentModels();
+      }
     }
     if (next !== 'segment') {
       segPoints = [];
@@ -3450,7 +3539,6 @@ export function createStudioPage(host) {
     // 有图层时始终走「底图缓存 + 实时绘制图层」，与拖动中的预览路径完全一致，
     // 避免 renderBase 缓存与图层状态不同步导致「只有按住鼠标才显示」。
     const liveLayers =
-      !adjustPreview &&
       doc.baseVisible !== false &&
       doc.layers.length > 0 &&
       // 调整层会改写已合成内容，不能走这条捷径（D9.3）。
@@ -3475,7 +3563,9 @@ export function createStudioPage(host) {
     if (liveLayers && !showPreview) {
       const crop = doc.transform.crop;
       ctx.save();
-      ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+      // 图层坐标是「未裁剪」空间，画布原点对应裁剪后的左上角；
+      // 偏移由 drawLayers 内部统一处理，这里不能再减一次 crop，否则会画偏。
+      ctx.translate(view.x, view.y);
       ctx.scale(view.scale, view.scale);
       // 统一走 renderer，剪贴蒙版与混合模式在拖动预览里同样生效（D12.1）。
       drawLayers(ctx, doc.layers, { crop, groups: doc.groups });
@@ -3489,11 +3579,27 @@ export function createStudioPage(host) {
       const scale = Math.min(w / pw, h / ph);
       const dw = pw * scale;
       const dh = ph * scale;
+      const px = view.x + (w - dw) / 2;
+      const py = view.y + (h - dh) / 2;
       ctx.save();
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(preview.image, view.x + (w - dw) / 2, view.y + (h - dh) / 2, dw, dh);
+      ctx.drawImage(preview.image, px, py, dw, dh);
       ctx.restore();
+      // 预览的是「结果将作为新主图」：图层必须继续画在结果之上。
+      // 之前这里直接跳过图层，AI 出结果后画布上图层集体消失，
+      // 只有切到别的版本（清掉预览）才重新出现。
+      // 图层坐标是文档空间，按「画面 → 预览显示矩形」的同一比例映射，位置才对得上。
+      if (doc.layers.length) {
+        const crop = doc.transform.crop;
+        const fx = dw / Math.max(1, doc.size.width);
+        const fy = dh / Math.max(1, doc.size.height);
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.scale(fx, fy);
+        drawLayers(ctx, doc.layers, { crop, groups: doc.groups });
+        ctx.restore();
+      }
     }
 
     if (showMask && doc.hasMask() && !preview.image) {
@@ -3512,13 +3618,30 @@ export function createStudioPage(host) {
       ctx.restore();
     }
 
+    // 选区画笔落笔中的实时预览：蚂蚁线要等松手才重建，先把编辑中的选区半透明盖上。
+    if (drag?.mode === 'selpaint' && selection?.canvas) {
+      const crop = doc.transform.crop;
+      ctx.save();
+      ctx.translate(
+        view.x + ((selection.rect?.x || 0) - (crop?.x || 0)) * view.scale,
+        view.y + ((selection.rect?.y || 0) - (crop?.y || 0)) * view.scale,
+      );
+      ctx.scale(view.scale, view.scale);
+      ctx.globalAlpha = 0.32;
+      ctx.drawImage(selection.canvas, 0, 0);
+      ctx.restore();
+    }
+
     // 选区蚂蚁线（D8.1）：黑白虚线交替，antsOffset 每 120ms 前进，形成流动感。
     if (selection) {
       const path = selectionOutline();
       if (path) {
         const crop = doc.transform.crop;
         ctx.save();
-        ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
+        ctx.translate(
+          view.x + ((selection.rect?.x || 0) - (crop?.x || 0)) * view.scale,
+          view.y + ((selection.rect?.y || 0) - (crop?.y || 0)) * view.scale,
+        );
         ctx.scale(view.scale, view.scale);
         ctx.lineWidth = 1.4 / view.scale;
         ctx.strokeStyle = 'rgba(0,0,0,0.88)';
@@ -3537,14 +3660,21 @@ export function createStudioPage(host) {
       ctx.save();
       ctx.translate(view.x - (crop?.x || 0) * view.scale, view.y - (crop?.y || 0) * view.scale);
       ctx.scale(view.scale, view.scale);
-      if (drag?.mode === 'segBox' && drag.rect) {
+      const rect = drag?.mode === 'segBox'
+        ? drag.rect
+        : segMode === 'box' || segMode === 'text' ? segBox : null;
+      if (rect) {
         ctx.setLineDash([6 / view.scale, 4 / view.scale]);
         ctx.lineWidth = 1.2 / view.scale;
         ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-        ctx.strokeRect(drag.rect.x, drag.rect.y, drag.rect.width, drag.rect.height);
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.lineDashOffset = 4 / view.scale;
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
         ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
       }
-      if (segMode === 'points') {
+      if (segMode === 'points' || segMode === 'box') {
         for (const point of segPoints) {
           const radius = 5 / view.scale;
           ctx.beginPath();
@@ -3833,6 +3963,16 @@ export function createStudioPage(host) {
     return crop ? { x: point.x + crop.x, y: point.y + crop.y } : { x: point.x, y: point.y };
   }
 
+  /** 画面（裁剪后）中心 → 图层坐标（旋转后未裁剪空间）。 */
+  function viewCenterDoc() {
+    const crop = doc?.transform.crop;
+    const size = doc?.size || { width: 0, height: 0 };
+    return {
+      x: (crop ? crop.x : 0) + size.width / 2,
+      y: (crop ? crop.y : 0) + size.height / 2,
+    };
+  }
+
   function offsetRect(rect) {
     const crop = doc?.transform.crop;
     return crop
@@ -3848,6 +3988,17 @@ export function createStudioPage(host) {
       x: Math.min(size.width, Math.max(0, point.x)),
       y: Math.min(size.height, Math.max(0, point.y)),
     };
+  }
+
+  /**
+   * AI 分割提示坐标（「旋转后未裁剪」空间）。
+   * 这里刻意不做范围夹取：摆在画面之外的贴纸/产品图也必须能落框，
+   * 一旦夹到主图边缘，从画布外往里拖就会退化成“框太小了”。
+   * 提示超出送图范围的部分在 runSegment 里按发送图裁掉。
+   */
+  function segmentPoint(rawPoint) {
+    const crop = doc?.transform.crop;
+    return { x: rawPoint.x + (crop?.x || 0), y: rawPoint.y + (crop?.y || 0) };
   }
 
   /* ============================================================
@@ -3868,7 +4019,7 @@ export function createStudioPage(host) {
   function updateSelectionUi() {
     const has = Boolean(selection);
     const coverage = has ? coverageAlpha(selection.alpha) : 0;
-    refs.selbar.hidden = !(has || WAND_TOOLS.has(tool));
+    refs.selbar.hidden = !(has || WAND_TOOLS.has(tool) || SELECT_BRUSH_TOOLS.has(tool));
     refs.selInfo.textContent = has ? `选区 ${fmtCoverage(coverage)}` : '未选区';
     // 选区不必先转蒙版：提交时会自动并入（P1-2）。
     refs.selInfo.title = has ? '提交时会自动并入蒙版，无需先转蒙版' : '';
@@ -3889,12 +4040,26 @@ export function createStudioPage(host) {
     antsTimer = 0;
   }
 
-  function setSelectionAlpha(alpha, width, height) {
+  /**
+   * 写入选区。
+   * rect：这份 alpha 覆盖的「旋转后未裁剪」坐标矩形（默认从 0,0 起，即整张画布）；
+   * source：来源图层 {layerId}，用于抠图时按同一区域重新取像素。
+   */
+  function setSelectionAlpha(alpha, width, height, rect = null, source = null) {
     if (!alpha || !width || !height) {
       clearSelection();
       return;
     }
-    selection = { width, height, alpha, canvas: alphaToCanvas(alpha, width, height) };
+    selection = {
+      width,
+      height,
+      alpha,
+      canvas: alphaToCanvas(alpha, width, height),
+      rect: rect
+        ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(width), height: Math.round(height) }
+        : { x: 0, y: 0, width, height },
+      source: source && source.layerId ? { layerId: source.layerId } : null,
+    };
     selPath = null;
     antsOffset = 0;
     updateSelectionUi();
@@ -3909,6 +4074,87 @@ export function createStudioPage(host) {
     selPath = null;
     updateSelectionUi();
     if (!silent) scheduleDraw();
+  }
+
+  /* ---------------------------------------------------------- 选区画笔（人工精修） */
+
+  /**
+   * 选区画笔/橡皮：直接改选区 alpha，用来在 AI 结果上加减范围。
+   * 落笔过程中画在 `selection.canvas` 上（白色 + alpha），松手再把 alpha 写回，
+   * 避免每帧读回整张大图；蚂蚁线只在松手后重建一次。
+   */
+  function ensureSelectionCanvas() {
+    if (!doc) return null;
+    const size = doc.maskSize;
+    if (!size.width || !size.height) return null;
+    // 已有选区（可能来自画布外的图层，尺寸与蒙版不同）就直接沿用，别按蒙版尺寸重置。
+    if (selection?.canvas) return selection.canvas;
+    setSelectionAlpha(createAlpha(size.width, size.height), size.width, size.height);
+    return selection?.canvas || null;
+  }
+
+  /** 文档坐标 → 选区画布坐标（选区可能只覆盖画布外的某块图层区域）。 */
+  function toSelectionLocal(at) {
+    const rect = selection?.rect;
+    if (!rect) return at;
+    return { x: at.x - rect.x, y: at.y - rect.y };
+  }
+
+  function stampSelection(at, erase) {
+    const canvas = ensureSelectionCanvas();
+    if (!canvas) return;
+    const local = toSelectionLocal(at);
+    const ctx = canvas.getContext('2d');
+    const radius = Math.max(1, brush.size / 2);
+    const soft = 1 - brush.hardness;
+    ctx.save();
+    ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, brush.opacity));
+    if (soft > 0.02) {
+      const gradient = ctx.createRadialGradient(
+        local.x,
+        local.y,
+        Math.max(0, radius * brush.hardness),
+        local.x,
+        local.y,
+        radius,
+      );
+      gradient.addColorStop(0, 'rgba(255,255,255,1)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = gradient;
+    } else {
+      ctx.fillStyle = '#ffffff';
+    }
+    ctx.beginPath();
+    ctx.arc(local.x, local.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function strokeSelectionTo(point, erase) {
+    const from = drag?.last || point;
+    const distance = Math.hypot(point.x - from.x, point.y - from.y);
+    const step = Math.max(1, brush.size * 0.12);
+    const count = Math.max(1, Math.ceil(distance / step));
+    for (let i = 1; i <= count; i += 1) {
+      stampSelection(
+        {
+          x: from.x + ((point.x - from.x) * i) / count,
+          y: from.y + ((point.y - from.y) * i) / count,
+        },
+        erase,
+      );
+    }
+    if (drag) drag.last = point;
+  }
+
+  function commitSelectionPaint() {
+    if (!selection?.canvas) return;
+    selection.alpha = canvasToAlpha(selection.canvas);
+    selPath = null;
+    antsOffset = 0;
+    updateSelectionUi();
+    scheduleDraw();
   }
 
   /** 蚂蚁线路径按需构建并缓存；大图自动降采样。 */
@@ -3964,7 +4210,13 @@ export function createStudioPage(host) {
         }
       }
     }
-    const merged = combineAlpha(selection?.alpha || null, next, mode);
+    // 已有选区若来自画布外图层（空间不一致），魔棒就重新开始，别把两份 alpha 硬拼。
+    const sameSpace =
+      Boolean(selection) &&
+      selection.width === mask.width &&
+      selection.height === mask.height &&
+      (!selection.rect || (selection.rect.x === 0 && selection.rect.y === 0));
+    const merged = combineAlpha(sameSpace ? selection.alpha : null, next, mode);
     if (!selectionHasPixels(merged)) {
       clearSelection();
       toastWarn('该位置没有可选的区域，可调高容差再试');
@@ -3984,22 +4236,32 @@ export function createStudioPage(host) {
       toastWarn('还没有选区：先用魔棒点选一块区域');
       return;
     }
-    const mask = maskSize();
-    if (selection.width !== mask.width || selection.height !== mask.height) {
-      clearSelection();
-      return;
-    }
+    const width = selection.width;
+    const height = selection.height;
+    const rect = selection.rect || { x: 0, y: 0, width, height };
     let next = null;
-    if (op === 'invert') next = invertAlpha(selection.alpha, mask.width, mask.height, visibleBounds());
-    if (op === 'feather') next = featherAlpha(selection.alpha, mask.width, mask.height, selRadius);
-    if (op === 'expand') next = expandAlpha(selection.alpha, mask.width, mask.height, selRadius);
-    if (op === 'contract') next = contractAlpha(selection.alpha, mask.width, mask.height, selRadius);
+    if (op === 'invert') {
+      // 反选只作用于画面可见范围，换算到当前选区自身的坐标。
+      const visible = visibleBounds();
+      const bounds = visible
+        ? {
+            x: visible.x - rect.x,
+            y: visible.y - rect.y,
+            width: visible.width,
+            height: visible.height,
+          }
+        : { x: 0, y: 0, width, height };
+      next = invertAlpha(selection.alpha, width, height, bounds);
+    }
+    if (op === 'feather') next = featherAlpha(selection.alpha, width, height, selRadius);
+    if (op === 'expand') next = expandAlpha(selection.alpha, width, height, selRadius);
+    if (op === 'contract') next = contractAlpha(selection.alpha, width, height, selRadius);
     if (!next) return;
     if (!selectionHasPixels(next)) {
       clearSelection();
       return;
     }
-    setSelectionAlpha(next, mask.width, mask.height);
+    setSelectionAlpha(next, width, height, rect, selection.source);
   }
 
   /**
@@ -4011,12 +4273,7 @@ export function createStudioPage(host) {
       toastWarn('还没有选区：先用魔棒点选要处理的区域');
       return;
     }
-    const mask = maskSize();
-    if (selection.width !== mask.width || selection.height !== mask.height) {
-      toastWarn('选区尺寸与当前图像不一致，请重新选择');
-      clearSelection();
-      return;
-    }
+    const rect = selection.rect || { x: 0, y: 0, width: selection.width, height: selection.height };
     const data = new ImageData(selection.width, selection.height);
     const pixels = data.data;
     for (let i = 0; i < selection.alpha.length; i += 1) {
@@ -4028,7 +4285,8 @@ export function createStudioPage(host) {
     }
     const layer = makeCanvas(selection.width, selection.height);
     layer.getContext('2d').putImageData(data, 0, 0);
-    doc.mask.getContext('2d').drawImage(layer, 0, 0);
+    // 选区可能只覆盖画布外的一块区域，按它自己的原点贴回蒙版（超出部分自动裁掉）。
+    doc.mask.getContext('2d').drawImage(layer, rect.x, rect.y);
     doc.markMaskChanged(true);
     tintDirty = true;
     doc.snapshot();
@@ -4055,6 +4313,182 @@ export function createStudioPage(host) {
    * AI 主体选择（D13.1）：/api/image/segment
    * ============================================================ */
 
+  function aiTargetOptions() {
+    const options = [['', '合成图（主图 + 所有可见图层）']];
+    const current = doc && selectedLayerId ? doc.findLayer(selectedLayerId) : null;
+    if (current && !current.isAdjustment) {
+      options.push(['__current__', `当前图层：${current.name || '未命名'}（跟随选择）`]);
+    }
+    for (const layer of doc?.layers || []) {
+      if (layer.isAdjustment) continue;
+      if (current && layer.id === current.id) continue;
+      options.push([layer.id, layer.name || '图层']);
+    }
+    return options;
+  }
+
+  /** 同步「主体选择 / 抠图对象」两个下拉：合成图或指定叠加层。 */
+  function syncAiTargets() {
+    const options = aiTargetOptions();
+    const current = doc && selectedLayerId ? doc.findLayer(selectedLayerId) : null;
+    if (current && !current.isAdjustment) aiTargetLastId = current.id;
+    if (aiTargetFollow) {
+      // 默认跟随当前选中图层：选了叠加层就只对该层做主体选择，没选才是合成图。
+      aiTargetId = current && !current.isAdjustment ? '__current__' : '';
+    } else if (aiTargetId === '__current__' && !current) {
+      // 手动选过「当前图层」又取消选中时，沿用刚才那层，不能悄悄退回合成图。
+      const fallback = aiTargetLastId && doc?.findLayer(aiTargetLastId) ? aiTargetLastId : '';
+      aiTargetId = fallback;
+    }
+    if (!options.some(([value]) => value === aiTargetId)) aiTargetId = '';
+    for (const select of [refs.segTarget, refs.cutTarget]) {
+      if (!select) continue;
+      select.innerHTML = options
+        .map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`)
+        .join('');
+      select.value = aiTargetId;
+    }
+  }
+
+  function aiTargetLayer() {
+    if (!doc) return null;
+    const id = aiTargetId === '__current__' ? selectedLayerId || aiTargetLastId : aiTargetId;
+    const layer = id ? doc.findLayer(id) : null;
+    return layer && !layer.isAdjustment ? layer : null;
+  }
+
+  function layerBox(layer) {
+    return layer.bounds ? layer.bounds() : { x: layer.x, y: layer.y, width: layer.width, height: layer.height };
+  }
+
+  function visibleLayersBottomUp() {
+    return doc.layers.filter((layer) => {
+      if (!layer || layer.isAdjustment || layer.visible === false) return false;
+      if (layer.groupId && doc.findGroup?.(layer.groupId)?.visible === false) return false;
+      return true;
+    });
+  }
+
+  /**
+   * 「对象 = 合成图」时，如果提示主要落在画面之外（摆在画布外的贴纸/产品图），
+   * 自动把对象切到那个图层——框住谁就扣谁，不用先去下拉里找。
+   */
+  function adoptLayerTarget(hint = {}) {
+    if (!doc || aiTargetLayer()) return;
+    const crop = doc.transform.crop;
+    const oriented = doc.oriented;
+    const view = crop
+      ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+      : { x: 0, y: 0, width: oriented.width, height: oriented.height };
+    const rect = hint.box || null;
+    const point = hint.point || null;
+    const overlap = (a, b) => {
+      const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+      const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+      return { w: Math.max(0, w), h: Math.max(0, h) };
+    };
+    if (rect) {
+      const inside = overlap(rect, view);
+      const area = Math.max(1, rect.width * rect.height);
+      if ((inside.w * inside.h) / area > 0.6) return;
+    } else if (point) {
+      if (point.x >= view.x && point.x <= view.x + view.width && point.y >= view.y && point.y <= view.y + view.height) return;
+    } else {
+      return;
+    }
+    const layers = visibleLayersBottomUp();
+    let best = null;
+    let bestScore = 0;
+    for (const layer of layers) {
+      const b = layerBox(layer);
+      if (rect) {
+        const hit = overlap(rect, b);
+        const score = hit.w * hit.h;
+        if (score > bestScore) {
+          best = layer;
+          bestScore = score;
+        }
+      } else if (point.x >= b.x && point.x <= b.x + b.width && point.y >= b.y && point.y <= b.y + b.height) {
+        best = layer; // 从下往上找，后命中的更靠上
+      }
+    }
+    if (!best) return;
+    aiTargetFollow = false;
+    aiTargetLastId = best.id;
+    aiTargetId = best.id;
+    syncAiTargets();
+    toast(`对象已切到图层「${best.name || '未命名'}」`);
+  }
+
+  /**
+   * AI 看到的像素：指定图层时只送该层（透明底），否则送整张合成图。
+   * 指定图层时区域 = 该图层自己的外框（不裁剪、也不要求在画面内），
+   * 这样摆在画布外面的贴纸/产品图同样能被框选、抠出。
+   * @returns {{canvas: HTMLCanvasElement, region: {x:number,y:number,width:number,height:number}, layer: object|null}}
+   */
+  function aiTargetSource() {
+    const oriented = doc.oriented;
+    const layer = aiTargetLayer();
+    if (layer) {
+      // 只送这一层自己的外框区域：不裁剪、也不要求它在画面里，
+      // 这样摆在画布外面的贴纸/产品图同样能被框选和抠出。
+      const bounds = layer.bounds ? layer.bounds() : { x: layer.x, y: layer.y, width: layer.width, height: layer.height };
+      const region = {
+        x: Math.floor(bounds.x) - 2,
+        y: Math.floor(bounds.y) - 2,
+        width: Math.max(8, Math.ceil(bounds.width) + 4),
+        height: Math.max(8, Math.ceil(bounds.height) + 4),
+      };
+      const canvas = doc.renderLayer(layer.id, { region });
+      if (canvas && canvasHasPixels(canvas)) return { canvas, region, layer };
+      if (canvas) {
+        const name = layer.name || '当前图层';
+        let why = '没有可见像素（可能是空图层）';
+        if (layer.visible === false) why = '已隐藏（点图层眼睛恢复可见）';
+        else if (layer.opacity === 0) why = '不透明度是 0';
+        else if (layer.groupId && doc.findGroup?.(layer.groupId)?.visible === false) {
+          why = '所在的图层组被隐藏';
+        }
+        toastWarn(`图层「${name}」${why}，已改用合成图`);
+      }
+    }
+    const crop = doc.transform.crop;
+    return {
+      canvas: doc.renderBase(),
+      region: crop
+        ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+        : { x: 0, y: 0, width: oriented.width, height: oriented.height },
+      layer: null,
+    };
+  }
+
+  const SEG_MODEL_LABELS = { 'sam3.1-multiplex': 'SAM 3.1', birefnet: 'BiRefNet' };
+
+  /** 拉一次分割模型清单：只把「已就绪」的模型放进下拉，避免选了才报错。 */
+  async function loadSegmentModels() {
+    if (!refs.segModel || segModelsLoaded || segModelsLoading) return;
+    segModelsLoading = true;
+    try {
+      const data = await api.segmentModels();
+      const models = (data?.models || []).filter((item) => item.ready);
+      const options = ['<option value="">自动</option>']
+        .concat(models.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`))
+        .join('');
+      refs.segModel.innerHTML = options;
+      if (segModel && !models.some((item) => item.id === segModel)) segModel = '';
+      refs.segModel.value = segModel;
+      segModelsLoaded = true;
+    } catch {
+      // 模型清单拿不到时保留「自动」，后端仍会按模式挑模型。
+    } finally {
+      segModelsLoading = false;
+    }
+  }
+
+  function segModelLabel(id) {
+    return SEG_MODEL_LABELS[id] || id || '';
+  }
+
   function syncSegUi(keepStatus = false) {
     if (refs.segModes) {
       refs.segModes.innerHTML = SEGMENT_MODES.map(
@@ -4078,26 +4512,61 @@ export function createStudioPage(host) {
     }
     if (refs.segStatus && !segBusy && !keepStatus) {
       const meta = SEGMENT_MODES.find((item) => item.id === segMode) || SEGMENT_MODES[0];
-      refs.segStatus.textContent =
-        segMode === 'points' && segPoints.length ? `${meta.hint}（已 ${segPoints.length} 点）` : meta.hint;
+      let text = meta.hint;
+      if (segMode === 'points' || segMode === 'box') {
+        if (segPoints.length) {
+          const add = segPoints.filter((item) => item.label !== 0).length;
+          const sub = segPoints.length - add;
+          text += `（已 ${segPoints.length} 点${sub ? `，含 ${sub} 个排除点` : ''}）`;
+        }
+      }
+      if (segMode === 'text' && segBox) text += '（已用框限制范围）';
+      if (segLastModel) text += ` · 最近：${segModelLabel(segLastModel)}`;
+      refs.segStatus.textContent = text;
     }
   }
 
-  /** 把分割蒙版贴进选区（灰度 PNG，白 = 选中；尺寸与原图一致，这里统一缩到蒙版空间）。 */
-  async function applySegmentMask(mask, owner = doc) {
+  /**
+   * 把分割蒙版贴进选区（灰度 PNG，白 = 选中）。
+   * region / layerId 由发送图决定：指定图层时选区直接存在该图层区域里
+   * （区域可能在画面/裁剪之外），否则仍贴回整张蒙版空间。
+   */
+  async function applySegmentMask(mask, owner = doc, region = null, layerId = '') {
     if (!doc || doc !== owner || !mask?.url) return;
     const size = maskSize();
     if (!size.width || !size.height) return;
     const image = await loadImage(api.fileUrl(mask.url));
     // 图片解码期间可能已经切换了工程，旧蒙版不能再落到新文档上。
     if (doc !== owner) return;
-    const canvas = makeCanvas(size.width, size.height);
+    const area = region
+      ? {
+          x: Math.round(region.x),
+          y: Math.round(region.y),
+          width: Math.round(region.width),
+          height: Math.round(region.height),
+        }
+      : { x: 0, y: 0, width: size.width, height: size.height };
+    const local = Boolean(region && layerId);
+    const width = local ? area.width : size.width;
+    const height = local ? area.height : size.height;
+    const dest = local ? { x: 0, y: 0, width, height } : area;
+    const canvas = makeCanvas(width, height);
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(image, 0, 0, size.width, size.height);
-    const data = ctx.getImageData(0, 0, size.width, size.height).data;
-    const alpha = maskGrayToAlpha(data, size.width, size.height);
+    ctx.drawImage(
+      image,
+      0,
+      0,
+      image.naturalWidth || image.width,
+      image.naturalHeight || image.height,
+      dest.x,
+      dest.y,
+      dest.width,
+      dest.height,
+    );
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const alpha = maskGrayToAlpha(data, width, height);
     let hasPixels = false;
     for (let i = 0; i < alpha.length; i += 1) {
       if (alpha[i] > 0) {
@@ -4109,20 +4578,30 @@ export function createStudioPage(host) {
       toastWarn('这个提示没有选到区域，换个位置或改用框选');
       return;
     }
-    setSelectionAlpha(alpha, size.width, size.height);
+    if (local) {
+      setSelectionAlpha(alpha, width, height, area, { layerId });
+    } else {
+      setSelectionAlpha(alpha, width, height);
+    }
     segAppliedId = mask.url;
-    toastSuccess(`已生成选区 ${(coverageAlpha(alpha) * 100).toFixed(1)}%`);
+    toastSuccess(`已生成选区 ${(coverageAlpha(alpha) * 100).toFixed(1)}% · 可用「选区画笔 I / 橡皮 Q」加减范围`);
   }
 
   /**
-   * 发起一次主体分割：发送「旋转后未裁剪」的合成图（长边超 2048 先缩小），
+   * 发起一次主体分割：发送「合成图或指定叠加层」（长边超 2048 先缩小），
    * 异步任务轮询进度；框/点提示换算到发送图坐标后再提交。
    */
   async function runSegment(hint = {}) {
     if (!doc || segBusy) return;
+    // 合成图模式下框到画布外的图层时，自动把对象切到那一层（框住谁扣谁）。
+    adoptLayerTarget(hint);
     // 记住发起时的文档：轮询期间切换工程后，旧结果不能再贴到新工程上。
     const owner = doc;
-    const base = doc.renderBase();
+    const source = aiTargetSource();
+    const base = source.canvas;
+    // region 是发送图覆盖的「旋转后未裁剪」区域：合成图 = 裁剪矩形，图层 = 该图层外框。
+    const region = source.region;
+    const layerId = source.layer?.id || '';
     const send = segmentSendSize(base.width, base.height, 2048);
     let image = base;
     if (send.scale !== 1) {
@@ -4132,15 +4611,41 @@ export function createStudioPage(host) {
       ictx.imageSmoothingQuality = 'high';
       ictx.drawImage(base, 0, 0, send.width, send.height);
     }
-    const crop = doc.transform.crop;
+    // 提示点/框存的是「旋转后未裁剪」坐标，先减掉 region 原点，
+    // 否则有裁剪时会错位到主图区域、裁剪区外的图层也框不到。
+    const toViewRect = (rect) => ({
+      x: rect.x - region.x,
+      y: rect.y - region.y,
+      width: rect.width,
+      height: rect.height,
+    });
+    // 点提示同样裁进发送图：落点可能在图层外，超出部分后端不认。
+    const toViewPoint = (point) => ({
+      x: Math.max(0, Math.min(region.width, point.x - region.x)),
+      y: Math.max(0, Math.min(region.height, point.y - region.y)),
+    });
+    // 提示可能落在送图之外（例如框比图层大），先裁到图内再发，避免后端拒绝坐标。
+    const clampToSend = (rect) => {
+      const x0 = Math.max(0, Math.min(region.width, Math.min(rect.x, rect.x + rect.width)));
+      const y0 = Math.max(0, Math.min(region.height, Math.min(rect.y, rect.y + rect.height)));
+      const x1 = Math.max(0, Math.min(region.width, Math.max(rect.x, rect.x + rect.width)));
+      const y1 = Math.max(0, Math.min(region.height, Math.max(rect.y, rect.y + rect.height)));
+      return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+    };
+    const clickPoint = hint.point || null;
+    let mode = segMode;
+    // BiRefNet 只做「显著性主体」，不能接提示；选了它就强制走 subject。
+    if (segModel === 'birefnet') mode = 'subject';
+    if (segMode === 'subject' && clickPoint && segModel !== 'birefnet') mode = 'points';
     const payload = {
       image: image.toDataURL('image/png'),
-      mode: segMode,
+      mode,
       multi: Boolean(refs.segMulti?.checked),
       feather: Math.max(0, Math.min(32, Math.round(Number(refs.segFeather?.value) || 0))),
       async: true,
     };
-    if (segMode === 'text') {
+    if (segModel) payload.model = segModel;
+    if (mode === 'text') {
       const text = String(hint.text ?? refs.segText?.value ?? '').trim();
       if (!text) {
         toastWarn('先写一句主体描述，例如「穿黑衣服的人」');
@@ -4148,9 +4653,34 @@ export function createStudioPage(host) {
         return;
       }
       payload.text = text;
+      // 文字 + 框：框只用来限制搜索范围（SAM 3.1 会把两者合在一起做提示）。
+      if (segBox) payload.box = toSendBox(clampToSend(toViewRect(segBox)), send.scale, null);
     }
-    if (segMode === 'box' && hint.box) payload.box = toSendBox(hint.box, send.scale, crop);
-    if (segMode === 'points') payload.points = toSendPoints(segPoints, send.scale, crop);
+    if (mode === 'box') {
+      const rect = hint.box || segBox;
+      if (!rect) {
+        toastWarn('先在画面上拖一个框');
+        return;
+      }
+      const local = clampToSend(toViewRect(rect));
+      if (local.width < 3 || local.height < 3) {
+        toastWarn('框里没有这个图层的内容，把框拖到图层上再试');
+        return;
+      }
+      payload.box = toSendBox(local, send.scale, null);
+      // 框 + 点：框内补正点、Alt 点排除，一起送给 SAM 3.1。
+      if (segPoints.length) {
+        payload.points = toSendPoints(segPoints.map(toViewPoint), send.scale, null);
+      }
+    }
+    if (mode === 'points') {
+      const points = clickPoint ? [{ ...clickPoint, label: 1 }] : segPoints;
+      if (!points.length) {
+        toastWarn('先在主体上点一下');
+        return;
+      }
+      payload.points = toSendPoints(points.map(toViewPoint), send.scale, null);
+    }
 
     segBusy = true;
     segCandidates = [];
@@ -4160,7 +4690,21 @@ export function createStudioPage(host) {
     scheduleDraw();
     let failed = '';
     try {
-      const started = await api.segment(payload);
+      let started = null;
+      try {
+        started = await api.segment(payload);
+      } catch (err) {
+        // 自动模式下 SAM 3.1 不可用（未就绪 / 显存不足）时，回退 BiRefNet 显著性主体。
+        if (mode === 'points' && segMode === 'subject' && !segModel) {
+          delete payload.points;
+          delete payload.box;
+          payload.mode = 'subject';
+          mode = 'subject';
+          started = await api.segment(payload);
+        } else {
+          throw err;
+        }
+      }
       const jobId = started?.job_id;
       if (!jobId) throw new Error('后端没有返回分割任务');
       segJob = pollJob(jobId, (job) => {
@@ -4175,10 +4719,13 @@ export function createStudioPage(host) {
       if (!job) return;
       if (doc !== owner) return;
       if (job.status !== 'done') throw new Error(job.error || '分割失败');
+      segLastModel = job.meta?.model || job.model || '';
       const masks = sortSegmentMasks(job.meta?.masks || job.masks || []);
       if (!masks.length) throw new Error('没有返回蒙版');
       segCandidates = masks;
-      await applySegmentMask(masks[0], owner);
+      segRegion = region;
+      segLayerId = layerId;
+      await applySegmentMask(masks[0], owner, region, layerId);
     } catch (err) {
       failed = err?.message || '分割失败';
       toastError(err, '主体选择失败');
@@ -4196,7 +4743,10 @@ export function createStudioPage(host) {
     segJob = null;
     segBusy = false;
     segPoints = [];
+    segBox = null;
     segCandidates = [];
+    segRegion = null;
+    segLayerId = '';
     segAppliedId = '';
     syncSegUi();
   }
@@ -4853,9 +5403,17 @@ export function createStudioPage(host) {
       return;
     }
     if (tool === 'segment') {
-      // D13.1：主体 = 点一下即分割；框选 = 拖框；点选 = 累积提示点；文字 = 走浮条输入。
-      const at = maskPoint(point);
+      // D13.1：主体 = 点一下交给 SAM 3.1 点提示；框选 = 拖框（Shift/Alt 点可加减选）；
+      // 点选 = 累积提示点；文字 = 输入描述，可在画面上拖框限制范围。
+      const at = segmentPoint(freePoint);
       if (segMode === 'box') {
+        if (event.shiftKey || event.altKey) {
+          segPoints.push({ x: at.x, y: at.y, label: event.altKey ? 0 : 1 });
+          syncSegUi();
+          scheduleDraw();
+          if (segBox) void runSegment({ box: segBox });
+          return;
+        }
         drag = { mode: 'segBox', start: at, rect: null };
         scheduleDraw();
       } else if (segMode === 'points') {
@@ -4864,9 +5422,10 @@ export function createStudioPage(host) {
         scheduleDraw();
         void runSegment({});
       } else if (segMode === 'subject') {
-        void runSegment({});
+        void runSegment({ point: at });
       } else {
-        toast('文字模式：在下方输入主体描述后点「选取」');
+        drag = { mode: 'segBox', start: at, rect: null };
+        scheduleDraw();
         refs.segText?.focus();
       }
       return;
@@ -4928,6 +5487,16 @@ export function createStudioPage(host) {
       const start = maskPoint(point);
       drag = { mode: 'paint', last: start };
       stampMask(start);
+      scheduleDraw();
+      return;
+    }
+    if (SELECT_BRUSH_TOOLS.has(tool)) {
+      // 人工精修选区：画笔加选、橡皮减选，按住 Alt 临时互换。
+      const at = maskPoint(point);
+      const erase = tool === 'seleraser' ? !event.altKey : event.altKey;
+      if (!ensureSelectionCanvas()) return;
+      stampSelection(at, erase);
+      drag = { mode: 'selpaint', last: at, erase };
       scheduleDraw();
       return;
     }
@@ -5131,6 +5700,11 @@ export function createStudioPage(host) {
       scheduleDraw();
       return;
     }
+    if (drag.mode === 'selpaint') {
+      strokeSelectionTo(imagePoint, drag.erase);
+      scheduleDraw();
+      return;
+    }
     if (drag.mode === 'spot') {
       healStroke(imagePoint);
       scheduleDraw();
@@ -5176,7 +5750,8 @@ export function createStudioPage(host) {
       return;
     }
     if (drag.mode === 'segBox') {
-      drag.rect = normalizeRect(drag.start, imagePoint);
+      // 分割框不能沿用 clampPoint：那会把框锁在主图范围内，裁剪区外的图层就框不到。
+      drag.rect = normalizeRect(drag.start, segmentPoint(rawPoint));
       scheduleDraw();
       return;
     }
@@ -5285,6 +5860,10 @@ export function createStudioPage(host) {
       drag.mode === 'moveLayer' &&
       (drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
     drag = null;
+    if (mode === 'selpaint') {
+      commitSelectionPaint();
+      return;
+    }
     if (mode === 'paint') {
       if (editingLayerMaskId) {
         // 图层蒙版：几何与蒙版都由 commitLayers 一次性落快照，不动文档蒙版状态。
@@ -5361,10 +5940,16 @@ export function createStudioPage(host) {
         toast('已创建形状，可在右侧调整填充 / 描边 / 圆角');
       }
     } else if (mode === 'segBox') {
-      // D13.1 框选：松手才发起分割，太小的框视为误触。
+      // D13.1 框选：松手才发起分割，太小的框视为误触；文字模式下框只用来限范围。
       if (rect && rect.width > 6 && rect.height > 6) {
-        void runSegment({ box: rect });
-      } else {
+        segBox = rect;
+        if (segMode === 'text') {
+          syncSegUi();
+          toastSuccess('已用框限制文字搜索范围');
+        } else {
+          void runSegment({ box: rect });
+        }
+      } else if (segMode !== 'text') {
         toastWarn('框太小了，请重新拖出一个框');
       }
     } else if (mode === 'patternPick') {
@@ -5908,16 +6493,8 @@ export function createStudioPage(host) {
     if (!doc || !versionId || versionId === currentVersionId) return;
     const version = versions.find((item) => item.id === versionId);
     if (!version) return;
-    // D23.1：切换版本会重建文档，当前图层会丢；先确认。
-    if (doc?.layers.length) {
-      const confirmed = await confirmDialog({
-        title: '切换版本',
-        message: `切换版本会丢弃当前 ${doc.layers.length} 个图层（不会自动保存），是否继续？`,
-        confirmText: '继续切换',
-      });
-      if (!confirmed) return;
-    }
     const token = ++openSeq;
+    const owner = doc;
     let blob = version.blob || null;
     if (!blob) {
       try {
@@ -5930,7 +6507,7 @@ export function createStudioPage(host) {
     if (!blob && version.meta?.resultUrl) {
       blob = await fetchBlob(version.meta.resultUrl);
     }
-    if (token !== openSeq || !doc) return;
+    if (token !== openSeq || doc !== owner) return;
     if (!blob) {
       toastWarn('该版本的原图不在本机，无法切换');
       return;
@@ -5940,11 +6517,55 @@ export function createStudioPage(host) {
     const url = URL.createObjectURL(blob);
     try {
       const image = await loadImage(url);
-      if (token !== openSeq) return;
-      const name = doc.name;
-      const next = new StudioDoc(image, name);
+      if (token !== openSeq || doc !== owner) return;
+      // 换主图 = 只换底图：图层继续留在原文档里，先按尺寸 / 原点差异换算坐标。
+      const oldSize = doc.size;
+      const oldOriented = doc.oriented;
+      const crop = doc.transform.crop;
+      const nw = image.naturalWidth || image.width;
+      const nh = image.naturalHeight || image.height;
+      let scale = 1;
+      let dx = 0;
+      let dy = 0;
+      let unsure = false;
+      if (nw === oldSize.width && nh === oldSize.height) {
+        // 版本是从当前画面烘焙的（快门 / 合并 / AI 结果）：新图原点 = 旧裁剪框左上角
+        dx = -(crop?.x || 0);
+        dy = -(crop?.y || 0);
+      } else if (nw === oldOriented.width && nh === oldOriented.height) {
+        // 原始整图：和图层坐标是同一空间，不需要换算
+      } else if (
+        oldSize.width > 0 &&
+        oldSize.height > 0 &&
+        Math.abs(nw / oldSize.width - nh / oldSize.height) < 0.02
+      ) {
+        // 等比缩放（放大 / 缩小）
+        scale = nw / oldSize.width;
+        dx = -(crop?.x || 0) * scale;
+        dy = -(crop?.y || 0) * scale;
+      } else {
+        unsure = true;
+      }
+      compensateLayersForBase(doc.layers, { scale, dx, dy });
+      const keptLayers = doc.layers.length;
+      const sizeChanged = nw !== oldSize.width || nh !== oldSize.height;
+      doc.replaceMainImage(image);
       sourceBlob = blob;
-      setDoc(next);
+      // 主图级状态已重置：清掉依赖旧坐标的编辑现场（图层本身保留）。
+      selectionSets = [];
+      cropRect = null;
+      refs.cropbar.hidden = true;
+      clearSelection(true);
+      resetSegmentHints();
+      editingLayerMaskId = '';
+      baseVisible = true;
+      refs.stage.classList.remove('is-base-hidden');
+      syncAdjustInputs();
+      updateSizeInfo();
+      updateHistoryUi();
+      updateMaskStatus();
+      renderSnapshots();
+      if (sizeChanged) requestAnimationFrame(() => fitView());
       // 150ms 淡入：只动 opacity，不做位移，避免切换时晕。
       refs.canvas.classList.remove('is-version-fade');
       void refs.canvas.offsetWidth;
@@ -5952,12 +6573,53 @@ export function createStudioPage(host) {
       currentVersionId = version.id;
       renderDock();
       scheduleSave();
-      toast(`已切换到「${version.label}」`);
+      ai?.refresh?.();
+      if (unsure) {
+        toastWarn(`已切换到「${version.label}」 · 尺寸变化较大，图层保持原坐标，可能需要手动微调`);
+      } else if (keptLayers && version.kind !== 'original') {
+        toast(
+          `已切换到「${version.label}」 · 保留 ${keptLayers} 个图层` +
+            '（该快照已含图层像素，如出现重复可在图层面板隐藏）',
+        );
+      } else {
+        toast(`已切换到「${version.label}」 · 保留 ${keptLayers} 个图层`);
+      }
     } catch (err) {
       toastError(err, '切换版本失败');
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * 换主图后换算图层几何：新原点相对旧原点偏移 (dx, dy)，尺度按 scale。
+   * 覆盖图片层 / 文字层 / 形状层；调整层在 replaceMainImage 里跟随新尺寸。
+   */
+  function compensateLayersForBase(layers, { scale = 1, dx = 0, dy = 0 } = {}) {
+    const k = Number(scale) > 0 ? Number(scale) : 1;
+    if (k === 1 && !dx && !dy) return;
+    (layers || []).forEach((layer) => {
+      if (!layer || layer.isAdjustment) return;
+      if (Array.isArray(layer.quad)) {
+        layer.quad = layer.quad.map((point) => ({ x: point.x * k + dx, y: point.y * k + dy }));
+        layer._warpCache = null;
+      }
+      layer.x = (layer.x || 0) * k + dx;
+      layer.y = (layer.y || 0) * k + dy;
+      if (layer.isText) {
+        layer.fontSize = (layer.fontSize || 0) * k;
+        layer.strokeWidth = (layer.strokeWidth || 0) * k;
+        layer.shadowBlur = (layer.shadowBlur || 0) * k;
+        layer.shadowX = (layer.shadowX || 0) * k;
+      } else if (layer.isShape) {
+        layer.width = (layer.width || 0) * k;
+        layer.height = (layer.height || 0) * k;
+        layer.strokeWidth = (layer.strokeWidth || 0) * k;
+        layer.radius = (layer.radius || 0) * k;
+      } else if (layer.scale) {
+        layer.scale *= k;
+      }
+    });
   }
 
   /** 打开工程时从本机恢复版本链；老工程没有版本记录时补一张原始卡。 */
@@ -6352,7 +7014,9 @@ export function createStudioPage(host) {
       ${project.id === projectId ? '<span class="studio-proj-flag">当前</span>' : ''}
       ${locked ? '<span class="studio-proj-flag is-lock">编辑中</span>' : ''}
       <div class="studio-proj-actions">
-        <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>打开</button>
+        <button class="btn ghost sm" type="button" data-act="open"${
+          locked ? ' data-takeover="1" title="该工程正在其他标签编辑，点此接管"' : ''
+        }>${locked ? '接管' : '打开'}</button>
         <button class="btn ghost sm" type="button" data-act="delete">删除</button>
       </div>
     </div>`;
@@ -6406,7 +7070,7 @@ export function createStudioPage(host) {
   }
 
   /** 从项目历史打开一个工程：先保存当前工程，再按工程快照恢复。 */
-  async function openProjectById(id) {
+  async function openProjectById(id, { takeover = false } = {}) {
     if (!id) return false;
     if (id === projectId && doc) {
       toast('已经是当前项目');
@@ -6431,9 +7095,16 @@ export function createStudioPage(host) {
     if (doc) await closeProject({ flush: true });
     const ok = await applyRestore(saved);
     if (ok) {
+      // 从历史里点「接管」：抢过租约，让另一个标签转只读，本标签继续编辑。
+      if (takeover) {
+        lease?.take?.();
+        setLeaseLocked(false);
+      }
       // 重新落一次 lastProjectId：关闭旧工程时被清掉，打开新工程后要恢复自动恢复能力。
       scheduleSave(300);
-      toastSuccess(`已打开「${saved.project.name || '工程'}」`);
+      toastSuccess(
+        takeover ? `已接管并打开「${saved.project.name || '工程'}」` : `已打开「${saved.project.name || '工程'}」`,
+      );
       if (!refs.projHistoryPanel.hidden) await refreshProjectList();
     }
     return ok;
@@ -6480,7 +7151,7 @@ export function createStudioPage(host) {
       if (!id) return;
       if (button.dataset.act === 'open') {
         button.disabled = true;
-        const ok = await openProjectById(id);
+        const ok = await openProjectById(id, { takeover: button.dataset.takeover === '1' });
         button.disabled = false;
         if (ok) {
           modal.close();
@@ -6513,7 +7184,7 @@ export function createStudioPage(host) {
     if (!id) return;
     if (button.dataset.act === 'open') {
       button.disabled = true;
-      const ok = await openProjectById(id);
+      const ok = await openProjectById(id, { takeover: button.dataset.takeover === '1' });
       button.disabled = false;
       if (ok) setProjHistory(false);
       return;
@@ -6862,6 +7533,24 @@ export function createStudioPage(host) {
     restoring = true;
     const urls = [];
     try {
+      // 图层位图 / 蒙版先一起开始解码，与主图解码并行，最后按顺序组装。
+      const safeLoad = (url) => loadImage(url).catch(() => null);
+      const preloaded = new Map();
+      for (const record of saved.layers || []) {
+        if (record.id === 'base' || !record.bitmapBlob) continue;
+        const url = URL.createObjectURL(record.bitmapBlob);
+        urls.push(url);
+        preloaded.set(record.id, { image: safeLoad(url), mask: null });
+      }
+      for (const record of saved.layers || []) {
+        if (!record.maskBlob) continue;
+        const url = URL.createObjectURL(record.maskBlob);
+        urls.push(url);
+        const item = preloaded.get(record.id) || { image: null, mask: null };
+        item.mask = safeLoad(url);
+        preloaded.set(record.id, item);
+      }
+
       const baseUrl = URL.createObjectURL(base.bitmapBlob);
       urls.push(baseUrl);
       const image = await loadImage(baseUrl);
@@ -6890,11 +7579,11 @@ export function createStudioPage(host) {
       }
 
       // 图层蒙版恢复（D8.2 / D9.3）：叠加层与调整层共用。
-      const restoreLayerMask = async (layer, props, blob) => {
-        if (!blob) return;
-        const maskUrl = URL.createObjectURL(blob);
-        urls.push(maskUrl);
-        const maskImage = await loadImage(maskUrl);
+      // 传入的是已经解码好的图片（调用方并行预解码），这里只负责贴回画布。
+      const restoreLayerMask = async (layer, props, maskPromise) => {
+        if (!maskPromise) return;
+        const maskImage = await maskPromise;
+        if (!maskImage) return;
         const maskCanvas = layer.ensureMask();
         const mctx = maskCanvas.getContext('2d');
         mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
@@ -6902,6 +7591,11 @@ export function createStudioPage(host) {
         layer.maskVisible = props.maskVisible !== false;
         layer.touchMask();
       };
+
+      // 等并行解码全部完成（通常主图解码完时它们已经好了）。
+      await Promise.all(
+        [...preloaded.values()].flatMap((item) => [item.image, item.mask].filter(Boolean)),
+      );
 
       const missing = [];
       for (const record of saved.layers || []) {
@@ -6919,7 +7613,7 @@ export function createStudioPage(host) {
           layer.locked = Boolean(props.locked);
           // 没有蒙版快照时按几何重建，保证刷新后局部范围还在（D9.4）。
           if (!record.maskBlob && layer.local?.type !== 'none') layer.setLocal(layer.local);
-          await restoreLayerMask(layer, props, record.maskBlob);
+          await restoreLayerMask(layer, props, preloaded.get(record.id)?.mask || null);
           continue;
         }
         // D11.2：文字图层按 props 还原，没有位图。
@@ -6965,10 +7659,9 @@ export function createStudioPage(host) {
           missing.push(record.props?.name || record.id);
           continue;
         }
-        const layerUrl = URL.createObjectURL(record.bitmapBlob);
-        urls.push(layerUrl);
         try {
-          const layerImage = await loadImage(layerUrl);
+          const layerImage = await preloaded.get(record.id)?.image;
+          if (!layerImage) throw new Error('图层解码失败');
           const layer = next.addOverlay(layerImage, {
             name: props.name,
             x: props.x,
@@ -6991,7 +7684,7 @@ export function createStudioPage(host) {
           layer.sourceWidth = layer.naturalWidth || layer.sourceWidth || 0;
           layer.sourceHeight = layer.naturalHeight || layer.sourceHeight || 0;
           layerBlobs.set(record.id, record.bitmapBlob);
-          await restoreLayerMask(layer, props, record.maskBlob);
+          await restoreLayerMask(layer, props, preloaded.get(record.id)?.mask || null);
         } catch {
           missing.push(record.props?.name || record.id);
         }
@@ -7096,8 +7789,19 @@ export function createStudioPage(host) {
         // 隐私模式下读不到 sessionStorage，按未忽略处理
       }
       if (saved.project.tabId && saved.project.tabId === tabId()) {
-        // 同一标签页刷新：直接恢复，不打断。
-        await applyRestore(saved);
+        // 同一标签页刷新：直接恢复；大工程解码要几秒，先给出可见进度，
+        // 否则画面空着会被当成「面板没加载出来」。
+        refs.restoreText.textContent = '正在恢复上次编辑…';
+        refs.restoreApply.hidden = true;
+        refs.restoreIgnore.hidden = true;
+        refs.restoreBar.hidden = false;
+        try {
+          await applyRestore(saved);
+        } finally {
+          refs.restoreApply.hidden = false;
+          refs.restoreIgnore.hidden = false;
+          hideRestoreBar();
+        }
         return;
       }
       pendingRestore = saved;
@@ -8619,19 +9323,41 @@ export function createStudioPage(host) {
   }
 
   /**
-   * 合成一块透明底图：`renderBase` → 裁到 `doc.size` → `destination-in` 叠选区 alpha
+   * 合成一块透明底图：`base` → 裁到 `rect` → `destination-in` 叠选区 alpha
    * → 可选去色边 → 可选固定尺寸 contain。
+   * baseRect / alphaRect 是 base 与 alpha 各自覆盖的「旋转后未裁剪」区域，
+   * 默认按旧约定（base 已是裁剪后空间、alpha 是整张画布）。
    */
-  function composeCutout(base, rect, alpha, alphaWidth, alphaHeight, { fit = true } = {}) {
+  function composeCutout(base, rect, alpha, alphaWidth, alphaHeight, { fit = true, baseRect = null, alphaRect = null } = {}) {
     const prepared = prepareCutoutAlpha(alpha, alphaWidth, alphaHeight, cutoutEdge);
     const alphaCanvas = alphaToCanvas(prepared, alphaWidth, alphaHeight);
     const canvas = makeCanvas(rect.width, rect.height);
     const ctx = canvas.getContext('2d');
-    // base 已经是「裁剪后」输出空间（doc.size），不能再按 rect.x/y 取样，否则会整块透明。
-    ctx.drawImage(base, 0, 0, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    const baseOrigin = baseRect || { x: rect.x, y: rect.y };
+    ctx.drawImage(
+      base,
+      rect.x - baseOrigin.x,
+      rect.y - baseOrigin.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      rect.width,
+      rect.height,
+    );
     ctx.globalCompositeOperation = 'destination-in';
-    // 选区 alpha 是「旋转后未裁剪」空间，才需要按裁剪偏移取样。
-    ctx.drawImage(alphaCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    const alphaOrigin = alphaRect || { x: 0, y: 0 };
+    ctx.drawImage(
+      alphaCanvas,
+      rect.x - alphaOrigin.x,
+      rect.y - alphaOrigin.y,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      rect.width,
+      rect.height,
+    );
     ctx.globalCompositeOperation = 'source-over';
     if (cutoutDecon) {
       const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -8648,15 +9374,35 @@ export function createStudioPage(host) {
    */
   async function buildCutoutCanvas() {
     if (!doc) return null;
-    const base = doc.renderBase();
-    // 选区与蒙版都保存在「旋转后未裁剪」空间，尺寸比对必须用 oriented。
-    if (selection.width !== doc.oriented.width || selection.height !== doc.oriented.height) {
-      toastWarn('选区与当前画面尺寸不一致，请重新选择');
-      clearSelection(true);
+    const alphaRect = selection.rect || { x: 0, y: 0, width: selection.width, height: selection.height };
+    // 选区来自某个图层时，按该图层区域重新取像素（区域可能在画面之外）。
+    const layer = selection.source?.layerId ? doc.findLayer(selection.source.layerId) : null;
+    const crop = doc.transform.crop;
+    const oriented = doc.oriented;
+    let base;
+    let baseRect;
+    let rect;
+    if (layer) {
+      rect = { x: alphaRect.x, y: alphaRect.y, width: selection.width, height: selection.height };
+      base = doc.renderLayer(layer.id, { region: rect });
+      baseRect = rect;
+    } else {
+      base = doc.renderBase();
+      baseRect = crop
+        ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+        : { x: 0, y: 0, width: oriented.width, height: oriented.height };
+      rect = cutoutRect(crop, base.width, base.height);
+    }
+    if (!base) return null;
+    const raw = composeCutout(base, rect, selection.alpha, selection.width, selection.height, {
+      fit: false,
+      baseRect,
+      alphaRect,
+    });
+    if (!canvasHasPixels(raw.canvas)) {
+      toastWarn('选区内没有可抠出的像素，检查一下对象是不是选对了图层');
       return null;
     }
-    const rect = cutoutRect(doc.transform.crop, base.width, base.height);
-    const raw = composeCutout(base, rect, selection.alpha, selection.width, selection.height, { fit: false });
     const fitted = fitCutoutCanvas(raw.canvas);
     return { canvas: fitted.canvas, raw: raw.canvas, rect, target: fitted.target };
   }
@@ -8704,6 +9450,10 @@ export function createStudioPage(host) {
       const built = await buildCutoutCanvas();
       if (!built) return;
       const { canvas, raw, rect, target } = built;
+      // 抠图可能来自合成图，也可能只来自某个叠加层；提示里写清楚，避免误判成主图。
+      const sourceLayer = selection.source?.layerId ? doc.findLayer(selection.source.layerId) : null;
+      const targetLayer = sourceLayer || aiTargetLayer();
+      const fromLabel = targetLayer ? `图层「${targetLayer.name || '未命名'}」` : '合成图';
       // 选区可能被裁剪框完全排除（先选区再裁剪），此时输出全透明；
       // 继续建层只会得到「只有选框、看不见内容」的空图层。
       if (!canvasHasPixels(raw)) {
@@ -8719,13 +9469,13 @@ export function createStudioPage(host) {
         const url = URL.createObjectURL(blob);
         downloadUrl(url, `${name}${tag}-cutout.png`);
         setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toastSuccess(`已抠出选区 · ${width} × ${height} · PNG`);
+        toastSuccess(`已从${fromLabel}抠出选区 · ${width} × ${height} · PNG`);
         return;
       }
       if (action === 'copy') {
         const blob = await canvasToBlob(canvas, 'image/png');
         if (await copyBlob(blob)) {
-          toastSuccess('已复制透明 PNG 到剪贴板');
+          toastSuccess(`已从${fromLabel}复制透明 PNG 到剪贴板`);
         } else {
           const url = URL.createObjectURL(blob);
           downloadUrl(url, `${name}${tag}-cutout.png`);
@@ -8744,7 +9494,7 @@ export function createStudioPage(host) {
         const url = URL.createObjectURL(blob);
         downloadUrl(url, `${name}${tag}-cutout-white.jpg`);
         setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toastSuccess(`已导出白底 JPG · ${width} × ${height}`);
+        toastSuccess(`已从${fromLabel}导出白底 JPG · ${width} × ${height}`);
         return;
       }
       if (action === 'layer') {
@@ -8773,7 +9523,7 @@ export function createStudioPage(host) {
           // 需要单独看抠图结果时点主图眼睛即可。
           doc.invalidateBase();
           scheduleDraw();
-          toastSuccess('已建立抠图层 · 与主图重合，可拖动 / 缩放（点主图眼睛可单独查看）');
+          toastSuccess(`已从${fromLabel}建立抠图层 · 与主图重合，可拖动 / 缩放（点主图眼睛可单独查看）`);
         }
       }
     } catch (err) {
@@ -8801,6 +9551,8 @@ export function createStudioPage(host) {
       alpha: new Uint8ClampedArray(selection.alpha),
       width: selection.width,
       height: selection.height,
+      rect: { ...selection.rect },
+      source: selection.source ? { ...selection.source } : null,
     });
     renderCutSelectionSets();
     toastSuccess(`已存为 ${selectionSets[selectionSets.length - 1].name}`);
@@ -8828,13 +9580,31 @@ export function createStudioPage(host) {
     refs.cutBtn.textContent = '批量导出中…';
     try {
       flushAdjustPreview();
-      const base = doc.renderBase();
-      const rect = cutoutRect(doc.transform.crop, base.width, base.height);
+      // 批量导出同样跟随「对象」选择；选区来自图层时按该图层区域取像素。
+      const crop = doc.transform.crop;
+      const oriented = doc.oriented;
+      const layerSel = selection.source?.layerId ? doc.findLayer(selection.source.layerId) : null;
+      const useLayer = Boolean(selectionHasArea() && layerSel);
+      const base = useLayer ? doc.renderLayer(layerSel.id, { region: selection.rect }) : doc.renderBase();
+      const rect = useLayer
+        ? { x: selection.rect.x, y: selection.rect.y, width: selection.width, height: selection.height }
+        : cutoutRect(crop, base.width, base.height);
+      const baseRect = useLayer
+        ? rect
+        : crop
+          ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+          : { x: 0, y: 0, width: oriented.width, height: oriented.height };
+      const alphaRect = useLayer ? selection.rect : { x: 0, y: 0 };
+      const alphaW = useLayer ? selection.width : oriented.width;
+      const alphaH = useLayer ? selection.height : oriented.height;
       const name = baseName(doc.name);
       let done = 0;
       for (const group of groups) {
-        if (group.width !== base.width || group.height !== base.height) continue;
-        const { canvas, target } = composeCutout(base, rect, group.alpha, group.width, group.height);
+        if (group.width !== alphaW || group.height !== alphaH) continue;
+        const { canvas, target } = composeCutout(base, rect, group.alpha, group.width, group.height, {
+          baseRect,
+          alphaRect,
+        });
         const blob = await canvasToBlob(canvas, 'image/png');
         const url = URL.createObjectURL(blob);
         downloadUrl(url, `${name}-${group.name}${cutoutSizeTag(target)}.png`);
@@ -8873,7 +9643,7 @@ export function createStudioPage(host) {
     if (load) {
       const set = selectionSets.find((item) => item.id === load.dataset.load);
       if (set) {
-        setSelectionAlpha(new Uint8ClampedArray(set.alpha), set.width, set.height);
+        setSelectionAlpha(new Uint8ClampedArray(set.alpha), set.width, set.height, set.rect || null, set.source || null);
         toast(`已载入 ${set.name}`);
       }
       return;
@@ -9488,12 +10258,34 @@ export function createStudioPage(host) {
     const next = button.dataset.segMode;
     if (!SEGMENT_MODES.some((item) => item.id === next) || next === segMode) return;
     segMode = next;
+    // BiRefNet 只能做主体显著性；切到框/点/文字时自动回到「自动」模型。
+    if (next !== 'subject' && segModel === 'birefnet') {
+      segModel = '';
+      if (refs.segModel) refs.segModel.value = '';
+    }
     segPoints = [];
+    segBox = null;
     segCandidates = [];
     segAppliedId = '';
     syncSegUi();
     scheduleDraw();
     if (segMode === 'text') refs.segText?.focus();
+  });
+
+  refs.segModel?.addEventListener('change', () => {
+    segModel = refs.segModel.value || '';
+    // 选 BiRefNet 就等于「显著性主体」，模式自动切回主体。
+    if (segModel === 'birefnet' && segMode !== 'subject') {
+      segMode = 'subject';
+      segBox = null;
+    }
+    // 换模型等于换提示方式，清掉旧提示点避免误导。
+    segPoints = [];
+    segCandidates = [];
+    segAppliedId = '';
+    segLastModel = '';
+    syncSegUi();
+    scheduleDraw();
   });
 
   refs.segRun?.addEventListener('click', () => {
@@ -9511,15 +10303,27 @@ export function createStudioPage(host) {
     scheduleDraw();
   });
 
+  // 主体选择 / 抠图对象：合成图或任一叠加层，两个下拉共用同一个选择。
+  for (const select of [refs.segTarget, refs.cutTarget]) {
+    select?.addEventListener('change', () => {
+      aiTargetId = select.value || '';
+      // 手动选「当前图层」= 继续跟随；选合成图 / 固定图层 = 停止跟随。
+      aiTargetFollow = aiTargetId === '__current__';
+      syncAiTargets();
+      scheduleDraw();
+    });
+  }
+
   refs.segCands?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-seg-cand]');
     if (!button) return;
     const mask = segCandidates[Number(button.dataset.segCand)];
     if (!mask) return;
-    void applySegmentMask(mask).then(() => syncSegUi());
+    void applySegmentMask(mask, doc, segRegion, segLayerId).then(() => syncSegUi());
   });
 
   syncSegUi();
+  syncAiTargets();
 
   refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));
   refs.rotateRight.addEventListener('click', () => commitTransform('向右旋转', () => doc?.rotateRight()));
@@ -9655,7 +10459,7 @@ export function createStudioPage(host) {
     let added = 0;
     for (const file of files) {
       const layer = await addOverlayFile(file, {
-        center: { x: doc.size.width / 2, y: doc.size.height / 2 },
+        center: viewCenterDoc(),
       });
       if (layer) added += 1;
     }
@@ -10025,7 +10829,7 @@ export function createStudioPage(host) {
     const file = new File([blob], name || 'material.png', { type: blob.type || 'image/png' });
     return addOverlayFile(file, {
       name: file.name,
-      center: { x: doc.size.width / 2, y: doc.size.height / 2 },
+      center: viewCenterDoc(),
       focusSticker,
     });
   }

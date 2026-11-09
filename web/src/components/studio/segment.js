@@ -9,10 +9,10 @@
 export const SEGMENT_MAX_SIDE = 2048;
 
 export const SEGMENT_MODES = [
-  { id: 'subject', label: '主体', hint: '点一下画面，自动选出最显著主体' },
-  { id: 'box', label: '框选', hint: '在画面上拖出一个框，选框内主体' },
-  { id: 'points', label: '点选', hint: '点主体上的点累积提示；Alt 点击标记排除' },
-  { id: 'text', label: '文字', hint: '输入主体描述后点「选取」' },
+  { id: 'subject', label: '主体', hint: '点一下要选的主体：落点作为提示交给 SAM 3.1（自动模式下不可用时回退 BiRefNet）' },
+  { id: 'box', label: '框选', hint: '拖框选范围；Shift 点击加点、Alt 点击排除，框和点会一起送给 SAM 3.1' },
+  { id: 'points', label: '点选', hint: '点主体上的点累积提示；Alt 点击标记排除（负点）' },
+  { id: 'text', label: '文字', hint: '写描述后点「选取」；可先在画面上拖框限制搜索范围' },
 ];
 
 /**

@@ -229,7 +229,7 @@ export function mountAiPanel(host, ctx) {
           <button class="btn ghost sm" type="button" data-ref="asLayerBtn" title="保留主图，把结果落成可单独显隐/移动的图层">作为新图层</button>
           <button class="btn primary sm" type="button" data-ref="adoptBtn">载入为新底图</button>
         </div>
-        <div class="ai-hint" data-ref="adoptHint" hidden>「载入为新底图」会替换主图并清空蒙版与历史；「作为新图层」保留主图，结果叠成可单独编辑的图层。</div>
+        <div class="ai-hint" data-ref="adoptHint" hidden>「载入为新底图」会替换主图并清空蒙版、历史与当前所有图层；「作为新图层」保留主图与图层，结果叠成可单独编辑的图层。</div>
         <div class="ai-quality" data-ref="quality" hidden></div>
       </section>
 
@@ -380,7 +380,7 @@ export function mountAiPanel(host, ctx) {
     if (ctx.hasDocChanges?.()) {
       const ok = await confirmDialog({
         title: `载入历史 #${entry.index}`,
-        message: '将用该结果替换当前主图，裁剪、旋转、调色与蒙版会重置。',
+        message: '将用该结果替换当前主图，裁剪、旋转、调色、蒙版与当前图层都会重置。',
         confirmText: '载入',
       });
       if (!ok) return;

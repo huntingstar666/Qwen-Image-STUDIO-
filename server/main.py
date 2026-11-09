@@ -1519,32 +1519,30 @@ def _parse_segment_request(payload: dict[str, Any]) -> dict[str, Any]:
     if mode not in segment_registry.MODES:
         raise ApiError("mode 只能是 subject / box / points / text",
                        code="invalid_field")
-    if mode == "box":
+    # SAM 3.1 multiplex：框 / 点 / 文字可以组合；模式只决定必填项与默认模型。
+    box = payload.get("box")
+    if isinstance(box, dict) and not box:
+        box = None
+    points = payload.get("points")
+    if isinstance(points, list) and not points:
+        points = None
+    text = str(payload.get("text") or "").strip()
+    if mode == "box" and box is None:
+        raise ApiError("框选模式需要提供 box", code="invalid_field")
+    if mode == "points" and points is None:
+        raise ApiError("点选模式需要提供 points", code="invalid_field")
+    if mode == "text" and not text:
+        raise ApiError("请填写要选取的主体描述", code="invalid_field")
+    if box is not None:
         try:
-            segment_maskops.validate_box(payload.get("box"), width, height)
+            segment_maskops.validate_box(box, width, height)
         except SegmentError as exc:
             raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
-        box = payload.get("box")
-        points = None
-        text = ""
-    elif mode == "points":
+    if points is not None:
         try:
-            segment_maskops.validate_points(payload.get("points"), width, height)
+            segment_maskops.validate_points(points, width, height)
         except SegmentError as exc:
             raise ApiError(exc.message, code=exc.code, status=exc.status) from exc
-        box = None
-        points = payload.get("points")
-        text = ""
-    elif mode == "text":
-        text = str(payload.get("text") or "").strip()
-        if not text:
-            raise ApiError("请填写要选取的主体描述", code="invalid_field")
-        box = None
-        points = None
-    else:
-        box = None
-        points = None
-        text = ""
 
     feather = _segment_int(payload, "feather", 0, 0, 32)
     max_side = _segment_int(payload, "max_side", 0, 0, segment_maskops.MAX_SIDE)

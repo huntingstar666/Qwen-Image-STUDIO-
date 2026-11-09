@@ -178,6 +178,11 @@
   display: none;
 }
 
+/* 「正在恢复…」时隐藏按钮：.btn 自带 display，会覆盖 UA 的 [hidden] */
+.studio-restore [hidden] {
+  display: none !important;
+}
+
 .studio-restore-dot {
   width: 6px;
   height: 6px;
@@ -1955,6 +1960,8 @@
 .studio-canvas-wrap canvas[data-tool="skin"],
 .studio-canvas-wrap canvas[data-tool="liquify"],
 .studio-canvas-wrap canvas[data-tool="mosaic"],
+.studio-canvas-wrap canvas[data-tool="selbrush"],
+.studio-canvas-wrap canvas[data-tool="seleraser"],
 .studio-canvas-wrap canvas[data-tool="eraser"] {
   cursor: none;
 }
@@ -2084,10 +2091,22 @@
   display: none;
 }
 
+/* 浮条里的 hidden 兜底：.studio-maskbar-field 自带 display，会覆盖 UA 的 [hidden] */
+.studio-maskbar > [hidden] {
+  display: none !important;
+}
+
 /* 污点修复（D10.1）：复用笔刷参数，但隐藏蒙版专用的选择与按钮 */
 .studio-maskbar.is-heal .studio-maskbar-tool,
 .studio-maskbar.is-heal [data-ref="maskExport"],
 .studio-maskbar.is-heal [data-ref="maskClear"] {
+  display: none;
+}
+
+/* 选区画笔 / 橡皮：同样复用笔刷参数，但操作的是选区而不是蒙版 */
+.studio-maskbar.is-selection .studio-maskbar-tool,
+.studio-maskbar.is-selection [data-ref="maskExport"],
+.studio-maskbar.is-selection [data-ref="maskClear"] {
   display: none;
 }
 
@@ -2450,6 +2469,15 @@ button.studio-fold-head:disabled {
   padding: 0 10px;
   font-size: 11.5px;
   border-radius: 999px;
+}
+
+/* 主体选择对象：合成图或指定叠加层 */
+.studio-seg-target,
+.studio-seg-model {
+  height: 24px;
+  max-width: 190px;
+  padding: 0 4px;
+  font-size: 10.5px;
 }
 
 /* 抠图菜单（D21.1）：选区条在画布底部，菜单向上弹，避免被画布裁掉 */

@@ -275,6 +275,26 @@ export function createHistoryPage(host) {
   const prefersReducedMotion = () =>
     Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 
+  /** 刷新中的可见反馈：按钮禁用 + 旋转图标 + 网格 aria-busy。 */
+  function setBusy(busy) {
+    refs.refresh.disabled = busy;
+    refs.refresh.classList.toggle('is-busy', busy);
+    refs.grid.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  /** 让网格淡出后再切换内容（清空历史用）。 */
+  async function fadeOutGrid(duration = 160) {
+    const grid = refs.grid;
+    if (prefersReducedMotion() || typeof grid.animate !== 'function') return;
+    const out = grid.animate([{ opacity: 1 }, { opacity: 0 }], {
+      duration,
+      easing: 'ease-in',
+      fill: 'forwards',
+    });
+    await out.finished.catch(() => {});
+    out.cancel();
+  }
+
   /** 列表重绘序号：快速连续切换时只让最后一次生效。 */
   let renderSeq = 0;
 
@@ -702,6 +722,7 @@ export function createHistoryPage(host) {
     if (loading) return;
     if (!force && Date.now() - loadedAt < 5000 && items.length) return;
     loading = true;
+    setBusy(true);
     render();
     let failed = false;
     try {
@@ -725,6 +746,7 @@ export function createHistoryPage(host) {
       toastError(err, '历史记录加载失败');
     } finally {
       loading = false;
+      setBusy(false);
       // 失败时保留错误面板与重试按钮，不要被常规渲染覆盖成空状态
       if (!failed) renderAnimated();
     }
@@ -753,10 +775,11 @@ export function createHistoryPage(host) {
     if (!confirmed) return;
     try {
       await api.deleteHistory();
+      await fadeOutGrid();
       items = [];
       loadedAt = 0;
-      toastSuccess('历史记录已清空');
       render();
+      toastSuccess('历史记录已清空');
     } catch (err) {
       toastError(err, '清空历史失败');
     }

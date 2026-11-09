@@ -2189,6 +2189,25 @@ details.fold > .fold-body {
   color: var(--muted);
 }
 
+/* 刷新中的按钮反馈：禁点 + 旋转图标 */
+.history-toolbar .btn.is-busy {
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.history-toolbar .btn.is-busy::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: spin 0.7s linear infinite;
+}
+
 /* 精修工程分组（D22.1 V4） */
 .history-projects {
   margin-bottom: 18px;

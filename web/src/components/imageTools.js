@@ -873,6 +873,7 @@ export function createImageToolsPage(host) {
             <div class="panel-head">
               <div class="panel-title">画布 <span class="panel-sub" data-ref="stageSub">上传图片开始</span></div>
               <div class="panel-actions">
+                <button class="btn ghost sm" type="button" data-ref="stageCompare" disabled>对比</button>
                 <button class="btn ghost sm" type="button" data-ref="undo">↶ 撤销</button>
                 <button class="btn ghost sm" type="button" data-ref="resetAll">重置</button>
                 <button class="btn ghost sm tools-quick-export" type="button" data-ref="quickExport" disabled>导出</button>
@@ -1077,6 +1078,7 @@ export function createImageToolsPage(host) {
     sendEdit: ref('sendEdit'),
     undo: ref('undo'),
     quickExport: ref('quickExport'),
+    stageCompare: ref('stageCompare'),
     resetAll: ref('resetAll'),
     stage: ref('stage'),
     stageInner: ref('stageInner'),
@@ -1277,6 +1279,8 @@ export function createImageToolsPage(host) {
         ? action.hint || '当前没有可执行的操作'
         : primary?.title || '';
     refs.quickExport.disabled = noSource;
+    refs.stageCompare.disabled =
+      noSource || (!state.stagedOps.length && !(state.outpaint.active && state.outpaint.result));
     refs.actionHint.textContent = noSource
       ? '请先上传图片，或从素材仓库 / 最近结果导入'
       : action.hint || '';
@@ -2290,6 +2294,8 @@ export function createImageToolsPage(host) {
     refs.opsCount.textContent = `${ops.length} 步`;
     refs.undo.disabled = !ops.length;
     refs.resetAll.disabled = !ops.length && !state.source;
+    refs.stageCompare.disabled =
+      !state.source || (!ops.length && !(state.outpaint.active && state.outpaint.result));
     if (!ops.length) {
       refs.opsList.innerHTML = '<div class="field-hint">还没有操作。裁剪/旋转/缩放/调色应用后会记录在这里。</div>';
       return;
@@ -2356,6 +2362,49 @@ export function createImageToolsPage(host) {
     syncToolGroups();
     refs.inspectorScroll.scrollTop = 0;
     refs.format?.focus?.();
+  });
+
+  refs.stageCompare.addEventListener('click', async () => {
+    if (!state.source) return;
+    if (!state.stagedOps.length && !(state.outpaint.active && state.outpaint.result)) {
+      toastWarn('还没有编辑，当前就是原图');
+      return;
+    }
+    if (workStale()) await render();
+    if (!workCanvas || !sourceImage) return;
+
+    // 参考图只应用几何操作，保证和当前画面同尺寸、同构图；调色作为差异显示
+    const geometryOps = state.stagedOps.filter((op) => op.op !== 'adjust');
+    const referenceCanvas = geometryOps.length
+      ? applyOpsToCanvas(sourceImage, geometryOps)
+      : canvasFromImage(sourceImage);
+    const referenceUrl = referenceCanvas.toDataURL('image/png');
+
+    // Canvas 像素本身不含 CSS filter，对比前把调色烘焙进临时画布
+    const currentCanvas = document.createElement('canvas');
+    currentCanvas.width = workCanvas.width;
+    currentCanvas.height = workCanvas.height;
+    const currentCtx = currentCanvas.getContext('2d');
+    const adjustOps = state.stagedOps.filter((op) => op.op === 'adjust');
+    currentCtx.filter = adjustFilterString(adjustOps, null) || 'none';
+    currentCtx.drawImage(workCanvas, 0, 0);
+    const currentUrl = currentCanvas.toDataURL('image/png');
+
+    openCompareDialog({
+      references: [
+        {
+          url: referenceUrl,
+          label: `编辑前（${fmtNum(referenceCanvas.width)}×${fmtNum(referenceCanvas.height)}）`,
+        },
+      ],
+      results: [
+        {
+          url: currentUrl,
+          label: `当前编辑（${fmtNum(currentWorkDims.width)}×${fmtNum(currentWorkDims.height)}）`,
+        },
+      ],
+      initialResult: 0,
+    });
   });
 
   refs.cropReset.addEventListener('click', () => {

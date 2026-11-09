@@ -188,7 +188,7 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 
 ## 5. 验收清单
 
-- [ ] 放 3 个素材图层 → 切到「原始主图」→ 图层全部还在，位置不变
+- [x] 放 3 个素材图层 → 切到「原始主图」→ 图层全部还在，位置不变（用户已验证）
 - [ ] AI 修改（仅底图）→ 结果设为主图 → 图层保留，且**没有**重复叠影
 - [ ] AI 修改（包含图层）→ 结果设为主图 → 提示重复风险，可一键隐藏
 - [ ] 快门 → 切到其他快照 → 再切回 → 图层栈完全不变
@@ -208,3 +208,41 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 | 4 | **D8 + D9 + D10** 尺寸策略（含旋转/翻转补偿）、持久化拆分、收敛临时补丁 | 待做 |
 
 > 阶段 1 已完成的部分：`switchVersion()` 不再 `new StudioDoc`，改为 `doc.replaceMainImage(image)`；图层 / 组保留，并按“旧裁剪尺寸 → 新图”的对应关系做平移或等比缩放补偿；主图级状态（变换 / 调色 / 蒙版 / 修复 / 撤销栈 / 选区）重置。
+
+---
+
+## 7. 实施进度（2026-11-10）
+
+**分支**：`feat/studio-main-image-model`（独立分支，**不合并 main**，供验证与后续开发）
+**基线**：`main@370d265`
+**提交**：`8f7df0f feat(studio): 主图模型重构——切主图与会话内换底图不再丢图层`
+
+### 7.1 已完成
+
+| # | 内容 | 位置 |
+| --- | --- | --- |
+| 1 | **D5 主体**：切主图不再重建文档 | `studioDoc.replaceMainImage()`、`studio.js switchVersion()` |
+| 2 | 图层几何补偿（平移 / 等比缩放，覆盖图片 / 文字 / 形状 / 透视） | `studio.js compensateLayersForBase()` |
+| 3 | **计划外修复**：AI 结果预览期间图层被跳过导致“画布上图层消失、切版本才回来” | `studio.js` 绘制分支（预览后叠加 `drawLayers`） |
+| 4 | 调色滑杆拖动预览（`adjustPreview`）时保持图层可见 | `studio.js liveLayers` 条件 |
+| 5 | 附带：AI 主体选择支持画布外图层（按图层外框发送、选区带 `rect/source`、抠图同区域取像素） | `studio.js`、`studioDoc.renderLayer()` |
+| 6 | 附带：SAM3.1 框 + 点 + 文字可组合 | `server/segmenters/*`、`server/main.py` |
+
+### 7.2 用户验证
+
+- 2026-11-10：AI 操作后图层不再消失；主图 / 版本切换逻辑正常。
+
+### 7.3 未完成（按 §6 继续）
+
+- D1 `renderMain()` 语义收敛
+- D3 AI 默认只送底图（消除结果预览时的图层重影）
+- D4 「载入为新底图」只换底图、保留图层
+- D6/D7 快门只记录主图、旧快照兼容提示
+- D8 旋转 / 翻转不再清空图层
+- D9/D10 持久化拆分、收敛临时补丁
+
+### 7.4 分支约定
+
+- 本分支仅用于这轮重构，**验证通过前不合并 main**；
+- 后续每完成一个阶段（D3/D4、D6/D7、D8…）单独提交，便于逐段回退；
+- 若需回到改动前状态：`git checkout main` 即可，main 未被修改。

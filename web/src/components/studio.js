@@ -4485,7 +4485,11 @@ export function createStudioPage(host) {
   function repairPaint(point, radius, paint) {
     if (!doc) return false;
     const repair = doc.ensureRepair();
-    if (!selection) return paint(repair.getContext('2d'));
+    if (!selection) {
+      const result = paint(repair.getContext('2d'));
+      if (result !== false) doc.stampRepairLive(paint);
+      return result;
+    }
     const canvas = fullScratch(repair.width, repair.height);
     const sctx = canvas.getContext('2d');
     sctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -4504,6 +4508,9 @@ export function createStudioPage(host) {
     sctx.drawImage(selection.canvas, x0, y0, width, height, x0, y0, width, height);
     sctx.globalCompositeOperation = 'source-over';
     repair.getContext('2d').drawImage(canvas, x0, y0, width, height, x0, y0, width, height);
+    if (result !== false) {
+      doc.stampRepairLive((ctx) => ctx.drawImage(canvas, x0, y0, width, height, x0, y0, width, height));
+    }
     return result;
   }
 
@@ -4521,8 +4528,7 @@ export function createStudioPage(host) {
         softness: 1 - brush.hardness,
       }),
     );
-    // 修复层画在 underlay 之上，必须让 underlay/base 一起失效才能看到即时结果。
-    doc.invalidateRepair();
+    // 修复层画在 underlay 之上；repairPaint 已把笔触同步进缓存的 underlay（D27.2）。
   }
 
   /** 沿拖动路径按笔刷间距连续落笔，避免快速拖动出现断点。 */
@@ -4572,8 +4578,7 @@ export function createStudioPage(host) {
       drag.mode = 'clone-blocked';
       return;
     }
-    // D27.1：只动了修复层，干净底图缓存继续复用（每帧不再重跑滤镜/LUT）。
-    doc.invalidateRepair();
+    // D27.2：笔触已由 repairPaint 增量写进 underlay，这里不再整图重建。
   }
 
   function cloneStroke(point) {
@@ -4614,7 +4619,6 @@ export function createStudioPage(host) {
       drag.mode = 'pattern-blocked';
       return;
     }
-    doc.invalidateRepair();
   }
 
   function patternStroke(point) {
@@ -4657,7 +4661,6 @@ export function createStudioPage(host) {
         softness: 1 - brush.hardness,
       }),
     );
-    doc.invalidateRepair();
   }
 
   /* ============================================================
@@ -4680,7 +4683,6 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateRepair();
   }
 
   function skinStroke(point) {
@@ -4717,7 +4719,6 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateRepair();
   }
 
   /* ============================================================
@@ -4741,7 +4742,6 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateRepair();
   }
 
   function mosaicStroke(point) {

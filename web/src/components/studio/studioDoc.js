@@ -844,6 +844,30 @@ export class StudioDoc {
   }
 
   /**
+   * D27.2：把刚画的笔触同步进缓存的 underlay，避免每帧重建整张底图。
+   * `paint` 必须是「同样的笔触画到任意 ctx」的幂等操作（所有修复类 dab 都满足）。
+   * 缓存的 underlay 与干净底图是同一个对象时先脱钩，别把修复写进干净底图。
+   */
+  stampRepairLive(paint) {
+    const underlay = this._underlay;
+    if (!underlay) return false;
+    if (underlay === this._clean) {
+      const copy = makeCanvas(underlay.width, underlay.height);
+      copy.getContext('2d').drawImage(underlay, 0, 0);
+      this._underlay = copy;
+    }
+    const ctx = this._underlay.getContext('2d');
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    paint(ctx);
+    ctx.restore();
+    this._base = null;
+    return true;
+  }
+
+  /**
    * 3D LUT 逐像素查表（D9.2）。只在加载了 LUT 时多一次 getImageData/putImageData，
    * 结果随 `_underlay` 缓存，拖动叠加层不会重复计算。
    */

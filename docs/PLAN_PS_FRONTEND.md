@@ -1213,6 +1213,15 @@ DOM 结构：
   - 「画不出来」根因：`cloneAnchor` 是全局变量，切换工程后没清空，取样点留在上一张图的坐标空间；`cloneDab` 读源区域越界就返回 false，笔触被标成 `clone-blocked`，看起来就是完全没反应。现在 `setDoc()` 里清空 `cloneAnchor/cloneOffset`，并在笔刷条常驻显示取样状态（`按住 Alt 点击画面取样` / `取样点 x, y（Alt 点击可重新取样）`）。
   - 实测（1440×900，940×1672）：100 次 pointermove 同步耗时 **102ms（≈1.0ms/次）**；Alt 取样后涂抹像素确实变化；污点修复、修复画笔均正常；调色 +35 画面变化、复位可复原（修复层不再被丢）；`node --test web/tests/studio/*.test.mjs` **139 passed**。
 
+- **D27.2 修复类笔触改为增量写入 underlay（卡顿根治）** —— D27.1 只免掉了滤镜/LUT，但每帧仍要 `makeCanvas + drawImage(clean) + drawImage(repair)` 重建整张 underlay，4K 图上是几十 MB 的分配，GC 直接把帧率压下去。
+  - 改法：`studioDoc.stampRepairLive(paint)` —— 落笔时**把同一笔触同时写进 `repair` 与缓存的 `_underlay`**（缓存与 `_clean` 是同一对象时先拷一份脱钩，避免污染干净底图），然后只把 `_base` 置空。`repairPaint()` 的两个分支（有/无选区）都在最后调它，原来 7 处 `doc.invalidateRepair()` 全部删掉。
+  - 效果：无图层时 `renderBase()` 直接返回 underlay，落笔期间**完全不做全尺寸合成**；有图层时走 `draw()` 已有的 `liveLayers` 路径，屏幕分辨率合成。
+  - 实测（headless 1440×900，2400×3200 图，45 帧连续移动）：
+    - 无图层：avg **24.1 → 16.4ms**（60fps），p95 **39.3 → 17.6ms**，max **63.3 → 22.3ms**；
+    - 带 1 个叠加图层：avg 22.3ms / p95 29.8ms（主要成本变成 `drawLayers` 的屏幕合成）；
+    - 涂抹确有像素变化（1372 px）；调色 +35 后复位可完全复原；Ctrl+Z 可撤销整笔；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+  - 仍可继续优化（未做）：带多个大图层时把 `drawLayers` 也纳入缓存（按笔触开始时的图层快照渲染一次），或把修复层做成独立屏幕叠加层。
+
 - **D25.5 「项目历史」两份列表实现（已去重）** —— Dock 书脊浮层（`refreshProjectList`）与顶栏「历史项目…」弹窗（`openProjectHistoryDialog`）各自写了一份工程行 HTML 和删除逻辑，且「编辑中」表现不一致（浮层用角标，弹窗改按钮文案）。
   - 抽出 `projectRowHtml(project, tab)`（缩略图 / 名称 / 尺寸·时间 / 「当前」「编辑中」角标 / 打开·删除）与 `deleteProjectById(id, name)`（同一份确认文案与「先关当前工程再清库」顺序）；两个入口只保留一处渲染、一处删除。
   - 统一后两个入口表现一致：都有「当前」「编辑中」角标，锁定工程的打开按钮置灰。
@@ -1777,6 +1786,7 @@ DOM 结构：
 | D26.3 | 图层库支持文字 / 形状 / 蒙版 | 已完成 | 本次提交 | 文字/形状存 props + 32px 缩略图，位图额外存 `maskBlob`；置入按类型重建并贴回蒙版；旧记录兼容；详见 §12.11 |
 | D26.4 | 图层批量导出 | 已完成 | 本次提交 | 图层栏「导出」改菜单：当前图层 / 所有可见图层（>5 个先确认）/ 当前图层 + 蒙版；详见 §12.11 |
 | D27.1 | 仿制图章卡顿 + 换工程后画不出来 | 已完成 | 本次提交 | 修复层移出「干净底图」缓存，落笔只 `invalidateRepair()`；笔刷画布复用；换工程清取样点并显示取样状态；详见 §12.11 |
+| D27.2 | 修复类笔触增量写入 underlay（根治每帧重建） | 已完成 | 本次提交 | `repairPaint()` 落笔后把同一笔触同步进缓存的 underlay（`stampRepairLive`），不再逐帧重建整张底图；2400×3200 无图层 40fps→60fps；详见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

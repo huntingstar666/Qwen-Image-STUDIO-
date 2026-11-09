@@ -312,6 +312,9 @@ export function createStudioPage(host) {
   let view = { scale: 1, x: 0, y: 0 };
   let showMask = true;
   let activeTab = 'ai';
+  /* D25.4：图层属性正文 / 历史快照列表的展开状态（默认收起，属性记住本机选择）。 */
+  let propsOpen = readPropsOpen();
+  let snapOpen = false;
   let cropRect = null;
   let drag = null;
   let cursor = null;
@@ -873,31 +876,44 @@ export function createStudioPage(host) {
             </div>
 
             <div class="studio-layer-props" data-ref="layerProps" hidden>
-              <div class="studio-pane-title">图层属性<span data-ref="layerPropsSep" hidden> · </span><span class="mono" data-ref="layerPropsName"></span></div>
-              <label class="studio-maskbar-field">
-                <span>混合</span>
-                <select class="select" data-ref="layerBlend" aria-label="图层混合模式">
-                  ${BLEND_MODES.map((mode) => `<option value="${mode.id}">${mode.label}</option>`).join('')}
-                </select>
-              </label>
-              <label class="studio-check"><input type="checkbox" data-ref="layerClipped" /><span>剪贴到下层</span></label>
-              <div class="studio-row studio-smart" data-ref="smartRow" hidden>
-                <label class="studio-check" title="智能对象：始终按原始位图绘制，缩放不烘焙像素">
-                  <input type="checkbox" data-ref="smartToggle" /><span>智能对象</span>
+              <button class="studio-fold-head" type="button" data-ref="propsToggle" aria-expanded="false" title="展开 / 收起图层属性">
+                <span class="studio-pane-title">图层属性</span>
+                <span class="studio-props-name mono" data-ref="layerPropsName" hidden></span>
+                <span class="studio-props-empty" data-ref="layerPropsEmpty">未选中图层</span>
+                <span class="studio-fold-chevron" aria-hidden="true"></span>
+              </button>
+              <div class="studio-fold-body" data-ref="propsBody" hidden>
+                <label class="studio-maskbar-field">
+                  <span>混合</span>
+                  <select class="select" data-ref="layerBlend" aria-label="图层混合模式">
+                    ${BLEND_MODES.map((mode) => `<option value="${mode.id}">${mode.label}</option>`).join('')}
+                  </select>
                 </label>
-                <button class="btn ghost sm" type="button" data-ref="smartReplace" title="换一张图，保留位置、缩放、蒙版与混合">替换内容…</button>
-                <button class="btn ghost sm" type="button" data-ref="smartReset" title="把图层恢复到原始像素尺寸（100%）">原始尺寸</button>
+                <label class="studio-check"><input type="checkbox" data-ref="layerClipped" /><span>剪贴到下层</span></label>
+                <div class="studio-row studio-smart" data-ref="smartRow" hidden>
+                  <label class="studio-check" title="智能对象：始终按原始位图绘制，缩放不烘焙像素">
+                    <input type="checkbox" data-ref="smartToggle" /><span>智能对象</span>
+                  </label>
+                  <button class="btn ghost sm" type="button" data-ref="smartReplace" title="换一张图，保留位置、缩放、蒙版与混合">替换内容…</button>
+                  <button class="btn ghost sm" type="button" data-ref="smartReset" title="把图层恢复到原始像素尺寸（100%）">原始尺寸</button>
+                </div>
+                <div class="studio-note" data-ref="layerPropsHint" hidden></div>
               </div>
-              <div class="studio-note" data-ref="layerPropsHint" hidden></div>
             </div>
 
             <div class="studio-snapshots" data-ref="snapshotBox" hidden>
-              <div class="studio-snapshots-head">
-                <span class="studio-pane-title">历史快照</span>
-                <button class="btn ghost sm" type="button" data-ref="snapshotAdd">＋ 新建</button>
+              <div class="studio-fold-head">
+                <button class="studio-fold-toggle" type="button" data-ref="snapToggle" aria-expanded="false" title="展开 / 收起历史快照">
+                  <span class="studio-pane-title">历史快照</span>
+                  <span class="mono" data-ref="snapCount">0</span>
+                  <span class="studio-fold-chevron" aria-hidden="true"></span>
+                </button>
+                <button class="btn ghost sm" type="button" data-ref="snapshotAdd" title="把当前状态存为快照">＋ 新建</button>
               </div>
-              <div class="studio-snapshot-list" data-ref="snapshotList"></div>
-              <div class="studio-note">快照保存在本次会话内；点击名称回跳，双击重命名。</div>
+              <div class="studio-fold-body" data-ref="snapBody" hidden>
+                <div class="studio-snapshot-list" data-ref="snapshotList"></div>
+                <div class="studio-note">快照保存在本次会话内；点击名称回跳，双击重命名。</div>
+              </div>
             </div>
 
             <div class="studio-panel-foot">
@@ -1083,7 +1099,9 @@ export function createStudioPage(host) {
     patternClear: ref('patternClear'),
     layerProps: ref('layerProps'),
     layerPropsName: ref('layerPropsName'),
-    layerPropsSep: ref('layerPropsSep'),
+    layerPropsEmpty: ref('layerPropsEmpty'),
+    propsToggle: ref('propsToggle'),
+    propsBody: ref('propsBody'),
     layerBlend: ref('layerBlend'),
     layerClipped: ref('layerClipped'),
     smartRow: ref('smartRow'),
@@ -1094,6 +1112,9 @@ export function createStudioPage(host) {
     snapshotBox: ref('snapshotBox'),
     snapshotList: ref('snapshotList'),
     snapshotAdd: ref('snapshotAdd'),
+    snapToggle: ref('snapToggle'),
+    snapBody: ref('snapBody'),
+    snapCount: ref('snapCount'),
     maskTool: ref('maskTool'),
     maskExport: ref('maskExport'),
     maskClear: ref('maskClear'),
@@ -1178,6 +1199,7 @@ export function createStudioPage(host) {
       syncTabs();
       syncStickerPane();
     }
+    syncLayerProps();
     updateHistoryUi();
     scheduleDraw();
     scheduleSave();
@@ -7571,12 +7593,15 @@ export function createStudioPage(host) {
     const group = groupPropsTarget();
     const layer = group ? null : layerPropsTarget();
     const target = group || layer;
-    // 有工程时这块始终占位（无选中则禁用）：选中/取消图层不再显示/隐藏整块，
-    // 否则右侧分页高度忽大忽小，切换主图与图层时整块面板会「抖动」。
+    // D25.4：折叠头常驻 32px（有工程就占位），正文默认收起；选中/取消选中不再改变整块高度。
     refs.layerProps.hidden = !doc;
     const canEdit = Boolean(target);
+    refs.layerPropsName.hidden = !target;
     refs.layerPropsName.textContent = target ? target.name : '';
-    if (refs.layerPropsSep) refs.layerPropsSep.hidden = !target;
+    refs.layerPropsEmpty.hidden = Boolean(target);
+    refs.propsToggle.disabled = !canEdit;
+    refs.propsToggle.setAttribute('aria-expanded', String(canEdit && propsOpen));
+    refs.propsBody.hidden = !(canEdit && propsOpen);
     refs.layerBlend.value = target?.blend || 'source-over';
     refs.layerBlend.disabled = !canEdit;
     refs.layerBlend.title = group ? '整组合成后生效' : '当前图层的混合模式';
@@ -7601,7 +7626,7 @@ export function createStudioPage(host) {
       // 锁定图层不允许换内容 / 改尺寸（与拖动、缩放一致）。
       refs.smartReplace.disabled = locked;
       refs.smartReset.disabled = locked || Math.abs((layer.scale ?? 1) - 1) < 0.001;
-      refs.smartReset.title = `恢复到原始像素尺寸（${Math.round(layer.sourceWidth || 0)} × ${Math.round(
+      refs.smartReset.title = `把图层恢复到原始像素尺寸（${Math.round(layer.sourceWidth || 0)} × ${Math.round(
         layer.sourceHeight || 0,
       )}）`;
     }
@@ -7609,6 +7634,28 @@ export function createStudioPage(host) {
     refs.layerPropsHint.hidden = true;
     refs.layerPropsHint.textContent = '';
   }
+
+  /** D25.4：图层属性展开状态记在本机，刷新后保留。 */
+  function readPropsOpen() {
+    try {
+      return localStorage.getItem('wb.studio.propsOpen') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function togglePropsOpen() {
+    if (!layerPropsTarget() && !groupPropsTarget()) return;
+    propsOpen = !propsOpen;
+    try {
+      localStorage.setItem('wb.studio.propsOpen', propsOpen ? '1' : '0');
+    } catch {
+      /* 隐私模式忽略 */
+    }
+    syncLayerProps();
+  }
+
+  refs.propsToggle.addEventListener('click', togglePropsOpen);
 
   function commitLayerProps() {
     doc?.touchLayers();
@@ -7820,11 +7867,14 @@ export function createStudioPage(host) {
 
   function renderSnapshots() {
     refs.snapshotBox.hidden = !doc;
+    const list = doc?.snapshots || [];
+    refs.snapCount.textContent = String(list.length);
+    refs.snapToggle.setAttribute('aria-expanded', String(Boolean(doc) && snapOpen));
+    refs.snapBody.hidden = !(doc && snapOpen);
     if (!doc) {
       refs.snapshotList.innerHTML = '';
       return;
     }
-    const list = doc.snapshots || [];
     if (!list.length) {
       refs.snapshotList.innerHTML = '<div class="studio-note">还没有快照。新建一个可随时回跳。</div>';
       return;
@@ -7839,6 +7889,12 @@ export function createStudioPage(host) {
       )
       .join('');
   }
+
+  refs.snapToggle.addEventListener('click', () => {
+    if (!doc) return;
+    snapOpen = !snapOpen;
+    renderSnapshots();
+  });
 
   /** 回跳后同步所有面板与画布状态。 */
   function afterSnapshotJump(name) {

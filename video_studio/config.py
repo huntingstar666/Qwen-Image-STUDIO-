@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("VIDEO_STUDIO_DATA") or (ROOT / "_data"))
 PROJECTS_DIR = DATA_DIR / "projects"
+#: 任务列表落盘（重启后可查最近 100 条）
+TASKS_FILE = DATA_DIR / "tasks.json"
 
 #: 主项目（生图 / 参考图上传 / 模型档案）地址
 MAIN_BASE = (os.environ.get("VIDEO_STUDIO_MAIN") or "http://127.0.0.1:8700").rstrip("/")

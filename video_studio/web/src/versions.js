@@ -4,6 +4,7 @@ const SOURCE_LABEL = {
   generate: "生成",
   upload: "上传",
   legacy: "旧版",
+  history: "主项目",
 };
 
 function escapeHtml(value) {

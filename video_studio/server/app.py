@@ -513,7 +513,7 @@ def api_prompts(project_id: str) -> dict[str, Any]:
         task.set_progress(100, "完成")
         return result
 
-    task = task_manager().submit("prompts", project_id, run)
+    task = task_manager().submit("prompts", project_id, run, title="生成分镜提示词")
     return {"taskId": task.id}
 
 
@@ -557,7 +557,7 @@ def api_images(project_id: str, payload: dict[str, Any] = Body(default={})) -> d
             raise StudioError(f"全部失败：{failed[0]['error']}", code="generate_failed")
         return {"generated": generated, "failed": failed, "total": total}
 
-    task = task_manager().submit("images", project_id, run)
+    task = task_manager().submit("images", project_id, run, title="批量生图")
     return {"taskId": task.id}
 
 
@@ -583,7 +583,8 @@ def api_image_one(project_id: str, shot_id: str) -> dict[str, Any]:
         task.set_progress(100, "完成")
         return {"shotId": shot_id}
 
-    task = task_manager().submit("image", project_id, run)
+    task = task_manager().submit("image", project_id, run,
+                                 title=f"重新生成 {shot_id}", shot_id=shot_id)
     return {"taskId": task.id}
 
 
@@ -601,8 +602,144 @@ def api_render(project_id: str) -> dict[str, Any]:
             store.save(project)
         return result
 
-    task = task_manager().submit("render", project_id, run)
+    task = task_manager().submit("render", project_id, run, title="导出成片")
     return {"taskId": task.id}
+
+
+@app.get("/api/tasks")
+def api_tasks(projectId: str = "", limit: int = 50) -> dict[str, Any]:
+    return {"tasks": task_manager().list_tasks(projectId, limit)}
+
+
+@app.get("/api/main/queue")
+def api_main_queue() -> dict[str, Any]:
+    """主项目队列摘要：用于任务中心底部提示「卡在谁那里」。"""
+    try:
+        health = images.MainClient().health()
+    except StudioError as exc:
+        return {"reachable": False, "error": str(exc)}
+    queue = health.get("queue") or {}
+    engine = health.get("engine") or {}
+    return {
+        "reachable": True,
+        "engineReady": bool(engine.get("ready")),
+        "device": str(engine.get("device") or ""),
+        "pending": int(queue.get("pending") or 0),
+        "running": bool(queue.get("running")),
+        "runningId": queue.get("running_id") or queue.get("runningId") or "",
+        "history": int(queue.get("history") or 0),
+    }
+
+
+def _main_url(url: str) -> str:
+    text = str(url or "")
+    if text.startswith(("http://", "https://")):
+        return text
+    return f"{config.MAIN_BASE}{text}" if text.startswith("/") else text
+
+
+@app.get("/api/main/history")
+def api_main_history(limit: int = 30) -> dict[str, Any]:
+    limit = max(1, min(int(limit), 60))
+    try:
+        data = images.MainClient()._request("GET", f"/api/history?limit={limit}", timeout=15.0)
+    except StudioError as exc:
+        return {"reachable": False, "error": str(exc), "items": []}
+    items = []
+    for job in data.get("items") or []:
+        meta = job.get("meta") or {}
+        imgs = []
+        for index, raw in enumerate(job.get("images") or []):
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("url") or raw.get("thumb_url") or "")
+            if not url:
+                continue
+            try:
+                image_index = int(raw.get("index", index))
+            except (TypeError, ValueError):
+                image_index = index
+            imgs.append({
+                "url": _main_url(url),
+                "thumbUrl": _main_url(str(raw.get("thumb_url") or url)),
+                "filename": str(raw.get("filename") or ""),
+                "width": int(raw.get("width") or 0),
+                "height": int(raw.get("height") or 0),
+                "index": image_index,
+            })
+        if not imgs:
+            continue
+        params = job.get("params") or {}
+        items.append({
+            "id": str(job.get("id") or ""),
+            "kind": str(job.get("kind") or ""),
+            "status": str(job.get("status") or ""),
+            "prompt": str(job.get("prompt") or ""),
+            "createdAt": str(job.get("created_at") or ""),
+            "projectId": str(meta.get("projectId") or ""),
+            "shotId": str(meta.get("shotId") or ""),
+            "seed": params.get("seed"),
+            "width": int(params.get("width") or 0),
+            "height": int(params.get("height") or 0),
+            "images": imgs,
+        })
+    return {"reachable": True, "items": items}
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/image/from-history")
+def api_image_from_history(project_id: str, shot_id: str,
+                           payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """把主项目历史里的一张图取回，写成该段的新版本。"""
+    job_id = str(payload.get("jobId") or "")
+    try:
+        image_index = int(payload.get("imageIndex") or 0)
+    except (TypeError, ValueError):
+        image_index = 0
+    if not job_id:
+        raise StudioError("缺少 jobId", code="bad_payload")
+    client = images.MainClient()
+    job: dict[str, Any] | None = None
+    try:
+        job = client.job(job_id)
+    except StudioError:
+        # 任务详情可能已清理，退回历史列表里找
+        try:
+            data = client._request("GET", "/api/history?limit=200", timeout=15.0)
+        except StudioError as exc:
+            raise StudioError(f"主项目不可达：{exc}", code="main_error", status=503) from exc
+        job = next((item for item in data.get("items") or []
+                    if str(item.get("id")) == job_id), None)
+    if job is None:
+        raise StudioError("主项目里找不到这条任务（可能已被清理）", code="not_found", status=404)
+
+    images_list = [item for item in (job.get("images") or []) if isinstance(item, dict)]
+    meta = next((item for item in images_list
+                 if str(item.get("index")) == str(image_index)), None)
+    if meta is None and 0 <= image_index < len(images_list):
+        meta = images_list[image_index]
+    if meta is None:
+        raise StudioError("该任务没有对应图片", code="not_found", status=404)
+
+    data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
+    suffix = Path(str(meta.get("filename") or "shot.png")).suffix.lower() or ".png"
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        suffix = ".png"
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        relpath = store.save_shot_image(project_id, shot_id, data, suffix)
+        shot["image"] = relpath
+        shot["status"] = "ready"
+        shot["seed"] = int((job.get("params") or {}).get("seed") or 0)
+        shot["width"] = int(meta.get("width") or 0)
+        shot["height"] = int(meta.get("height") or 0)
+        images.record_image_version(
+            project_id, shot, relpath,
+            seed=shot["seed"], width=shot["width"], height=shot["height"],
+            job_id=job_id, source="history",
+        )
+        store.save(project)
+        return _view(project)
 
 
 @app.get("/api/tasks/{task_id}")

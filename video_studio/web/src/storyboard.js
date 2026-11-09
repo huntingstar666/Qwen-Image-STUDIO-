@@ -62,6 +62,7 @@ export class Storyboard {
 
   setFilter(filter) {
     this.filter = filter;
+    if (this.segmented) this.segmented.set(filter);
     this.render();
   }
 

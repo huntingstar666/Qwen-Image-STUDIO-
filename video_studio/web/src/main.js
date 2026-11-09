@@ -2,6 +2,7 @@ import { api, toast, formatMs } from "./api.js";
 import { getState, setState, shotAt } from "./store.js";
 import { Timeline } from "./timeline.js";
 import { Storyboard } from "./storyboard.js";
+import { HistoryGallery } from "./history.js";
 import { initSegmented } from "./ui.js";
 import { renderInspector, renderPipeline } from "./inspector.js";
 
@@ -32,10 +33,17 @@ const refs = {
   storyboardPanel: $("storyboardPanel"),
   viewSwitch: $("viewSwitch"),
   stageHint: $("stageHint"),
+  historyPanel: $("historyPanel"),
+  btnTasks: $("btnTasks"),
+  taskCenter: $("taskCenter"),
+  taskBadge: $("taskBadge"),
+  tcMain: $("tcMain"),
+  tcList: $("tcList"),
 };
 
 let timeline = null;
 let storyboard = null;
+let historyGallery = null;
 let viewSwitch = null;
 let drawerDraft = null;
 let lastStageKey = "";
@@ -150,6 +158,14 @@ async function boot() {
       onDeleteVersion: (id, file) => deleteShotVersion(file, id),
     },
   );
+
+  historyGallery = new HistoryGallery(
+    { root: $("historyPanel") },
+    { onUse: (payload) => useHistoryImage(payload) },
+  );
+
+  bindTaskCenter();
+  startTaskPolling();
 
   viewSwitch = initSegmented(refs.viewSwitch, (view) => setView(view));
   setView(localStorage.getItem("videoStudio.view") === "storyboard" ? "storyboard" : "timeline");
@@ -550,12 +566,19 @@ function renderSide() {
 }
 
 function bindTabs() {
+  const panels = {
+    shot: refs.inspector,
+    pipeline: refs.pipeline,
+    history: refs.historyPanel,
+  };
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item === tab));
       const name = tab.dataset.tab;
-      refs.inspector.hidden = name !== "shot";
-      refs.pipeline.hidden = name !== "pipeline";
+      Object.entries(panels).forEach(([key, node]) => {
+        if (node) node.hidden = key !== name;
+      });
+      if (name === "history" && historyGallery) historyGallery.load();
     });
   });
 }
@@ -671,6 +694,254 @@ async function deleteShotVersion(file, shotId = getState().selectedId) {
     setState({ project });
     renderAll();
     toast("版本已删除", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 任务中心
+
+const TASK_STATUS = {
+  queued: "排队中",
+  running: "进行中",
+  done: "完成",
+  error: "失败",
+  canceled: "已取消",
+  interrupted: "已中断",
+};
+
+let taskCache = [];
+let mainQueue = null;
+let taskTimer = 0;
+
+function startTaskPolling() {
+  refreshTasks();
+  if (taskTimer) clearInterval(taskTimer);
+  taskTimer = setInterval(refreshTasks, 3000);
+}
+
+async function refreshTasks() {
+  const project = getState().project;
+  const query = project
+    ? `?projectId=${encodeURIComponent(project.id)}&limit=50`
+    : "?limit=50";
+  try {
+    const data = await api.get(`/api/tasks${query}`);
+    taskCache = data.tasks || [];
+  } catch (err) {
+    return;
+  }
+  renderTaskBadge();
+  if (!refs.taskCenter.hidden) {
+    renderTaskCenter();
+    refreshMainQueue();
+  }
+}
+
+function renderTaskBadge() {
+  if (!refs.taskBadge) return;
+  const active = taskCache.filter((task) => ["queued", "running"].includes(task.status)).length;
+  refs.taskBadge.hidden = !active;
+  refs.taskBadge.textContent = String(active);
+}
+
+function bindTaskCenter() {
+  refs.btnTasks.addEventListener("click", () => {
+    const open = refs.taskCenter.hidden;
+    refs.taskCenter.hidden = !open;
+    refs.btnTasks.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      renderTaskCenter();
+      refreshMainQueue();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (refs.taskCenter.hidden) return;
+    if (refs.taskCenter.contains(event.target) || refs.btnTasks.contains(event.target)) return;
+    refs.taskCenter.hidden = true;
+    refs.btnTasks.setAttribute("aria-expanded", "false");
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || refs.taskCenter.hidden) return;
+    refs.taskCenter.hidden = true;
+    refs.btnTasks.setAttribute("aria-expanded", "false");
+  });
+  refs.tcList.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-task-action]");
+    if (!action) return;
+    const task = taskCache.find((item) => item.id === action.dataset.id);
+    if (!task) return;
+    const kind = action.dataset.taskAction;
+    if (kind === "cancel") cancelTask(task);
+    if (kind === "retry") retryTask(task);
+    if (kind === "failures") showTaskFailures(task);
+  });
+}
+
+async function refreshMainQueue() {
+  try {
+    mainQueue = await api.get("/api/main/queue");
+  } catch (err) {
+    mainQueue = { reachable: false, error: err.message };
+  }
+  renderMainQueue();
+}
+
+function renderMainQueue() {
+  if (!refs.tcMain) return;
+  if (!mainQueue) {
+    refs.tcMain.textContent = "主项目：—";
+    return;
+  }
+  if (!mainQueue.reachable) {
+    refs.tcMain.textContent = "主项目离线";
+    return;
+  }
+  refs.tcMain.textContent =
+    `主项目：运行中 ${mainQueue.running ? 1 : 0} · 排队 ${Number(mainQueue.pending) || 0}`;
+}
+
+function renderTaskCenter() {
+  if (!refs.tcList) return;
+  if (!taskCache.length) {
+    refs.tcList.innerHTML =
+      '<div class="tc-empty">还没有任务。批量生图、提示词、导出都会出现在这里。</div>';
+    return;
+  }
+  const scrollTop = refs.tcList.scrollTop;
+  const queued = taskCache.filter((task) => task.status === "queued");
+  refs.tcList.innerHTML = taskCache.map((task) => taskRowHtml(task, queued)).join("");
+  refs.tcList.scrollTop = scrollTop;
+}
+
+function taskRowHtml(task, queued) {
+  const status = task.status || "";
+  const active = ["queued", "running"].includes(status);
+  const progress = task.progress || {};
+  const value = Math.max(0, Math.min(100, Number(progress.value) || 0));
+  const result = task.result || {};
+  const failed = Array.isArray(result.failed) ? result.failed : [];
+  const queuedAhead = status === "queued"
+    ? queued.filter((item) => (item.createdAt || 0) < (task.createdAt || 0)).length
+    : 0;
+
+  let summary = "";
+  if (status === "done") {
+    if (task.kind === "images") {
+      summary = `生成 ${result.generated ?? 0}/${result.total ?? 0} 段`
+        + (failed.length ? ` · 失败 ${failed.length}` : "");
+    } else if (task.kind === "render") {
+      summary = result.file ? String(result.file).split("/").pop() : "成片已导出";
+    } else if (task.kind === "image") {
+      summary = task.shotId ? `完成 ${task.shotId}` : "已完成";
+    } else {
+      summary = "已完成";
+    }
+  } else if (status === "running") {
+    summary = progress.label || "处理中";
+  } else if (status === "queued") {
+    summary = queuedAhead ? `排队中（前面还有 ${queuedAhead} 个）` : "排队中";
+  }
+
+  let actions = "";
+  const id = escapeHtml(task.id);
+  if (active) {
+    actions += `<button class="mini-btn" type="button" data-task-action="cancel" data-id="${id}">取消</button>`;
+  }
+  if (["error", "interrupted"].includes(status)) {
+    actions += `<button class="mini-btn" type="button" data-task-action="retry" data-id="${id}">重试</button>`;
+  }
+  if (status === "done" && task.kind === "images" && failed.length) {
+    actions += `<button class="mini-btn" type="button" data-task-action="failures" data-id="${id}">查看失败</button>`;
+  }
+
+  const elapsed = task.elapsedMs ? `${Math.round(task.elapsedMs / 1000)}s` : "";
+  return `<div class="tc-row" data-id="${id}">
+    <div class="tc-row-top">
+      <span class="tc-title">${escapeHtml(task.title || task.kind || "任务")}</span>
+      <span class="tc-status ${escapeHtml(status)}">${escapeHtml(TASK_STATUS[status] || status)}</span>
+    </div>
+    ${active ? `<div class="tc-progress"><i style="width:${value}%"></i></div>` : ""}
+    <div class="tc-sub">
+      <span>${escapeHtml(summary)}</span>
+      ${status === "running" ? `<span>${value}%</span>` : ""}
+      ${elapsed ? `<span>${escapeHtml(elapsed)}</span>` : ""}
+      <span class="tc-actions">${actions}</span>
+    </div>
+    ${task.error && !["done"].includes(status)
+      ? `<div class="tc-error">${escapeHtml(task.error)}</div>`
+      : ""}
+  </div>`;
+}
+
+async function cancelTask(task) {
+  try {
+    await api.post(`/api/tasks/${task.id}/cancel`);
+    toast("已请求取消任务");
+    refreshTasks();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+function retryTask(task) {
+  const project = getState().project;
+  if (!project) return;
+  const base = `/api/projects/${project.id}`;
+  if (task.kind === "image" && task.shotId) {
+    runTask(`${base}/images/${task.shotId}`, "重新生成该镜头");
+    return;
+  }
+  if (task.kind === "images") {
+    const failed = ((task.result || {}).failed || [])
+      .map((item) => item.id).filter(Boolean);
+    runTask(`${base}/images`, "重试失败段", failed.length ? { shotIds: failed } : {});
+    return;
+  }
+  if (task.kind === "prompts") {
+    runTask(`${base}/prompts`, "生成分镜提示词");
+    return;
+  }
+  if (task.kind === "render") {
+    runTask(`${base}/render`, "导出成片");
+    return;
+  }
+  toast("这个任务暂不支持一键重试");
+}
+
+function showTaskFailures(task) {
+  const failed = ((task.result || {}).failed || [])
+    .map((item) => item.id).filter(Boolean);
+  if (!failed.length) {
+    toast("这条任务没有失败项");
+    return;
+  }
+  refs.taskCenter.hidden = true;
+  refs.btnTasks.setAttribute("aria-expanded", "false");
+  setView("storyboard");
+  if (storyboard) storyboard.setFilter("failed");
+  selectShot(failed[0]);
+  const shot = (getState().project.shots || []).find((item) => item.id === failed[0]);
+  if (shot) seek(shot.startMs);
+}
+
+// --------------------------------------------------------------------------- 历史图库
+
+async function useHistoryImage({ jobId, imageIndex }) {
+  const state = getState();
+  if (!state.project || !state.selectedId) {
+    toast("先选一个镜头段，再从历史里取图", "bad");
+    return;
+  }
+  pushUndo();
+  try {
+    const project = await api.post(
+      `/api/projects/${state.project.id}/shots/${state.selectedId}/image/from-history`,
+      { jobId, imageIndex },
+    );
+    setState({ project });
+    renderAll();
+    toast(`已用到 ${state.selectedId}`, "ok");
   } catch (err) {
     toast(err.message, "bad");
   }
@@ -908,6 +1179,8 @@ async function runTask(path, label, body) {
     hiddenTask();
     toast(err.message, "bad");
     return null;
+  } finally {
+    refreshTasks();
   }
 }
 

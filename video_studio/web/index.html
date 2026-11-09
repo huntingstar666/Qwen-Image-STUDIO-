@@ -61,6 +61,14 @@
         <circle cx="9" cy="10" r="1.7" />
         <path d="M4.8 17l4.6-4.6 3.4 3.4 2.6-2.6 4.2 4.2" />
       </symbol>
+      <symbol id="i-tasks" viewBox="0 0 24 24">
+        <path d="M9.2 6.4h10.6M9.2 12h10.6M9.2 17.6h10.6" />
+        <path d="M4.6 6.4h.01M4.6 12h.01M4.6 17.6h.01" stroke-width="2.6" />
+      </symbol>
+      <symbol id="i-history" viewBox="0 0 24 24">
+        <path d="M4.4 12a7.6 7.6 0 1 0 2.2-5.4M4.2 4.6v4.2h4.2" />
+        <path d="M12 8.4V12l2.6 1.6" />
+      </symbol>
     </svg>
 
     <div class="app" data-view="timeline">
@@ -87,6 +95,19 @@
           <button class="btn" id="btnSettings">
             <svg class="icon"><use href="#i-settings"></use></svg>设置
           </button>
+          <div class="task-wrap">
+            <button class="btn" id="btnTasks" aria-expanded="false">
+              <svg class="icon"><use href="#i-tasks"></use></svg>任务
+              <span class="task-badge" id="taskBadge" hidden>0</span>
+            </button>
+            <div class="task-center" id="taskCenter" hidden>
+              <div class="tc-head">
+                <strong>任务</strong>
+                <span class="tc-main" id="tcMain">主项目：—</span>
+              </div>
+              <div class="tc-list" id="tcList"></div>
+            </div>
+          </div>
           <button class="btn primary" id="btnExport">
             <svg class="icon"><use href="#i-export"></use></svg>导出成片
           </button>
@@ -139,9 +160,11 @@
           <div class="side-tabs">
             <button class="tab active" data-tab="shot">镜头</button>
             <button class="tab" data-tab="pipeline">流程</button>
+            <button class="tab" data-tab="history">历史</button>
           </div>
           <div class="side-body" id="inspector"></div>
           <div class="side-body" id="pipeline" hidden></div>
+          <div class="side-body" id="historyPanel" hidden></div>
         </aside>
       </main>
 

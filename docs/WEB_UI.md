@@ -159,7 +159,7 @@ web/
    ├─ data/gallery.js         作品画廊数据入口（合并 gallery-zz.js / gallery-more.js）
    └─ components/
       ├─ toast.js             顶栏右侧中文提示（info/success/warn/error）
-      ├─ modal.js             通用模态框（支持 dialogClass / hideFooter）+ 确认对话框
+      ├─ modal.js             通用模态框（dialogClass / hideFooter / 可选 exit 异步退场）+ 确认对话框
       ├─ polish.js            提示词润色对比弹窗（文生图 / 图像编辑共用）
       ├─ jobView.js           任务进度轮询 + 结果渲染（尺寸/align/质量/遮罩叠加/收藏）
       ├─ controls.js          TurboControl / LoraPicker / ModelsField 复用控件

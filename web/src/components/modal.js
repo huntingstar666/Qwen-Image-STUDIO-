@@ -19,6 +19,7 @@ let activeModal = null;
  * @param {string} [options.dialogClass] 追加到 .modal 的类名（自定义尺寸/主题）
  * @param {boolean} [options.hideFooter] 不渲染默认底栏（由内容区自己画按钮）
  * @param {Function} [options.onClose]
+ * @param {Function} [options.exit] 可选退场钩子：返回 Promise 时，等它结束后再移除弹窗
  * @returns {{close:Function, root:HTMLElement, body:HTMLElement}}
  */
 export function openModal({
@@ -30,6 +31,7 @@ export function openModal({
   dialogClass = '',
   hideFooter = false,
   onClose,
+  exit,
 }) {
   closeModal();
   const host = document.getElementById('modal-root') || document.body;
@@ -56,12 +58,35 @@ export function openModal({
 
   const backdrop = ce('div', { class: 'modal-backdrop' }, [modal]);
 
-  const close = () => {
+  let closing = false;
+  const teardown = () => {
     if (!backdrop.isConnected) return;
     backdrop.remove();
     document.removeEventListener('keydown', onKey);
     if (activeModal === api) activeModal = null;
     onClose?.();
+  };
+
+  const close = () => {
+    if (!backdrop.isConnected || closing) return Promise.resolve();
+    // 默认行为保持不变：没有 exit 钩子时立即移除。
+    if (typeof exit !== 'function') {
+      teardown();
+      return Promise.resolve();
+    }
+    closing = true;
+    let pending = null;
+    try {
+      pending = exit({ backdrop, modal, body });
+    } catch {
+      pending = null;
+    }
+    return Promise.resolve(pending)
+      .catch(() => {})
+      .then(() => {
+        closing = false;
+        teardown();
+      });
   };
 
   const onKey = (event) => {

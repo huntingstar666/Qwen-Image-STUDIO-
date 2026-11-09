@@ -146,6 +146,8 @@ async function boot() {
       },
       onUploadAudio: () => $("fileAudio").click(),
       onUploadSubtitle: () => $("fileSubtitle").click(),
+      onUseVersion: (id, file) => useShotVersion(file, id),
+      onDeleteVersion: (id, file) => deleteShotVersion(file, id),
     },
   );
 
@@ -181,6 +183,20 @@ async function boot() {
   window.addEventListener("keydown", (event) => {
     const tag = (event.target.tagName || "").toLowerCase();
     if (["input", "textarea", "select"].includes(tag)) return;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (key === "y") {
+        event.preventDefault();
+        redo();
+        return;
+      }
+    }
     if (event.code === "Space") {
       event.preventDefault();
       togglePlay();
@@ -221,6 +237,11 @@ function applyTheme() {
 async function loadProject(projectId, { keepTime = true } = {}) {
   const previous = currentMs();
   const project = await api.get(`/api/projects/${projectId}`);
+  if (project.id !== undoProjectId) {
+    undoProjectId = project.id;
+    undoStack.length = 0;
+    redoStack.length = 0;
+  }
   localStorage.setItem("videoStudio.project", projectId);
   const list = stateProjects().some((item) => item.id === projectId)
     ? stateProjects()
@@ -553,6 +574,8 @@ function shotHandlers() {
     regenerate: () => regenerateShot(),
     uploadImage: () => $("fileShotImage").click(),
     clearImage: () => clearShotImage(),
+    useVersion: (file) => useShotVersion(file),
+    deleteVersion: (file) => deleteShotVersion(file),
   };
 }
 
@@ -564,6 +587,7 @@ async function patchShot(patch) {
 async function patchShotById(shotId, patch) {
   const state = getState();
   if (!state.project || !shotId) return null;
+  pushUndo();
   try {
     const result = await api.patch(
       `/api/projects/${state.project.id}/shots/${shotId}`,
@@ -595,6 +619,7 @@ async function patchShotById(shotId, patch) {
 async function retimeShot(shotId, patch) {
   const state = getState();
   if (!state.project) return;
+  pushUndo();
   try {
     await api.patch(`/api/projects/${state.project.id}/shots/${shotId}`, patch);
     const project = await api.get(`/api/projects/${state.project.id}`);
@@ -609,6 +634,7 @@ async function retimeShot(shotId, patch) {
 async function clearShotImage() {
   const state = getState();
   if (!state.project || !state.selectedId) return;
+  pushUndo();
   try {
     const project = await api.post(
       `/api/projects/${state.project.id}/shots/${state.selectedId}/clear`,
@@ -617,6 +643,124 @@ async function clearShotImage() {
     renderAll();
   } catch (err) {
     toast(err.message, "bad");
+  }
+}
+
+async function useShotVersion(file, shotId = getState().selectedId) {
+  const state = getState();
+  if (!state.project || !shotId) return;
+  pushUndo();
+  try {
+    const project = await api.post(
+      `/api/projects/${state.project.id}/shots/${shotId}/versions/use`, { file });
+    setState({ project });
+    renderAll();
+    toast("已切换到该版本", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+async function deleteShotVersion(file, shotId = getState().selectedId) {
+  const state = getState();
+  if (!state.project || !shotId) return;
+  if (!window.confirm("删除这个版本？图片文件会一起删掉，且不可恢复。")) return;
+  try {
+    const project = await api.del(
+      `/api/projects/${state.project.id}/shots/${shotId}/versions`, { file });
+    setState({ project });
+    renderAll();
+    toast("版本已删除", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 撤销 / 重做
+
+const HISTORY_LIMIT = 20;
+const undoStack = [];
+const redoStack = [];
+let undoProjectId = "";
+
+function snapshotShots() {
+  const project = getState().project;
+  if (!project) return null;
+  const shots = (project.shots || []).map(({ imageUrl, ...rest }) => rest);
+  return JSON.parse(JSON.stringify(shots));
+}
+
+function pushUndo() {
+  const shots = snapshotShots();
+  if (!shots) return;
+  const projectId = getState().project.id;
+  if (undoProjectId !== projectId) {
+    undoProjectId = projectId;
+    undoStack.length = 0;
+    redoStack.length = 0;
+  }
+  const key = JSON.stringify(shots);
+  const last = undoStack[undoStack.length - 1];
+  redoStack.length = 0;
+  if (last && last.key === key) return;
+  undoStack.push({ shots, key, selectedId: getState().selectedId });
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+}
+
+async function restoreShots(entry) {
+  const state = getState();
+  if (!state.project) return;
+  const project = await api.post(`/api/projects/${state.project.id}/restore`, { shots: entry.shots });
+  const ids = new Set((project.shots || []).map((shot) => shot.id));
+  const selectedId = ids.has(entry.selectedId)
+    ? entry.selectedId
+    : ((project.shots || [])[0] || {}).id || "";
+  setState({ project, selectedId });
+  renderAll();
+}
+
+async function undo() {
+  const state = getState();
+  if (!state.project) return;
+  if (undoProjectId !== state.project.id) {
+    undoStack.length = 0;
+    redoStack.length = 0;
+  }
+  if (!undoStack.length) {
+    toast("没有可撤销的改动");
+    return;
+  }
+  const entry = undoStack.pop();
+  redoStack.push({ shots: snapshotShots(), selectedId: state.selectedId });
+  try {
+    await restoreShots(entry);
+    toast("已撤销");
+  } catch (err) {
+    toast(err.message, "bad");
+    undoStack.push(entry);
+  }
+}
+
+async function redo() {
+  const state = getState();
+  if (!state.project) return;
+  if (undoProjectId !== state.project.id) {
+    undoStack.length = 0;
+    redoStack.length = 0;
+  }
+  if (!redoStack.length) {
+    toast("没有可重做的改动");
+    return;
+  }
+  const entry = redoStack.pop();
+  const current = snapshotShots();
+  undoStack.push({ shots: current, key: JSON.stringify(current), selectedId: state.selectedId });
+  try {
+    await restoreShots(entry);
+    toast("已重做");
+  } catch (err) {
+    toast(err.message, "bad");
+    redoStack.push(entry);
   }
 }
 
@@ -673,6 +817,7 @@ async function uploadFile(event, kind) {
         toast("先选一个镜头段", "bad");
         return;
       }
+      pushUndo();
       const updated = await api.upload(
         `/api/projects/${project.id}/shots/${getState().selectedId}/image`, file);
       setState({ project: updated });
@@ -731,6 +876,7 @@ async function pipelineAction(action) {
 async function regenerateShot(shotId = getState().selectedId) {
   const state = getState();
   if (!state.project || !shotId) return;
+  pushUndo();
   await runTask(`/api/projects/${state.project.id}/images/${shotId}`, "重新生成该镜头");
 }
 
@@ -993,6 +1139,22 @@ async function saveDrawer() {
     patch.locks.content.entities = (drawerDraft.locks.content.entities || [])
       .filter((entity) => (entity.name || "").trim() || (entity.desc || "").trim());
   }
+
+  // 改画幅会让已生成的图被居中裁切，先把后果说清楚
+  const oldRatio = (project.canvas || {}).ratio || "16:9";
+  const ratioChanged = Boolean(patch.canvas && patch.canvas.ratio
+    && patch.canvas.ratio !== oldRatio);
+  const imageShots = (project.shots || []).filter((shot) => shot.image);
+  let regenerateIds = null;
+  if (ratioChanged && imageShots.length) {
+    const proceed = window.confirm(
+      `画幅将从 ${oldRatio} 改为 ${patch.canvas.ratio}，已有 ${imageShots.length} 张图会按新画幅居中裁切。继续保存吗？`);
+    if (!proceed) return;
+    if (window.confirm(`要顺便按新画幅重新生成这 ${imageShots.length} 张图吗？`)) {
+      regenerateIds = imageShots.map((shot) => shot.id);
+    }
+  }
+
   try {
     const updated = await api.patch(`/api/projects/${project.id}`, patch);
     setState({ project: updated });
@@ -1000,6 +1162,10 @@ async function saveDrawer() {
     refs.drawerBackdrop.hidden = true;
     renderAll();
     toast("设置已保存，提示词已按新风格重新装配", "ok");
+    if (regenerateIds) {
+      await runTask(`/api/projects/${project.id}/images`, "按新画幅重新生图",
+        { shotIds: regenerateIds });
+    }
   } catch (err) {
     toast(err.message, "bad");
   }

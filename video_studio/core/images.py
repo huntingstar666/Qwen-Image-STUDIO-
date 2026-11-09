@@ -20,8 +20,37 @@ from . import store
 from .errors import CanceledError, MainProjectError, StudioError
 
 TERMINAL = ("done", "error", "canceled")
+#: 每段保留的图片版本上限（超出删最旧文件）
+MAX_IMAGE_VERSIONS = 8
 ProgressFn = Callable[[int, str], None]
 CancelFn = Callable[[], bool]
+
+
+def record_image_version(project_id: str, shot: dict[str, Any], file: str, *,
+                         seed: int = 0, width: int = 0, height: int = 0,
+                         job_id: str = "", source: str = "generate") -> None:
+    """把一版图片记入 shot.imageHistory，并裁掉超限的最旧文件。"""
+    from .schema import now_text
+    history = [dict(item) for item in (shot.get("imageHistory") or [])]
+    history = [item for item in history if item.get("file") != file]
+    history.insert(0, {
+        "file": file,
+        "seed": int(seed or 0),
+        "at": now_text(),
+        "jobId": str(job_id or ""),
+        "width": int(width or 0),
+        "height": int(height or 0),
+        "source": str(source or "generate"),
+    })
+    victims: list[str] = []
+    while len(history) > MAX_IMAGE_VERSIONS:
+        oldest = history.pop()
+        old_file = str(oldest.get("file") or "")
+        if old_file and old_file != shot.get("image"):
+            victims.append(old_file)
+    shot["imageHistory"] = history
+    for victim in victims:
+        store.delete_media(project_id, victim)
 
 
 class MainClient:
@@ -215,6 +244,11 @@ def generate_shot(project: dict[str, Any], shot: dict[str, Any], client: MainCli
     shot["seed"] = int(payload.get("seed") or 0)
     shot["width"] = int(meta.get("width") or 0)
     shot["height"] = int(meta.get("height") or 0)
+    record_image_version(
+        project["id"], shot, relpath,
+        seed=shot["seed"], width=shot["width"], height=shot["height"],
+        job_id=job_id, source="generate",
+    )
     return shot
 
 

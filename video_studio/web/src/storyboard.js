@@ -1,5 +1,6 @@
 import { formatMs } from "./api.js";
 import { initSegmented } from "./ui.js";
+import { renderVersions } from "./versions.js";
 
 const STATUS_LABEL = {
   pending: "待生成",
@@ -141,6 +142,7 @@ export class Storyboard {
     const status = shot.status || "pending";
     const open = this.expanded.has(shot.id);
     const prompt = shot.prompt || "";
+    const versionCount = (shot.imageHistory || []).length;
     const durationSec = Math.max(0, shot.endMs - shot.startMs) / 1000;
     const thumb = shot.imageUrl
       ? `<img class="sb-thumb is-loading" src="${escapeHtml(shot.imageUrl)}" alt="${escapeHtml(shot.id)}" loading="lazy" />`
@@ -174,6 +176,7 @@ export class Storyboard {
               : ""}
           </div>
         </div>
+        <div class="sb-versions" data-versions hidden></div>
       </div>
       <div class="sb-actions">
         <button class="mini-btn" type="button" data-act="regen" ${status === "generating" ? "disabled" : ""}>
@@ -182,6 +185,9 @@ export class Storyboard {
         <button class="mini-btn" type="button" data-act="upload">
           <svg class="icon"><use href="#i-upload"></use></svg>换图
         </button>
+        ${versionCount > 1
+          ? `<button class="mini-btn ghost" type="button" data-act="versions">版本 ${versionCount}</button>`
+          : ""}
         <button class="mini-btn ghost" type="button" data-act="locate">
           <svg class="icon"><use href="#i-locate"></use></svg>定位
         </button>
@@ -253,6 +259,20 @@ export class Storyboard {
         if (!shot) return;
         await this._flush();
         const action = actionBtn.dataset.act;
+        if (action === "versions") {
+          const panel = row.querySelector("[data-versions]");
+          if (!panel) return;
+          if (!panel.hidden) {
+            panel.hidden = true;
+            return;
+          }
+          renderVersions(panel, shot, {
+            onUse: (file) => this.handlers.onUseVersion(shot.id, file),
+            onDelete: (file) => this.handlers.onDeleteVersion(shot.id, file),
+          });
+          panel.hidden = false;
+          return;
+        }
         if (action === "regen") this.handlers.onRegenerate(shot.id);
         if (action === "upload") this.handlers.onUpload(shot.id);
         if (action === "locate") this.handlers.onLocate(shot);

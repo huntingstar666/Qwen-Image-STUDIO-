@@ -73,6 +73,13 @@ def _read_upload(file: UploadFile, limit: int, label: str) -> bytes:
     return data
 
 
+def _shot_of(project: dict[str, Any], shot_id: str) -> dict[str, Any]:
+    shot = next((item for item in project.get("shots") or [] if item.get("id") == shot_id), None)
+    if shot is None:
+        raise StudioError(f"镜头段不存在：{shot_id}", code="not_found", status=404)
+    return shot
+
+
 def _silences(project: dict[str, Any]) -> list[tuple[int, int]]:
     """静音区间带缓存（音频换掉时缓存文件会被删除）。"""
     audio = project.get("audio") or {}
@@ -349,6 +356,7 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
             shots = segments.retime(shots, shot_id, patch, int((project.get("audio") or {}).get("durationMs") or 0),
                                     int((project.get("canvas") or {}).get("fps") or config.FPS))
             shot = next(item for item in shots if item.get("id") == shot_id)
+        old_prompt = str(shot.get("prompt") or "")
         for key, value in patch.items():
             if key in ("startMs", "endMs"):
                 continue
@@ -358,6 +366,10 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
                 shot["transition"] = {**(shot.get("transition") or {}), **value}
             else:
                 shot[key] = value
+        if "prompt" in patch and patch["prompt"] != old_prompt:
+            history = shot.setdefault("promptHistory", [])
+            history.insert(0, {"at": schema.now_text(), "text": patch["prompt"], "source": "manual"})
+            del history[10:]
         if "description" in patch or "text" in patch or "usedEntities" in patch:
             shot["prompt"], shot["negative"] = prompts.assemble_prompt(project, shot)
         project["shots"] = shots
@@ -379,6 +391,96 @@ def api_shot_image(project_id: str, shot_id: str, file: UploadFile = File(...)) 
             raise StudioError(f"镜头段不存在：{shot_id}", code="not_found", status=404)
         shot["image"] = store.save_shot_image(project_id, shot_id, data, suffix)
         shot["status"] = "ready"
+        shot["seed"] = 0
+        shot["width"] = 0
+        shot["height"] = 0
+        images.record_image_version(project_id, shot, shot["image"], source="upload")
+        store.save(project)
+        return _view(project)
+
+
+@app.get("/api/projects/{project_id}/shots/{shot_id}/versions")
+def api_shot_versions(project_id: str, shot_id: str) -> dict[str, Any]:
+    project = store.load(project_id)
+    shot = _shot_of(project, shot_id)
+    versions = []
+    for item in shot.get("imageHistory") or []:
+        entry = dict(item)
+        file = str(entry.get("file") or "")
+        if not file:
+            continue
+        entry["url"] = store.url_for(project_id, file)
+        entry["current"] = file == (shot.get("image") or "")
+        versions.append(entry)
+    return {"shotId": shot_id, "versions": versions}
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/versions/use")
+def api_shot_version_use(project_id: str, shot_id: str,
+                         payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    file = str(payload.get("file") or "")
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        entry = next((item for item in shot.get("imageHistory") or []
+                      if item.get("file") == file), None)
+        if entry is None:
+            raise StudioError("该版本不在历史记录里", code="not_found", status=404)
+        store.read_media(project_id, file)
+        shot["image"] = file
+        shot["status"] = "ready"
+        shot["seed"] = int(entry.get("seed") or 0)
+        shot["width"] = int(entry.get("width") or 0)
+        shot["height"] = int(entry.get("height") or 0)
+        store.save(project)
+        return _view(project)
+
+
+@app.delete("/api/projects/{project_id}/shots/{shot_id}/versions")
+def api_shot_version_delete(project_id: str, shot_id: str,
+                            payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    file = str(payload.get("file") or "")
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        history = [item for item in shot.get("imageHistory") or [] if item.get("file") != file]
+        if len(history) == len(shot.get("imageHistory") or []):
+            raise StudioError("该版本不在历史记录里", code="not_found", status=404)
+        shot["imageHistory"] = history
+        if shot.get("image") == file:
+            shot["image"] = str(history[0].get("file") or "") if history else ""
+            shot["status"] = "ready" if shot["image"] else "pending"
+        store.save(project)
+        store.delete_media(project_id, file)
+        return _view(project)
+
+
+@app.post("/api/projects/{project_id}/restore")
+def api_restore(project_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """撤销/重做：用前端快照整体替换 shots（只做基础校验，保留图片历史）。"""
+    items = payload.get("shots")
+    if not isinstance(items, list):
+        raise StudioError("shots 必须是数组", code="bad_payload")
+    if len(items) > 500:
+        raise StudioError("镜头段过多（上限 500）", code="too_many_shots")
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise StudioError(f"shots[{index}] 必须是对象", code="bad_payload")
+        shot_id = str(item.get("id") or "")
+        if not shot_id or shot_id in seen:
+            raise StudioError(f"shots[{index}] 缺少 id 或 id 重复", code="bad_payload")
+        seen.add(shot_id)
+        shot = dict(item)
+        shot.pop("imageUrl", None)
+        shot["startMs"] = int(shot.get("startMs") or 0)
+        shot["endMs"] = int(shot.get("endMs") or 0)
+        cleaned.append(shot)
+    cleaned.sort(key=lambda shot: shot["startMs"])
+    with _lock(project_id):
+        project = store.load(project_id)
+        project["shots"] = cleaned
         store.save(project)
         return _view(project)
 

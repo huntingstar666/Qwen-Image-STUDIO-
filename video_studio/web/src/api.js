@@ -34,8 +34,12 @@ export const api = {
   patch(path, body) {
     return fetch(path, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify(body) }).then(parse);
   },
-  del(path) {
-    return fetch(path, { method: "DELETE" }).then(parse);
+  del(path, body) {
+    return fetch(path, {
+      method: "DELETE",
+      headers: body === undefined ? undefined : JSON_HEADERS,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then(parse);
   },
   upload(path, file, field = "file") {
     const form = new FormData();

@@ -1,4 +1,5 @@
 import { formatMs } from "./api.js";
+import { renderVersions } from "./versions.js";
 
 function escapeHtml(value) {
   return String(value == null ? "" : value)
@@ -75,6 +76,13 @@ export function renderInspector(host, state, handlers) {
       <button class="btn ghost" data-action="clear" ${shot.imageUrl ? "" : "disabled"}>清除画面</button>
     </div>
 
+    ${(shot.imageHistory || []).length
+      ? `<details class="ver-block">
+          <summary>图片版本 <span class="tag">${shot.imageHistory.length}</span></summary>
+          <div class="ver-host" data-version-host></div>
+        </details>`
+      : ""}
+
     ${(shot.warnings || []).length
       ? `<div class="chips" style="margin-bottom:10px">${shot.warnings
           .map((item) => `<span class="tag warn">${escapeHtml(item)}</span>`).join("")}</div>`
@@ -130,6 +138,14 @@ export function renderInspector(host, state, handlers) {
   `;
 
   bindFields(host, handlers);
+
+  const versionHost = host.querySelector("[data-version-host]");
+  if (versionHost) {
+    renderVersions(versionHost, shot, {
+      onUse: (file) => handlers.useVersion(file),
+      onDelete: (file) => handlers.deleteVersion(file),
+    });
+  }
 }
 
 function bindFields(host, handlers) {

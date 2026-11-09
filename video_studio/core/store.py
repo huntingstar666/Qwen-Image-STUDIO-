@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -160,9 +161,45 @@ def read_media(project_id: str, relpath: str) -> Path:
     return path
 
 
-def save_shot_image(project_id: str, shot_id: str, data: bytes, ext: str = ".png") -> str:
+def save_shot_image(project_id: str, shot_id: str, data: bytes, ext: str = ".png",
+                    *, version: int | None = None) -> str:
+    """写入镜头图片，默认自动递增版本号（s3_v1.png、s3_v2.png…）。"""
     ext = ext if ext.startswith(".") else f".{ext}"
-    return write_bytes(project_id, "images", f"{_safe_name(shot_id, 'shot')}{ext}", data)
+    stem = _safe_name(shot_id, "shot")
+    if version is None:
+        numbers = image_version_numbers(project_id, shot_id)
+        version = (max(numbers) if numbers else 0) + 1
+    return write_bytes(project_id, "images", f"{stem}_v{int(version)}{ext}", data)
+
+
+def image_version_numbers(project_id: str, shot_id: str) -> set[int]:
+    """扫描磁盘上该段的图片版本号；旧版同名文件（s3.png）视为第 1 版。"""
+    stem = _safe_name(shot_id, "shot")
+    directory = project_dir(project_id) / "images"
+    numbers: set[int] = set()
+    if not directory.is_dir():
+        return numbers
+    pattern = re.compile(rf"^{re.escape(stem)}(?:_v(\d+))?\.(?:png|jpe?g|webp)$", re.IGNORECASE)
+    for entry in directory.iterdir():
+        match = pattern.match(entry.name)
+        if match:
+            numbers.add(int(match.group(1)) if match.group(1) else 1)
+    return numbers
+
+
+def delete_media(project_id: str, relpath: str) -> bool:
+    """删除项目内媒体文件；路径校验与 read_media 一致。"""
+    if not relpath:
+        return False
+    try:
+        path = read_media(project_id, relpath)
+    except StudioError:
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def save_audio(project_id: str, data: bytes, ext: str = ".m4a", *, stem: str = "source") -> str:
@@ -197,6 +234,13 @@ def _shot_view(project_id: str, shot: dict[str, Any]) -> dict[str, Any]:
     data = dict(shot)
     image = shot.get("image") or ""
     data["imageUrl"] = url_for(project_id, image) if image else ""
+    history = []
+    for item in shot.get("imageHistory") or []:
+        entry = dict(item)
+        file = entry.get("file") or ""
+        entry["url"] = url_for(project_id, file) if file else ""
+        history.append(entry)
+    data["imageHistory"] = history
     return data
 
 

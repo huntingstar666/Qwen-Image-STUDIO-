@@ -343,6 +343,19 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
         shot.setdefault("description", "")
         shot.setdefault("warnings", [])
         shot.setdefault("attempts", 0)
+        shot.setdefault("imageHistory", [])
+        shot.setdefault("promptHistory", [])
+        # 旧项目：现有图片补一条 v1 记录，不移动文件
+        if shot.get("image") and not shot["imageHistory"]:
+            shot["imageHistory"] = [{
+                "file": shot["image"],
+                "seed": int(shot.get("seed") or 0),
+                "at": project.get("updatedAt") or "",
+                "jobId": "",
+                "width": int(shot.get("width") or 0),
+                "height": int(shot.get("height") or 0),
+                "source": "legacy",
+            }]
         for key, value in shot_defaults().items():
             if not isinstance(shot.get(key), dict):
                 shot[key] = copy.deepcopy(value)
@@ -404,7 +417,11 @@ def new_shot(index: int, start_ms: int, end_ms: int, text: str) -> dict[str, Any
         "warnings": [],
         "note": "",
         "image": "",
+        "imageHistory": [],
+        "promptHistory": [],
         "seed": 0,
+        "width": 0,
+        "height": 0,
         "status": "pending",
         "attempts": 0,
         **copy.deepcopy(shot_defaults()),

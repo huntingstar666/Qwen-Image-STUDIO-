@@ -793,6 +793,7 @@ for _sub in ("src", "assets"):
 
 
 @app.get("/")
+@app.get("/index.html")
 def index() -> FileResponse:
     path = WEB_DIR / "index.html"
     if not path.is_file():

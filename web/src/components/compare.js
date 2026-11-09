@@ -180,28 +180,30 @@ function mountCompare(container, references, results, initialReference, initialR
           </label>
         </section>
 
-        <section class="cmp-block">
-          <div class="cmp-block-head">色彩比对 <span class="cmp-block-sub">结果图校正</span></div>
-          <label class="cmp-range">
-            <span>饱和度 <b data-ref="satVal">100%</b></span>
-            <input type="range" min="0" max="200" step="1" value="100" data-ref="sat" />
-          </label>
-          <label class="cmp-range">
-            <span>亮度 <b data-ref="brightVal">100%</b></span>
-            <input type="range" min="40" max="180" step="1" value="100" data-ref="bright" />
-          </label>
-          <label class="cmp-range">
-            <span>对比度 <b data-ref="contrastVal">100%</b></span>
-            <input type="range" min="40" max="200" step="1" value="100" data-ref="contrast" />
-          </label>
-          <label class="cmp-range">
-            <span>色相 <b data-ref="hueVal">0°</b></span>
-            <input type="range" min="-45" max="45" step="1" value="0" data-ref="hue" />
-          </label>
-          <button class="btn ghost sm block" type="button" data-ref="resetColor">恢复原始色彩</button>
-        </section>
+        <details class="cmp-block cmp-fold">
+          <summary class="cmp-block-head">色彩比对 <span class="cmp-block-sub">结果图校正</span></summary>
+          <div class="cmp-fold-body">
+            <label class="cmp-range">
+              <span>饱和度 <b data-ref="satVal">100%</b></span>
+              <input type="range" min="0" max="200" step="1" value="100" data-ref="sat" />
+            </label>
+            <label class="cmp-range">
+              <span>亮度 <b data-ref="brightVal">100%</b></span>
+              <input type="range" min="40" max="180" step="1" value="100" data-ref="bright" />
+            </label>
+            <label class="cmp-range">
+              <span>对比度 <b data-ref="contrastVal">100%</b></span>
+              <input type="range" min="40" max="200" step="1" value="100" data-ref="contrast" />
+            </label>
+            <label class="cmp-range">
+              <span>色相 <b data-ref="hueVal">0°</b></span>
+              <input type="range" min="-45" max="45" step="1" value="0" data-ref="hue" />
+            </label>
+            <button class="btn ghost sm block" type="button" data-ref="resetColor">恢复原始色彩</button>
+          </div>
+        </details>
 
-        <section class="cmp-block">
+        <section class="cmp-block cmp-result-block">
           <div class="cmp-block-head">比对结果 <span class="cmp-badge" data-ref="badge"></span></div>
           <div class="cmp-stats" data-ref="stats">计算中…</div>
         </section>

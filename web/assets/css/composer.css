@@ -2556,13 +2556,43 @@ html[data-theme="dark"] .feed-empty {
 .cmp-block {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 13px 15px;
+  gap: 8px;
+  padding: 11px 15px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .cmp-block:last-child {
   border-bottom: 0;
+}
+
+/* 色彩比对是次级「校正」工具，默认收起，保证比对结果完整可见 */
+.cmp-fold > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.cmp-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cmp-fold > summary::after {
+  content: '展开';
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--dim);
+}
+
+.cmp-fold[open] > summary::after {
+  content: '收起';
+}
+
+.cmp-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 9px;
 }
 
 .cmp-block-head {

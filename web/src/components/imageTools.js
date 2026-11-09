@@ -3051,15 +3051,23 @@ export function createImageToolsPage(host) {
     if (workStale()) await render();
     if (!workCanvas || !sourceImage) return;
 
-    // 参考图停在「第一次缩放」之前：缩放会改变画面尺寸，若把 resize 也应用到参考图，
-    // 两张图会被 fit 成同样的显示大小，用户看到的就是 0 差异（对比失效）。
-    const firstResize = state.stagedOps.findIndex((op) => op.op === 'resize');
-    const referenceOps =
-      firstResize >= 0 ? state.stagedOps.slice(0, firstResize) : state.stagedOps;
-    const geometryOps = referenceOps.filter((op) => op.op !== 'adjust');
-    const referenceCanvas = geometryOps.length
-      ? applyOpsToCanvas(sourceImage, geometryOps)
+    // 参考图 = 除最后一步外的全部操作：这样镜像/裁剪/旋转/缩放/调色每一步都能看出差异。
+    // 若把最后一步也应用到参考图，两张图会完全一致，用户看到的就是 0 差异（对比失效）。
+    const priorOps = state.stagedOps.slice(0, -1);
+    const priorGeometry = priorOps.filter((op) => op.op !== 'adjust');
+    const priorAdjust = priorOps.filter((op) => op.op === 'adjust');
+    let referenceCanvas = priorGeometry.length
+      ? applyOpsToCanvas(sourceImage, priorGeometry)
       : canvasFromImage(sourceImage);
+    if (priorAdjust.length) {
+      const baked = document.createElement('canvas');
+      baked.width = referenceCanvas.width;
+      baked.height = referenceCanvas.height;
+      const bctx = baked.getContext('2d');
+      bctx.filter = adjustFilterString(priorAdjust, null) || 'none';
+      bctx.drawImage(referenceCanvas, 0, 0);
+      referenceCanvas = baked;
+    }
     const referenceUrl = referenceCanvas.toDataURL('image/png');
 
     // Canvas 像素本身不含 CSS filter，对比前把调色烘焙进临时画布
@@ -3076,7 +3084,7 @@ export function createImageToolsPage(host) {
       references: [
         {
           url: referenceUrl,
-          label: `编辑前（${fmtNum(referenceCanvas.width)}×${fmtNum(referenceCanvas.height)}）`,
+          label: `上一步（${fmtNum(referenceCanvas.width)}×${fmtNum(referenceCanvas.height)}）`,
         },
       ],
       results: [

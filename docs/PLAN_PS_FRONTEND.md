@@ -1222,6 +1222,12 @@ DOM 结构：
     - 涂抹确有像素变化（1372 px）；调色 +35 后复位可完全复原；Ctrl+Z 可撤销整笔；`node --test web/tests/studio/*.test.mjs` **139 passed**。
   - 仍可继续优化（未做）：带多个大图层时把 `drawLayers` 也纳入缓存（按笔触开始时的图层快照渲染一次），或把修复层做成独立屏幕叠加层。
 
+- **D27.3 仿制图章「鼠标放不进画布」：`clampPoint()` 每帧重合成整图（已修复）** —— D27.2 之后用户仍反馈卡到鼠标悬停都没反应。
+  - 定位：monkey-patch `CanvasRenderingContext2D.prototype.drawImage` 记录 >3ms 调用并抓调用栈，看到 `composite → StudioDoc.renderBase → imageRect → clampPoint` 在**每次 pointermove** 都跑一次：`stampRepairLive()` 每落一个 dab 会把 `_base` 置空，而 `clampPoint()` 为了取「画面尺寸」调了 `imageRect()`（内部是 `doc.renderBase()`），于是每个 move 都新建一张 2400×3200 画布并整图 `drawImage`（软件渲染 4~9ms），30 次 move 同步耗时 **376ms**，主线程被占满，hover/光标都排不上。
+  - 改法：删除 `imageRect()`，`clampPoint()` 直接用 `doc.size`（只读 `transform/oriented`，零绘制）。
+  - 实测（headless 1440×900，2400×3200）：30 次 move 同步耗时 **376ms → 12~18ms**（含一笔开始的取样合成），第二笔 **12.3ms**；带 1 个图层 **3.6ms**。剩下的慢调用都只在一笔开始/结束各一次（`renderSample()` 取样合成 ≈4ms、`snapshot()` 复制蒙版/修复层各 ≈4ms），不再随移动次数增长。
+  - 已清理临时埋点（`window.__diag` / `window.__stampLog`）；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D25.5 「项目历史」两份列表实现（已去重）** —— Dock 书脊浮层（`refreshProjectList`）与顶栏「历史项目…」弹窗（`openProjectHistoryDialog`）各自写了一份工程行 HTML 和删除逻辑，且「编辑中」表现不一致（浮层用角标，弹窗改按钮文案）。
   - 抽出 `projectRowHtml(project, tab)`（缩略图 / 名称 / 尺寸·时间 / 「当前」「编辑中」角标 / 打开·删除）与 `deleteProjectById(id, name)`（同一份确认文案与「先关当前工程再清库」顺序）；两个入口只保留一处渲染、一处删除。
   - 统一后两个入口表现一致：都有「当前」「编辑中」角标，锁定工程的打开按钮置灰。
@@ -1787,6 +1793,7 @@ DOM 结构：
 | D26.4 | 图层批量导出 | 已完成 | 本次提交 | 图层栏「导出」改菜单：当前图层 / 所有可见图层（>5 个先确认）/ 当前图层 + 蒙版；详见 §12.11 |
 | D27.1 | 仿制图章卡顿 + 换工程后画不出来 | 已完成 | 本次提交 | 修复层移出「干净底图」缓存，落笔只 `invalidateRepair()`；笔刷画布复用；换工程清取样点并显示取样状态；详见 §12.11 |
 | D27.2 | 修复类笔触增量写入 underlay（根治每帧重建） | 已完成 | 本次提交 | `repairPaint()` 落笔后把同一笔触同步进缓存的 underlay（`stampRepairLive`），不再逐帧重建整张底图；2400×3200 无图层 40fps→60fps；详见 §12.11 |
+| D27.3 | 仿制图章「鼠标放不进画布」 | 已完成 | 本次提交 | `clampPoint()` 不再调 `renderBase()` 取尺寸（改读 `doc.size`），每个 pointermove 少了整图重合成；2400×3200 30 次 move 376ms→12~18ms；详见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

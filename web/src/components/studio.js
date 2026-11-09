@@ -3822,10 +3822,6 @@ export function createStudioPage(host) {
     };
   }
 
-  function imageRect() {
-    return doc ? doc.renderBase() : { width: 1, height: 1 };
-  }
-
   /** 显示坐标 → 蒙版坐标（蒙版始终覆盖整张未裁剪的画面）。 */
   function maskPoint(point) {
     const crop = doc?.transform.crop;
@@ -3840,7 +3836,9 @@ export function createStudioPage(host) {
   }
 
   function clampPoint(point) {
-    const size = imageRect();
+    // 只用来限制坐标范围，取尺寸即可；这里若走 renderBase()，每次 pointermove
+    // 都会在修复笔触让缓存失效后重合成整张底图（2400×3200 一次 8ms，D27.3）。
+    const size = doc ? doc.size : { width: 1, height: 1 };
     return {
       x: Math.min(size.width, Math.max(0, point.x)),
       y: Math.min(size.height, Math.max(0, point.y)),

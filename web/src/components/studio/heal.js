@@ -56,6 +56,20 @@ function css(color) {
 }
 
 /**
+ * 笔刷临时画布复用（D27.1）：每次落笔都新建 canvas 会在快速涂抹时制造大量垃圾，
+ * 这里按尺寸复用一个画布；写入方式都是整块覆盖（putImageData / fillRect），无需清空。
+ */
+let dabScratch = null;
+function dabCanvasFor(size) {
+  if (!dabScratch) dabScratch = document.createElement('canvas');
+  if (dabScratch.width !== size || dabScratch.height !== size) {
+    dabScratch.width = size;
+    dabScratch.height = size;
+  }
+  return dabScratch;
+}
+
+/**
  * 把一个修复笔触画进目标上下文（通常是文档修复层）。
  * @param {CanvasRenderingContext2D} ctx 目标上下文（文档坐标）
  * @param {CanvasImageSource} source 取样来源（合成后的底图）
@@ -89,9 +103,7 @@ export function healDab(ctx, source, { x, y, radius, opacity = 1, softness = 0.5
   }
   if (!colors) return;
 
-  const scratchCanvas = document.createElement('canvas');
-  scratchCanvas.width = size;
-  scratchCanvas.height = size;
+  const scratchCanvas = dabCanvasFor(size);
   const sctx = scratchCanvas.getContext('2d');
   const center = size / 2;
 
@@ -207,9 +219,7 @@ export function cloneDab(ctx, source, { x, y, sx, sy, radius, opacity = 1, softn
     }
   }
 
-  const scratchCanvas = document.createElement('canvas');
-  scratchCanvas.width = size;
-  scratchCanvas.height = size;
+  const scratchCanvas = dabCanvasFor(size);
   const sctx = scratchCanvas.getContext('2d');
   sctx.putImageData(patchData, 0, 0);
 

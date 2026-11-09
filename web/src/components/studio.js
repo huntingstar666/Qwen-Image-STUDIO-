@@ -527,6 +527,9 @@ export function createStudioPage(host) {
                 <label class="studio-check studio-maskbar-align" data-ref="cloneAlignWrap" hidden>
                   <input type="checkbox" data-ref="cloneAligned" checked /><span>对齐取样</span>
                 </label>
+                <span class="studio-maskbar-field studio-clone-sample" data-ref="cloneSampleWrap" hidden>
+                  <span data-ref="cloneSampleHint">按住 Alt 点击画面取样</span>
+                </span>
                 <label class="studio-maskbar-field studio-maskbar-mode" data-ref="mosaicModeWrap" hidden>
                   <span>模式</span>
                   <select class="select" data-ref="mosaicMode">
@@ -1039,6 +1042,8 @@ export function createStudioPage(host) {
     maskbar: ref('maskbar'),
     cloneAlignWrap: ref('cloneAlignWrap'),
     cloneAligned: ref('cloneAligned'),
+    cloneSampleWrap: ref('cloneSampleWrap'),
+    cloneSampleHint: ref('cloneSampleHint'),
     mosaicModeWrap: ref('mosaicModeWrap'),
     mosaicMode: ref('mosaicMode'),
     textEmpty: ref('textEmpty'),
@@ -3205,6 +3210,8 @@ export function createStudioPage(host) {
       segAppliedId = '';
     }
     if (refs.cloneAlignWrap) refs.cloneAlignWrap.hidden = !CLONE_TOOLS.has(next);
+    if (refs.cloneSampleWrap) refs.cloneSampleWrap.hidden = !CLONE_TOOLS.has(next);
+    if (CLONE_TOOLS.has(next)) syncCloneHint();
     if (refs.mosaicModeWrap) refs.mosaicModeWrap.hidden = next !== 'mosaic';
     if (refs.patternWrap) refs.patternWrap.hidden = next !== 'pattern';
     if (next === 'pattern') updatePatternHint();
@@ -4515,7 +4522,7 @@ export function createStudioPage(host) {
       }),
     );
     // 修复层画在 underlay 之上，必须让 underlay/base 一起失效才能看到即时结果。
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   /** 沿拖动路径按笔刷间距连续落笔，避免快速拖动出现断点。 */
@@ -4535,6 +4542,14 @@ export function createStudioPage(host) {
   /* ============================================================
    * 仿制图章 / 修复画笔（D10.2）
    * ============================================================ */
+
+  /** D27.1：仿制图章 / 修复画笔的取样状态提示，避免「点了没反应」。 */
+  function syncCloneHint() {
+    if (!refs.cloneSampleHint) return;
+    refs.cloneSampleHint.textContent = cloneAnchor
+      ? `取样点 ${Math.round(cloneAnchor.x)}, ${Math.round(cloneAnchor.y)}（Alt 点击可重新取样）`
+      : '按住 Alt 点击画面取样';
+  }
 
   function cloneAt(point) {
     if (!doc || !drag || drag.mode !== 'clone') return;
@@ -4557,7 +4572,8 @@ export function createStudioPage(host) {
       drag.mode = 'clone-blocked';
       return;
     }
-    doc.invalidateBase();
+    // D27.1：只动了修复层，干净底图缓存继续复用（每帧不再重跑滤镜/LUT）。
+    doc.invalidateRepair();
   }
 
   function cloneStroke(point) {
@@ -4598,7 +4614,7 @@ export function createStudioPage(host) {
       drag.mode = 'pattern-blocked';
       return;
     }
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   function patternStroke(point) {
@@ -4641,7 +4657,7 @@ export function createStudioPage(host) {
         softness: 1 - brush.hardness,
       }),
     );
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   /* ============================================================
@@ -4664,7 +4680,7 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   function skinStroke(point) {
@@ -4701,7 +4717,7 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   /* ============================================================
@@ -4725,7 +4741,7 @@ export function createStudioPage(host) {
       }),
     );
     if (!ok) return;
-    doc.invalidateBase();
+    doc.invalidateRepair();
   }
 
   function mosaicStroke(point) {
@@ -4858,6 +4874,7 @@ export function createStudioPage(host) {
         // Alt + 点击 = 取样（对齐模式下会清空旧偏移）。
         cloneAnchor = { x: imagePoint.x, y: imagePoint.y };
         cloneOffset = null;
+        syncCloneHint();
         toast(`已取样：${Math.round(imagePoint.x)}, ${Math.round(imagePoint.y)}`);
         scheduleDraw();
         return;
@@ -7214,6 +7231,10 @@ export function createStudioPage(host) {
     tintRect = null;
     adjustPreview = false;
     refs.cropbar.hidden = true;
+    // 取样点属于上一张图的坐标空间，换工程后必须清掉，否则仿制图章会「画不出来」。
+    cloneAnchor = null;
+    cloneOffset = null;
+    syncCloneHint();
     refs.empty.hidden = true;
     refs.dot.classList.add('is-live');
     refs.fileName.textContent = doc.name;

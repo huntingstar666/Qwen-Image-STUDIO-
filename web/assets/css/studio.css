@@ -2347,6 +2347,18 @@ button.studio-fold-head:disabled {
   text-align: right;
 }
 
+/* D27.1：仿制图章的取样状态（未取样 / 已取样坐标）。 */
+.studio-clone-sample {
+  min-width: 0;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.studio-clone-sample > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .studio-maskbar .btn {
   height: 28px;
   padding: 0 12px;

@@ -102,6 +102,7 @@ export class StudioDoc {
     this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
     this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
     this._base = null;
+    this._clean = null;
     this.snapshot();
   }
 
@@ -175,6 +176,7 @@ export class StudioDoc {
     this.groups = (state.groups || []).map((group) => ({ ...group }));
     this._base = null;
     this._underlay = null;
+    this._clean = null;
     this._tint = null;
     this._maskHas = null;
   }
@@ -832,6 +834,13 @@ export class StudioDoc {
   invalidateBase() {
     this._base = null;
     this._underlay = null;
+    this._clean = null;
+  }
+
+  /** D27.1：只改了修复层（仿制图章 / 修复画笔 / 污点）时用，干净底图缓存继续复用。 */
+  invalidateRepair() {
+    this._base = null;
+    this._underlay = null;
   }
 
   /**
@@ -849,11 +858,12 @@ export class StudioDoc {
   }
 
   /**
-   * 「原图 + 变换 + 调色 + 裁剪」的合成画布（不含叠加层），单独缓存。
-   * 叠加层拖动时只需重画 `_base`，底层 4K 合成可以复用（D18.2）。
+   * 「原图 + 变换 + 调色 + 裁剪」的合成画布（不含修复层、不含叠加层），单独缓存。
+   * 修复笔触只改修复层，每次落笔都重跑这层会连同滤镜/LUT 一起重算，
+   * 大图上会明显卡顿（D27.1），所以把「干净底图」与「带修复层的底图」分开缓存。
    */
-  renderUnderlay() {
-    if (this._underlay) return this._underlay;
+  renderClean() {
+    if (this._clean) return this._clean;
     const oriented = this.oriented;
     const crop = this.transform.crop;
     const baseWidth = crop ? crop.width : oriented.width;
@@ -905,6 +915,24 @@ export class StudioDoc {
     }
 
     this._applyLut(canvas);
+    this._clean = canvas;
+    return canvas;
+  }
+
+  /**
+   * 「干净底图 + 修复层」。修复笔触只让这一层失效（`invalidateRepair()`），
+   * 滤镜 / LUT / 原图变换不必重跑，涂抹时每帧只多两次全尺寸 drawImage。
+   */
+  renderUnderlay() {
+    if (this._underlay) return this._underlay;
+    const clean = this.renderClean();
+    if (!this.repair) {
+      this._underlay = clean;
+      return clean;
+    }
+    const canvas = makeCanvas(clean.width, clean.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(clean, 0, 0);
     this._drawRepair(ctx);
     this._underlay = canvas;
     return canvas;

@@ -1206,6 +1206,13 @@ DOM 结构：
   - 顺带修复：`afterLayerAdded()` 只同步了图层属性，导入文字层后「文字」分页仍显示上一个图层——现在四个分页一起同步。
   - 实测（1440×900，headless）：文字层「☆ 素材」→ 新记录 `params.layer.kind=text`、`props.text=测试文字D26`、`docW/H=941/1672`；经图层栏「＋ → 从素材仓库」置入后图层数 +1、文字分页立即显示原文案；「存入图层库 → 置入」同样得到可编辑文字层；导出菜单三项齐全；`node --test web/tests/studio/*.test.mjs` **139 passed**。
 
+- **D27.1 仿制图章卡顿、换工程后「画不出来」（已修复）** —— 现象：落笔一顿一顿；切换工程后 Alt 取样再涂没有任何反应。
+  - 卡顿根因：修复层是画进 `_underlay` 的（`renderUnderlay()` 末尾 `_drawRepair()`），而修复笔触每落一个 dab 都调 `invalidateBase()`，会**连 `_underlay` 一起丢弃**。于是每个 dab 都要重跑「原图变换 + Canvas filter（曝光/对比/饱和）+ 色温色相叠加 + LUT 逐像素」，再做全尺寸合成；大图/挂了 LUT 时直接卡死。
+  - 改法（`studioDoc.js`）：拆出 `renderClean()`（干净底图，缓存 `_clean`），`renderUnderlay()` = clean + 修复层；新增 `invalidateRepair()` 只失效 `_underlay/_base`，`invalidateBase()` 仍清三层。仿制图章 / 修复画笔 / 污点修复 / 涂抹 / 磨皮 / 液化 / 图案图章 / 马赛克 的落笔全部改用 `invalidateRepair()`。
+  - 垃圾回收：`heal.js` 的 `healDab` / `cloneDab` 原来**每个 dab 新建一个 canvas**，改为模块级按尺寸复用。
+  - 「画不出来」根因：`cloneAnchor` 是全局变量，切换工程后没清空，取样点留在上一张图的坐标空间；`cloneDab` 读源区域越界就返回 false，笔触被标成 `clone-blocked`，看起来就是完全没反应。现在 `setDoc()` 里清空 `cloneAnchor/cloneOffset`，并在笔刷条常驻显示取样状态（`按住 Alt 点击画面取样` / `取样点 x, y（Alt 点击可重新取样）`）。
+  - 实测（1440×900，940×1672）：100 次 pointermove 同步耗时 **102ms（≈1.0ms/次）**；Alt 取样后涂抹像素确实变化；污点修复、修复画笔均正常；调色 +35 画面变化、复位可复原（修复层不再被丢）；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D25.5 「项目历史」两份列表实现（已去重）** —— Dock 书脊浮层（`refreshProjectList`）与顶栏「历史项目…」弹窗（`openProjectHistoryDialog`）各自写了一份工程行 HTML 和删除逻辑，且「编辑中」表现不一致（浮层用角标，弹窗改按钮文案）。
   - 抽出 `projectRowHtml(project, tab)`（缩略图 / 名称 / 尺寸·时间 / 「当前」「编辑中」角标 / 打开·删除）与 `deleteProjectById(id, name)`（同一份确认文案与「先关当前工程再清库」顺序）；两个入口只保留一处渲染、一处删除。
   - 统一后两个入口表现一致：都有「当前」「编辑中」角标，锁定工程的打开按钮置灰。
@@ -1769,6 +1776,7 @@ DOM 结构：
 | D26.2 | 位图层素材保留几何与外观 | 已完成 | 本次提交 | sidecar 带 `x/y/scale/rotation/flip/blend/opacity/quad` 与 `docW/docH`，置入按画布比还原；详见 §12.11 |
 | D26.3 | 图层库支持文字 / 形状 / 蒙版 | 已完成 | 本次提交 | 文字/形状存 props + 32px 缩略图，位图额外存 `maskBlob`；置入按类型重建并贴回蒙版；旧记录兼容；详见 §12.11 |
 | D26.4 | 图层批量导出 | 已完成 | 本次提交 | 图层栏「导出」改菜单：当前图层 / 所有可见图层（>5 个先确认）/ 当前图层 + 蒙版；详见 §12.11 |
+| D27.1 | 仿制图章卡顿 + 换工程后画不出来 | 已完成 | 本次提交 | 修复层移出「干净底图」缓存，落笔只 `invalidateRepair()`；笔刷画布复用；换工程清取样点并显示取样状态；详见 §12.11 |
 
 ### 14.13 启动顺序（等通知后）
 

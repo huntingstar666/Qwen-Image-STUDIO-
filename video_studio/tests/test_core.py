@@ -432,9 +432,21 @@ def test_review_mark_and_clear() -> None:
     assert "review" not in shot
 
 
+def test_directive_is_appended_to_prompt() -> None:
+    project = _project()
+    shot = schema.new_shot(0, 0, 2000, "台词")
+    shot["description"] = "人物抬头看向灯光"
+    shot["note"] = "中景，平视"
+    shot["directive"] = "让雨更大，人物不要看镜头"
+    prompt, _ = prompts.assemble_prompt(project, shot)
+    assert "让雨更大" in prompt
+    assert prompt.index("中景") < prompt.index("让雨更大")
+
+
 def test_new_shot_has_text_mode_and_beat() -> None:
     shot = schema.new_shot(0, 0, 1000, "台词")
     assert shot["textMode"] == "auto" and shot["beat"] is None
+    assert shot["directive"] == ""
     assert "review" not in shot
 
 

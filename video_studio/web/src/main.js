@@ -5,6 +5,7 @@ import { Storyboard } from "./storyboard.js";
 import { HistoryGallery } from "./history.js";
 import { initSegmented } from "./ui.js";
 import { renderInspector, renderPipeline } from "./inspector.js";
+import { ShotDialog } from "./shotDialog.js";
 
 const $ = (id) => document.getElementById(id);
 const audioEl = $("audio");
@@ -52,6 +53,7 @@ const refs = {
 let timeline = null;
 let storyboard = null;
 let historyGallery = null;
+let shotDialog = null;
 let viewSwitch = null;
 let drawerDraft = null;
 let rafId = 0;
@@ -275,6 +277,43 @@ async function boot() {
     { onUse: (payload) => useHistoryImage(payload) },
   );
 
+  shotDialog = new ShotDialog(
+    {
+      dialog: $("sdDialog"),
+      backdrop: $("sdBackdrop"),
+      body: $("sdBody"),
+      id: $("sdId"),
+      time: $("sdTime"),
+      status: $("sdStatus"),
+      prev: $("sdPrev"),
+      next: $("sdNext"),
+      close: $("sdClose"),
+      done: $("sdDone"),
+    },
+    {
+      patch: (shotId, patch) => patchShotById(shotId, patch),
+      regenerate: (shotId) => regenerateShot(shotId),
+      upload: (shotId) => {
+        selectShot(shotId);
+        $("fileShotImage").click();
+      },
+      clear: (shotId) => clearShotImage(shotId),
+      useVersion: (shotId, file) => useShotVersion(file, shotId),
+      deleteVersion: (shotId, file) => deleteShotVersion(file, shotId),
+      setTextMode: (shotId) => setShotTextMode("auto", shotId),
+      clearReview: (shotId, fields) => clearShotReview(fields, shotId),
+      polish: (shotId, directive) => polishShot(shotId, directive),
+      listMaterials: (q) => api.get(`/api/main/materials?limit=60&q=${encodeURIComponent(q || "")}`),
+      useMaterial: (shotId, url) => useMaterialImage(shotId, url),
+      onNavigate: (shotId) => {
+        selectShot(shotId);
+        const shot = selectedShot();
+        if (shot) seek(shot.startMs);
+      },
+      toast: (message, kind) => toast(message, kind),
+    },
+  );
+
   bindTaskCenter();
   startTaskPolling();
 
@@ -315,6 +354,8 @@ async function boot() {
   window.addEventListener("keydown", (event) => {
     const tag = (event.target.tagName || "").toLowerCase();
     if (["input", "textarea", "select"].includes(tag)) return;
+    // 详情弹窗打开时只保留弹窗自己的快捷键
+    if (shotDialog && shotDialog.isOpen()) return;
     if ((event.ctrlKey || event.metaKey) && !event.altKey) {
       const key = event.key.toLowerCase();
       if (key === "z") {
@@ -340,6 +381,14 @@ async function boot() {
       if (shot) {
         event.preventDefault();
         openSplitDialog(shot.id, currentMs());
+      }
+      return;
+    }
+    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (tag === "button" || tag === "a") return;
+      if (selectedShot()) {
+        event.preventDefault();
+        openShotDetail();
       }
       return;
     }
@@ -475,6 +524,9 @@ function renderAll() {
   }
   if (state.project && storyboard) {
     storyboard.setProject(state.project, state.selectedId);
+  }
+  if (state.project && shotDialog) {
+    shotDialog.setProject(state.project);
   }
 }
 
@@ -937,6 +989,18 @@ function selectedShot() {
   return ((project && project.shots) || []).find((shot) => shot.id === getState().selectedId) || null;
 }
 
+/** 打开段落详情弹窗（替代原侧栏镜头面板）。 */
+function openShotDetail(shotId = getState().selectedId) {
+  const project = getState().project;
+  if (!project || !shotId) {
+    toast("先在时间线或分镜表选一个镜头段", "bad");
+    return;
+  }
+  selectShot(shotId);
+  shotDialog.setProject(getState().project);
+  shotDialog.open(shotId);
+}
+
 function shotHandlers() {
   return {
     patchShot: (patch) => patchShot(patch),
@@ -1119,6 +1183,7 @@ function bindContextBar() {
     if (!button) return;
     const shot = selectedShot();
     if (!shot) return;
+    if (button.dataset.ctx === "detail") openShotDetail(shot.id);
     if (button.dataset.ctx === "split") openSplitDialog(shot.id, currentMs());
     if (button.dataset.ctx === "mergePrev") mergeWithNeighbor("prev");
     if (button.dataset.ctx === "mergeNext") mergeWithNeighbor("next");
@@ -1186,13 +1251,12 @@ function mergeWithNeighbor(direction) {
   mergeShotsByIds(direction === "prev" ? [neighbor.id, shot.id] : [shot.id, neighbor.id]);
 }
 
-async function setShotTextMode(mode) {
+async function setShotTextMode(mode, shotId = getState().selectedId) {
   const project = getState().project;
-  const shot = selectedShot();
-  if (!project || !shot) return;
+  if (!project || !shotId) return;
   pushUndo();
   try {
-    await api.patch(`/api/projects/${project.id}/shots/${shot.id}`, { textMode: mode });
+    await api.patch(`/api/projects/${project.id}/shots/${shotId}`, { textMode: mode });
     const updated = await api.get(`/api/projects/${project.id}`);
     setState({ project: updated });
     renderAll();
@@ -1202,17 +1266,44 @@ async function setShotTextMode(mode) {
   }
 }
 
-async function clearShotReview(fields) {
+async function clearShotReview(fields, shotId = getState().selectedId) {
   const project = getState().project;
-  const shot = selectedShot();
-  if (!project || !shot) return;
+  if (!project || !shotId) return;
   pushUndo();
   try {
     const updated = await api.post(
-      `/api/projects/${project.id}/shots/${shot.id}/review/clear`, { fields });
+      `/api/projects/${project.id}/shots/${shotId}/review/clear`, { fields });
     setState({ project: updated });
     renderAll();
     toast("已标记处理", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+/** 按用户指令让 LLM 重写本段画面描述。 */
+async function polishShot(shotId, directive) {
+  const project = getState().project;
+  if (!project || !shotId) throw new Error("先选一个镜头段");
+  pushUndo();
+  const data = await api.post(
+    `/api/projects/${project.id}/shots/${shotId}/polish`, { directive });
+  setState({ project: data, selectedId: shotId });
+  renderAll();
+  return data.polish;
+}
+
+/** 从主项目素材仓库取图，写成该段的新版本。 */
+async function useMaterialImage(shotId, url) {
+  const project = getState().project;
+  if (!project || !shotId || !url) return;
+  pushUndo();
+  try {
+    const updated = await api.post(
+      `/api/projects/${project.id}/shots/${shotId}/image/from-material`, { url });
+    setState({ project: updated, selectedId: shotId });
+    renderAll();
+    toast("已从素材仓库换图", "ok");
   } catch (err) {
     toast(err.message, "bad");
   }
@@ -1243,6 +1334,8 @@ function openShotMenu(shotId, x, y) {
   const versionCount = (shot.imageHistory || []).length;
 
   const rows = [
+    ["detail", "段落详情…"],
+    ["sep"],
     ["split", playheadInside ? "在播放头拆分" : "在播放头拆分（播放头不在段内）", !playheadInside],
     ["mergePrev", "与上段合并", index <= 0],
     ["mergeNext", "与下段合并", index >= shots.length - 1],
@@ -1274,6 +1367,7 @@ function bindShotMenu() {
     const shotId = menuShotId;
     closeShotMenu();
     if (!shotId) return;
+    if (action === "detail") return openShotDetail(shotId);
     if (action === "split") return openSplitDialog(shotId, currentMs());
     if (action === "mergePrev" || action === "mergeNext") {
       selectShot(shotId);
@@ -1295,11 +1389,7 @@ function bindShotMenu() {
     }
     if (action === "versions") {
       selectShot(shotId);
-      setSideTab("shot");
-      requestAnimationFrame(() => {
-        const block = refs.inspector.querySelector(".ver-block");
-        if (block) block.open = true;
-      });
+      openShotDetail(shotId);
     }
   });
   document.addEventListener("pointerdown", (event) => {
@@ -1463,22 +1553,6 @@ function bindBgm() {
 }
 
 let bgmVolumeTimer = 0;
-
-/** 侧栏 tab 切换（右键菜单「图片版本」用）。 */
-function setSideTab(name) {
-  if (window.innerWidth <= 1080) {
-    const app = document.querySelector(".app");
-    app.classList.add("side-open");
-    if (refs.sideBackdrop) refs.sideBackdrop.hidden = false;
-  }
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tab === name);
-  });
-  const panels = { shot: refs.inspector, pipeline: refs.pipeline, history: refs.historyPanel };
-  Object.entries(panels).forEach(([key, node]) => {
-    if (node) node.hidden = key !== name;
-  });
-}
 
 // --------------------------------------------------------------------------- 拆分弹窗
 
@@ -1646,13 +1720,13 @@ async function editCue(index, text) {
   }
 }
 
-async function clearShotImage() {
+async function clearShotImage(shotId = getState().selectedId) {
   const state = getState();
-  if (!state.project || !state.selectedId) return;
+  if (!state.project || !shotId) return;
   pushUndo();
   try {
     const project = await api.post(
-      `/api/projects/${state.project.id}/shots/${state.selectedId}/clear`,
+      `/api/projects/${state.project.id}/shots/${shotId}/clear`,
     );
     setState({ project });
     renderAll();
@@ -2043,6 +2117,7 @@ function bindTopbar() {
   $("btnExport").addEventListener("click", () => pipelineAction("export"));
   $("btnSettings").addEventListener("click", () => openDrawer());
   $("btnSegment").addEventListener("click", () => pipelineAction("segment"));
+  $("btnShotDetail").addEventListener("click", () => openShotDetail());
   if (refs.btnTheme) refs.btnTheme.addEventListener("click", cycleTheme);
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (themeMode === "auto") applyTheme();

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -463,7 +464,7 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
             history = shot.setdefault("promptHistory", [])
             history.insert(0, {"at": schema.now_text(), "text": patch["prompt"], "source": "manual"})
             del history[10:]
-        if retimed or auto_reset or {"description", "text", "usedEntities"} & set(patch):
+        if retimed or auto_reset or {"description", "text", "usedEntities", "directive"} & set(patch):
             shot["prompt"], shot["negative"] = prompts.assemble_prompt(project, shot)
         if "text" in patch and not retimed:
             segments.mark_review(shot, image=True, reason="text")
@@ -471,6 +472,20 @@ def api_patch_shot(project_id: str, shot_id: str, payload: dict[str, Any] = Body
         store.save(project)
         return {"shot": store.public_view(project)["shots"][
             next(i for i, item in enumerate(shots) if item.get("id") == shot_id)]}
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/polish")
+def api_shot_polish(project_id: str, shot_id: str,
+                    payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """按用户指令让 LLM 重写本段画面描述，并重拼提示词。"""
+    directive = str(payload.get("directive") or "").strip()[:1000]
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        shot["directive"] = directive
+        result = prompts.polish(project, shot, directive)
+        store.save(project)
+        return {**_view(project), "polish": result}
 
 
 @app.post("/api/projects/{project_id}/shots/merge")
@@ -857,6 +872,59 @@ def api_main_history(limit: int = 30) -> dict[str, Any]:
             "images": imgs,
         })
     return {"reachable": True, "items": items}
+
+
+@app.get("/api/main/materials")
+def api_main_materials(q: str = "", limit: int = 60) -> dict[str, Any]:
+    """代理主项目素材仓库，供详情弹窗「从素材仓库选择」使用。"""
+    limit = max(1, min(int(limit), 120))
+    query = f"/api/materials?limit={limit}"
+    if str(q or "").strip():
+        query += "&q=" + urllib.parse.quote(str(q).strip())
+    try:
+        data = images.MainClient()._request("GET", query, timeout=20.0)
+    except StudioError as exc:
+        return {"reachable": False, "error": str(exc), "items": []}
+    items = []
+    for item in data.get("items") or []:
+        image = item.get("image") or {}
+        url = _main_url(str(image.get("url") or ""))
+        thumb = _main_url(str(image.get("thumbUrl") or url))
+        if not url:
+            continue
+        items.append({
+            "id": str(item.get("id") or ""),
+            "title": str(item.get("title") or ""),
+            "kind": str(item.get("kind") or ""),
+            "url": url,
+            "thumbUrl": thumb,
+        })
+    return {"reachable": True, "items": items}
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/image/from-material")
+def api_image_from_material(project_id: str, shot_id: str,
+                            payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """把素材仓库里的一张图取回，写成该段的新版本。"""
+    url = str(payload.get("url") or "")
+    if not url:
+        raise StudioError("缺少素材 url", code="bad_payload")
+    data = images.MainClient().download(url)
+    suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        suffix = ".png"
+    with _lock(project_id):
+        project = store.load(project_id)
+        shot = _shot_of(project, shot_id)
+        relpath = store.save_shot_image(project_id, shot_id, data, suffix)
+        shot["image"] = relpath
+        shot["status"] = "ready"
+        shot["seed"] = 0
+        shot["width"] = 0
+        shot["height"] = 0
+        images.record_image_version(project_id, shot, relpath, source="material")
+        store.save(project)
+        return _view(project)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/image/from-history")

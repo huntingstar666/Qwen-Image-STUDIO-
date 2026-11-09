@@ -169,6 +169,7 @@ SHOT_FIELDS: dict[str, dict[str, Any]] = {
     "endMs": {"type": "int", "min": 0, "max": 24 * 3600 * 1000},
     "text": {"type": "text", "max_len": 2000},
     "description": {"type": "text", "max_len": 2000},
+    "directive": {"type": "text", "max_len": 1000},
     "prompt": {"type": "text", "max_len": 4000},
     "negative": {"type": "text", "max_len": 2000},
     "textMode": {"type": "enum", "options": list(TEXT_MODES)},
@@ -364,6 +365,7 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
                 shot[key] = copy.deepcopy(value)
         shot.setdefault("textMode", "auto")
         shot.setdefault("beat", None)
+        shot.setdefault("directive", "")
         if not isinstance(shot.get("review"), dict):
             shot.pop("review", None)
         motion = shot.get("motion") or {}
@@ -418,6 +420,7 @@ def new_shot(index: int, start_ms: int, end_ms: int, text: str) -> dict[str, Any
         "endMs": int(end_ms),
         "text": text,
         "description": "",
+        "directive": "",
         "prompt": "",
         "negative": "",
         "usedEntities": [],

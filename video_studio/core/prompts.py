@@ -89,6 +89,7 @@ def assemble_prompt(project: dict[str, Any], shot: dict[str, Any]) -> tuple[str,
         parts.extend(entity_prompt(entities[item]) for item in used)
     parts.append(str(shot.get("description") or ""))
     parts.append(str(shot.get("note") or ""))
+    parts.append(str(shot.get("directive") or ""))
     if style_on:
         parts.append(str(style.get("suffix") or ""))
     prompt = _join(parts)
@@ -400,6 +401,81 @@ def generate(project: dict[str, Any], *, span: int = 1) -> dict[str, Any]:
     if source == "template" and not error:
         error = "已按模板拼装"
     return {"source": source, "model": model, "error": error, "warnings": warnings}
+
+
+POLISH_SYSTEM = """你是电影分镜师。用户会给你一个镜头段：台词、上下文、当前画面描述和用户指令。
+请按用户指令的意图，把「画面描述」重写成一句适合文生图的描述（40~120 字）：
+1. 只写画面内容：场景、人物动作与表情、环境细节、光线氛围；
+2. 不要写景别、机位、构图；不要复述台词；不要出现文字、字幕、logo；
+3. 保持角色/场景与上下文一致，用户指令优先级最高；
+4. 同时给出不超过 20 字的镜头语言 note；
+5. 只输出 JSON：{"description":"...","note":"..."}，不要解释。"""
+
+
+def polish(project: dict[str, Any], shot: dict[str, Any], directive: str = "") -> dict[str, Any]:
+    """按用户指令让 LLM 重写当前段的画面描述，并重拼最终提示词。"""
+    index = next((i for i, item in enumerate(project.get("shots") or [])
+                  if item.get("id") == shot.get("id")), -1)
+    llm_cfg = project.get("llm") or {}
+    cfg = _main_config()
+    profile, profile_id = _resolve_profile(cfg, str(llm_cfg.get("profileId") or ""))
+    model = str(llm_cfg.get("model") or profile.get("model") or config.DEFAULT_LLM_MODEL)
+    if not model:
+        raise StudioError("未配置提示词模型，无法润色画面描述", code="llm_unavailable")
+
+    style = (project.get("locks") or {}).get("style") or {}
+    content = (project.get("locks") or {}).get("content") or {}
+    lines = [
+        f"【台词】{shot.get('text') or '（无台词）'}",
+        f"【上下文】\n{_context_text(project.get('shots') or [], index)}" if index >= 0 else "",
+        f"【当前画面描述】{shot.get('description') or '（空）'}",
+        f"【用户指令】{directive or '（空）'}",
+        f"【全局风格】{style.get('prefix') or '（未设置）'}；{style.get('suffix') or ''}",
+    ]
+    entities = content.get("entities") or []
+    if entities:
+        lines.append("【已登记角色/场景】")
+        lines.extend(f"- {entity_prompt(item)}" for item in entities[:20])
+    try:
+        client = _build_client(profile)
+        raw = client.chat(
+            model,
+            [{"role": "system", "content": POLISH_SYSTEM},
+             {"role": "user", "content": "\n".join(item for item in lines if item)}],
+            temperature=float(llm_cfg.get("temperature") or 0.7),
+            num_predict=800,
+            format="json",
+            think=False,
+        )
+    except StudioError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 统一转成可读错误
+        raise StudioError(f"润色失败：{exc}", code="llm_error") from exc
+
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text[text.find("{"): text.rfind("}") + 1] if "{" in text else text)
+    except json.JSONDecodeError as exc:
+        raise StudioError("提示词模型返回的内容不是 JSON", code="llm_bad_output") from exc
+    description = str((data or {}).get("description") or "").strip()
+    if not description:
+        raise StudioError("提示词模型没有返回可用的画面描述", code="llm_bad_output")
+
+    shot["description"] = description[:2000]
+    shot["note"] = str((data or {}).get("note") or "")[:40]
+    shot["prompt"], shot["negative"] = assemble_prompt(project, shot)
+    from .segments import clear_review
+    clear_review(shot, ["prompt"])
+    return {
+        "description": shot["description"],
+        "note": shot["note"],
+        "prompt": shot["prompt"],
+        "model": model,
+        "profileId": profile_id,
+    }
 
 
 def _now() -> str:

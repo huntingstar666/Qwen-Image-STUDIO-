@@ -149,6 +149,7 @@
               <button class="seg" type="button" data-view="storyboard" role="tab" aria-selected="false">分镜表</button>
             </div>
             <span class="stage-hint" id="stageHint">点镜头块看画面，双击只播这一段</span>
+            <button class="btn ghost sd-open" id="btnShotDetail" type="button">编辑详情</button>
             <button class="icon-btn side-toggle" id="btnSide" data-tip="打开侧栏" aria-label="打开侧栏">
               <svg class="icon"><use href="#i-panel"></use></svg>
             </button>
@@ -191,12 +192,11 @@
 
         <aside class="side">
           <div class="side-tabs">
-            <button class="tab active" data-tab="shot">镜头</button>
-            <button class="tab" data-tab="pipeline">流程</button>
+            <button class="tab active" data-tab="pipeline">流程</button>
             <button class="tab" data-tab="history">历史</button>
           </div>
-          <div class="side-body" id="inspector"></div>
-          <div class="side-body" id="pipeline" hidden></div>
+          <div class="side-body" id="inspector" hidden></div>
+          <div class="side-body" id="pipeline"></div>
           <div class="side-body" id="historyPanel" hidden></div>
         </aside>
       </main>
@@ -241,6 +241,7 @@
         <div class="tl-context" id="tlContext" hidden>
           <span class="ctx-info" id="ctxInfo"></span>
           <span class="ctx-actions">
+            <button class="mini-btn" type="button" data-ctx="detail">编辑详情</button>
             <button class="mini-btn" type="button" data-ctx="split">在播放头拆分</button>
             <button class="mini-btn" type="button" data-ctx="mergePrev">与上段合并</button>
             <button class="mini-btn" type="button" data-ctx="mergeNext">与下段合并</button>
@@ -367,6 +368,27 @@
         <button class="btn" type="button" id="bgmPreview">试听</button>
         <button class="btn danger" type="button" id="bgmDelete">删除</button>
       </div>
+    </div>
+
+    <div class="sd-backdrop" id="sdBackdrop" hidden></div>
+    <div class="sd-dialog" id="sdDialog" hidden role="dialog" aria-modal="true">
+      <header class="sd-head">
+        <div class="sd-head-main">
+          <span class="sd-id" id="sdId">s1</span>
+          <span class="sd-time" id="sdTime"></span>
+          <span class="tag" id="sdStatus">待生成</span>
+        </div>
+        <div class="sd-nav">
+          <button class="icon-btn" type="button" id="sdPrev" title="上一个镜头" aria-label="上一个镜头">‹</button>
+          <button class="icon-btn" type="button" id="sdNext" title="下一个镜头" aria-label="下一个镜头">›</button>
+          <button class="icon-btn" type="button" id="sdClose" title="关闭" aria-label="关闭">×</button>
+        </div>
+      </header>
+      <div class="sd-body" id="sdBody"></div>
+      <footer class="sd-foot">
+        <span class="sd-hint">改动自动保存 · Esc 关闭</span>
+        <button class="btn primary" type="button" id="sdDone">完成</button>
+      </footer>
     </div>
 
     <div class="modal-backdrop" id="modalBackdrop" hidden></div>

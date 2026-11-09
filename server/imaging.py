@@ -974,6 +974,33 @@ def preprocess_plan(
     )
 
 
+def sample_size_for(
+    width: int,
+    height: int,
+    *,
+    max_side: int = 2048,
+    min_side: int = 1024,
+    multiple: int = 32,
+) -> tuple[int, int]:
+    """采样分辨率：长边夹到 ``[min_side, max_side]``，32 对齐；只缩不放。
+
+    孤海扩图工作流会把「原图 + 灰边」的整张画布先做一次
+    ``长边 = min(max(1024, 长边), 2048)`` 的缩放再送模型，出图后还原回画布尺寸。
+    直接在 4K 级画布上采样会让模型丢掉细节、外补区发虚而且接缝亮度跳变。
+    """
+    w = max(1, int(width))
+    h = max(1, int(height))
+    multiple = max(1, int(multiple))
+    long_side = max(w, h)
+    target = min(max(long_side, max(1, int(min_side))), max(1, int(max_side)))
+    if target >= long_side:
+        return w, h
+    scale = target / float(long_side)
+    out_w = max(multiple, int(round(w * scale / multiple)) * multiple)
+    out_h = max(multiple, int(round(h * scale / multiple)) * multiple)
+    return out_w, out_h
+
+
 def apply_preprocess(im: Image.Image, plan: PreprocessPlan, *, method: str = "lanczos") -> Image.Image:
     """按 :class:`PreprocessPlan` 缩放并补边，返回 ``canvas_w x canvas_h`` 的工作图。
 

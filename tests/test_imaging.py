@@ -892,6 +892,22 @@ def test_outpaint_canvas_rejects_non_finite_percent():
             lambda: imaging.outpaint_canvas(src, left=float("nan")))
 
 
+def test_sample_size_for_clamps_long_side_and_snaps():
+    """孤海扩图档位：整张外补画布按长边 1024~2048 缩放、32 对齐，只缩不放。"""
+    # 3904×1856（左/右各 104% 的实例）→ 长边收到 2048，32 对齐
+    width, height = imaging.sample_size_for(3904, 1856)
+    assert (width, height) == (2048, 960)
+    assert width % 32 == 0 and height % 32 == 0
+    assert abs(width / height - 3904 / 1856) < 0.05
+    # 本来就小于上限：原样返回，不做重采样
+    assert imaging.sample_size_for(1600, 900) == (1600, 900)
+    # 小图不放大（只缩不放）
+    assert imaging.sample_size_for(800, 600) == (800, 600)
+    # 可收紧上限
+    width, height = imaging.sample_size_for(3904, 1856, max_side=1024)
+    assert max(width, height) == 1024
+
+
 # ---------------------------------------------------------------------------
 # compare / 端到端
 # ---------------------------------------------------------------------------

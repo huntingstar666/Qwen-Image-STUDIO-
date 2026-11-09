@@ -1277,6 +1277,31 @@ class Pipeline:
         # 否则 4K/8K 参考图会按原分辨率做 VAE 编码，耗时和显存都随原图尺寸暴涨。
         ref_images = _cap_reference_images(ref_images, max(max(work_image.size), 1024))
 
+        # 扩图 / 全景：先按孤海工作流的「图像缩放（范围）」把整张画布（原图 + 灰边）
+        # 缩到长边 1024~2048 再采样，出图后还原回画布尺寸。
+        # 直接在 4K 级画布上采样，模型会丢细节、外补区发虚、接缝亮度跳变。
+        sample_res = {
+            "from": [work_image.width, work_image.height],
+            "to": [work_image.width, work_image.height],
+            "applied": False,
+        }
+        if task_mode in ("outpaint", "panorama"):
+            try:
+                sample_limit = int(local.get("sample_max_side") or 2048)
+            except (TypeError, ValueError):
+                sample_limit = 2048
+            sample_w, sample_h = imaging.sample_size_for(
+                work_image.width, work_image.height,
+                max_side=sample_limit,
+                min_side=int(local.get("sample_min_side") or 1024),
+                multiple=int(profile.get("snap") or 32),
+            )
+            if (sample_w, sample_h) != work_image.size:
+                work_image = work_image.resize((sample_w, sample_h), Image.LANCZOS)
+                ref_images[0] = work_image
+                sample_res.update(to=[sample_w, sample_h], applied=True)
+        job.align["sample_res"] = sample_res
+
         # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
         encode_negative = not (
             abs(float(sampling["cfg"]) - 1.0) < 1e-6
@@ -1356,6 +1381,12 @@ class Pipeline:
         sample_mask = None
         if mask_canvas is not None:
             sample_mask = (mask_canvas > 0.5).astype(mask_canvas.dtype)
+            if sample_res.get("applied") and sample_mask.shape[1::-1] != tuple(work_image.size):
+                # 扩图把画布缩小采样时，噪声遮罩要同步缩到采样尺寸（最近邻保持硬边）。
+                mask_image = Image.fromarray(
+                    (sample_mask * 255).astype(np.uint8), mode="L")
+                mask_image = mask_image.resize(work_image.size, Image.NEAREST)
+                sample_mask = (np.asarray(mask_image) > 127).astype(np.float32)
         noise_mask = sample_mask if scheme == "a" else None
 
         job.check_cancel()
@@ -1390,6 +1421,12 @@ class Pipeline:
         edited_list = self._decode(engine, samples)
         timings["decode"] = round(time.time() - t_start, 2)
         edited = edited_list[0]
+        if sample_res.get("applied"):
+            # 还原：采样尺寸 → 画布尺寸（唯一一次重采样），随后仍按整画布遮罩合成，
+            # 源图区在合成阶段逐字节保留。
+            target_size = tuple(sample_res["from"])
+            if edited.size != target_size:
+                edited = edited.resize(target_size, Image.LANCZOS)
 
         feather = int(local.get("feather") if local.get("feather") is not None else 32)
         color_match = _truthy(local.get("color_match", True))
@@ -1505,6 +1542,16 @@ class Pipeline:
                     "top": pano_plan.top, "bottom": pano_plan.bottom,
                 },
             )
+        elif task_mode == "outpaint" and op_info is not None:
+            # 扩图同样需要交界渐变：模型在灰边一侧画出的亮带/阶跃，
+            # 合成后会沿着源图边界显出一个「方框」。只改扩展区，源图像素不动。
+            final, seam_report = imaging.seam_level(
+                final,
+                {
+                    "left": op_info.left, "right": op_info.right,
+                    "top": op_info.top, "bottom": op_info.bottom,
+                },
+            )
         # 360° 环绕接缝：仅全景可开，属于实验能力（官方未承诺等距柱状投影）。
         if task_mode == "panorama" and pano_wrap and pano_seam_blend > 0:
             final, wrap_report = imaging.wrap_seam_blend(
@@ -1541,6 +1588,8 @@ class Pipeline:
             "canvas": {"w": plan.width, "h": plan.height},
             # 送进采样器的画布（方案 B 是裁块）与本次是否用到了遮罩
             "sample_canvas": {"w": work_image.width, "h": work_image.height},
+            # 扩图/全景的采样缩放记录：from=画布尺寸，to=实际采样尺寸
+            "sample_res": dict(sample_res),
             "mask_used": mask_canvas is not None,
             "source": {"w": src.width, "h": src.height},
             "output": {"w": final.width, "h": final.height},
@@ -1556,6 +1605,8 @@ class Pipeline:
             "warnings": warnings,
             "outpaint": (dataclasses.asdict(op_info)
                          if op_info is not None and task_mode != "panorama" else None),
+            # 扩图/全景的交界渐变报告：before_* 是原阶跃，after_* 是摊平后的残差
+            "seam": seam_report,
             "panorama": ({
                 "aspect": pano_aspect,
                 "long_side": pano_long_side,

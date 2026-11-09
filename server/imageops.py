@@ -189,6 +189,28 @@ def _target_size(image: Image.Image, spec: dict[str, Any]) -> tuple[int, int]:
     raise ImageOpsError(f"未知的 resize 模式：{mode}（支持 exact/percent/long_edge/short_edge/megapixels）")
 
 
+def _apply_sharpen(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
+    """缩放后的锐化（UnsharpMask），``sharpen_after`` 0 表示不处理。"""
+    sharpen = float(spec.get("sharpen_after") or 0)
+    if sharpen <= 0:
+        return image
+    return image.filter(
+        ImageFilter.UnsharpMask(
+            radius=1.0, percent=int(_clamp(sharpen, 1, 200)), threshold=2
+        )
+    )
+
+
+def _apply_snap(size: tuple[int, int], spec: dict[str, Any]) -> tuple[int, int]:
+    """把目标尺寸对齐到 ``snap`` 的倍数（与前端预览一致）。"""
+    snap = _as_int(spec.get("snap", 0), "snap")
+    if snap <= 1:
+        return size
+    width = max(snap, int(round(size[0] / snap)) * snap)
+    height = max(snap, int(round(size[1] / snap)) * snap)
+    return width, height
+
+
 def op_resize(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
     """两种用法：
 
@@ -200,10 +222,7 @@ def op_resize(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
         return _resize_fit(image, spec)
 
     width, height = _target_size(image, spec)
-    snap = _as_int(spec.get("snap", 0), "snap")
-    if snap > 1:
-        width = max(snap, int(round(width / snap)) * snap)
-        height = max(snap, int(round(height / snap)) * snap)
+    width, height = _apply_snap((width, height), spec)
     if width > MAX_SIDE or height > MAX_SIDE:
         raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）", code="image_too_large")
 
@@ -212,38 +231,40 @@ def op_resize(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
         out = image.resize((width, height), resample=method, reducing_gap=3)
     else:
         out = image.resize((width, height), resample=method)
-
-    sharpen = float(spec.get("sharpen_after") or 0)
-    if sharpen > 0:
-        out = out.filter(ImageFilter.UnsharpMask(
-            radius=1.0, percent=int(_clamp(sharpen, 1, 200)), threshold=2))
-    return out
+    return _apply_sharpen(out, spec)
 
 
 def _resize_fit(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
-    """旧接口：fit = contain(补边) / cover(裁切) / stretch(拉伸)。"""
+    """旧接口：fit = contain(补边) / cover(裁切) / stretch(拉伸)。
+
+    ``filter`` / ``sharpen_after`` 与新模式保持一致，避免用户在精确宽高下
+    选了算法却仍然固定走 LANCZOS。
+    """
     width = _as_int(spec.get("width"), "width", minimum=1)
     height = _as_int(spec.get("height"), "height", minimum=1)
+    width, height = _apply_snap((width, height), spec)
     if width > MAX_SIDE or height > MAX_SIDE:
         raise ImageOpsError(f"目标尺寸过大（上限 {MAX_SIDE}）", code="image_too_large")
     fit = str(spec.get("fit") or "contain")
+    method = _resample(spec.get("filter"))
     if fit == "stretch":
-        return image.resize((width, height), Image.LANCZOS)
+        return _apply_sharpen(image.resize((width, height), method), spec)
     if fit == "cover":
         scale = max(width / image.width, height / image.height)
         size = (max(width, int(round(image.width * scale))), max(height, int(round(image.height * scale))))
-        resized = image.resize(size, Image.LANCZOS)
+        resized = image.resize(size, method)
         left = (size[0] - width) // 2
         top = (size[1] - height) // 2
-        return resized.crop((left, top, left + width, top + height))
+        out = resized.crop((left, top, left + width, top + height))
+        return _apply_sharpen(out, spec)
     # contain：等比缩到能放下，然后居中补边（透明或白）
     scale = min(width / image.width, height / image.height)
     size = (max(1, int(round(image.width * scale))), max(1, int(round(image.height * scale))))
-    resized = image.resize(size, Image.LANCZOS)
+    resized = image.resize(size, method)
     background = (255, 255, 255, 0) if image.mode == "RGBA" else (255, 255, 255)
     canvas = Image.new(image.mode, (width, height), background)
     canvas.paste(resized, ((width - size[0]) // 2, (height - size[1]) // 2))
-    return canvas
+    return _apply_sharpen(canvas, spec)
 
 
 def op_adjust(image: Image.Image, spec: dict[str, Any]) -> Image.Image:

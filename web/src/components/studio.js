@@ -1888,24 +1888,24 @@ export function createStudioPage(host) {
    * 画面全空时兜底导出图层原始位图；仍然为空则返回 null，由调用方提示。
    */
   async function bakeLayerToPng(layer) {
-    const drawOnce = async () => {
-      const canvas = makeCanvas(doc.size.width, doc.size.height);
-      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
-      if (!canvasHasPixels(canvas)) return null;
-      return canvasToBlob(canvas, 'image/png');
-    };
+    const canvas = makeCanvas(doc.size.width, doc.size.height);
+    // 只在同步绘制期间临时改状态，避免自动保存把「临时可见」写进工程。
     const prevVisible = layer.visible;
     const prevOpacity = layer.opacity;
-    layer.visible = true;
-    if (!(layer.opacity > 0)) layer.opacity = 1;
     try {
-      const blob = await drawOnce();
-      if (blob) return { blob, raw: false };
-    } catch {
-      /* 落到位图兜底 */
+      layer.visible = true;
+      if (!(layer.opacity > 0)) layer.opacity = 1;
+      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
     } finally {
       layer.visible = prevVisible;
       layer.opacity = prevOpacity;
+    }
+    if (canvasHasPixels(canvas)) {
+      try {
+        return { blob: await canvasToBlob(canvas, 'image/png'), raw: false };
+      } catch {
+        /* 编码失败时落到原始位图兜底 */
+      }
     }
     const raw = await layerBlobFor(layer).catch(() => null);
     return raw ? { blob: raw, raw: true } : { blob: null, raw: false };

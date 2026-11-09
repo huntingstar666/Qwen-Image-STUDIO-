@@ -13,6 +13,8 @@ const refs = {
   stage: $("stage"),
   stageArea: document.querySelector(".stage-area"),
   image: $("stageImage"),
+  imageB: $("stageImageB"),
+  stageBlack: $("stageBlack"),
   subtitle: $("stageSubtitle"),
   empty: $("stageEmpty"),
   timecode: $("timecode"),
@@ -52,7 +54,6 @@ let storyboard = null;
 let historyGallery = null;
 let viewSwitch = null;
 let drawerDraft = null;
-let lastStageKey = "";
 let rafId = 0;
 /** 双击镜头块后的试听区间（ms），播到段尾自动停。 */
 let playRange = null;
@@ -60,6 +61,9 @@ let playRange = null;
 let splitLoop = null;
 /** 拆分弹窗状态：{shotId, atMs, snap} */
 let splitState = null;
+/** 拖拽播放头时暂停音频跟随，松手后恢复。 */
+let scrubbing = false;
+let scrubResume = false;
 
 // --------------------------------------------------------------------------- 工具
 
@@ -210,6 +214,11 @@ async function boot() {
       onPlayRange: (shot) => playShot(shot),
       onCueText: (index, text) => editCue(index, text),
       onMerge: (ids) => mergeShotsByIds(ids),
+      onScrubStart: () => beginScrub(),
+      onScrubEnd: () => endScrub(),
+      onShotMenu: (shotId, x, y) => openShotMenu(shotId, x, y),
+      onDropImage: (shotId, file) => uploadShotImage(shotId, file),
+      onBgmOpen: (node) => openBgmPanel(node),
     },
   );
 
@@ -223,6 +232,8 @@ async function boot() {
   bindSplitDialog();
   bindContextBar();
   bindModal();
+  bindShotMenu();
+  bindBgm();
 
   storyboard = new Storyboard(
     {
@@ -321,6 +332,15 @@ async function boot() {
     if (event.code === "Space") {
       event.preventDefault();
       togglePlay();
+      return;
+    }
+    if (!event.ctrlKey && !event.metaKey && !event.altKey
+        && event.key.toLowerCase() === "s") {
+      const shot = selectedShot();
+      if (shot) {
+        event.preventDefault();
+        openSplitDialog(shot.id, currentMs());
+      }
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -588,19 +608,7 @@ function renderStage() {
   }
   renderEmptyCopy(project);
   const ms = currentMs();
-  const shot = shotAt(ms) || (project.shots || []).find((item) => item.id === state.selectedId);
-  const url = (shot && shot.imageUrl) || "";
-  const key = `${shot ? shot.id : ""}|${url}`;
-  if (key !== lastStageKey) {
-    lastStageKey = key;
-    if (url) {
-      refs.image.src = url;
-      refs.stage.classList.add("has-image");
-    } else {
-      refs.image.removeAttribute("src");
-      refs.stage.classList.remove("has-image");
-    }
-  }
+  renderPreview(project, ms);
 
   const spec = (project.render || {}).subtitle || {};
   const cue = (project.subtitle && project.subtitle.cues || []).find(
@@ -612,6 +620,115 @@ function renderStage() {
 
   if (project.shots && project.shots.length) refs.empty.hidden = true;
   else refs.empty.hidden = false;
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+/** 与后端 render._motion_state 同一套运镜公式，返回 CSS transform。 */
+function motionTransform(motion, progress) {
+  const kind = String((motion || {}).type || "none");
+  const zoomTo = Math.min(1.3, Math.max(1.001, Number((motion || {}).zoom) || 1.06));
+  if (kind === "none") return { zoom: 1, transform: "none" };
+  const p = clamp01(progress);
+  let zoom = 1;
+  let x = null;
+  let y = null;
+  if (kind === "push") {
+    zoom = 1 + (zoomTo - 1) * p;
+  } else if (kind === "pull") {
+    zoom = zoomTo - (zoomTo - 1) * p;
+  } else if (kind === "diag") {
+    zoom = 1 + (zoomTo - 1) * p;
+    x = (1 - 1 / zoom) * (1 - p);
+    y = (1 - 1 / zoom) * p;
+  } else {
+    zoom = zoomTo;
+  }
+  if (kind === "left") x = (1 - 1 / zoom) * (1 - p);
+  if (kind === "right") x = (1 - 1 / zoom) * p;
+  if (kind === "up") y = (1 - 1 / zoom) * (1 - p);
+  if (kind === "down") y = (1 - 1 / zoom) * p;
+  if (x === null) x = (1 - 1 / zoom) / 2;
+  if (y === null) y = (1 - 1 / zoom) / 2;
+  const tx = (0.5 - x - 1 / (2 * zoom)) * 100;
+  const ty = (0.5 - y - 1 / (2 * zoom)) * 100;
+  return { zoom, transform: `scale(${zoom.toFixed(4)}) translate(${tx.toFixed(3)}%, ${ty.toFixed(3)}%)` };
+}
+
+function paintLayer(img, shot, progress, opacity) {
+  const url = (shot && shot.imageUrl) || "";
+  if (!url) {
+    img.style.opacity = "0";
+    return false;
+  }
+  if (img.dataset.url !== url) {
+    img.dataset.url = url;
+    img.src = url;
+  }
+  img.style.opacity = String(opacity);
+  img.style.transform = motionTransform(shot.motion, progress).transform;
+  return opacity > 0.01;
+}
+
+/**
+ * 预览：找到当前时间所在的镜头与转场窗口。
+ * 转场以切点为中心（与导出端一致）：fade 交叉淡化，fadeblack 先压黑再抬起。
+ */
+function renderPreview(project, ms) {
+  const shots = project.shots || [];
+  if (!shots.length) {
+    refs.stage.classList.remove("has-image");
+    refs.image.style.opacity = "0";
+    refs.imageB.style.opacity = "0";
+    refs.stageBlack.style.opacity = "0";
+    return;
+  }
+
+  let index = shots.findIndex((shot) => ms >= shot.startMs && ms < shot.endMs);
+  if (index < 0) index = ms < shots[0].startMs ? 0 : shots.length - 1;
+
+  let scene = { a: shots[index], b: null, alpha: 0, type: "cut" };
+  for (let i = 1; i < shots.length; i += 1) {
+    const transition = shots[i].transition || {};
+    const type = String(transition.type || "cut");
+    const duration = Number(transition.durationMs || 0);
+    if (type === "cut" || duration <= 0) continue;
+    const boundary = shots[i].startMs;
+    if (ms < boundary - duration / 2 || ms > boundary + duration / 2) continue;
+    scene = {
+      a: shots[i - 1],
+      b: shots[i],
+      alpha: clamp01((ms - (boundary - duration / 2)) / duration),
+      type,
+    };
+    break;
+  }
+
+  const progress = (shot) => clamp01((ms - shot.startMs) / Math.max(1, shot.endMs - shot.startMs));
+  let visible = false;
+  if (!scene.b || scene.type === "cut") {
+    visible = paintLayer(refs.image, scene.a, progress(scene.a), 1) || visible;
+    refs.imageB.style.opacity = "0";
+    refs.stageBlack.style.opacity = "0";
+  } else if (scene.type === "fadeblack") {
+    if (scene.alpha < 0.5) {
+      visible = paintLayer(refs.image, scene.a, progress(scene.a), 1) || visible;
+      refs.imageB.style.opacity = "0";
+      refs.stageBlack.style.opacity = String(scene.alpha * 2);
+    } else {
+      refs.image.style.opacity = "0";
+      visible = paintLayer(refs.imageB, scene.b, progress(scene.b), 1) || visible;
+      refs.stageBlack.style.opacity = String((1 - scene.alpha) * 2);
+    }
+  } else {
+    visible = paintLayer(refs.image, scene.a, progress(scene.a), 1) || visible;
+    const second = paintLayer(refs.imageB, scene.b, progress(scene.b), scene.alpha);
+    refs.stageBlack.style.opacity = "0";
+    visible = visible || second;
+  }
+  refs.stage.classList.toggle("has-image", visible);
 }
 
 /** 空状态按「缺什么」给出下一步和对应格式，避免用户不知道传什么。 */
@@ -713,6 +830,27 @@ function seek(ms) {
   selectFollow(value);
 }
 
+/** 开始拖动：暂停音频与播放头跟随，避免 rAF 把线拉回音频时间。 */
+function beginScrub() {
+  if (scrubbing) return;
+  scrubbing = true;
+  scrubResume = !audioEl.paused;
+  if (scrubResume) audioEl.pause();
+}
+
+/** 松开拖动：停在新位置；之前正在播放就继续播。 */
+function endScrub() {
+  if (!scrubbing) return;
+  scrubbing = false;
+  const resume = scrubResume;
+  scrubResume = false;
+  if (resume) {
+    audioEl.play().then(() => {
+      if (!rafId) rafId = requestAnimationFrame(loop);
+    }).catch(() => {});
+  }
+}
+
 /** 双击镜头块：只播这一段，段尾自动停。再双击一次重播。 */
 function playShot(shot) {
   if (!shot || !audioEl.src) {
@@ -733,6 +871,9 @@ function bindTransport() {
     playRange = null;
     seek((Number(refs.seek.value) / 1000) * duration());
   });
+  refs.seek.addEventListener("pointerdown", () => beginScrub());
+  refs.seek.addEventListener("pointerup", () => endScrub());
+  refs.seek.addEventListener("pointercancel", () => endScrub());
   audioEl.addEventListener("play", () => {
     refs.play.classList.add("is-playing");
     if (!rafId) rafId = requestAnimationFrame(loop);
@@ -1075,6 +1216,268 @@ async function clearShotReview(fields) {
   } catch (err) {
     toast(err.message, "bad");
   }
+}
+
+// --------------------------------------------------------------------------- 镜头段菜单 / 就地换图
+
+let menuShotId = "";
+
+function closeShotMenu() {
+  const menu = $("shotMenu");
+  if (menu) menu.hidden = true;
+  menuShotId = "";
+}
+
+function openShotMenu(shotId, x, y) {
+  const project = getState().project;
+  if (!project) return;
+  const shots = project.shots || [];
+  const shot = shots.find((item) => item.id === shotId);
+  if (!shot) return;
+  closeShotMenu();
+  const index = shots.findIndex((item) => item.id === shotId);
+  const frame = 1000 / Number((project.canvas || {}).fps || 30);
+  const playhead = currentMs();
+  const playheadInside = playhead > shot.startMs + frame && playhead < shot.endMs - frame;
+  const review = shot.review || {};
+  const versionCount = (shot.imageHistory || []).length;
+
+  const rows = [
+    ["split", playheadInside ? "在播放头拆分" : "在播放头拆分（播放头不在段内）", !playheadInside],
+    ["mergePrev", "与上段合并", index <= 0],
+    ["mergeNext", "与下段合并", index >= shots.length - 1],
+    ["sep"],
+    ["upload", "替换图片…", false],
+    ["regen", "重新生成画面", shot.status === "generating"],
+    ["versions", `图片版本（${versionCount}）`, versionCount === 0],
+    ["clear", "清空画面", !shot.image],
+  ];
+  if (review.prompt || review.image) rows.push(["sep"], ["review", "标记已处理", false]);
+
+  const menu = $("shotMenu");
+  menu.innerHTML = rows.map(([key, label, disabled]) => (key === "sep"
+    ? '<div class="sep"></div>'
+    : `<button type="button" data-menu-action="${key}" ${disabled ? "disabled" : ""}>${escapeHtml(label)}</button>`))
+    .join("");
+  menu.hidden = false;
+  const box = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - box.width - 8, x))}px`;
+  menu.style.top = `${Math.max(8, Math.min(window.innerHeight - box.height - 8, y))}px`;
+  menuShotId = shotId;
+}
+
+function bindShotMenu() {
+  $("shotMenu").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-menu-action]");
+    if (!button) return;
+    const action = button.dataset.menuAction;
+    const shotId = menuShotId;
+    closeShotMenu();
+    if (!shotId) return;
+    if (action === "split") return openSplitDialog(shotId, currentMs());
+    if (action === "mergePrev" || action === "mergeNext") {
+      selectShot(shotId);
+      return mergeWithNeighbor(action === "mergePrev" ? "prev" : "next");
+    }
+    if (action === "upload") {
+      selectShot(shotId);
+      $("fileShotImage").click();
+      return;
+    }
+    if (action === "regen") return regenerateShot(shotId);
+    if (action === "clear") {
+      selectShot(shotId);
+      return clearShotImage();
+    }
+    if (action === "review") {
+      selectShot(shotId);
+      return clearShotReview(["prompt", "image"]);
+    }
+    if (action === "versions") {
+      selectShot(shotId);
+      setSideTab("shot");
+      requestAnimationFrame(() => {
+        const block = refs.inspector.querySelector(".ver-block");
+        if (block) block.open = true;
+      });
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!$("shotMenu").hidden && !event.target.closest("#shotMenu")) closeShotMenu();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("shotMenu").hidden) closeShotMenu();
+  });
+  window.addEventListener("resize", closeShotMenu);
+  const scroller = $("tlScroll");
+  if (scroller) scroller.addEventListener("scroll", closeShotMenu);
+}
+
+/** 直接把图片拖到镜头块上：只接受 png / jpg / webp。 */
+async function uploadShotImage(shotId, file) {
+  const project = getState().project;
+  if (!project || !file) return;
+  if (!/^image\//.test(file.type) && !/\.(png|jpe?g|webp)$/i.test(file.name || "")) {
+    toast("只支持 png / jpg / webp 图片", "bad");
+    return;
+  }
+  pushUndo();
+  try {
+    const updated = await api.upload(
+      `/api/projects/${project.id}/shots/${shotId}/image`, file);
+    setState({ project: updated, selectedId: shotId });
+    renderAll();
+    toast(`已替换 ${shotId} 的画面`, "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+// --------------------------------------------------------------------------- 背景音乐
+
+function syncBgmPanel() {
+  const project = getState().project;
+  if (!project) return;
+  const bgm = (project.render || {}).bgm || {};
+  $("bgmFile").textContent = bgm.file
+    ? String(bgm.file).split("/").pop()
+    : "还没有背景音乐";
+  $("bgmVolume").value = String(Number(bgm.volumeDb ?? -18));
+  $("bgmVolumeLabel").textContent = `${Number(bgm.volumeDb ?? -18)} dB`;
+  $("bgmLoop").checked = Boolean(bgm.loop);
+  $("bgmDuck").checked = Boolean(bgm.duck);
+  $("bgmPreview").disabled = !bgm.url;
+  $("bgmDelete").disabled = !bgm.url;
+  const preview = $("bgmAudio");
+  if (bgm.url && preview.dataset.url !== bgm.url) {
+    preview.dataset.url = bgm.url;
+    preview.src = bgm.url;
+  }
+  preview.loop = Boolean(bgm.loop);
+  preview.volume = Math.pow(10, Number(bgm.volumeDb ?? -18) / 20);
+}
+
+function openBgmPanel(anchor) {
+  const project = getState().project;
+  if (!project) return;
+  const bgm = (project.render || {}).bgm || {};
+  // 空轨道：点击直接选文件，少一次点击
+  if (!bgm.url) {
+    $("fileBgm").click();
+    return;
+  }
+  syncBgmPanel();
+  const panel = $("bgmPopover");
+  panel.hidden = false;
+  const box = panel.getBoundingClientRect();
+  const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+  const left = rect ? rect.left : 24;
+  const top = rect ? rect.top - box.height - 10 : 120;
+  panel.style.left = `${Math.max(8, Math.min(window.innerWidth - box.width - 8, left))}px`;
+  panel.style.top = `${Math.max(8, Math.min(window.innerHeight - box.height - 8, top))}px`;
+}
+
+function closeBgmPanel() {
+  $("bgmPopover").hidden = true;
+  const preview = $("bgmAudio");
+  preview.pause();
+}
+
+async function patchBgm(patch) {
+  const project = getState().project;
+  if (!project) return;
+  try {
+    const updated = await api.patch(
+      `/api/projects/${project.id}`, { render: { bgm: patch } });
+    setState({ project: updated });
+    renderAll();
+    syncBgmPanel();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+function bindBgm() {
+  $("bgmClose").addEventListener("click", closeBgmPanel);
+  $("bgmUpload").addEventListener("click", () => $("fileBgm").click());
+  $("bgmDelete").addEventListener("click", async () => {
+    const project = getState().project;
+    if (!project) return;
+    const confirmed = await askConfirm({
+      title: "删除背景音乐",
+      text: "删除后成片将没有背景音乐，确定继续？",
+      okText: "删除",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      const updated = await api.del(`/api/projects/${project.id}/bgm`);
+      setState({ project: updated });
+      renderAll();
+      syncBgmPanel();
+      toast("背景音乐已删除", "ok");
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+  });
+  $("bgmVolume").addEventListener("input", () => {
+    $("bgmVolumeLabel").textContent = `${Number($("bgmVolume").value)} dB`;
+    clearTimeout(bgmVolumeTimer);
+    bgmVolumeTimer = setTimeout(() => patchBgm({ volumeDb: Number($("bgmVolume").value) }), 220);
+  });
+  $("bgmLoop").addEventListener("change", () => patchBgm({ loop: $("bgmLoop").checked }));
+  $("bgmDuck").addEventListener("change", () => patchBgm({ duck: $("bgmDuck").checked }));
+  $("bgmPreview").addEventListener("click", () => {
+    const project = getState().project;
+    const bgm = (project && project.render && project.render.bgm) || {};
+    if (!bgm.url) return;
+    const preview = $("bgmAudio");
+    if (preview.paused) {
+      preview.currentTime = Math.min(currentMs() / 1000, Math.max(0, (preview.duration || 0) - 0.1));
+      preview.play().catch((err) => toast(err.message, "bad"));
+      $("bgmPreview").textContent = "停止试听";
+    } else {
+      preview.pause();
+      $("bgmPreview").textContent = "试听";
+    }
+  });
+  $("bgmAudio").addEventListener("pause", () => {
+    $("bgmPreview").textContent = "试听";
+  });
+  $("bgmAudio").addEventListener("ended", () => {
+    $("bgmPreview").textContent = "试听";
+  });
+  // 主音频一播放就停掉 BGM 试听，避免两路声音叠在一起
+  audioEl.addEventListener("play", () => $("bgmAudio").pause());
+  document.addEventListener("pointerdown", (event) => {
+    const panel = $("bgmPopover");
+    if (panel.hidden) return;
+    if (panel.contains(event.target)) return;
+    // 点 BGM 轨道时交给 onBgmOpen 重新定位，不要先关掉
+    if (event.target.closest("[data-bgm]")) return;
+    closeBgmPanel();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("bgmPopover").hidden) closeBgmPanel();
+  });
+}
+
+let bgmVolumeTimer = 0;
+
+/** 侧栏 tab 切换（右键菜单「图片版本」用）。 */
+function setSideTab(name) {
+  if (window.innerWidth <= 1080) {
+    const app = document.querySelector(".app");
+    app.classList.add("side-open");
+    if (refs.sideBackdrop) refs.sideBackdrop.hidden = false;
+  }
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === name);
+  });
+  const panels = { shot: refs.inspector, pipeline: refs.pipeline, history: refs.historyPanel };
+  Object.entries(panels).forEach(([key, node]) => {
+    if (node) node.hidden = key !== name;
+  });
 }
 
 // --------------------------------------------------------------------------- 拆分弹窗
@@ -1701,9 +2104,14 @@ async function uploadFile(event, kind) {
       toast("图片已替换", "ok");
       return;
     }
-    toast(kind === "audio" ? "正在解析音频…" : "正在解析字幕…");
+    toast(kind === "audio" ? "正在解析音频…"
+      : kind === "subtitle" ? "正在解析字幕…" : "正在上传背景音乐…");
     await api.upload(path, file);
     await loadProject(project.id, { keepTime: kind !== "audio" });
+    if (kind === "bgm") {
+      syncBgmPanel();
+      openBgmPanel($("tlBgm"));
+    }
     toast(kind === "audio" ? "音频已就绪" : kind === "subtitle" ? "字幕已解析" : "背景音乐已就绪", "ok");
   } catch (err) {
     toast(err.message, "bad");

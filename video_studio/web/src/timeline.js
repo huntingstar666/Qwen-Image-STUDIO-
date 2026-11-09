@@ -187,19 +187,26 @@ export class Timeline {
       block.appendChild(badges);
 
       const transition = shot.transition || {};
-      if (transition.type && transition.type !== "cut") {
-        const chip = document.createElement("span");
-        chip.className = "transition";
-        chip.textContent = transition.type === "fadeblack" ? "黑场" : "淡入";
-        block.appendChild(chip);
-      }
       const motionType = (shot.motion || {}).type || "none";
-      if (MOTION_SHORT[motionType]) {
+      const fx = [];
+      if (transition.type && transition.type !== "cut") {
+        fx.push(transition.type === "fadeblack" ? "黑场" : "淡入");
+      }
+      if (MOTION_SHORT[motionType]) fx.push(MOTION_SHORT[motionType]);
+      if (fx.length) {
         const chip = document.createElement("span");
-        chip.className = "motion";
-        chip.textContent = MOTION_SHORT[motionType];
+        chip.className = "fx";
+        chip.textContent = fx.join(" · ");
         block.appendChild(chip);
       }
+
+      const menuBtn = document.createElement("button");
+      menuBtn.type = "button";
+      menuBtn.className = "block-menu";
+      menuBtn.dataset.menu = "1";
+      menuBtn.textContent = "⋯";
+      menuBtn.title = "段操作：拆分 / 合并 / 换图 / 重新生成";
+      block.appendChild(menuBtn);
 
       const label = document.createElement("span");
       label.className = "label";
@@ -262,12 +269,23 @@ export class Timeline {
     const host = this.refs.bgm;
     host.innerHTML = "";
     const bgm = (this.project.render && this.project.render.bgm) || {};
-    if (!bgm.url) return;
+    if (!bgm.url) {
+      const empty = document.createElement("button");
+      empty.type = "button";
+      empty.className = "bgm-empty";
+      empty.dataset.bgm = "open";
+      empty.textContent = "点击上传背景音乐（mp3 / wav / m4a / flac…）";
+      host.appendChild(empty);
+      return;
+    }
     const node = document.createElement("div");
     node.className = "bgm-block";
+    node.dataset.bgm = "open";
+    node.title = "点击调整背景音乐：音量 / 循环 / 闪避";
     node.style.left = "0px";
     node.style.width = `${Math.max(60, (duration / 1000) * this.pxPerSec - 2)}px`;
-    node.textContent = `BGM · ${bgm.volumeDb ?? -18} dB${bgm.loop ? " · 循环" : ""}${bgm.duck ? " · 闪避" : ""}`;
+    const name = String(bgm.file || "").split("/").pop() || "背景音乐";
+    node.textContent = `${name} · ${bgm.volumeDb ?? -18} dB${bgm.loop ? " · 循环" : ""}${bgm.duck ? " · 闪避" : ""}`;
     host.appendChild(node);
   }
 
@@ -288,6 +306,9 @@ export class Timeline {
       if (event.target.closest(".sub-block")) return;
       // 段间「合并」胶囊自己处理点击
       if (event.target.closest(".merge-gap")) return;
+      // 段操作按钮 / BGM 轨道自己处理点击
+      if (event.target.closest(".block-menu")) return;
+      if (event.target.closest("[data-bgm]")) return;
       const handle = event.target.closest(".shot-block .handle");
       if (handle) {
         event.preventDefault();
@@ -315,7 +336,7 @@ export class Timeline {
       if (shot) this.handlers.onPlayRange(shot);
     });
 
-    // 字幕块单击 = 就地改文案；段间胶囊 = 合并相邻两段
+    // 字幕块单击 = 就地改文案；段间胶囊 = 合并；⋯ / BGM = 各自面板
     scroll.addEventListener("click", (event) => {
       const gap = event.target.closest(".merge-gap");
       if (gap) {
@@ -325,9 +346,51 @@ export class Timeline {
         if (ids.length === 2 && this.handlers.onMerge) this.handlers.onMerge(ids);
         return;
       }
+      const menuBtn = event.target.closest(".block-menu");
+      if (menuBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const block = menuBtn.closest(".shot-block");
+        const rect = menuBtn.getBoundingClientRect();
+        this.handlers.onShotMenu?.(block.dataset.id, rect.left, rect.bottom + 4);
+        return;
+      }
+      const bgm = event.target.closest("[data-bgm]");
+      if (bgm) {
+        event.preventDefault();
+        this.handlers.onBgmOpen?.(bgm);
+        return;
+      }
       const block = event.target.closest(".sub-block");
       if (!block || !this.handlers.onCueText) return;
       this._startCueEdit(block);
+    });
+
+    scroll.addEventListener("contextmenu", (event) => {
+      const block = event.target.closest(".shot-block");
+      if (!block) return;
+      event.preventDefault();
+      this.handlers.onShotMenu?.(block.dataset.id, event.clientX, event.clientY);
+    });
+
+    // 图片直接拖到某个镜头块上 = 替换该段画面
+    scroll.addEventListener("dragover", (event) => {
+      const block = event.target.closest(".shot-block");
+      if (!block) return;
+      event.preventDefault();
+      block.classList.add("drop-target");
+    });
+    scroll.addEventListener("dragleave", (event) => {
+      const block = event.target.closest(".shot-block");
+      if (block) block.classList.remove("drop-target");
+    });
+    scroll.addEventListener("drop", (event) => {
+      const block = event.target.closest(".shot-block");
+      if (!block) return;
+      event.preventDefault();
+      block.classList.remove("drop-target");
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (file) this.handlers.onDropImage?.(block.dataset.id, file);
     });
 
     // 键盘可达：字幕块聚焦后回车 / 空格进入编辑
@@ -402,10 +465,18 @@ export class Timeline {
   }
 
   _startSeekDrag(event) {
-    const move = (moveEvent) => this.handlers.onSeek(this._timeAt(moveEvent.clientX));
+    let scrubbing = false;
+    const move = (moveEvent) => {
+      if (!scrubbing && Math.abs(moveEvent.clientX - event.clientX) > 1) {
+        scrubbing = true;
+        this.handlers.onScrubStart?.();
+      }
+      this.handlers.onSeek(this._timeAt(moveEvent.clientX));
+    };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (scrubbing) this.handlers.onScrubEnd?.();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -417,6 +488,7 @@ export class Timeline {
     const edge = handle.dataset.edge;
     const shot = (this.project.shots || []).find((item) => item.id === shotId);
     if (!shot) return;
+    this.handlers.onScrubStart?.();
     const startX = event.clientX;
     const origin = edge === "left" ? shot.startMs : shot.endMs;
     const minGap = 1000 / 60;
@@ -439,6 +511,7 @@ export class Timeline {
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      this.handlers.onScrubEnd?.();
       if (block.dataset.dragValue === undefined) return;
       const raw = this._snapTime(Number(block.dataset.dragValue || "0"));
       delete block.dataset.dragValue;

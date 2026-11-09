@@ -258,6 +258,20 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
   display: none;
 }
 .stage.has-image img { display: block; }
+/* 预览双层：A 当前段、B 下一段；运镜与转场都由 JS 写 transform / opacity */
+.stage-img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+.stage-img.layer-b { opacity: 0; }
+.stage-black {
+  position: absolute; inset: 0;
+  background: #000;
+  opacity: 0; pointer-events: none;
+}
 .stage.has-image .stage-empty { display: none; }
 
 .stage-empty {
@@ -617,8 +631,30 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
   font-size: 10px; color: #fff;
   background: rgba(0, 0, 0, 0.38); border-radius: 999px; padding: 1px 6px;
 }
+/* 转场与运镜合并成一个角标，右上角留给「⋯」操作按钮 */
+.shot-block .fx {
+  position: absolute; right: 6px; top: 24px;
+  max-width: calc(100% - 12px);
+  font-size: 10px; color: #fff;
+  background: rgba(0, 0, 0, 0.4); border-radius: 999px; padding: 1px 6px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  pointer-events: none;
+}
+.shot-block .block-menu {
+  position: absolute; right: 3px; top: 3px; z-index: 6;
+  width: 18px; height: 18px; padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(16, 18, 20, 0.55); color: #fff;
+  font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.shot-block:hover .block-menu,
+.shot-block.selected .block-menu { opacity: 1; }
+.shot-block.drop-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring) inset; }
 .shot-block .badges {
-  position: absolute; left: 6px; top: 5px; right: 44px;
+  position: absolute; left: 6px; top: 5px; right: 26px;
   display: flex; align-items: center; gap: 4px;
   overflow: hidden; white-space: nowrap;
   pointer-events: none;
@@ -650,6 +686,59 @@ html[data-theme="dark"] .stage { background: #0a0c0e; }
 .tl-row.shots:hover .merge-gap { opacity: 1; }
 .merge-gap:hover { color: var(--accent); border-color: var(--accent); }
 .review-chip { height: 28px; font-size: 12px; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+
+/* 镜头段右键 / 「⋯」菜单 */
+.shot-menu {
+  position: fixed; z-index: 56;
+  min-width: 168px; padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-float);
+}
+.shot-menu button {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 7px 10px;
+  border: 0; border-radius: 6px;
+  background: transparent; color: var(--text);
+  font-size: 12px; text-align: left;
+}
+.shot-menu button:hover:not(:disabled) { background: var(--panel-2); }
+.shot-menu button:disabled { color: var(--dim); cursor: not-allowed; }
+.shot-menu .sep { height: 1px; margin: 4px 6px; background: var(--line-soft); }
+
+/* BGM 空轨与配置浮层 */
+.bgm-empty {
+  position: absolute; left: 8px; top: 5px;
+  height: calc(var(--bgm-h) - 10px);
+  padding: 0 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel); color: var(--muted);
+  font-size: 11px;
+}
+.bgm-empty:hover { color: var(--accent); border-color: var(--accent); }
+.bgm-block { cursor: pointer; }
+.bgm-popover {
+  position: fixed; z-index: 56;
+  width: 264px; padding: 12px;
+  display: flex; flex-direction: column; gap: 9px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-float);
+}
+.bgm-head { display: flex; align-items: center; justify-content: space-between; }
+.bgm-head strong { font-size: 13px; }
+.bgm-head .icon-btn { width: 24px; height: 24px; }
+.bgm-file {
+  font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgm-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+.bgm-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+.bgm-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.bgm-actions .btn { height: 28px; padding: 0 10px; font-size: 11.5px; }
 
 .sub-block {
   position: absolute; top: 7px; height: calc(var(--subs-h) - 14px);

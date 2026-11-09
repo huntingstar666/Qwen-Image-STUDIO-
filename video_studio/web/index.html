@@ -155,7 +155,9 @@
           </div>
           <div class="stage-area">
             <div class="stage" id="stage">
-              <img id="stageImage" alt="" />
+              <img class="stage-img" id="stageImage" alt="" />
+              <img class="stage-img layer-b" id="stageImageB" alt="" />
+              <div class="stage-black" id="stageBlack"></div>
               <div class="subtitle" id="stageSubtitle"></div>
               <div class="stage-empty" id="stageEmpty">
                 <h2 id="emptyTitle">先给一段音频和带时间轴的逐字稿</h2>
@@ -344,6 +346,29 @@
       </footer>
     </div>
 
+    <div class="shot-menu" id="shotMenu" hidden></div>
+
+    <div class="bgm-popover" id="bgmPopover" hidden>
+      <div class="bgm-head">
+        <strong>背景音乐</strong>
+        <button class="icon-btn" id="bgmClose" title="关闭" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"></use></svg>
+        </button>
+      </div>
+      <div class="bgm-file" id="bgmFile">还没有背景音乐</div>
+      <label class="bgm-row">音量
+        <input type="range" id="bgmVolume" min="-40" max="0" step="1" />
+        <span id="bgmVolumeLabel">-18 dB</span>
+      </label>
+      <label class="switch"><input type="checkbox" id="bgmLoop" /><span>循环铺满</span></label>
+      <label class="switch"><input type="checkbox" id="bgmDuck" /><span>原声闪避</span></label>
+      <div class="bgm-actions">
+        <button class="btn" type="button" id="bgmUpload">上传 / 更换</button>
+        <button class="btn" type="button" id="bgmPreview">试听</button>
+        <button class="btn danger" type="button" id="bgmDelete">删除</button>
+      </div>
+    </div>
+
     <div class="modal-backdrop" id="modalBackdrop" hidden></div>
     <div class="modal-dialog" id="modalDialog" hidden role="dialog" aria-modal="true">
       <h3 id="modalTitle">确认</h3>
@@ -376,6 +401,7 @@
       accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.mp4,.mov,audio/*" hidden />
     <input type="file" id="fileShotImage" accept="image/png,image/jpeg,image/webp" hidden />
     <audio id="audio" preload="auto"></audio>
+    <audio id="bgmAudio" preload="auto"></audio>
     <div class="toast-root" id="toastRoot" role="status" aria-live="polite"></div>
 
     <script type="module" src="/src/main.js"></script>

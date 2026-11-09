@@ -188,6 +188,64 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     );
   };
 
+  /**
+   * 关闭动画：把当前图“飞回”来源缩略图位置，遮罩同时淡出。
+   * 用克隆层做位移动画，避免遮罩淡出把图片一起淡化。
+   */
+  const playExit = () => new Promise((resolve) => {
+    const backdrop = modal?.root;
+    if (!backdrop || prefersReducedMotion() || typeof img.animate !== 'function') {
+      resolve();
+      return;
+    }
+    const finish = () => resolve();
+    const backdropAnim = backdrop.animate(
+      [{ opacity: 1 }, { opacity: 0 }],
+      { duration: 160, easing: 'ease-in', fill: 'forwards' },
+    );
+    const target = img.getBoundingClientRect();
+    const from = usableRect(origin);
+    // 放大/平移状态下直接淡出，避免从被裁切的画面硬跳回缩略图。
+    if (!from || zoom !== 1 || !target.width || !target.height) {
+      img.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: 'ease-in', fill: 'forwards' });
+      backdropAnim.finished.catch(() => {}).then(finish);
+      return;
+    }
+    const clone = img.cloneNode();
+    clone.style.cssText = [
+      'position:fixed',
+      `left:${target.left}px`,
+      `top:${target.top}px`,
+      `width:${target.width}px`,
+      `height:${target.height}px`,
+      'max-width:none',
+      'max-height:none',
+      'object-fit:contain',
+      'z-index:120',
+      'pointer-events:none',
+      'transform-origin:center center',
+    ].join(';');
+    document.body.append(clone);
+    const scaleX = from.width / target.width;
+    const scaleY = from.height / target.height;
+    const dx = from.left + from.width / 2 - (target.left + target.width / 2);
+    const dy = from.top + from.height / 2 - (target.top + target.height / 2);
+    const fly = clone.animate(
+      [
+        { transform: 'none', opacity: 1 },
+        {
+          transform: `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`,
+          opacity: 0.9,
+        },
+      ],
+      { duration: 200, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
+    );
+    Promise.all([backdropAnim.finished.catch(() => {}), fly.finished.catch(() => {})]).then(() => {
+      clone.remove();
+      finish();
+    });
+  });
+
   const onKey = (event) => {
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
@@ -215,6 +273,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     size: 'lg',
     dialogClass: 'lightbox-modal',
     hideFooter: true,
+    exit: playExit,
     onClose: () => {
       document.removeEventListener('keydown', onKey);
       onClose?.();

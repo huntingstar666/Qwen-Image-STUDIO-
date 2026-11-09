@@ -2385,6 +2385,24 @@ details.fold > .fold-body {
   gap: 14px;
 }
 
+/* 历史详情图：点击进高清预览（不再是新窗口打开链接） */
+.result-img-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.result-img-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .kv {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr);

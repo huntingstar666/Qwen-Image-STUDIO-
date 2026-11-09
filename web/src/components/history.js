@@ -11,6 +11,7 @@
 import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
+import { openLightbox } from './lightbox.js';
 import { favoriteImage } from './favorites.js';
 import { clearProject, leaseHeldByOther, listProjects } from './studio/persistence.js';
 import { imageUrlToDataUrl } from './studio/chain.js';
@@ -432,9 +433,9 @@ export function createHistoryPage(host) {
               <div class="result-img-wrap"${
                 image.width && image.height ? ` style="aspect-ratio:${Number(image.width)}/${Number(image.height)}"` : ''
               }>
-                <a href="${escapeHtml(imageUrl(image.url))}" target="_blank" rel="noopener" title="打开原图">
+                <button class="result-img-btn" type="button" data-preview-index="${index}" title="高清预览">
                   <img src="${escapeHtml(imageUrl(image.url))}" alt="历史结果 ${index + 1}" loading="lazy" />
-                </a>
+                </button>
               </div>
               <div class="result-card-foot">
                 <span class="mono">${fmtNum(image.width)}×${fmtNum(image.height)}</span>
@@ -462,6 +463,30 @@ export function createHistoryPage(host) {
       </div>`;
 
     content.querySelectorAll('.result-img-wrap img').forEach(fadeInImage);
+
+    // 详情图点开高清预览：起点用当前图片 rect，关闭后回到详情弹窗
+    content.querySelectorAll('[data-preview-index]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const start = Number(button.dataset.previewIndex) || 0;
+        const originImg = button.querySelector('img');
+        openLightbox(
+          item.images.map((image, i) => ({
+            url: imageUrl(image.url),
+            thumb: image.thumb ? imageUrl(image.thumb) : undefined,
+            width: image.width || undefined,
+            height: image.height || undefined,
+            filename: image.filename,
+            label: `第 ${i + 1} 张`,
+          })),
+          start,
+          {
+            title: '历史高清预览',
+            origin: originImg?.getBoundingClientRect() || null,
+            onClose: () => showDetail(item.id),
+          },
+        );
+      });
+    });
 
     content.querySelectorAll('[data-download-index]').forEach((button) => {
       button.addEventListener('click', () => {

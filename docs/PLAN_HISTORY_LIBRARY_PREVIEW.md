@@ -176,7 +176,13 @@ goToEditPage();
 > - `history.js` 新增「回到图像编辑」动作与 `sendBackToEdit()`；参数不全时用 `quality`（preset / size_mode / sampling / loras / task_mode / seed）与 `meta.rawPrompt` 补齐。
 > - 发现并修复：`storage/history.json` 原先只落盘 `to_summary()` 的少量参数，服务重启后 `replay.json` 不可回放。现改为落盘「除 `images` / `mask` / `pose` / `meta` 外的完整参数」，列表接口仍返回轻量摘要。
 > - 已验证：重启服务后回退旧记录可带回 3 张输入图、steps / cfg / seed 与提示词；重启后用新任务验证 `replay.json` 仍含 `preset` / `size_mode` / `loras` / `local` 等字段。
-> - 遮罩留档依赖 P4；当前回退不带遮罩，属预期降级。
+> - 遮罩留档见下方 P4；P3 阶段回退不带遮罩，属预期降级。
+
+> **P4 落实情况（2026-11-09）**
+> - `pipeline.py` 在解析遮罩后，把 `mask_src` 按原图尺寸（最近邻缩放）编码为 PNG，写入 `storage/uploads` 并记到 `job.meta["mask_url"]`；外扩（outpaint）自动生成的遮罩不落盘。
+> - 前端无需新增逻辑：`applyHandoff()` 已有的 `payload.mask` 分支会把遮罩挂到第 1 张图并计算覆盖率，遮罩编辑器按画布尺寸缩放回填。
+> - 已验证：带遮罩的新任务完成后 `meta.mask_url` 可访问（512×640，灰度 0/255），历史回退后上传项显示「遮罩 23%」，遮罩编辑器状态栏为「512 × 640 · 覆盖 23%」。
+> - 旧记录无 `mask_url`，回退时按无遮罩继续，符合预期。
 
 ### 2.4 不在本次范围
 

@@ -1054,6 +1054,7 @@ class Pipeline:
 
         # 遮罩（原图尺寸 → 工作画布坐标），零色差靠它把遮罩外原样保留
         mask_canvas: np.ndarray | None = None
+        mask_src: np.ndarray | None = None
         if params.get("mask"):
             mask_bytes = _entry_bytes(params["mask"])
             try:
@@ -1082,6 +1083,15 @@ class Pipeline:
                                        orig_name=(entry.get("name") if isinstance(entry, dict) else None))
             input_urls.append(meta["url"])
         job.meta["input_urls"] = input_urls
+
+        # 遮罩留档：还原到原图尺寸，历史「回到图像编辑」时可直接回填遮罩编辑器
+        if mask_src is not None:
+            mask_image = Image.fromarray(
+                np.where(mask_src > 0.5, 255, 0).astype(np.uint8), mode="L")
+            if mask_image.size != src.size:
+                mask_image = mask_image.resize(src.size, Image.NEAREST)
+            job.meta["mask_url"] = storage.save_upload(
+                imaging.encode_png(mask_image), ext=".png", orig_name="mask.png")["url"]
 
         job.align = {
             "canvas": {"w": plan.width, "h": plan.height},

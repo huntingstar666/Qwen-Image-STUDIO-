@@ -124,7 +124,7 @@ App Shell（所有页面共享）：
 - 「精修工程」并入分类 chip：选中时只显示工程，其余任务分类只显示对应任务，全部视图同时展示两个区块；
 - 点击卡片查看大图、参数摘要、提示词、`align` / `quality` 标记、时间；
 - 下载单张 / 全部、复制提示词、导出可复现请求参数 JSON（`/api/jobs/{id}/replay.json`）；
-- **编辑任务一键回退**：详情弹窗对 `kind=edit` 提供「回到图像编辑」——读取 `meta.input_urls` 还原输入图（缺失时降级用结果图）、`meta.mask_url` 还原遮罩（待 P4）、`replay.params` 还原预设 / 覆盖项 / 尺寸 / 采样 / 种子 / Turbo / LoRA / 一致性，经 `handoff.restore` 交接后跳 `#edit`；旧记录参数不全时用 `quality`（preset / size_mode / sampling / loras）补齐；
+- **编辑任务一键回退**：详情弹窗对 `kind=edit` 提供「回到图像编辑」——读取 `meta.input_urls` 还原输入图（缺失时降级用结果图）、`meta.mask_url` 还原遮罩（新任务起留档，旧记录按无遮罩处理）、`replay.params` 还原预设 / 覆盖项 / 尺寸 / 采样 / 种子 / Turbo / LoRA / 一致性，经 `handoff.restore` 交接后跳 `#edit`；旧记录参数不全时用 `quality`（preset / size_mode / sampling / loras）补齐；
 - 历史落盘（`storage/history.json`）保留除图片 / 遮罩 / 姿态图 / meta 之外的完整参数，服务重启后 `replay.json` 仍可回放；`/api/history` 列表摘要保持轻量；
 - 清空全部历史（`DELETE /api/history`，二次确认）。后端只提供整体清空，因此不提供单条删除。
 

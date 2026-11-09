@@ -513,6 +513,17 @@ export function mountAiPanel(host, ctx) {
     return findPreset(state.presets, currentPresetId().id);
   }
 
+  /**
+   * 真正会提交的任务：任务框显式选过就用它，停在「自动」时跟随预设
+   * （与 submit() 内部同一口径）。注意「自动识别」只影响提示与任务 LoRA 预选，
+   * 不会把识别结果当任务发出去（会被 presets.merge 判成与预设冲突）。
+   */
+  function effectiveTask() {
+    const mode = String(refs.task.value || 'auto');
+    if (mode !== 'auto') return mode;
+    return presetTaskMode(currentPreset()) || 'edit';
+  }
+
   function presetValue(key, fallback) {
     return effectiveValue(currentPreset(), state.overrides, key, fallback);
   }
@@ -700,9 +711,10 @@ export function mountAiPanel(host, ctx) {
 
   function syncTaskHint() {
     const mode = refs.task.value;
+    const effective = TASK_LABELS[effectiveTask()] || effectiveTask();
     refs.submitHint.textContent =
       mode === 'auto'
-        ? 'Ctrl+Enter 提交 · 任务 LoRA 会按指令关键词自动识别'
+        ? `Ctrl+Enter 提交 · 任务跟随预设：${effective}`
         : `Ctrl+Enter 提交 · 当前任务：${TASK_LABELS[mode] || mode}`;
   }
 
@@ -1280,6 +1292,36 @@ export function mountAiPanel(host, ctx) {
         confirmText: '继续整图修改',
       });
       if (!ok) return;
+    }
+
+    // 指令看起来是移除 / 扩图 / 全景，但当前预设的任务不是它：直接提交会按普通编辑跑
+    // （没有任务 LoRA、没有提示图，遮罩也可能不参与合成），结果就是「看着没生效」（D29.2）。
+    const detected = detectTask(text, Boolean(source.hasMask));
+    const currentTask = effectiveTask();
+    if (
+      String(refs.task.value || 'auto') === 'auto'
+      && detected !== currentTask
+      && ['remove', 'outpaint', 'panorama'].includes(detected)
+      && findPreset(state.presets, detected)
+    ) {
+      const presetLabel = currentPreset()?.label || currentTask;
+      const ok = await confirmDialog({
+        title: `按「${TASK_LABELS[detected]}」执行？`,
+        message:
+          `指令看起来是「${TASK_LABELS[detected]}」，但当前预设「${presetLabel}」会按`
+          + `「${TASK_LABELS[currentTask] || currentTask}」执行：缺少对应的任务 LoRA 与提示图，`
+          + `结果通常不会真的${detected === 'remove' ? '移除' : '扩展'}。`
+          + `建议切到「${TASK_LABELS[detected]}」预设再提交。`,
+        confirmText: `切到${TASK_LABELS[detected]}`,
+        cancelText: '仍按当前预设',
+      });
+      if (ok) {
+        selectPreset(detected);
+        if (detected !== 'remove') {
+          toastWarn(`已切到「${TASK_LABELS[detected]}」预设：先设置外扩/比例参数，再点「生成」`);
+          return;
+        }
+      }
     }
 
     const loraState = collectLoras();
@@ -1866,10 +1908,15 @@ export function mountAiPanel(host, ctx) {
     },
     /** studio 端画完蒙版后调用：只更新任务识别与提示，不做整图编码 */
     onMaskChanged(coverage) {
-      const task = detectTask(promptEditor.getText(), coverage > 0);
-      refs.submitHint.textContent = `已圈选 ${fmtCoverage(coverage)} · 自动识别：${
-        TASK_LABELS[task] || task
-      }`;
+      // 显示**实际会执行**的任务，而不是「自动识别」猜到的任务：
+      // 预设是「原生」时，指令写成「去掉耳环」也不会走移除流程（D29.2）。
+      const detected = detectTask(promptEditor.getText(), coverage > 0);
+      const effective = effectiveTask();
+      const mismatch =
+        detected !== effective && ['remove', 'outpaint', 'panorama'].includes(detected);
+      refs.submitHint.textContent = `已圈选 ${fmtCoverage(coverage)} · 本次任务：${
+        TASK_LABELS[effective] || effective
+      }${mismatch ? `（指令像「${TASK_LABELS[detected]}」，需切到同名预设）` : ''}`;
       // 有没有蒙版会决定预设是否降级，及时刷新卡片与高级参数回显。
       renderPresets();
       advanced.refresh();

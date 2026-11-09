@@ -487,3 +487,64 @@
 preprocess.* / panorama.* / task / consistency / steps / cfg / sampler / scheduler / denoise`
 均为「预设 → 页面控件 → overrides → 按差异回传」单链路；保护开关（色彩 / 零偏移）见 P1-10，
 不再有独立状态。
+
+### 17.9 后端链路审计（第三轮，只读核对）
+
+审计方式：只读代码 + payload / `presets.merge` 快照 + 回归测试（`test_edit_presets` /
+`test_edit_validation` / `test_pipeline_guards`，**61 passed**）+ 浏览器实测，未改任何代码。
+结论：**后端主干没有会阻断出图或产生「两套行为」的问题**；只有边界语义与一个接口校验缺口。
+
+#### 17.9.1 参数传递
+
+- 入口统一：`main.py` 只做校验与入队，解析都在 `pipeline.py`；文生图与编辑共用 `_sampling_plan`，
+  Turbo / 采样器 / 调度器不存在两套口径。
+- 优先级固定：**请求显式 > 预设展开 > 后端内置默认**（`presets._fill_missing` 只补缺）；
+  快照确认显式 `false` 能压过预设 `true`。
+- 校验单源：区间读 `presets.NUMERIC_LIMITS`，枚举读 `TASK_ALIASES / SCHEMES`；请求层
+  `strict_task=False`，任务组合交给管线补齐。
+- 任务档位：`_task_local_overrides` 为扩图/全景补 `crop_min_side / expand_pct / feather_pct /
+  hint / fills`，**请求显式给过的键优先**。
+- LoRA：任务 LoRA 按文件名去重；Turbo 加速 LoRA 与用户 LoRA 互斥清理；一致性三态
+  （对象 / `false` / 预设）处理完整。
+- 零偏移：仅 `follow` 生效；扩图/全景自动关闭并写入 `align.zero_shift`；遮罩外逐字节保留
+  由 `outside_max_abs` 验收。
+- 尺寸：32 对齐、`resolution=0`、预处理只缩不放、超 `max_side` 在编码前拦截。
+
+#### 17.9.2 调度
+
+- `jobs.py` 固定 **1 个 worker 串行**（显存约束）；多任务只排队，不并发出图。
+- 取消：排队任务直接置 canceled；运行中在进度回调与关键节点检查。
+- 进度：轮询走 `slim_params`，图片 data URL 不回传。
+- 历史：提交即落盘；进程崩溃重启后未完成任务标记为「中断」，不会凭空消失。
+- 模型切换：`_engine_for` 卸载其它引擎权重（32G 放不下两套），与单 worker 配合无竞态。
+- 空闲：`last_activity` 驱动显存自动卸载，不打断运行中任务。
+
+#### 17.9.3 LLM 与提示词注入
+
+两条通道分离，润色结果**不会**由后端自动塞进生图请求：
+
+1. 润色（`/api/polish`）：`system` = 目标图像模型官方 PE 原文（qwen / moss 各一份）；
+   `user` = 目标画布 + 参考图尺寸/描述 + 用户文本 + JSON 输出约定；T2I / EDIT 采样分开；
+   参考图仅在「档案允许发送 + 模型支持视觉」时附图。细节见 `docs/PROMPT_POLISH.md` §11。
+2. 生图：前端采纳润色文本后才进入提示词框 → 风格/镜头拼接（前端）→ `meta.rawPrompt` 保留
+   拼接前文本 → 后端只做三类追加：任务训练指令前置（按原文判重）、水印补全、姿态图编号顺延。
+
+失败回落完整：不可用 / 超时 / 空内容 / 解析失败都回退原提示词；`wh_ratio` / `ratio_follow`
+按模式收口；Key 只在请求头并打码。
+
+#### 17.9.4 边界语义（不是故障）
+
+1. 预设默认开 Turbo（9 步档）：步数 / CFG 被档位接管，改步数不生效，需先关 Turbo。
+2. `local.enabled=false` + 有遮罩（仅第三方手动组合）：不是「完全不动」，而是「整画布采样 +
+   仍按遮罩贴回」；无遮罩时才真正 native。前端两页不会产生此组合。
+3. 润色是建议而非自动注入，必须用户采纳。
+4. 单卡单任务：并发只会排队。
+
+#### 17.9.5 待补缺口（等通知再改）
+
+| # | 缺口 | 影响 | 建议修法 | 状态 |
+| --- | --- | --- | --- | --- |
+| P3-1 | `consistency_lora.strength` 与 `turbo.lora_strength` 未纳入 `NUMERIC_LIMITS` / 请求校验 | 前端 `clampStrength` 已夹到 0~2，页面提交安全；第三方 API 直接传 `99` 会原样送进引擎 | `main._validate_edit_params` 补两条 0~2 校验（复用 `presets.limits`），`_preset_view` 同步映射 | **待补（未改代码）** |
+
+**复核结论**：后端只有一份合并后的参数，不存在「预设 / 用户设置两套状态」；上述边界均为设计
+语义或第三方接口收口问题，不影响当前工作台三页的正常出图。

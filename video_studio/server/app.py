@@ -304,6 +304,33 @@ def _derive(project: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, 
     )
 
 
+@app.patch("/api/projects/{project_id}/subtitle/cues")
+def api_subtitle_cues(project_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """就地改字幕文案：只替换 cues，不动上传的原字幕文件。"""
+    cues = payload.get("cues")
+    if not isinstance(cues, list):
+        raise StudioError("cues 必须是数组", code="bad_payload")
+    cleaned = []
+    for index, item in enumerate(cues[:2000]):
+        if not isinstance(item, dict):
+            raise StudioError(f"cues[{index}] 必须是对象", code="bad_payload")
+        try:
+            start = int(item.get("startMs") or 0)
+            end = int(item.get("endMs") or 0)
+        except (TypeError, ValueError):
+            raise StudioError(f"cues[{index}] 时间格式不正确", code="bad_payload") from None
+        text = str(item.get("text") or "").strip()
+        if end <= start or not text:
+            continue
+        cleaned.append({"startMs": start, "endMs": end, "text": text[:500]})
+    cleaned.sort(key=lambda cue: cue["startMs"])
+    with _lock(project_id):
+        project = store.load(project_id)
+        project.setdefault("subtitle", {})["cues"] = cleaned
+        store.save(project)
+        return _view(project)
+
+
 @app.post("/api/projects/{project_id}/segments/preview")
 def api_segments_preview(project_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     with _lock(project_id):

@@ -14,9 +14,8 @@
       (function () {
         try {
           var saved = localStorage.getItem("videoStudio.theme");
-          var dark = saved
-            ? saved === "dark"
-            : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var dark = saved === "dark" || (saved !== "light" && prefersDark);
           document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
         } catch (err) {}
       })();
@@ -69,6 +68,17 @@
         <path d="M4.4 12a7.6 7.6 0 1 0 2.2-5.4M4.2 4.6v4.2h4.2" />
         <path d="M12 8.4V12l2.6 1.6" />
       </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2.8v2.2M12 19v2.2M2.8 12H5M19 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4L17 7M7 17l-1.6 1.6" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M20 14.6A8.4 8.4 0 0 1 9.4 4a8.4 8.4 0 1 0 10.6 10.6z" />
+      </symbol>
+      <symbol id="i-auto" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" />
+      </symbol>
     </svg>
 
     <div class="app" data-view="timeline">
@@ -86,18 +96,21 @@
         <div class="top-actions">
           <span class="chip" id="chipMain" title="主项目状态">主项目</span>
           <span class="chip" id="chipFfmpeg" title="ffmpeg 状态">ffmpeg</span>
-          <button class="btn" id="btnAudio">
-            <svg class="icon"><use href="#i-audio"></use></svg>上传音频
+          <button class="btn" id="btnAudio" title="上传音频">
+            <svg class="icon"><use href="#i-audio"></use></svg><span class="btn-label">上传音频</span>
           </button>
-          <button class="btn" id="btnSubtitle">
-            <svg class="icon"><use href="#i-caption"></use></svg>上传字幕
+          <button class="btn" id="btnSubtitle" title="上传字幕">
+            <svg class="icon"><use href="#i-caption"></use></svg><span class="btn-label">上传字幕</span>
           </button>
-          <button class="btn" id="btnSettings">
-            <svg class="icon"><use href="#i-settings"></use></svg>设置
+          <button class="icon-btn" id="btnTheme" title="主题：跟随系统" aria-label="切换主题">
+            <svg class="icon"><use id="themeIcon" href="#i-auto"></use></svg>
+          </button>
+          <button class="btn" id="btnSettings" title="项目设置">
+            <svg class="icon"><use href="#i-settings"></use></svg><span class="btn-label">设置</span>
           </button>
           <div class="task-wrap">
-            <button class="btn" id="btnTasks" aria-expanded="false">
-              <svg class="icon"><use href="#i-tasks"></use></svg>任务
+            <button class="btn" id="btnTasks" aria-expanded="false" title="任务中心">
+              <svg class="icon"><use href="#i-tasks"></use></svg><span class="btn-label">任务</span>
               <span class="task-badge" id="taskBadge" hidden>0</span>
             </button>
             <div class="task-center" id="taskCenter" hidden>
@@ -108,8 +121,8 @@
               <div class="tc-list" id="tcList"></div>
             </div>
           </div>
-          <button class="btn primary" id="btnExport">
-            <svg class="icon"><use href="#i-export"></use></svg>导出成片
+          <button class="btn primary" id="btnExport" title="导出成片">
+            <svg class="icon"><use href="#i-export"></use></svg><span class="btn-label">导出成片</span>
           </button>
         </div>
       </header>
@@ -221,6 +234,21 @@
     </div>
 
     <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+    <div class="preflight-backdrop" id="preflightBackdrop" hidden></div>
+    <div class="preflight" id="preflight" hidden>
+      <header class="preflight-head">
+        <h2>导出前体检</h2>
+        <button class="icon-btn" id="preflightClose" title="关闭" aria-label="关闭">
+          <svg class="icon"><use href="#i-close"></use></svg>
+        </button>
+      </header>
+      <div class="preflight-list" id="preflightList"></div>
+      <footer class="preflight-foot">
+        <span class="hint">可以先修问题，也可以忽略继续导出。</span>
+        <button class="btn" id="preflightCancel">先修一下</button>
+        <button class="btn primary" id="preflightGo">忽略并继续</button>
+      </footer>
+    </div>
     <aside class="drawer" id="drawer" hidden>
       <header class="drawer-head">
         <h2>项目设置</h2>

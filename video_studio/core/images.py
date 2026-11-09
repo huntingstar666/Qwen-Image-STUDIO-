@@ -140,11 +140,11 @@ def image_size(project: dict[str, Any]) -> tuple[int, int]:
 
 
 def canvas_size(project: dict[str, Any]) -> tuple[int, int]:
-    """导出画布尺寸：按比例把长边收在 480~2048，宽高都取偶数（H.264 要求）。"""
+    """导出画布尺寸：按比例把长边收在 480~3840，宽高都取偶数（H.264 要求）。"""
     canvas = project.get("canvas") or {}
     from .schema import RATIOS
     ratio = float(RATIOS.get(str(canvas.get("ratio") or "16:9")) or 16 / 9)
-    long_side = min(2048, max(480, int(canvas.get("longSide") or 1920)))
+    long_side = min(3840, max(480, int(canvas.get("longSide") or 1920)))
     if ratio >= 1:
         width, height = long_side, long_side / ratio
     else:

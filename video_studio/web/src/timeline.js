@@ -203,15 +203,16 @@ export class Timeline {
     const host = this.refs.subs;
     host.innerHTML = "";
     const cues = (this.project.subtitle && this.project.subtitle.cues) || [];
-    cues.slice(0, 400).forEach((cue) => {
+    cues.slice(0, 400).forEach((cue, index) => {
       const left = (cue.startMs / 1000) * this.pxPerSec;
       const width = Math.max(8, ((cue.endMs - cue.startMs) / 1000) * this.pxPerSec);
       const node = document.createElement("div");
       node.className = "sub-block";
       node.style.left = `${left}px`;
       node.style.width = `${width}px`;
+      node.dataset.index = String(index);
       node.textContent = cue.text.replace(/\n/g, " ");
-      node.title = `${formatMs(cue.startMs)}–${formatMs(cue.endMs)}  ${cue.text}`;
+      node.title = `${formatMs(cue.startMs)}–${formatMs(cue.endMs)}  ${cue.text}（点击修改文案）`;
       host.appendChild(node);
     });
   }
@@ -242,6 +243,8 @@ export class Timeline {
     const { scroll } = this.refs;
 
     scroll.addEventListener("pointerdown", (event) => {
+      // 字幕块单击进入文案编辑，不触发跳转
+      if (event.target.closest(".sub-block")) return;
       const handle = event.target.closest(".shot-block .handle");
       if (handle) {
         event.preventDefault();
@@ -267,6 +270,52 @@ export class Timeline {
       if (!block || !this.handlers.onPlayRange) return;
       const shot = (this.project.shots || []).find((item) => item.id === block.dataset.id);
       if (shot) this.handlers.onPlayRange(shot);
+    });
+
+    // 字幕块单击 = 就地改文案
+    scroll.addEventListener("click", (event) => {
+      const block = event.target.closest(".sub-block");
+      if (!block || !this.handlers.onCueText) return;
+      this._startCueEdit(block);
+    });
+  }
+
+  _startCueEdit(block) {
+    if (block.dataset.editing === "1") return;
+    const index = Number(block.dataset.index);
+    const cues = (this.project.subtitle && this.project.subtitle.cues) || [];
+    const cue = cues[index];
+    if (!cue) return;
+    block.dataset.editing = "1";
+    block.innerHTML = "";
+    const input = document.createElement("input");
+    input.className = "cue-input";
+    input.value = cue.text;
+    block.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = (commit) => {
+      if (settled) return;
+      settled = true;
+      const value = input.value.trim();
+      if (commit && value && value !== cue.text) {
+        this.handlers.onCueText(index, value);
+      } else {
+        this.render();
+      }
+    };
+    input.addEventListener("pointerdown", (event) => event.stopPropagation());
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
     });
   }
 

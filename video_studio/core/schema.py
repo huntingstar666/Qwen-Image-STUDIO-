@@ -49,7 +49,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "type": "object", "label": "画布",
         "fields": {
             "ratio": {"type": "enum", "options": list(RATIOS), "default": "16:9", "label": "画布比例"},
-            "longSide": {"type": "int", "min": 480, "max": 2048, "default": 1920, "label": "导出长边"},
+            "longSide": {"type": "int", "min": 480, "max": 3840, "default": 1920, "label": "导出长边"},
             "fps": {"type": "int", "min": 12, "max": 60, "default": 30, "label": "帧率"},
         },
     },

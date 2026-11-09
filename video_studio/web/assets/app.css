@@ -181,6 +181,7 @@ button { cursor: pointer; }
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
+  white-space: nowrap;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .btn:hover { background: var(--panel-2); border-color: var(--line-strong); }
@@ -1067,6 +1068,91 @@ img.is-loading {
 .hg-offline strong { font-size: 13px; color: var(--text-2); }
 .hg-offline p { margin: 0; font-size: 11.5px; line-height: 1.6; }
 .hg-offline .btn { height: 28px; font-size: 11.5px; }
+
+/* ------------------------------------------------------------------ 导出前体检 */
+
+.preflight-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(20, 22, 25, 0.32);
+  backdrop-filter: blur(2px);
+}
+.preflight {
+  position: fixed; z-index: 51;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(540px, 92vw);
+  max-height: 76vh;
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  animation: page-in 180ms var(--ease);
+}
+.preflight-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.preflight-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.preflight-list {
+  padding: 10px 14px; overflow: auto;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.pf-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--panel); color: var(--text);
+  font-size: 12.5px;
+}
+.pf-item:hover { border-color: var(--line-strong); background: var(--panel-2); }
+.pf-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+.pf-dot.image, .pf-dot.empty { background: var(--bad); }
+.pf-dot.prompt { background: var(--warn); }
+.pf-dot.subtitle { background: var(--violet); }
+.pf-dot.audio { background: var(--accent); }
+.pf-text { flex: 1; }
+.pf-jump { font-size: 11px; color: var(--accent); }
+.preflight-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.preflight-foot .hint { flex: 1; }
+.preflight-foot .btn { height: 30px; font-size: 12px; }
+
+/* ------------------------------------------------------------------ 字幕就地编辑 / 数字排版 */
+
+.sub-block { cursor: text; }
+.sub-block:hover { border-color: var(--accent); }
+.cue-input {
+  width: 100%; height: 100%;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  padding: 0 8px;
+  outline: none;
+}
+.timecode, .tl-meta, .sb-time, .sb-dur, .canvas-tag, .shot-time,
+.sb-num, .hg-meta, .hg-time { letter-spacing: -0.01em; }
+
+@media (max-width: 1440px) {
+  .topbar { gap: 10px; padding: 0 12px; }
+  .brand { min-width: 146px; }
+  .project-picker select { min-width: 148px; max-width: 200px; }
+  #chipFfmpeg { display: none; }
+  .top-actions { gap: 6px; }
+  .top-actions .btn { padding: 0 10px; }
+  .top-actions .btn .btn-label { display: none; }
+  .top-actions .btn.primary { padding: 0 12px; }
+  .top-actions .btn.primary .btn-label { display: inline; }
+}
 
 @media (max-width: 1080px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }

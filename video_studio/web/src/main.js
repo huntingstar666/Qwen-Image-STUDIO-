@@ -39,6 +39,10 @@ const refs = {
   taskBadge: $("taskBadge"),
   tcMain: $("tcMain"),
   tcList: $("tcList"),
+  btnTheme: $("btnTheme"),
+  preflight: $("preflight"),
+  preflightBackdrop: $("preflightBackdrop"),
+  preflightList: $("preflightList"),
 };
 
 let timeline = null;
@@ -100,7 +104,7 @@ function duration() {
 // --------------------------------------------------------------------------- 启动
 
 async function boot() {
-  applyTheme();
+  initTheme();
   timeline = new Timeline(
     {
       inner: $("tlInner"),
@@ -121,6 +125,7 @@ async function boot() {
       onSelect: (id) => selectShot(id),
       onRetime: (id, patch) => retimeShot(id, patch),
       onPlayRange: (shot) => playShot(shot),
+      onCueText: (index, text) => editCue(index, text),
     },
   );
 
@@ -128,6 +133,7 @@ async function boot() {
   bindTabs();
   bindTransport();
   bindDrawer();
+  bindPreflight();
 
   storyboard = new Storyboard(
     {
@@ -240,12 +246,37 @@ function stateProjects() {
   return getState().projects || [];
 }
 
+const THEME_ORDER = ["auto", "light", "dark"];
+const THEME_LABEL = { auto: "跟随系统", light: "浅色", dark: "深色" };
+const THEME_ICON = { auto: "#i-auto", light: "#i-sun", dark: "#i-moon" };
+let themeMode = "auto";
+
+function initTheme() {
+  const saved = localStorage.getItem("videoStudio.theme") || "auto";
+  themeMode = ["light", "dark"].includes(saved) ? saved : "auto";
+  applyTheme();
+}
+
 function applyTheme() {
-  const saved = localStorage.getItem("videoStudio.theme");
-  const dark = saved
-    ? saved === "dark"
-    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = themeMode === "dark" || (themeMode === "auto" && prefersDark);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  updateThemeButton();
+}
+
+function updateThemeButton() {
+  const icon = $("themeIcon");
+  if (!icon || !refs.btnTheme) return;
+  icon.setAttribute("href", THEME_ICON[themeMode]);
+  refs.btnTheme.title = `主题：${THEME_LABEL[themeMode]}（点击切换）`;
+}
+
+function cycleTheme() {
+  themeMode = THEME_ORDER[(THEME_ORDER.indexOf(themeMode) + 1) % THEME_ORDER.length];
+  if (themeMode === "auto") localStorage.removeItem("videoStudio.theme");
+  else localStorage.setItem("videoStudio.theme", themeMode);
+  applyTheme();
+  toast(`主题：${THEME_LABEL[themeMode]}`);
 }
 
 // --------------------------------------------------------------------------- 项目
@@ -380,7 +411,7 @@ const RATIO_VALUE = {
 /** 和后端 canvas_size 同一套规则：长边定尺寸，宽高取偶数。 */
 function canvasSize(canvas) {
   const ratio = RATIO_VALUE[(canvas || {}).ratio] || 16 / 9;
-  const longSide = Math.min(2048, Math.max(480, Number((canvas || {}).longSide) || 1920));
+  const longSide = Math.min(3840, Math.max(480, Number((canvas || {}).longSide) || 1920));
   let width = ratio >= 1 ? longSide : longSide * ratio;
   let height = ratio >= 1 ? longSide / ratio : longSide;
   width = Math.max(320, Math.round(width / 2) * 2);
@@ -648,6 +679,24 @@ async function retimeShot(shotId, patch) {
     const project = await api.get(`/api/projects/${state.project.id}`);
     setState({ project });
     renderAll();
+  } catch (err) {
+    toast(err.message, "bad");
+    renderAll();
+  }
+}
+
+/** 时间线上就地改字幕文案：只改 cues，导出时 ASS 会用同一份数据。 */
+async function editCue(index, text) {
+  const state = getState();
+  if (!state.project) return;
+  const cues = ((state.project.subtitle || {}).cues || []).map((cue, position) =>
+    (position === index ? { ...cue, text } : cue));
+  try {
+    const updated = await api.patch(
+      `/api/projects/${state.project.id}/subtitle/cues`, { cues });
+    setState({ project: updated });
+    renderAll();
+    toast("字幕已更新", "ok");
   } catch (err) {
     toast(err.message, "bad");
     renderAll();
@@ -1045,6 +1094,10 @@ function bindTopbar() {
   $("btnExport").addEventListener("click", () => pipelineAction("export"));
   $("btnSettings").addEventListener("click", () => openDrawer());
   $("btnSegment").addEventListener("click", () => pipelineAction("segment"));
+  if (refs.btnTheme) refs.btnTheme.addEventListener("click", cycleTheme);
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (themeMode === "auto") applyTheme();
+  });
 
   refs.projectSelect.addEventListener("change", () => {
     loadProject(refs.projectSelect.value, { keepTime: false });
@@ -1136,7 +1189,7 @@ async function pipelineAction(action) {
       return;
     }
     if (action === "export") {
-      await runTask(`/api/projects/${project.id}/render`, "导出成片");
+      await exportWithCheck();
       return;
     }
   } catch (err) {
@@ -1149,6 +1202,112 @@ async function regenerateShot(shotId = getState().selectedId) {
   if (!state.project || !shotId) return;
   pushUndo();
   await runTask(`/api/projects/${state.project.id}/images/${shotId}`, "重新生成该镜头");
+}
+
+// --------------------------------------------------------------------------- 导出前体检
+
+let preflightProceed = null;
+
+async function runPreflight(project) {
+  const issues = [];
+  const shots = project.shots || [];
+  if (!shots.length) {
+    issues.push({ kind: "empty", text: "还没有镜头段，导出会是空片" });
+  }
+  const missing = shots.filter((shot) => !shot.image);
+  if (missing.length) {
+    issues.push({ kind: "image", text: `${missing.length} 段还没有画面`, shotId: missing[0].id });
+  }
+  const emptyPrompt = shots.filter((shot) => !String(shot.prompt || "").trim());
+  if (emptyPrompt.length) {
+    issues.push({ kind: "prompt", text: `${emptyPrompt.length} 段提示词为空`, shotId: emptyPrompt[0].id });
+  }
+
+  const spec = (project.render || {}).subtitle || {};
+  const cues = (project.subtitle || {}).cues || [];
+  if (spec.enabled && cues.length) {
+    const size = canvasSize(project.canvas);
+    const fontSize = Math.max(12, Number(spec.size) || 46);
+    const maxChars = Math.max(8, Math.floor((size.width * 0.88) / fontSize));
+    const overflow = cues.filter((cue) => String(cue.text || "").length > maxChars * 2);
+    if (overflow.length) {
+      issues.push({ kind: "subtitle", text: `${overflow.length} 条字幕可能超出画面` });
+    }
+  }
+
+  const audio = project.audio || {};
+  if (!Number(audio.durationMs)) {
+    issues.push({ kind: "audio", text: "还没有音频，成片没有声音" });
+  } else if (audio.peaksUrl) {
+    try {
+      const peaks = await api.get(audio.peaksUrl);
+      const peak = Array.isArray(peaks) ? Math.max(0, ...peaks.map(Number)) : 0;
+      if (peak > 0 && peak < 6) {
+        issues.push({ kind: "audio", text: "原声音量偏低，成片可能听不清" });
+      }
+    } catch (err) {
+      // 波形缺失不阻塞导出
+    }
+  }
+  return issues;
+}
+
+async function exportWithCheck() {
+  const project = getState().project;
+  if (!project) return;
+  const issues = await runPreflight(project);
+  const proceed = () => runTask(`/api/projects/${project.id}/render`, "导出成片");
+  if (!issues.length) {
+    toast("体检通过，开始导出", "ok");
+    await proceed();
+    return;
+  }
+  openPreflight(issues, proceed);
+}
+
+function openPreflight(issues, proceed) {
+  preflightProceed = proceed;
+  refs.preflightList.innerHTML = issues.map((issue) => {
+    const jump = issue.shotId ? ` data-issue-shot="${escapeHtml(issue.shotId)}"` : "";
+    return `<button class="pf-item" type="button"${jump}>
+      <span class="pf-dot ${escapeHtml(issue.kind)}"></span>
+      <span class="pf-text">${escapeHtml(issue.text)}</span>
+      ${issue.shotId ? '<span class="pf-jump">定位</span>' : ""}
+    </button>`;
+  }).join("");
+  refs.preflight.hidden = false;
+  refs.preflightBackdrop.hidden = false;
+}
+
+function closePreflight() {
+  refs.preflight.hidden = true;
+  refs.preflightBackdrop.hidden = true;
+  preflightProceed = null;
+}
+
+function bindPreflight() {
+  const close = () => closePreflight();
+  $("preflightClose").addEventListener("click", close);
+  $("preflightCancel").addEventListener("click", close);
+  refs.preflightBackdrop.addEventListener("click", close);
+  $("preflightGo").addEventListener("click", () => {
+    const proceed = preflightProceed;
+    closePreflight();
+    if (proceed) proceed();
+  });
+  refs.preflightList.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-issue-shot]");
+    if (!item) return;
+    const shotId = item.dataset.issueShot;
+    closePreflight();
+    setView("storyboard");
+    selectShot(shotId);
+    const shot = (getState().project.shots || []).find((row) => row.id === shotId);
+    if (shot) seek(shot.startMs);
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !refs.preflight.hidden) closePreflight();
+  });
 }
 
 // --------------------------------------------------------------------------- 任务
@@ -1294,9 +1453,66 @@ async function openDrawer() {
   const llmModel = refs.drawerBody.querySelector('[data-path="llm.model"]');
   if (llmModel && models.length) llmModel.setAttribute("list", "llmModels");
   if (styles.length) enhanceStylePicker(styles);
+  enhanceCanvasPresets();
   bindDrawerFields();
   refs.drawer.hidden = false;
   refs.drawerBackdrop.hidden = false;
+}
+
+const RESOLUTION_PRESETS = [
+  { id: "720p", label: "720p", value: 1280 },
+  { id: "1080p", label: "1080p", value: 1920 },
+  { id: "4k", label: "4K", value: 3840 },
+];
+
+/** 把「导出长边」升级成常见分辨率预设，并实时显示成片实际尺寸。 */
+function enhanceCanvasPresets() {
+  const input = refs.drawerBody.querySelector('[data-path="canvas.longSide"]');
+  if (!input) return;
+  const field = input.closest(".field");
+  if (!field) return;
+  const ratioSelect = refs.drawerBody.querySelector('[data-path="canvas.ratio"]');
+  const fpsInput = refs.drawerBody.querySelector('[data-path="canvas.fps"]');
+
+  const presetField = document.createElement("div");
+  presetField.className = "field";
+  presetField.innerHTML = `<label>分辨率预设</label>
+    <select class="select" data-resolution-preset>
+      ${RESOLUTION_PRESETS.map((preset) =>
+        `<option value="${preset.id}">${preset.label}</option>`).join("")}
+      <option value="custom">自定义</option>
+    </select>`;
+  field.insertAdjacentElement("beforebegin", presetField);
+  const select = presetField.querySelector("[data-resolution-preset]");
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.style.marginTop = "6px";
+  field.appendChild(hint);
+
+  const sync = (fromPreset) => {
+    if (fromPreset) {
+      const preset = RESOLUTION_PRESETS.find((item) => item.id === select.value);
+      if (preset) input.value = String(preset.value);
+    } else {
+      const preset = RESOLUTION_PRESETS.find((item) => item.value === Number(input.value));
+      select.value = preset ? preset.id : "custom";
+    }
+    const size = canvasSize({
+      ratio: (ratioSelect && ratioSelect.value) || "16:9",
+      longSide: Number(input.value) || 1920,
+    });
+    hint.textContent =
+      `成片尺寸：${size.width}×${size.height} · ${Number((fpsInput || {}).value) || 30}fps`;
+  };
+
+  const current = RESOLUTION_PRESETS.find((preset) => preset.value === Number(input.value));
+  select.value = current ? current.id : "custom";
+  select.addEventListener("change", () => sync(true));
+  input.addEventListener("input", () => sync(false));
+  if (ratioSelect) ratioSelect.addEventListener("change", () => sync(false));
+  if (fpsInput) fpsInput.addEventListener("input", () => sync(false));
+  sync(false);
 }
 
 /** 把风格预设的纯文本输入升级成带分组的风格库下拉，选中即填入风格描述。 */

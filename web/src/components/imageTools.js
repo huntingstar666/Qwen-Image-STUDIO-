@@ -454,7 +454,7 @@ export function createImageToolsPage(host) {
                 <div>拖拽图片到这里，或点击选择</div>
                 <small>PNG / JPG / WebP；像素越大处理越慢</small>
               </div>
-              <input type="file" accept="image/*" hidden data-ref="fileInput" />
+              <input type="file" accept="image/*" hidden data-ref="fileInput" aria-label="选择要处理的图片" />
               <div class="row tools-import">
                 <button class="btn ghost sm" type="button" data-ref="importMaterials">素材仓库</button>
                 <button class="btn ghost sm" type="button" data-ref="importRecent">最近结果</button>
@@ -722,7 +722,7 @@ export function createImageToolsPage(host) {
                     <button class="btn primary sm" type="button" data-ref="taggerGo" disabled>反推标签</button>
                     <button class="btn ghost sm" type="button" data-ref="taggerCopy" disabled>复制</button>
                   </div>
-                  <textarea class="input mono" rows="4" readonly placeholder="识别结果会出现在这里" data-ref="taggerResult"></textarea>
+                  <textarea class="input mono" rows="4" readonly placeholder="识别结果会出现在这里" aria-label="反推标签结果" data-ref="taggerResult"></textarea>
                   <div class="row hidden" data-ref="taggerActions">
                     <button class="btn ghost sm" type="button" data-ref="taggerToT2i">→ 文生图</button>
                     <button class="btn ghost sm" type="button" data-ref="taggerToEdit">→ 图生图</button>
@@ -743,7 +743,7 @@ export function createImageToolsPage(host) {
                     <label class="field"><span class="field-label">字体</span><select class="select" data-ref="wmFont"></select></label>
                   </div>
                   <div class="hidden" data-ref="wmImageFields">
-                    <input type="file" accept="image/*" hidden data-ref="wmMarkInput" />
+                    <input type="file" accept="image/*" hidden data-ref="wmMarkInput" aria-label="选择图片水印" />
                     <button class="btn ghost sm block" type="button" data-ref="wmMarkPick">选择 PNG logo（推荐透明背景）</button>
                     <div class="field-hint" data-ref="wmMarkName">未选择图片</div>
                   </div>
@@ -804,7 +804,7 @@ export function createImageToolsPage(host) {
                     <button class="chip" type="button" data-gif-source="video">视频截取</button>
                   </div>
                   <div data-ref="gifImageFields">
-                    <input type="file" accept="image/*" multiple hidden data-ref="gifFrameInput" />
+                    <input type="file" accept="image/*" multiple hidden data-ref="gifFrameInput" aria-label="选择 GIF 帧图片" />
                     <div class="row">
                       <button class="btn ghost sm" type="button" data-ref="gifAddFrames">添加帧</button>
                       <button class="btn ghost sm" type="button" data-ref="gifAddSource">当前源图入帧</button>
@@ -816,7 +816,7 @@ export function createImageToolsPage(host) {
                     </div>
                   </div>
                   <div class="hidden" data-ref="gifVideoFields">
-                    <input type="file" accept="video/*" hidden data-ref="gifVideoInput" />
+                    <input type="file" accept="video/*" hidden data-ref="gifVideoInput" aria-label="选择 GIF 视频" />
                     <button class="btn ghost sm block" type="button" data-ref="gifVideoPick">选择视频（≤512MB）</button>
                     <div class="field-hint" data-ref="gifVideoInfo">支持 mp4 / mov / webm / mkv / avi</div>
                     <div class="grid-2">
@@ -907,7 +907,7 @@ export function createImageToolsPage(host) {
           <div class="panel-head">
             <div class="panel-title">
               结果
-              <span class="panel-sub" data-ref="resultCount">0 张</span>
+              <span class="panel-sub" data-ref="resultCount" aria-live="polite">0 张</span>
               <span class="panel-sub" data-ref="filmSelected">未选择</span>
             </div>
             <div class="panel-actions tools-film-actions">

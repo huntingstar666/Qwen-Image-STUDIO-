@@ -1214,6 +1214,29 @@ results       已落盘结果（url/thumb/尺寸/类型/时间）
 | 遮罩层 | `background-color: rgba(0,0,0,0)`，无棋盘 |
 | 控制台 | 0 error |
 
+### 12.4 无障碍：隐藏输入与结果播报（2026-11-09）
+
+**改动文件**
+
+- `web/src/components/imageTools.js`
+
+**内容**
+
+- 源图文件输入增加 `aria-label="选择要处理的图片"`；
+- 水印 logo 输入增加 `aria-label="选择图片水印"`；
+- GIF 帧输入/视频输入分别增加 `aria-label`；
+- 反推结果 textarea 增加 `aria-label="反推标签结果"`；
+- 结果数量 `resultCount` 增加 `aria-live="polite"`，处理完成时屏幕阅读器可播报；
+- Toast 容器原本已有 `role="status"` + `aria-live="assertive"`，本轮不改。
+
+**回归**
+
+| 场景 | 结果 |
+|---|---|
+| DOM 属性 | 5 个隐藏输入/结果框均有可访问名称；结果计数 `aria-live=polite` |
+| 视觉 | 无布局/样式变化 |
+| 控制台 | 0 error |
+
 ---
 
 ## 附录 A：整改前基线实测数据（2026-11-09）

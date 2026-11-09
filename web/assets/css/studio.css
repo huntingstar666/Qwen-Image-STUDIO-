@@ -240,7 +240,8 @@
   flex: 1 1 auto;
 }
 
-/* 图层库入口（D23.3） */
+/* 图层库入口（D23.3）/ 添加图层入口（D25.2） */
+.studio-layers-add,
 .studio-layers-library {
   flex: 0 0 auto;
   height: 20px;
@@ -254,9 +255,59 @@
   cursor: pointer;
 }
 
+.studio-layers-add {
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.studio-layers-add:hover:not(:disabled),
+.studio-layers-add:focus-visible,
 .studio-layers-library:hover,
 .studio-layers-library:focus-visible {
   border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.studio-layers-add:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 添加图层菜单：与图层库浮层同一位置，互斥打开。 */
+.studio-add-menu {
+  position: absolute;
+  top: 40px;
+  left: 6px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  min-width: 136px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 16px 36px rgb(0 0 0 / 22%);
+}
+
+.studio-add-menu[hidden] {
+  display: none;
+}
+
+.studio-add-menu button {
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-add-menu button:hover,
+.studio-add-menu button:focus-visible {
+  background: var(--accent-dim);
   color: var(--accent);
   outline: none;
 }
@@ -797,10 +848,24 @@
 }
 
 .studio-layers-empty {
+  width: 100%;
   padding: 18px 10px;
+  border: 0;
+  background: transparent;
   color: var(--dim);
   font-size: 10.5px;
   text-align: center;
+  cursor: pointer;
+}
+
+.studio-layers-empty:hover:not(:disabled),
+.studio-layers-empty:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.studio-layers-empty:disabled {
+  cursor: default;
 }
 
 .studio-layers-empty[hidden] {

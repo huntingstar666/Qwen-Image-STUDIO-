@@ -21,8 +21,14 @@ export function createLayerColumn(host, ctx) {
     <div class="studio-layers-head">
       <span class="studio-layers-title">图层 <span class="mono" data-lc-count>0</span></span>
       <span class="spacer"></span>
+      <button class="studio-layers-add" type="button" data-lc-add title="添加图层：本地图片 / 素材仓库 / 图层库" aria-haspopup="menu" aria-expanded="false">＋</button>
       <button class="studio-layers-library" type="button" data-lc-library title="图层库：跨工程存取图层">库</button>
       <button class="studio-layers-collapse" type="button" data-lc-collapse title="收起图层栏" aria-label="收起图层栏">‹</button>
+    </div>
+    <div class="studio-add-menu" data-lc-add-menu role="menu" hidden>
+      <button type="button" role="menuitem" data-lc-add-item="local">本地图片…</button>
+      <button type="button" role="menuitem" data-lc-add-item="warehouse">从素材仓库…</button>
+      <button type="button" role="menuitem" data-lc-add-item="library">从图层库…</button>
     </div>
     <div class="studio-library" data-lc-lib hidden>
       <div class="studio-library-head">
@@ -34,7 +40,7 @@ export function createLayerColumn(host, ctx) {
       <div class="studio-library-empty" data-lc-lib-empty>还没有图层素材</div>
     </div>
     <div class="studio-layers-list" data-lc-list role="listbox" aria-label="图层"></div>
-    <div class="studio-layers-empty" data-lc-empty>打开图片后可管理图层</div>
+    <button class="studio-layers-empty" type="button" data-lc-empty>打开图片后可管理图层</button>
     <label class="studio-layers-opacity">
       <span>不透明</span>
       <input type="range" min="0" max="100" step="1" value="100" data-lc-alpha aria-label="图层不透明度" />
@@ -77,7 +83,16 @@ export function createLayerColumn(host, ctx) {
     libList: host.querySelector('[data-lc-lib-list]'),
     libEmpty: host.querySelector('[data-lc-lib-empty]'),
     libSave: host.querySelector('[data-lc-lib-save]'),
+    addMenu: host.querySelector('[data-lc-add-menu]'),
+    addBtn: host.querySelector('[data-lc-add]'),
   };
+
+  /** D25.2：添加图层菜单（本地图片 / 素材仓库 / 图层库）。 */
+  function setAddMenuOpen(open) {
+    if (!refs.addMenu) return;
+    refs.addMenu.hidden = !open;
+    refs.addBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
 
   const closeMergeMenu = () => {
     if (!refs.mergeMenu || refs.mergeMenu.hidden) return;
@@ -239,8 +254,12 @@ export function createLayerColumn(host, ctx) {
     refs.count.textContent = String(count);
     refs.spineCount.textContent = String(count);
     refs.list.innerHTML = list.map(rowHtml).join('');
-    refs.empty.textContent = list.length ? '从文件或图层库添加图层' : '打开图片后可管理图层';
+    // D25.2：空态改成可点的「＋ 添加图层」，不再是一句点了没反应的提示。
+    const canAdd = Boolean(ctx.canAddLayer?.());
+    refs.empty.textContent = list.length ? '＋ 从文件或素材仓库添加图层' : '打开图片后可管理图层';
+    refs.empty.disabled = !list.length;
     refs.empty.hidden = count > 0;
+    if (refs.addBtn) refs.addBtn.disabled = !canAdd;
     const selectedGroupId = ctx.getSelectedGroupId?.() || '';
     const selectedId = ctx.getSelectedLayerId?.() || '';
     const selected = list.find((layer) => layer.id === selectedId && layer.kind !== 'base') || null;
@@ -313,8 +332,33 @@ export function createLayerColumn(host, ctx) {
     if (!event.target.closest('.studio-library') && !event.target.closest('[data-lc-library]')) {
       setLibraryOpen(false);
     }
+    if (!event.target.closest('[data-lc-add-menu]') && !event.target.closest('[data-lc-add]')) {
+      setAddMenuOpen(false);
+    }
+    // D25.2：添加图层菜单。
+    const addBtn = event.target.closest('[data-lc-add]');
+    if (addBtn && !addBtn.disabled) {
+      setLibraryOpen(false);
+      setAddMenuOpen(refs.addMenu?.hidden !== false);
+      return;
+    }
+    const addEmpty = event.target.closest('[data-lc-empty]');
+    if (addEmpty && !addEmpty.disabled) {
+      setAddMenuOpen(true);
+      return;
+    }
+    const addItem = event.target.closest('[data-lc-add-item]');
+    if (addItem) {
+      setAddMenuOpen(false);
+      const kind = addItem.dataset.lcAddItem;
+      if (kind === 'local') ctx.addLayerLocal?.();
+      else if (kind === 'warehouse') ctx.addLayerFromWarehouse?.();
+      else if (kind === 'library') setLibraryOpen(true);
+      return;
+    }
     const libBtn = event.target.closest('[data-lc-library]');
     if (libBtn) {
+      setAddMenuOpen(false);
       setLibraryOpen(refs.lib?.hidden !== false);
       return;
     }
@@ -604,5 +648,5 @@ export function createLayerColumn(host, ctx) {
 
   render();
 
-  return { render, setCollapsed, beginRename };
+  return { render, setCollapsed, beginRename, closeAddMenu: () => setAddMenuOpen(false) };
 }

@@ -437,6 +437,7 @@ export function createStudioPage(host) {
               <button type="button" role="menuitem" data-import="local">本地文件</button>
               <button type="button" role="menuitem" data-import="warehouse">素材仓库</button>
               <button type="button" role="menuitem" data-import="history">最近结果</button>
+              <button type="button" role="menuitem" data-import="ref">添加为参考图…</button>
               <button type="button" role="menuitem" data-import="newmain" hidden>作为新主图（新建项目）</button>
             </div>
           </div>
@@ -457,6 +458,7 @@ export function createStudioPage(host) {
           </div>
           <button class="btn ghost sm" type="button" data-ref="upscaleBtn" disabled title="高清放大当前画面（VOSR2 / SeedVR2 / FlashVSR）">放大</button>
           <input type="file" accept="image/*" hidden data-ref="fileInput" />
+          <input type="file" accept="image/*" multiple hidden data-ref="layerInput" />
         </div>
 
         <div class="studio-restore" data-ref="restoreBar" hidden>
@@ -991,6 +993,7 @@ export function createStudioPage(host) {
     projHistoryEmpty: ref('projHistoryEmpty'),
     versionMenu: ref('versionMenu'),
     fileInput: ref('fileInput'),
+    layerInput: ref('layerInput'),
     rail: ref('rail'),
     zoomLabel: ref('zoomLabel'),
     undoBtn: ref('undoBtn'),
@@ -2663,6 +2666,39 @@ export function createStudioPage(host) {
     },
     deleteLayerAsset(id) {
       return removeLayerAssetAction(id);
+    },
+    /* D25.2：图层栏「＋ 添加图层」三来源 */
+    canAddLayer() {
+      return Boolean(doc);
+    },
+    addLayerLocal() {
+      if (!doc) {
+        toastWarn('请先打开一张图片');
+        return;
+      }
+      refs.layerInput.click();
+    },
+    addLayerFromWarehouse() {
+      if (!doc) {
+        toastWarn('请先打开一张图片');
+        return;
+      }
+      openImportPicker({
+        title: '从素材仓库添加图层',
+        accept: 'ref',
+        multiple: true,
+        initialSource: 'warehouse',
+        onPick(items) {
+          void (async () => {
+            let added = 0;
+            for (const item of items) {
+              const layer = await addMaterialLayer(item.src, item.name, { focusSticker: false });
+              if (layer) added += 1;
+            }
+            if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加到画布');
+          })();
+        },
+      });
     },
     /** 图层是否部分在画布外（面板行小圆点提示，D23.2）。 */
     isLayerOutside(layer) {
@@ -8723,6 +8759,7 @@ export function createStudioPage(host) {
     setImportMenu(false);
     const source = item.dataset.import;
     if (source === 'newmain') startNewProject('local');
+    else if (source === 'ref') openRefPicker();
     else if (source === 'local') {
       pendingNewProject = false;
       refs.fileInput.click();
@@ -8823,6 +8860,8 @@ export function createStudioPage(host) {
     ) {
       setProjHistory(false);
     }
+    // D25.2：图层栏「＋」菜单点画布等外部区域也要收起。
+    if (refs.layerColumn && !refs.layerColumn.contains(event.target)) layersPanel?.closeAddMenu?.();
   }
   document.addEventListener('click', onDocumentClick);
 
@@ -8841,6 +8880,16 @@ export function createStudioPage(host) {
     const files = [...(refs.fileInput.files || [])];
     refs.fileInput.value = '';
     void importLocalFiles(files, { asNewProject });
+  });
+
+  /* D25.2：图层栏「＋ 添加图层 → 本地图片」共用这个隐藏 input。 */
+  refs.layerInput.addEventListener('change', () => {
+    const files = [...(refs.layerInput.files || [])];
+    refs.layerInput.value = '';
+    void (async () => {
+      const added = await addLayerFiles(files);
+      if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加图层');
+    })();
   });
 
   refs.compareAllBtn.addEventListener('click', () => {
@@ -9254,24 +9303,32 @@ export function createStudioPage(host) {
     });
   }
 
-  /* ---------------------------------------------------------- 导入分流（D1.2） */
+  /* ---------------------------------------------------------- 导入分流（D1.2 / D25.2） */
 
-  /** 统一导入入口：有主图时全部转参考图，无主图时第一张开为主图。 */
+  /**
+   * 统一导入入口（D25.2）：无工程时第一张开为主图；有工程时**默认全部加为画布图层**。
+   * 想把图片加到 AI 参考图，走「导入 → 添加为参考图…」或拖拽时按住 Shift。
+   */
   async function importPicked(items, { asNewProject = false } = {}) {
     const list = Array.isArray(items) ? items.filter((item) => item?.src) : [];
     if (!list.length) return;
     // 「新建项目」：用户已选中图片，此时才关闭旧工程（会先自动保存）。
     if (asNewProject && doc) await closeProject();
     if (doc) {
-      await ai.addRefItems(list);
+      let added = 0;
+      for (const item of list) {
+        const layer = await addMaterialLayer(item.src, item.name, { focusSticker: false });
+        if (layer) added += 1;
+      }
+      if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加到画布');
       return;
     }
     const [first, ...rest] = list;
     const opened = await openUrl(first.src, first.name);
-    if (opened && rest.length) await ai.addRefItems(rest);
+    if (opened && rest.length) await importPicked(rest);
   }
 
-  async function importLocalFiles(fileList, { asNewProject = false } = {}) {
+  async function importLocalFiles(fileList, { asNewProject = false, asRef = false } = {}) {
     const files = [...(fileList || [])].filter((file) => file.type?.startsWith('image/'));
     if (!files.length) {
       toastWarn('请选择图片文件（PNG / JPG / WebP）');
@@ -9279,22 +9336,53 @@ export function createStudioPage(host) {
     }
     if (asNewProject && doc) await closeProject();
     if (doc) {
-      await ai.addRefFiles(files);
+      if (asRef) {
+        await ai.addRefFiles(files);
+        return;
+      }
+      const added = await addLayerFiles(files);
+      if (added) toastSuccess(added > 1 ? `已添加 ${added} 个图层` : '已添加到画布');
       return;
     }
     const [first, ...rest] = files;
     await openFile(first);
-    if (doc && rest.length) await ai.addRefFiles(rest);
+    if (doc && rest.length) await importLocalFiles(rest);
+  }
+
+  /** D25.2：一批本地图片依次加成叠加图层（按主图中心居中）。 */
+  async function addLayerFiles(files) {
+    if (!doc) return 0;
+    let added = 0;
+    for (const file of files) {
+      const layer = await addOverlayFile(file, {
+        center: { x: doc.size.width / 2, y: doc.size.height / 2 },
+      });
+      if (layer) added += 1;
+    }
+    return added;
   }
 
   function openMainPicker(source, { asNewProject = false } = {}) {
     openImportPicker({
-      title: '导入图片',
+      title: doc ? '添加到画布' : '导入图片',
       accept: 'main',
-      multiple: false,
+      multiple: Boolean(doc),
       initialSource: source,
       onPick(items) {
         void importPicked(items, { asNewProject });
+      },
+    });
+  }
+
+  /** D25.2：显式把图片加到 AI 参考图（D1.2 的默认行为，现在降为二级入口）。 */
+  function openRefPicker() {
+    openImportPicker({
+      title: '添加为参考图',
+      accept: 'ref',
+      multiple: true,
+      initialSource: 'local',
+      onPick(items) {
+        void ai.addRefItems(items);
       },
     });
   }
@@ -9341,7 +9429,8 @@ export function createStudioPage(host) {
       const files = filesFromDataTransfer(event.dataTransfer);
       if (!files.length) return;
       event.preventDefault();
-      void importLocalFiles(files);
+      // D25.2：有工程时拖入 = 加到画布；按住 Shift 才进 AI 参考图。
+      void importLocalFiles(files, { asRef: event.shiftKey });
     });
   });
 
@@ -9354,17 +9443,13 @@ export function createStudioPage(host) {
     const file = item.getAsFile();
     if (!file) return;
     event.preventDefault();
-    // 粘贴会替换主图并清空历史，已有编辑时先确认，避免误丢工作。
+    // D25.2：有工程时粘贴 = 加一个图层（可在画布上继续拖动），不再替换主图。
     if (doc) {
-      const ok = await confirmDialog({
-        title: '替换当前图片',
-        message: '粘贴的图片会替换当前主图，未导出的编辑将丢失。确定继续？',
-        confirmText: '替换',
-        danger: true,
-      });
-      if (!ok || !doc) return;
+      const added = await addLayerFiles([file]);
+      if (added) toastSuccess('已粘贴为图层');
+      return;
     }
-    openFile(file);
+    void openFile(file);
   }
 
   /* ---------------------------------------------------------- 键盘 */
@@ -9620,7 +9705,7 @@ export function createStudioPage(host) {
   }
 
   /** 取素材文件后作为叠加层加入当前工程（按主图 60% 居中适配）。 */
-  async function addMaterialLayer(url, name) {
+  async function addMaterialLayer(url, name, { focusSticker = true } = {}) {
     if (!doc) return null;
     const blob = await fetchBlob(url);
     if (!blob) {
@@ -9631,7 +9716,7 @@ export function createStudioPage(host) {
     return addOverlayFile(file, {
       name: file.name,
       center: { x: doc.size.width / 2, y: doc.size.height / 2 },
-      focusSticker: true,
+      focusSticker,
     });
   }
   // 页面刚创建时画布还没有尺寸，先初始化一次

@@ -547,17 +547,47 @@ export function createHistoryPage(host) {
    */
   function restoreFromRecord(params, item) {
     const restore = { ...(params || {}) };
+    const metadata = item.meta || {};
     const quality = item.quality || {};
     if (!restore.preset && quality.preset) restore.preset = quality.preset;
     if (!restore.size_mode && quality.size_mode) restore.size_mode = quality.size_mode;
     if (restore.seed == null && quality.seed != null) restore.seed = quality.seed;
-    if (!Array.isArray(restore.loras) && Array.isArray(quality.loras)) restore.loras = quality.loras;
     if (!restore.task?.mode && quality.task_mode) restore.task = { mode: quality.task_mode };
     const sampling = quality.sampling || {};
     for (const key of ['steps', 'cfg', 'denoise', 'sampler', 'scheduler']) {
       if (restore[key] == null) restore[key] = sampling[key];
     }
-    if (!restore.turbo && sampling.turbo) restore.turbo = sampling.turbo;
+
+    // LoRA：新记录有用户原始请求快照，直接用；旧记录的 params.loras 是后端
+    // 「实际挂载」列表（含任务 / 一致性 / 加速 LoRA），需要剔除自动挂载项。
+    if (Array.isArray(metadata.request_loras)) {
+      restore.loras = metadata.request_loras;
+    } else if (Array.isArray(restore.loras)) {
+      restore.loras = restore.loras.filter((entry) => {
+        const name = String(entry?.name || '');
+        return name && !/consistency|一致性/i.test(name);
+      });
+    } else {
+      // 记录里没有 LoRA 信息：清空，避免把上一条记录残留的 LoRA 带进来。
+      restore.loras = [];
+    }
+    if (restore.consistency_lora == null && metadata.request_consistency != null) {
+      restore.consistency_lora = metadata.request_consistency;
+    }
+    if (restore.consistency_lora == null && Array.isArray(params?.loras)) {
+      const hit = params.loras.find((entry) => /consistency|一致性/i.test(String(entry?.name || '')));
+      if (hit) restore.consistency_lora = { name: hit.name, strength: Number(hit.strength) || 0.48 };
+    }
+
+    // Turbo：老版本 params.turbo 存的是布尔值，质量报告里才有 profile。
+    const turbo = restore.turbo;
+    if (!turbo || typeof turbo !== 'object') {
+      const reported = sampling.turbo;
+      restore.turbo = reported && typeof reported === 'object'
+        ? { enabled: Boolean(reported.enabled), profile: String(reported.profile || '') }
+        : { enabled: Boolean(turbo), profile: '' };
+    }
+
     if (!restore.local) {
       const local = {};
       if (quality.color_match != null) local.color_match = quality.color_match;

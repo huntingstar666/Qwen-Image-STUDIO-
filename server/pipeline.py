@@ -899,6 +899,16 @@ class Pipeline:
     def generate_edit(self, job) -> None:
         cfg = config.load_config()
         params = job.params
+        # 记录「用户原始请求」（预设合并前）：历史回退要按用户意图还原，
+        # 不能把后端自动挂载的任务 / 一致性 / 加速 LoRA 当成用户选择写回界面。
+        if "request_loras" not in job.meta:
+            job.meta["request_loras"] = [
+                {"name": os.path.basename(str(item.get("name") or "")),
+                 "strength": item.get("strength")}
+                for item in (params.get("loras") or [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+        job.meta.setdefault("request_consistency", params.get("consistency_lora"))
         # 预设合并：显式 > preset > 内置默认。不带 preset 时原样返回（老前端无感）。
         try:
             params, preset_info = presets.merge(params)
@@ -1128,7 +1138,11 @@ class Pipeline:
             "steps": sampling["steps"], "cfg": sampling["cfg"],
             "sampler": sampling["sampler"], "scheduler": sampling["scheduler"],
             "seed": sampling["seed"], "denoise": sampling["denoise"],
-            "turbo": sampling["turbo"], "negative_prompt": sampling["negative_prompt"],
+            "turbo": {
+                "enabled": bool(sampling["turbo"]),
+                "profile": str((params.get("turbo") or {}).get("profile") or ""),
+            },
+            "negative_prompt": sampling["negative_prompt"],
             "sigmas": sampling["sigmas"],
         })
         if sampling.get("slg"):

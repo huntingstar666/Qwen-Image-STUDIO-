@@ -3116,7 +3116,11 @@ export function createEditPage(host) {
     const presetId = String(restore.preset || '').trim();
     const preset = presetId ? findPreset(presetList, presetId) : null;
     if (presetId && !preset) warnings.push(`预设 ${presetId} 已不存在`);
-    if (preset) edit.preset = preset.id;
+    if (preset) {
+      edit.preset = preset.id;
+      // 标记为「已套用」：避免随后的 syncPresetState 把它当成切预设而重置覆盖项。
+      edit.appliedPreset = preset.id;
+    }
 
     // 预设之外的嵌套参数 → 扁平覆盖项；任务强制的 local 键不回填。
     const groups = ['local', 'zero_shift', 'preprocess', 'outpaint', 'panorama'];
@@ -3131,7 +3135,14 @@ export function createEditPage(host) {
       next[prefix] = value;
     };
     for (const group of groups) {
-      if (restore[group] && typeof restore[group] === 'object') flatten(group, restore[group]);
+      const value = restore[group];
+      if (!value || typeof value !== 'object') continue;
+      // 同一组内的旧覆盖项先清掉，避免上一条记录的值残留在本次还原里。
+      const prefix = `${group}.`;
+      for (const key of Object.keys(next)) {
+        if (key.startsWith(prefix)) delete next[key];
+      }
+      flatten(group, value);
     }
     for (const key of taskKeys) delete next[key];
     edit.overrides = next;
@@ -3189,41 +3200,63 @@ export function createEditPage(host) {
       setSeedValue(String(Math.max(0, Math.floor(seed))));
     }
 
-    // Turbo
-    if (restore.turbo && typeof restore.turbo === 'object' && turboControl) {
-      const turbo = { enabled: Boolean(restore.turbo.enabled), profile: String(restore.turbo.profile || '') };
+    // Turbo（老记录可能只存布尔值，这里一并兼容）
+    const turboRestore = restore.turbo;
+    if (turboControl && (typeof turboRestore === 'boolean' || (turboRestore && typeof turboRestore === 'object'))) {
+      const turbo = {
+        enabled: typeof turboRestore === 'boolean' ? turboRestore : Boolean(turboRestore.enabled),
+        profile: typeof turboRestore === 'object' ? String(turboRestore.profile || '') : '',
+      };
       turboControl.setValue(turbo);
       edit.turbo = turbo.enabled;
-      edit.turboProfile = turbo.profile;
+      if (turbo.profile) edit.turboProfile = turbo.profile;
       edit.turboUser = true;
       applyTurboToFields(false);
     }
 
-    // LoRA
+    // LoRA：后端只留文件名，回填时映射回目录里的完整 value，否则选择器认不出
+    const loraCatalog = (store.state.options?.models?.lora || []).map((entry) =>
+      typeof entry === 'string' ? entry : String(entry.value ?? entry.name ?? ''),
+    );
+    const resolveLoraName = (name) => {
+      const base = String(name || '').split(/[\\/]/).pop();
+      return loraCatalog.find((value) => String(value).split(/[\\/]/).pop() === base) || String(name || '');
+    };
     if (Array.isArray(restore.loras)) {
       edit.loras = Object.fromEntries(
         restore.loras
           .filter((item) => item && item.name)
-          .map((item) => [String(item.name), Number(item.strength) || 1]),
+          .map((item) => {
+            const strength = Number(item.strength);
+            return [resolveLoraName(item.name), Number.isFinite(strength) ? strength : 1];
+          }),
       );
       renderLoras();
     }
 
     // 一致性 LoRA
     const consistency = restore.consistency_lora;
-    if (consistency && typeof consistency === 'object' && consistency.name) {
-      edit.consistency = true;
-      edit.consistencyLora = String(consistency.name);
-      const strength = Number(consistency.strength);
-      if (Number.isFinite(strength)) edit.consistencyStrength = Math.min(2, Math.max(0, strength));
+    if (consistency && typeof consistency === 'object') {
+      if (consistency.enabled === false) {
+        edit.consistency = false;
+      } else {
+        edit.consistency = true;
+        if (consistency.name) edit.consistencyLora = resolveLoraName(consistency.name);
+        const strength = Number(consistency.strength);
+        if (Number.isFinite(strength)) edit.consistencyStrength = Math.min(2, Math.max(0, strength));
+      }
     } else if (consistency === false) {
       edit.consistency = false;
+    } else if (restore.local && typeof restore.local === 'object' && restore.local.consistency != null) {
+      // 旧记录没留 consistency_lora，用 local.consistency 判断开关（false 是硬关闭）
+      edit.consistency = Boolean(restore.local.consistency);
     }
     renderConsistency();
 
     patchSettings({
       edit: {
         preset: edit.preset,
+        appliedPreset: edit.appliedPreset,
         overrides: edit.overrides,
         sizeMode: edit.sizeMode,
         width: edit.width,
@@ -3325,7 +3358,11 @@ export function createEditPage(host) {
         }
         patchSettings({ edit: { overrides: edit.overrides } });
       }
-      if (payload.restore) applyRestore(payload.restore);
+      if (payload.restore) {
+        // 预设摘要是异步加载的；等它到位再还原，否则会误报「预设已不存在」。
+        await ensurePresets();
+        applyRestore(payload.restore);
+      }
       renderTaskMode();
       renderPresets();
       syncLocalControls();

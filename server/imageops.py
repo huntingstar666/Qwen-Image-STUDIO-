@@ -79,8 +79,49 @@ def op_crop(image: Image.Image, spec: dict[str, Any]) -> Image.Image:
     return image.crop((left, top, right, bottom))
 
 
+def _grid_segments(length: int, cuts: Any, count: int, gap: int) -> list[tuple[int, int]]:
+    """把长度按分线切成 count 段并扣除间隔，返回 (起点, 长度) 像素列表。
+
+    ``cuts`` 为归一化分线位置（0~1，长度 count-1）；为 None 时等分。
+    """
+    if cuts is None:
+        boundaries = [int(round(length * i / count)) for i in range(count + 1)]
+    else:
+        if not isinstance(cuts, (list, tuple)) or len(cuts) != count - 1:
+            raise ImageOpsError(f"分线数量应为 {count - 1} 条")
+        try:
+            values = [float(value) for value in cuts]
+        except (TypeError, ValueError) as exc:
+            raise ImageOpsError("分线位置必须是数字") from exc
+        if any(value <= 0 or value >= 1 for value in values):
+            raise ImageOpsError("分线位置必须在 0~1 之间")
+        if any(values[i] >= values[i + 1] for i in range(len(values) - 1)):
+            raise ImageOpsError("分线位置必须递增")
+        boundaries = [0] + [int(round(value * length)) for value in values] + [length]
+
+    safe_gap = float(gap)
+    for i in range(len(boundaries) - 1):
+        deduction = (0.5 if i > 0 else 0.0) + (0.5 if i < len(boundaries) - 2 else 0.0)
+        if deduction > 0:
+            safe_gap = min(
+                safe_gap,
+                max(0.0, (boundaries[i + 1] - boundaries[i] - 1) / deduction),
+            )
+
+    segments: list[tuple[int, int]] = []
+    for i in range(len(boundaries) - 1):
+        start = boundaries[i] + (safe_gap / 2 if i > 0 else 0)
+        end = boundaries[i + 1] - (safe_gap / 2 if i < len(boundaries) - 2 else 0)
+        start_i = int(round(start))
+        end_i = int(round(end))
+        if end_i <= start_i:
+            raise ImageOpsError("分线过密或间隔过大，导致某块不足 1 像素")
+        segments.append((start_i, end_i - start_i))
+    return segments
+
+
 def op_grid(image: Image.Image, spec: dict[str, Any]) -> list[Image.Image]:
-    """宫格切分：rows × columns，可带间隔（像素）与选中的格子序号（1 起，行优先）。"""
+    """宫格切分：rows × columns，可带间隔、自定义分线与选中序号（1 起，行优先）。"""
     rows = _as_int(spec.get("rows", 1), "rows", minimum=1)
     columns = _as_int(spec.get("columns", 1), "columns", minimum=1)
     row_gap = _as_int(spec.get("row_gap", 0), "row_gap")
@@ -102,22 +143,16 @@ def op_grid(image: Image.Image, spec: dict[str, Any]) -> list[Image.Image]:
         if not wanted:
             raise ImageOpsError("没有选中任何宫格")
 
-    cell_w = (image.width - column_gap * (columns - 1)) / columns
-    cell_h = (image.height - row_gap * (rows - 1)) / rows
-    if cell_w < 1 or cell_h < 1:
-        raise ImageOpsError("间隔过大，导致切分后每块不足 1 像素")
+    column_segments = _grid_segments(image.width, spec.get("column_cuts"), columns, column_gap)
+    row_segments = _grid_segments(image.height, spec.get("row_cuts"), rows, row_gap)
 
     out: list[Image.Image] = []
-    for r in range(rows):
-        for c in range(columns):
+    for r, (top, height) in enumerate(row_segments):
+        for c, (left, width) in enumerate(column_segments):
             index = r * columns + c + 1
             if wanted is not None and index not in wanted:
                 continue
-            left = int(round(c * (cell_w + column_gap)))
-            top = int(round(r * (cell_h + row_gap)))
-            right = int(round(left + cell_w))
-            bottom = int(round(top + cell_h))
-            out.append(image.crop((left, top, right, bottom)))
+            out.append(image.crop((left, top, left + width, top + height)))
     return out
 
 

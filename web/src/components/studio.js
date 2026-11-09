@@ -6051,6 +6051,54 @@ export function createStudioPage(host) {
     }
   }
 
+  /**
+   * D25.5：工程行 HTML。Dock 的「项目历史」浮层与顶栏「历史项目…」弹窗共用这一份，
+   * 避免两处各写一套后「当前 / 编辑中」标记与按钮文案不一致。
+   */
+  function projectRowHtml(project, tab) {
+    const locked = project.id !== projectId && leaseHeldByOther(project.id, tab);
+    const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
+    const when = project.updatedAt ? relativeTime(project.updatedAt) : '';
+    return `<div class="studio-proj-item${project.id === projectId ? ' is-current' : ''}" data-pid="${escapeHtml(
+      project.id,
+    )}">
+      <div class="studio-proj-thumb">${
+        project.thumbnail ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />` : '<span>无图</span>'
+      }</div>
+      <div class="studio-proj-info">
+        <div class="studio-proj-name">${escapeHtml(project.name || '未命名工程')}</div>
+        <div class="studio-proj-meta mono">${escapeHtml([size, when].filter(Boolean).join(' · '))}</div>
+      </div>
+      ${project.id === projectId ? '<span class="studio-proj-flag">当前</span>' : ''}
+      ${locked ? '<span class="studio-proj-flag is-lock">编辑中</span>' : ''}
+      <div class="studio-proj-actions">
+        <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>打开</button>
+        <button class="btn ghost sm" type="button" data-act="delete">删除</button>
+      </div>
+    </div>`;
+  }
+
+  /** D25.5：删除工程（两个入口共用确认文案与清理顺序）。 */
+  async function deleteProjectById(id, name) {
+    const confirmed = await confirmDialog({
+      title: '删除工程',
+      message: `删除「${escapeHtml(name || '该工程')}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!confirmed) return false;
+    try {
+      if (id === projectId) await closeProject({ flush: false });
+      await clearProject(id);
+    } catch (err) {
+      toastError(err, '删除工程失败');
+      return false;
+    }
+    toastSuccess('工程已删除');
+    await syncProjectCount();
+    return true;
+  }
+
   /** 渲染本机工程列表；正在被其它标签编辑的工程禁止直接打开。 */
   async function refreshProjectList() {
     let projects = [];
@@ -6062,33 +6110,8 @@ export function createStudioPage(host) {
     refs.projHistoryCount.textContent = String(projects.length);
     refs.projHistoryMeta.textContent = `${projects.length} 个项目`;
     refs.projHistoryEmpty.hidden = projects.length > 0;
-    refs.projHistoryList.textContent = '';
-    if (!projects.length) return;
     const tab = tabId();
-    for (const project of projects) {
-      const item = document.createElement('div');
-      item.className = 'studio-proj-item';
-      item.dataset.pid = project.id;
-      if (project.id === projectId) item.classList.add('is-current');
-      const locked = project.id !== projectId && leaseHeldByOther(project.id, tab);
-      const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
-      const when = project.updatedAt ? relativeTime(project.updatedAt) : '';
-      item.innerHTML = `
-        <div class="studio-proj-thumb">${
-          project.thumbnail ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />` : '<span>无图</span>'
-        }</div>
-        <div class="studio-proj-info">
-          <div class="studio-proj-name">${escapeHtml(project.name || '未命名工程')}</div>
-          <div class="studio-proj-meta mono">${escapeHtml([size, when].filter(Boolean).join(' · '))}</div>
-        </div>
-        ${project.id === projectId ? '<span class="studio-proj-flag">当前</span>' : ''}
-        ${locked ? '<span class="studio-proj-flag is-lock">编辑中</span>' : ''}
-        <div class="studio-proj-actions">
-          <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>打开</button>
-          <button class="btn ghost sm" type="button" data-act="delete">删除</button>
-        </div>`;
-      refs.projHistoryList.appendChild(item);
-    }
+    refs.projHistoryList.innerHTML = projects.map((project) => projectRowHtml(project, tab)).join('');
   }
 
   /** 读取并清空「从历史记录打开工程」的一次性交接。 */
@@ -6166,28 +6189,7 @@ export function createStudioPage(host) {
       }
       const tab = tabId();
       holder.innerHTML = `<div class="studio-projects-list">${projects
-        .map((project) => {
-          const locked = project.id !== projectId && leaseHeldByOther(project.id, tab);
-          const size = project.width && project.height ? `${fmtNum(project.width)} × ${fmtNum(project.height)}` : '';
-          const when = project.updatedAt ? relativeTime(project.updatedAt) : '';
-          return `<div class="studio-proj-item${project.id === projectId ? ' is-current' : ''}" data-pid="${escapeHtml(
-            project.id,
-          )}">
-            <div class="studio-proj-thumb">${
-              project.thumbnail ? `<img src="${escapeHtml(project.thumbnail)}" alt="" loading="lazy" />` : '<span>无图</span>'
-            }</div>
-            <div class="studio-proj-info">
-              <div class="studio-proj-name">${escapeHtml(project.name || '未命名工程')}</div>
-              <div class="studio-proj-meta mono">${escapeHtml([size, when].filter(Boolean).join(' · '))}</div>
-            </div>
-            <div class="studio-proj-actions">
-              <button class="btn ghost sm" type="button" data-act="open"${locked ? ' disabled' : ''}>${
-                locked ? '编辑中' : '打开'
-              }</button>
-              <button class="btn ghost sm" type="button" data-act="delete">删除</button>
-            </div>
-          </div>`;
-        })
+        .map((project) => projectRowHtml(project, tab))
         .join('')}</div>`;
     };
 
@@ -6208,23 +6210,7 @@ export function createStudioPage(host) {
       }
       if (button.dataset.act === 'delete') {
         const name = button.closest('[data-pid]')?.querySelector('.studio-proj-name')?.textContent || '该工程';
-        const confirmed = await confirmDialog({
-          title: '删除工程',
-          message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
-          confirmText: '删除',
-          danger: true,
-        });
-        if (!confirmed) return;
-        try {
-          if (id === projectId) await closeProject({ flush: false });
-          await clearProject(id);
-        } catch (err) {
-          toastError(err, '删除工程失败');
-          return;
-        }
-        toastSuccess('工程已删除');
-        await render();
-        await syncProjectCount();
+        if (await deleteProjectById(id, name)) await render();
       }
     });
 
@@ -6254,22 +6240,7 @@ export function createStudioPage(host) {
     }
     if (button.dataset.act === 'delete') {
       const name = item.querySelector('.studio-proj-name')?.textContent || '该工程';
-      const confirmed = await confirmDialog({
-        title: '删除工程',
-        message: `删除「${escapeHtml(name)}」？本机工程、图层、参考图与版本记录会一起删除，不可恢复。`,
-        confirmText: '删除',
-        danger: true,
-      });
-      if (!confirmed) return;
-      try {
-        if (id === projectId) await closeProject({ flush: false });
-        await clearProject(id);
-      } catch (err) {
-        toastError(err, '删除工程失败');
-        return;
-      }
-      toastSuccess('工程已删除');
-      await refreshProjectList();
+      if (await deleteProjectById(id, name)) await refreshProjectList();
     }
   });
 

@@ -91,17 +91,35 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   };
   const hideLqip = () => lqip.classList.remove('is-on');
 
-  const applyTransform = () => {
+  /** 平移边界：放大后才允许移动，且不把图片拖出舞台。 */
+  const clampPan = () => {
+    const maxX = Math.max(0, (img.clientWidth * zoom - stage.clientWidth) / 2);
+    const maxY = Math.max(0, (img.clientHeight * zoom - stage.clientHeight) / 2);
+    panX = Math.min(maxX, Math.max(-maxX, panX));
+    panY = Math.min(maxY, Math.max(-maxY, panY));
+  };
+
+  let transformTimer = 0;
+  /**
+   * @param {boolean} [animate] 按钮/双击/快捷键缩放用过渡；滚轮与拖拽必须跟手，传 false。
+   */
+  const applyTransform = (animate = false) => {
+    clampPan();
+    img.classList.toggle('is-animating', animate);
     img.style.transform = `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`;
     img.style.cursor = zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-out';
     ref('zoomVal').textContent = `${Math.round(zoom * 100)}%`;
+    if (animate) {
+      window.clearTimeout(transformTimer);
+      transformTimer = window.setTimeout(() => img.classList.remove('is-animating'), 220);
+    }
   };
 
-  const resetView = () => {
+  const resetView = (animate = false) => {
     zoom = 1;
     panX = 0;
     panY = 0;
-    applyTransform();
+    applyTransform(animate);
   };
 
   // 原图实际像素：当前显示宽度是被 max-width/max-height 适应窗口后的尺寸，
@@ -116,7 +134,7 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
     zoom = actualSizeZoom();
     panX = 0;
     panY = 0;
-    applyTransform();
+    applyTransform(true);
   };
 
   const updateInfo = () => {
@@ -330,12 +348,12 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
       show(index + 1);
     } else if (event.key === '+' || event.key === '=') {
       zoom = clampZoom(zoom * 1.2);
-      applyTransform();
+      applyTransform(true);
     } else if (event.key === '-') {
       zoom = clampZoom(zoom / 1.2);
-      applyTransform();
+      applyTransform(true);
     } else if (event.key === '0') {
-      resetView();
+      resetView(true);
     } else if (event.key === '1') {
       showActualSize();
     }
@@ -360,13 +378,13 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   ref('next').addEventListener('click', () => show(index + 1));
   ref('zoomIn').addEventListener('click', () => {
     zoom = clampZoom(zoom * 1.25);
-    applyTransform();
+    applyTransform(true);
   });
   ref('zoomOut').addEventListener('click', () => {
     zoom = clampZoom(zoom / 1.25);
-    applyTransform();
+    applyTransform(true);
   });
-  ref('zoomReset').addEventListener('click', resetView);
+  ref('zoomReset').addEventListener('click', () => resetView(true));
   ref('zoomActual').addEventListener('click', showActualSize);
   ref('download').addEventListener('click', () => {
     const item = list[index];
@@ -374,44 +392,95 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   });
   ref('open').addEventListener('click', () => window.open(list[index].url, '_blank', 'noopener'));
 
-  stage.addEventListener('wheel', (event) => {
-    event.preventDefault();
-    zoom = clampZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.9));
+  /** 以指针为锚点缩放：光标下的那一点保持不动。 */
+  const zoomAtPoint = (nextZoom, clientX, clientY, animate = false) => {
+    const next = clampZoom(nextZoom);
+    const rect = stage.getBoundingClientRect();
+    const px = clientX - (rect.left + rect.width / 2);
+    const py = clientY - (rect.top + rect.height / 2);
+    const ratio = next / zoom;
+    panX = px - (px - panX) * ratio;
+    panY = py - (py - panY) * ratio;
+    zoom = next;
     if (zoom <= 1) {
       panX = 0;
       panY = 0;
     }
-    applyTransform();
+    applyTransform(animate);
+  };
+
+  stage.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    zoomAtPoint(zoom * (event.deltaY < 0 ? 1.12 : 0.9), event.clientX, event.clientY, false);
   }, { passive: false });
 
-  stage.addEventListener('dblclick', () => {
-    if (zoom > 1) resetView();
-    else {
-      zoom = 2;
-      applyTransform();
-    }
+  stage.addEventListener('dblclick', (event) => {
+    if (zoom > 1) resetView(true);
+    else zoomAtPoint(2, event.clientX, event.clientY, true);
   });
+
+  // 拖拽速度（px/ms）用于松手后的短惯性
+  let lastMoveAt = 0;
+  let lastPointerX = 0;
+  let lastPointerY = 0;
+  let velocityX = 0;
+  let velocityY = 0;
+  let inertiaToken = 0;
 
   stage.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || zoom <= 1) return;
     dragging = true;
+    inertiaToken += 1; // 取消上一段惯性
     dragStartX = event.clientX;
     dragStartY = event.clientY;
     dragBaseX = panX;
     dragBaseY = panY;
-    stage.setPointerCapture(event.pointerId);
+    lastMoveAt = performance.now();
+    lastPointerX = event.clientX;
+    lastPointerY = event.clientY;
+    velocityX = 0;
+    velocityY = 0;
+    try {
+      stage.setPointerCapture(event.pointerId);
+    } catch {
+      // 合成事件或已释放的指针没有 capture，忽略即可
+    }
     applyTransform();
   });
   stage.addEventListener('pointermove', (event) => {
     if (!dragging) return;
     panX = dragBaseX + (event.clientX - dragStartX);
     panY = dragBaseY + (event.clientY - dragStartY);
+    const now = performance.now();
+    const dt = Math.max(1, now - lastMoveAt);
+    velocityX = (event.clientX - lastPointerX) / dt;
+    velocityY = (event.clientY - lastPointerY) / dt;
+    lastMoveAt = now;
+    lastPointerX = event.clientX;
+    lastPointerY = event.clientY;
     applyTransform();
   });
   const endDrag = () => {
     if (!dragging) return;
     dragging = false;
     applyTransform();
+    // 松手惯性：按最近一次速度衰减，撞到边界自然停住
+    const speed = Math.hypot(velocityX, velocityY);
+    if (prefersReducedMotion() || speed < 0.05 || zoom <= 1) return;
+    const token = ++inertiaToken;
+    let vx = velocityX * 16;
+    let vy = velocityY * 16;
+    const step = () => {
+      if (token !== inertiaToken || !img.isConnected) return;
+      vx *= 0.9;
+      vy *= 0.9;
+      if (Math.abs(vx) < 0.2 && Math.abs(vy) < 0.2) return;
+      panX += vx;
+      panY += vy;
+      applyTransform();
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   };
   stage.addEventListener('pointerup', endDrag);
   stage.addEventListener('pointercancel', endDrag);

@@ -2141,6 +2141,11 @@ html[data-theme="dark"] .feed-empty {
   will-change: transform;
 }
 
+/* 按钮 / 双击 / 快捷键缩放走过渡；滚轮与拖拽不加这个类，保持跟手 */
+.lb-img.is-animating {
+  transition: transform 180ms var(--ease);
+}
+
 /* 缩略图占位：原图解码前铺一层模糊底图，避免黑屏/白屏 */
 .lb-lqip {
   position: absolute;

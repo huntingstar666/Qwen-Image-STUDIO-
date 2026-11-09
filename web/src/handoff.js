@@ -20,6 +20,7 @@ let pendingStudio = null;
  *   localEnabled?: boolean|null,
  *   taskMode?: string|null,
  *   panorama?: {aspect?:string, long_side?:number, wrap?:boolean, seam_blend?:number}|null,
+ *   restore?: object|null,
  *   toast?: string
  * }} payload
  */
@@ -34,6 +35,8 @@ export function setHandoff(payload) {
     localEnabled: payload.localEnabled ?? null,
     taskMode: payload.taskMode || null,
     panorama: payload.panorama && typeof payload.panorama === 'object' ? payload.panorama : null,
+    // 历史回退：原样透传 replay 参数，由编辑页自行解析；不改变现有调用方。
+    restore: payload.restore && typeof payload.restore === 'object' ? payload.restore : null,
     toast: payload.toast || '已接收图像处理结果',
   };
 }

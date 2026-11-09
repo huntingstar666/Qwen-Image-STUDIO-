@@ -25,6 +25,20 @@ from . import config
 _INLINE_DATA_PREFIX = "data:"
 _SLIM_DATA_LIMIT = 256
 
+#: 历史落盘时丢弃的参数键（图片/遮罩/姿态图/内嵌 meta 都是大字段）。
+_HEAVY_PARAM_KEYS = {"images", "mask", "pose", "meta"}
+
+
+def replay_persisted_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """历史落盘保留可回放参数，去掉图片等大字段。
+
+    ``to_summary`` 只回传少量采样字段给列表轮询；如果落盘也用它，
+    服务重启后 ``replay.json`` 就只剩这几项，历史回退无法还原预设/尺寸。
+    这里保留除图片外的全部参数，体积仍然很小。
+    """
+    return {key: value for key, value in (params or {}).items()
+            if key not in _HEAVY_PARAM_KEYS}
+
 
 def slim_params(params: dict[str, Any] | None) -> dict[str, Any]:
     """把请求参数里的内联图片替换成占位符。
@@ -363,11 +377,15 @@ class JobQueue:
         """
         try:
             with self._lock:
-                payload = [
-                    self._jobs[jid].to_summary()
-                    for jid in self._order
-                    if jid in self._jobs
-                ]
+                payload = []
+                for jid in self._order:
+                    job = self._jobs.get(jid)
+                    if job is None:
+                        continue
+                    item = job.to_summary()
+                    # 列表摘要保持轻量，但落盘要留下可回放参数（图片除外）。
+                    item["params"] = replay_persisted_params(job.params)
+                    payload.append(item)
             os.makedirs(config.STORAGE_DIR, exist_ok=True)
             tmp = self._history_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:

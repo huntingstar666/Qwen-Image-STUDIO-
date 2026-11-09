@@ -13,6 +13,8 @@ import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
 import { clearProject, leaseHeldByOther, listProjects } from './studio/persistence.js';
+import { imageUrlToDataUrl } from './studio/chain.js';
+import { goToEditPage, setHandoff } from '../handoff.js';
 import { HISTORY_KINDS, historyKindLabel, visibleHistoryKinds } from '../data/historyKinds.js';
 import {
   copyText,
@@ -439,6 +441,15 @@ export function createHistoryPage(host) {
       size: 'lg',
       content,
       actions: [
+        ...(item.kind === 'edit'
+          ? [
+              {
+                label: '回到图像编辑',
+                kind: 'primary',
+                onClick: () => sendBackToEdit(item),
+              },
+            ]
+          : []),
         {
           label: '下载全部',
           kind: 'ghost',
@@ -470,6 +481,91 @@ export function createHistoryPage(host) {
         },
       ],
     });
+  }
+
+  /**
+   * 把一条编辑记录送回图像编辑页：输入图 + 遮罩 + 完整 replay 参数。
+   * 返回 false 时保留弹窗（失败提示已给出）。
+   */
+  async function sendBackToEdit(item) {
+    const meta = item.meta || {};
+    let params = {};
+    try {
+      const response = await fetch(api.replayUrl(item.id), { cache: 'no-store' });
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.params && typeof data.params === 'object') params = data.params;
+      }
+    } catch (err) {
+      console.warn('[history] 读取 replay 参数失败', err);
+    }
+
+    const savedInputs = Array.isArray(meta.input_urls) ? meta.input_urls.filter(Boolean) : [];
+    const urls = savedInputs.length ? savedInputs : item.images.slice(0, 1).map((image) => image.url);
+    const images = [];
+    for (let index = 0; index < urls.length; index += 1) {
+      try {
+        images.push({
+          dataUrl: await imageUrlToDataUrl(api.fileUrl(urls[index])),
+          name: `input-${index + 1}.png`,
+        });
+      } catch (err) {
+        console.warn('[history] 输入图读取失败', urls[index], err);
+      }
+    }
+    if (!images.length) {
+      toastWarn('原输入图已不可用，无法回到图像编辑');
+      return false;
+    }
+
+    let mask = null;
+    if (meta.mask_url) {
+      try {
+        mask = await imageUrlToDataUrl(api.fileUrl(meta.mask_url));
+      } catch (err) {
+        console.warn('[history] 遮罩读取失败', err);
+      }
+    }
+
+    setHandoff({
+      images,
+      mask,
+      prompt: params.prompt || meta.rawPrompt || item.prompt || '',
+      taskMode: params.task?.mode || null,
+      restore: restoreFromRecord(params, item),
+      toast: savedInputs.length
+        ? '已带回图像编辑，可调整参数后重新生成'
+        : '原输入图缺失，已用结果图继续编辑',
+    });
+    goToEditPage();
+    return true;
+  }
+
+  /**
+   * 旧记录（服务重启后）replay 参数只剩采样摘要，用质量报告里的
+   * preset / size_mode / sampling / loras 等补齐，能还原多少算多少。
+   */
+  function restoreFromRecord(params, item) {
+    const restore = { ...(params || {}) };
+    const quality = item.quality || {};
+    if (!restore.preset && quality.preset) restore.preset = quality.preset;
+    if (!restore.size_mode && quality.size_mode) restore.size_mode = quality.size_mode;
+    if (restore.seed == null && quality.seed != null) restore.seed = quality.seed;
+    if (!Array.isArray(restore.loras) && Array.isArray(quality.loras)) restore.loras = quality.loras;
+    if (!restore.task?.mode && quality.task_mode) restore.task = { mode: quality.task_mode };
+    const sampling = quality.sampling || {};
+    for (const key of ['steps', 'cfg', 'denoise', 'sampler', 'scheduler']) {
+      if (restore[key] == null) restore[key] = sampling[key];
+    }
+    if (!restore.turbo && sampling.turbo) restore.turbo = sampling.turbo;
+    if (!restore.local) {
+      const local = {};
+      if (quality.color_match != null) local.color_match = quality.color_match;
+      if (quality.feather != null) local.feather = quality.feather;
+      if (quality.scheme) local.scheme = quality.scheme;
+      if (Object.keys(local).length) restore.local = local;
+    }
+    return restore;
   }
 
   async function downloadWorkflow(item) {

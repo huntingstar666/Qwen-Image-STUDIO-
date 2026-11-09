@@ -171,6 +171,13 @@ goToEditPage();
 - 参数值越界（steps / cfg / scale）：按页面现有上下限夹紧；
 - 旧任务无遮罩、无 `input_urls`：不阻断，用结果图或空遮罩继续。
 
+> **P3 落实情况（2026-11-09）**
+> - `handoff.js` 增加 `restore` 透传；`edit.js` 新增 `applyRestore()`，按上表落位并在末尾统一刷新控件。
+> - `history.js` 新增「回到图像编辑」动作与 `sendBackToEdit()`；参数不全时用 `quality`（preset / size_mode / sampling / loras / task_mode / seed）与 `meta.rawPrompt` 补齐。
+> - 发现并修复：`storage/history.json` 原先只落盘 `to_summary()` 的少量参数，服务重启后 `replay.json` 不可回放。现改为落盘「除 `images` / `mask` / `pose` / `meta` 外的完整参数」，列表接口仍返回轻量摘要。
+> - 已验证：重启服务后回退旧记录可带回 3 张输入图、steps / cfg / seed 与提示词；重启后用新任务验证 `replay.json` 仍含 `preset` / `size_mode` / `loras` / `local` 等字段。
+> - 遮罩留档依赖 P4；当前回退不带遮罩，属预期降级。
+
 ### 2.4 不在本次范围
 
 - 文生图历史的「回填到文生图」：现有 `setT2IHandoff` 已能带提示词/尺寸/种子，可作为后续独立小改动。
@@ -191,6 +198,7 @@ goToEditPage();
 | `web/src/components/edit.js` | 新增 `applyRestore` 并接入 `applyHandoff` |
 | `web/assets/css/library.css` | 详情图 `cursor: zoom-in` 与预览提示 |
 | `server/pipeline.py` | 遮罩 PNG 留档 `meta.mask_url` |
+| `server/jobs.py` | 历史落盘保留可回放参数（列表摘要仍轻量） |
 | `server/materials.py` | `KINDS` 增补 `upscale` |
 | `docs/WEB_UI.md` / 本文件 | 能力与验收记录回写 |
 

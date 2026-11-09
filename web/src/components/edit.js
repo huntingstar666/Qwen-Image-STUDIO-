@@ -3106,6 +3106,163 @@ export function createEditPage(host) {
   refs.outpaintBtn.addEventListener('click', openOutpaintPanelDialog);
 
   /* ============================================================
+   * 历史回退：把 replay.params 拆回页面状态
+   * 预设 + 覆盖项 + 尺寸 + 采样 + 种子 + Turbo + LoRA/一致性
+   * ============================================================ */
+  function applyRestore(restore) {
+    if (!restore || typeof restore !== 'object') return;
+    const warnings = [];
+
+    const presetId = String(restore.preset || '').trim();
+    const preset = presetId ? findPreset(presetList, presetId) : null;
+    if (presetId && !preset) warnings.push(`预设 ${presetId} 已不存在`);
+    if (preset) edit.preset = preset.id;
+
+    // 预设之外的嵌套参数 → 扁平覆盖项；任务强制的 local 键不回填。
+    const groups = ['local', 'zero_shift', 'preprocess', 'outpaint', 'panorama'];
+    const taskKeys = new Set(['local.enabled', 'local.fills', 'local.hint', 'local.consistency']);
+    const next = { ...(edit.overrides || {}) };
+    const flatten = (prefix, value) => {
+      if (value === undefined || value === null) return;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        for (const [key, child] of Object.entries(value)) flatten(`${prefix}.${key}`, child);
+        return;
+      }
+      next[prefix] = value;
+    };
+    for (const group of groups) {
+      if (restore[group] && typeof restore[group] === 'object') flatten(group, restore[group]);
+    }
+    for (const key of taskKeys) delete next[key];
+    edit.overrides = next;
+
+    // 尺寸
+    const sizeMode = String(restore.size_mode || edit.sizeMode || 'follow');
+    if (['follow', 'custom', 'ratio', 'fixed_point'].includes(sizeMode)) {
+      edit.sizeMode = sizeMode;
+      refs.sizeMode.value = sizeMode;
+    }
+    if (Number(restore.width) > 0) edit.width = snapUp(restore.width);
+    if (Number(restore.height) > 0) edit.height = snapUp(restore.height);
+    if (restore.ratio) edit.ratio = String(restore.ratio);
+    if (restore.megapixels != null && restore.megapixels !== '') edit.megapixels = String(restore.megapixels);
+    if (restore.fit === 'pad' || restore.fit === 'crop') {
+      edit.fit = restore.fit;
+      refs.fit.value = restore.fit;
+    }
+    if (restore.pad_mode) {
+      edit.padMode = String(restore.pad_mode);
+      if ([...refs.padMode.options].some((option) => option.value === edit.padMode)) {
+        refs.padMode.value = edit.padMode;
+      }
+    }
+
+    // 采样（按页面上下限夹紧）
+    const steps = Number(restore.steps);
+    if (Number.isFinite(steps) && steps > 0) {
+      edit.steps = Math.min(200, Math.max(1, Math.round(steps)));
+      refs.steps.value = String(edit.steps);
+    }
+    const cfgValue = Number(restore.cfg);
+    if (Number.isFinite(cfgValue) && cfgValue >= 0) {
+      edit.cfg = Math.min(20, cfgValue);
+      refs.cfg.value = String(edit.cfg);
+    }
+    const denoise = Number(restore.denoise);
+    if (Number.isFinite(denoise)) {
+      edit.denoise = Math.min(1, Math.max(0, denoise));
+      refs.denoise.value = String(edit.denoise);
+    }
+    if (restore.sampler && [...refs.sampler.options].some((item) => item.value === restore.sampler)) {
+      edit.sampler = restore.sampler;
+      refs.sampler.value = restore.sampler;
+    }
+    if (restore.scheduler && [...refs.scheduler.options].some((item) => item.value === restore.scheduler)) {
+      edit.scheduler = restore.scheduler;
+      refs.scheduler.value = restore.scheduler;
+    }
+
+    // 种子：历史记录里是后端实际使用的种子，回填后固定，保证可复现
+    const seed = Number(restore.seed);
+    if (Number.isFinite(seed)) {
+      edit.seedMode = 'fixed';
+      setSeedValue(String(Math.max(0, Math.floor(seed))));
+    }
+
+    // Turbo
+    if (restore.turbo && typeof restore.turbo === 'object' && turboControl) {
+      const turbo = { enabled: Boolean(restore.turbo.enabled), profile: String(restore.turbo.profile || '') };
+      turboControl.setValue(turbo);
+      edit.turbo = turbo.enabled;
+      edit.turboProfile = turbo.profile;
+      edit.turboUser = true;
+      applyTurboToFields(false);
+    }
+
+    // LoRA
+    if (Array.isArray(restore.loras)) {
+      edit.loras = Object.fromEntries(
+        restore.loras
+          .filter((item) => item && item.name)
+          .map((item) => [String(item.name), Number(item.strength) || 1]),
+      );
+      renderLoras();
+    }
+
+    // 一致性 LoRA
+    const consistency = restore.consistency_lora;
+    if (consistency && typeof consistency === 'object' && consistency.name) {
+      edit.consistency = true;
+      edit.consistencyLora = String(consistency.name);
+      const strength = Number(consistency.strength);
+      if (Number.isFinite(strength)) edit.consistencyStrength = Math.min(2, Math.max(0, strength));
+    } else if (consistency === false) {
+      edit.consistency = false;
+    }
+    renderConsistency();
+
+    patchSettings({
+      edit: {
+        preset: edit.preset,
+        overrides: edit.overrides,
+        sizeMode: edit.sizeMode,
+        width: edit.width,
+        height: edit.height,
+        ratio: edit.ratio,
+        megapixels: edit.megapixels,
+        fit: edit.fit,
+        padMode: edit.padMode,
+        steps: edit.steps,
+        cfg: edit.cfg,
+        denoise: edit.denoise,
+        sampler: edit.sampler,
+        scheduler: edit.scheduler,
+        seedMode: edit.seedMode,
+        seed: edit.seed,
+        loras: edit.loras,
+        consistency: edit.consistency,
+        consistencyLora: edit.consistencyLora,
+        consistencyStrength: edit.consistencyStrength,
+        turbo: edit.turbo,
+        turboProfile: edit.turboProfile,
+        turboUser: edit.turboUser,
+      },
+    });
+    syncSeedUi();
+    renderModeRows();
+    updateSizeInfo();
+    syncSizeCard();
+    renderPresets();
+    renderTaskMode();
+    syncLocalControls();
+    advanced.refresh();
+    guards.sync(protectionOf(currentPreset(), edit.overrides || {}));
+    syncGuardNote();
+    updateMaskStatus();
+    if (warnings.length) toastWarn(`部分参数未还原：${warnings.join('、')}`);
+  }
+
+  /* ============================================================
    * 接收「图像处理」页的交接（送入图生图 / 扩图去局部重绘）
    * ============================================================ */
   async function applyHandoff() {
@@ -3168,6 +3325,7 @@ export function createEditPage(host) {
         }
         patchSettings({ edit: { overrides: edit.overrides } });
       }
+      if (payload.restore) applyRestore(payload.restore);
       renderTaskMode();
       renderPresets();
       syncLocalControls();

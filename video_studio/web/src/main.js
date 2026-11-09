@@ -2548,6 +2548,7 @@ async function openDrawer() {
   if (styles.length) enhanceStylePicker(styles);
   enhanceSuffixPresets(refs.drawerBody.querySelector('[data-path="locks.style.suffix"]'));
   enhanceCanvasPresets();
+  enhanceAnchorMode();
   bindDrawerFields();
   refs.drawer.hidden = false;
   refs.drawerBackdrop.hidden = false;
@@ -2607,6 +2608,25 @@ function enhanceCanvasPresets() {
   if (ratioSelect) ratioSelect.addEventListener("change", () => sync(false));
   if (fpsInput) fpsInput.addEventListener("input", () => sync(false));
   sync(false);
+}
+
+/** 参考图锚定默认关闭：关闭时收起「锚定方式」，并说明文字锚定的兜底逻辑。 */
+function enhanceAnchorMode() {
+  const toggle = refs.drawerBody.querySelector('[data-path="locks.content.imageAnchor"]');
+  const mode = refs.drawerBody.querySelector('[data-path="locks.content.anchorMode"]');
+  if (!toggle || !mode) return;
+  const field = mode.closest(".field");
+  if (!field) return;
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.style.marginTop = "6px";
+  hint.textContent = "默认关闭：只靠风格锁 + 内容锁的文字描述锚定；同一角色/场景会沿用同一张资产卡。打开后才会在生图时额外参考资产设定图。";
+  field.appendChild(hint);
+  const sync = () => {
+    field.hidden = !toggle.checked;
+  };
+  toggle.addEventListener("change", sync);
+  sync();
 }
 
 /** 把风格预设的纯文本输入升级成带分组的风格库下拉，选中即填入风格描述。 */

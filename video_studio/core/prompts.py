@@ -29,6 +29,7 @@ SYSTEM_PROMPT = """你是电影分镜师。用户给你一段带时间轴的台�
 
 1. 只输出 JSON，结构为 {"shots":[{"id":"s1","description":"...","usedEntities":["e1"],"note":"景别/机位/光线","motion":"push"}]}；
 2. description 只写画面内容：场景、人物动作与表情、环境细节、光线氛围；不要写景别、机位、构图（这些放 note）；40~120 字；
+   角色/场景的固定外观（发型、服装、年龄、脸型、场景结构）只由资产卡提供，不要在 description 里重复或改写；
 3. 不要复述台词原文，不要把台词、字幕、文字、logo 写进画面；
 4. 只能使用“已登记角色/场景”里出现的人物与地点，usedEntities 填实际用到的登记 id；一个都不用就填空数组；
 5. 同一场景相邻镜头保持环境与人物外观一致，只有台词明确表示换场时才改变场景；
@@ -78,6 +79,9 @@ def used_entity_ids(project: dict[str, Any], shot: dict[str, Any]) -> list[str]:
 
     @ 的顺序就是生图参考图顺序：图1 底稿、图2..N 按这里依次对应，
     因此提示词装配和锚定提交必须共用这一份顺序。
+
+    本段没有任何显式实体时，沿用上一段（角色+场景）；本段没写新场景时，
+    也沿用上一段的场景，保证同一场戏里文字外观不跳。
     """
     content = (project.get("locks") or {}).get("content") or {}
     entities = {str(item.get("id")): item for item in (content.get("entities") or [])}
@@ -92,6 +96,26 @@ def used_entity_ids(project: dict[str, Any], shot: dict[str, Any]) -> list[str]:
             entity_id = str(item or "")
             if entity_id in entities and entity_id not in ordered:
                 ordered.append(entity_id)
+
+    shots = project.get("shots") or []
+    index = next((i for i, item in enumerate(shots) if item.get("id") == shot.get("id")), -1)
+
+    def previous_used() -> list[str]:
+        for j in range(index - 1, -1, -1):
+            found = [str(item) for item in (shots[j].get("usedEntities") or [])
+                     if str(item) in entities]
+            if found:
+                return found
+        return []
+
+    if not ordered:
+        ordered = previous_used()
+    else:
+        locations = {key for key, item in entities.items()
+                     if str(item.get("kind") or "") == "location"}
+        if not any(item in locations for item in ordered):
+            carried = [item for item in previous_used() if item in locations]
+            ordered = carried + [item for item in ordered if item not in carried]
     return ordered
 
 
@@ -130,11 +154,10 @@ def assemble_prompt(project: dict[str, Any], shot: dict[str, Any]) -> tuple[str,
 
 
 def fill_continuity(project: dict[str, Any]) -> None:
-    """角色连贯：本段没点到人时，沿用上一段已用到的角色（场景不继承）。
+    """把「本段用了哪些角色/场景」补全，保证同一张资产卡始终进同一段提示词。
 
-    台词很少每句都重复称呼角色名，如果只按名字匹配，未命名的镜头会丢掉
-    人物外观描述，成片就会出现「换脸」。这里按「显式 > 台词命名 > 上一段角色」
-    三级回退，保证同一场戏里的人物始终带同一张设定卡。
+    规则：@ 显式引用 > 台词命名 > 上一段；本段没写新地点时沿用上一段地点。
+    角色和场景都继承，避免同一场戏里人物外观、场景描述突然换掉。
     """
     content = (project.get("locks") or {}).get("content") or {}
     if not content.get("enabled", True):
@@ -143,16 +166,30 @@ def fill_continuity(project: dict[str, Any]) -> None:
     if not entities:
         return
     kinds = {key: str(item.get("kind") or "character") for key, item in entities.items()}
+    locations = {key for key, kind in kinds.items() if kind == "location"}
     previous: list[str] = []
     for shot in project.get("shots") or []:
-        used = [str(item) for item in (shot.get("usedEntities") or []) if str(item) in entities]
-        if not used:
-            used = detect_entities(str(shot.get("text") or ""), list(entities.values()))
-        if not used:
-            used = [item for item in previous if kinds.get(item) == "character"]
-        shot["usedEntities"] = used
-        if used:
-            previous = used
+        explicit: list[str] = []
+        sources = [
+            shot.get("refAssets") or [],
+            shot.get("usedEntities") or [],
+            detect_entities(str(shot.get("text") or ""), list(entities.values())),
+        ]
+        for source in sources:
+            for item in source:
+                entity_id = str(item or "")
+                if entity_id in entities and entity_id not in explicit:
+                    explicit.append(entity_id)
+        if not explicit:
+            explicit = list(previous)
+        else:
+            # 本段没有点名新场景时，沿用上一段的场景，保证环境描述不跳
+            if not any(item in locations for item in explicit):
+                carried = [item for item in previous if item in locations]
+                explicit = carried + [item for item in explicit if item not in carried]
+        shot["usedEntities"] = explicit
+        if explicit:
+            previous = explicit
 
 
 def assemble_all(project: dict[str, Any]) -> None:
@@ -266,9 +303,12 @@ def _user_message(project: dict[str, Any], chunk: list[dict[str, Any]],
     lines = ["【全局风格】", f"风格描述：{style.get('prefix') or '（未设置）'}",
              f"画面质感：{style.get('suffix') or '（未设置）'}"]
     if entities:
-        lines.append("【已登记角色/场景（只能用这些）】")
+        lines.append("【已登记角色/场景（只能用这些；固定外观由资产卡注入，"
+                     "不要在 description 里写发型/服装/年龄/脸型/场景结构）】")
         for entity in entities:
-            lines.append(f"- {entity.get('id')} {entity_prompt(entity)}")
+            kind = {"character": "角色", "location": "场景", "prop": "道具"}.get(
+                str(entity.get("kind") or "character"), "元素")
+            lines.append(f"- {entity.get('id')} {kind}「{entity.get('name') or ''}」")
     lines.append("【镜头列表】")
     all_shots = project.get("shots") or []
     for local_index, shot in enumerate(chunk):
@@ -408,6 +448,14 @@ def generate(project: dict[str, Any], *, span: int = 1) -> dict[str, Any]:
             if strict:
                 shot_warnings.append("严格模式已剔除")
         shot["usedEntities"] = resolved
+        # 外观描述是文字锚定的唯一依据：空了就提前警告，避免同一角色每段换脸
+        for entity_id in resolved:
+            entity = entities.get(entity_id) or {}
+            if not str(entity.get("desc") or "").strip():
+                label = str(entity.get("name") or entity_id)
+                message = f"资产「{label}」没有固定外观描述"
+                if message not in shot_warnings:
+                    shot_warnings.append(message)
         shot["warnings"] = shot_warnings
 
     fill_continuity(project)
@@ -476,6 +524,7 @@ POLISH_SYSTEM = """你是电影分镜师。用户会给你一个镜头段：台�
 参考图里的脸型、发型、服装、场景结构等固定外观，但不要照搬参考图的背景和构图。
 请按用户指令的意图，把「画面描述」重写成一句适合文生图的描述（40~120 字）：
 1. 只写画面内容：场景、人物动作与表情、环境细节、光线氛围；
+   角色/场景的固定外观（发型、服装、年龄、脸型、场景结构）以资产卡为准，不要重复或改写；
 2. 不要写景别、机位、构图；不要复述台词；不要出现文字、字幕、logo；
 3. 保持角色/场景与上下文一致，用户指令优先级最高；
 4. 同时给出不超过 20 字的镜头语言 note；
@@ -504,8 +553,14 @@ def polish(project: dict[str, Any], shot: dict[str, Any], directive: str = "") -
     ]
     entities = content.get("entities") or []
     if entities:
-        lines.append("【已登记角色/场景】")
-        lines.extend(f"- {entity_prompt(item)}" for item in entities[:20])
+        lines.append("【已登记角色/场景（只能用这些；固定外观由资产卡注入，"
+                     "不要在描述里写发型/服装/年龄/脸型/场景结构）】")
+        names = []
+        for item in entities[:20]:
+            kind = {"character": "角色", "location": "场景", "prop": "道具"}.get(
+                str(item.get("kind") or "character"), "元素")
+            names.append(f"{kind}「{item.get('name') or item.get('id')}」")
+        lines.append("- " + "、".join(names))
     # 参考图：图1=当前画面（有图时），其后按 used_entity_ids 顺序放资产设定图
     refs: list[dict[str, Any]] = []
     try:

@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: 画布比例（比值 = 宽 / 高）
 RATIOS: dict[str, float] = {
@@ -83,7 +83,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
                 "fields": {
                     "enabled": {"type": "bool", "default": True, "label": "启用内容锁"},
                     "strict": {"type": "bool", "default": True, "label": "严格模式"},
-                    "imageAnchor": {"type": "bool", "default": True, "label": "参考图锚定"},
+                    "imageAnchor": {"type": "bool", "default": False, "label": "参考图锚定"},
                     "anchorMode": {
                         "type": "enum",
                         "options": ["auto", "scene", "previous", "two-pass"],
@@ -356,6 +356,12 @@ def _fill_defaults(node: dict[str, Any], fields: dict[str, Any],
 
 def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
     """给老项目补齐新字段（只补缺，不覆盖用户值），并迁移历史画布字段。"""
+    # v2：参考图锚定改为「默认关闭」；老项目一次性关掉，用户需要时再手动打开
+    if int(project.get("schemaVersion") or 1) < 2:
+        content = ((project.get("locks") or {}).get("content") or {})
+        content["imageAnchor"] = False
+        content.setdefault("anchorMode", "auto")
+        project["schemaVersion"] = 2
     # 先迁移：老文档只有 width/height，没有 longSide
     canvas = project.get("canvas")
     if isinstance(canvas, dict) and not int(canvas.get("longSide") or 0):

@@ -164,6 +164,42 @@ def test_assemble_prompt_order_and_entities() -> None:
     assert "过曝" in negative and "水印" in negative
 
 
+def test_fill_continuity_keeps_character_and_location() -> None:
+    project = _project()
+    first = schema.new_shot(0, 0, 1000, "小林走进车间")
+    first["usedEntities"] = ["e1", "e2"]
+    second = schema.new_shot(1, 1000, 2000, "他继续检查设备")
+    third = schema.new_shot(2, 2000, 3000, "他抬头看向灯")
+    third["refAssets"] = ["e1"]
+    project["shots"] = [first, second, third]
+    prompts.fill_continuity(project)
+    assert {"e1", "e2"} <= set(second["usedEntities"])
+    assert "e2" in third["usedEntities"]
+    assert "e1" in third["usedEntities"]
+
+
+def test_assemble_prompt_carries_previous_appearance() -> None:
+    project = _project()
+    first = schema.new_shot(0, 0, 1000, "小林走进车间")
+    first["usedEntities"] = ["e1", "e2"]
+    second = schema.new_shot(1, 1000, 2000, "他继续检查设备")
+    second["description"] = "人物低头检查设备"
+    project["shots"] = [first, second]
+    assert prompts.used_entity_ids(project, second) == ["e1", "e2"]
+    prompt, _ = prompts.assemble_prompt(project, second)
+    assert "深蓝工装" in prompt
+    assert "夜班车间" in prompt
+
+
+def test_llm_user_message_does_not_echo_appearance() -> None:
+    project = _project()
+    shot = schema.new_shot(0, 0, 1000, "小林推开门")
+    message = prompts._user_message(project, [shot], 0)
+    assert "小林" in message
+    assert "深蓝工装" not in message
+    assert "固定外观由资产卡注入" in message
+
+
 def test_assemble_prompt_detects_entity_from_dialogue() -> None:
     project = _project()
     shot = schema.new_shot(0, 0, 2000, "小林，把灯打开")
@@ -497,7 +533,7 @@ def test_apply_defaults_adds_asset_ref_images() -> None:
     ]
     schema.apply_defaults(project)
     assert project["locks"]["content"]["entities"][0]["refImages"] == []
-    assert project["locks"]["content"]["imageAnchor"] is True
+    assert project["locks"]["content"]["imageAnchor"] is False
 
 
 def test_build_anchor_payload_uses_base_and_assets() -> None:
@@ -595,6 +631,7 @@ def test_previous_anchor_uses_previous_frame_as_image1() -> None:
 
 def test_anchor_plan_prefers_previous_then_scene() -> None:
     project = _project()
+    project["locks"]["content"]["imageAnchor"] = True
     shot = schema.new_shot(1, 1000, 2000, "小林继续工作")
     hero = {"id": "e1", "kind": "character", "name": "小林", "desc": "", "data": b"x"}
     scene = {"id": "e2", "kind": "location", "name": "车间", "desc": "", "data": b"y"}
@@ -658,6 +695,7 @@ def test_generate_shot_single_pass_previous() -> None:
                 "id": "e1", "kind": "character", "name": "小林", "desc": "短发",
                 "refImages": ["assets/e1_v1.png"],
             }]
+            project["locks"]["content"]["imageAnchor"] = True
             project["locks"]["content"]["anchorMode"] = "previous"
             first = schema.new_shot(0, 0, 1000, "开场")
             first["image"] = "images/s1.png"

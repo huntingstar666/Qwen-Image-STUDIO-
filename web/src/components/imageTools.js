@@ -416,9 +416,10 @@ export function createImageToolsPage(host) {
         </nav>
 
         <aside class="tools-inspector">
+          <div class="tools-inspector-scroll" data-ref="inspectorScroll">
           <section class="panel">
             <div class="panel-head">
-              <div class="panel-title">源图 <span class="panel-sub">上传后开始处理</span></div>
+              <div class="panel-title">源图 <span class="panel-sub" data-ref="sourceSub">上传后开始处理</span></div>
               <div class="panel-actions">
                 <button class="btn ghost sm" type="button" data-ref="newSource">换一张</button>
               </div>
@@ -444,7 +445,7 @@ export function createImageToolsPage(host) {
           <section class="panel">
             <div class="panel-head"><div class="panel-title">工具 <span class="panel-sub">即时预览 · 可撤销</span></div></div>
             <div class="panel-body tool-stack">
-              <details class="fold tool-fold" data-group="adjust" open>
+              <details class="fold tool-fold" data-group="adjust" data-section="crop" open>
                 <summary>裁剪 / 宫格</summary>
                 <div class="fold-body">
                   <div class="field">
@@ -471,7 +472,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold" data-group="adjust">
+              <details class="fold tool-fold" data-group="adjust" data-section="rotate">
                 <summary>旋转 / 翻转</summary>
                 <div class="fold-body">
                   <div class="chips">
@@ -552,7 +553,7 @@ export function createImageToolsPage(host) {
                 </div>
               </details>
 
-              <details class="fold tool-fold" data-group="adjust">
+              <details class="fold tool-fold" data-group="adjust" data-section="color">
                 <summary>调色</summary>
                 <div class="fold-body">
                   <div class="adjust-list" data-ref="adjustList"></div>
@@ -826,12 +827,21 @@ export function createImageToolsPage(host) {
           <section class="panel">
             <div class="panel-head"><div class="panel-title">处理提示</div></div>
             <div class="panel-body tight">
-              <div class="field-hint">· 处理结果由后端保存到 storage/outputs，并出现在底部「结果」胶片条里。</div>
+              <div class="field-hint">· 处理结果会保存到作品历史，并出现在底部「结果」胶片条里。</div>
               <div class="field-hint">· 胶片条单击选中，可批量收藏 / 送入编辑 / 导出 / 加入 GIF；双击查看大图。</div>
               <div class="field-hint">· 扩图「去局部重绘」会自动生成遮罩，只需补一句编辑指令。</div>
-              <div class="field-hint">· 位深/色彩由服务端统一处理，PNG 输出会剥离 ICC。</div>
+              <div class="field-hint">· PNG 会保留透明区域；JPEG 无透明，需要先选择铺底色。</div>
             </div>
           </section>
+          </div>
+
+          <div class="tools-actionbar" data-ref="actionBar">
+            <div class="tools-actionbar-hint" data-ref="actionHint">选择工具后在这里执行</div>
+            <div class="tools-actionbar-row">
+              <button class="btn ghost" type="button" data-ref="actionSecondary" disabled>—</button>
+              <button class="btn primary" type="button" data-ref="actionPrimary" disabled>—</button>
+            </div>
+          </div>
         </aside>
 
         <main class="tools-main">
@@ -841,6 +851,7 @@ export function createImageToolsPage(host) {
               <div class="panel-actions">
                 <button class="btn ghost sm" type="button" data-ref="undo">↶ 撤销</button>
                 <button class="btn ghost sm" type="button" data-ref="resetAll">重置</button>
+                <button class="btn ghost sm tools-quick-export" type="button" data-ref="quickExport" disabled>导出</button>
               </div>
             </div>
             <div class="tool-stage" data-ref="stage">
@@ -898,6 +909,12 @@ export function createImageToolsPage(host) {
     fileInput: ref('fileInput'),
     newSource: ref('newSource'),
     sourceMeta: ref('sourceMeta'),
+    sourceSub: ref('sourceSub'),
+    inspectorScroll: ref('inspectorScroll'),
+    actionBar: ref('actionBar'),
+    actionHint: ref('actionHint'),
+    actionSecondary: ref('actionSecondary'),
+    actionPrimary: ref('actionPrimary'),
     importMaterials: ref('importMaterials'),
     importRecent: ref('importRecent'),
     importPaste: ref('importPaste'),
@@ -1035,6 +1052,7 @@ export function createImageToolsPage(host) {
     taggerStatus: ref('taggerStatus'),
     sendEdit: ref('sendEdit'),
     undo: ref('undo'),
+    quickExport: ref('quickExport'),
     resetAll: ref('resetAll'),
     stage: ref('stage'),
     stageInner: ref('stageInner'),
@@ -1064,6 +1082,7 @@ export function createImageToolsPage(host) {
     if (disposed) return;
     kit = loaded;
     renderRatios();
+    syncActionBar();
   });
 
   function renderRatios() {
@@ -1118,14 +1137,180 @@ export function createImageToolsPage(host) {
   /* ============================================================
    * 工具轨 / 尺寸模式 / 导出选项
    * ============================================================ */
+  let adjustSection = 'crop';
+
+  const ACTION_MAP = {
+    adjust: () => {
+      if (adjustSection === 'rotate') {
+        return {
+          primary: refs.rotateApply,
+          label: '应用角度',
+          hint: '按输入角度旋转并扩展画布',
+        };
+      }
+      if (adjustSection === 'color') {
+        return {
+          primary: refs.adjustApply,
+          secondary: refs.adjustReset,
+          label: '应用调色',
+          secondaryLabel: '重置滑杆',
+          hint: '应用到当前编辑结果 · 可撤销',
+        };
+      }
+      const pending = pendingCropPixelRect();
+      if (!pending && state.stagedOps.length) {
+        return {
+          primary: refs.quickExport,
+          label: '去导出',
+          hint: '裁剪已应用 · 可继续调色或导出',
+        };
+      }
+      return {
+        primary: refs.cropApply,
+        secondary: refs.cropReset,
+        label: '应用裁剪',
+        secondaryLabel: '重置选框',
+        hint: pending
+          ? '应用到当前编辑结果 · 可撤销'
+          : '先在画布上拖出裁剪框，或选择一个比例',
+        disabled: !pending,
+      };
+    },
+    size: {
+      primary: refs.resizeApply,
+      secondary: refs.pad32Apply,
+      label: '应用缩放',
+      secondaryLabel: '对齐 32',
+      hint: '按当前宽高与模式缩放',
+    },
+    watermark: {
+      primary: refs.wmApply,
+      secondary: refs.wmPreview,
+      label: '应用水印',
+      secondaryLabel: '服务端预览',
+      hint: '预览与最终导出保持一致',
+    },
+    gif: {
+      primary: refs.gifGo,
+      secondary: refs.gifCancel,
+      label: '生成 GIF',
+      secondaryLabel: '取消',
+      hint: '提交到后台任务队列',
+    },
+    upscale: {
+      primary: refs.upscaleGo,
+      secondary: refs.upscaleCompare,
+      label: '开始放大',
+      secondaryLabel: '图像对比',
+      hint: '使用当前编辑结果放大',
+    },
+    export: {
+      primary: refs.processApply,
+      label: '处理并保存',
+      hint: '保存到作品历史',
+    },
+    outpaint: () =>
+      state.outpaint.active && state.outpaint.result
+        ? {
+            primary: refs.outpaintGo,
+            secondary: refs.outpaintCancel,
+            label: '去局部重绘',
+            secondaryLabel: '取消预览',
+            hint: '把画布与遮罩送入图像编辑',
+          }
+        : {
+            primary: refs.outpaintPlan,
+            label: '规划扩图',
+            hint: '先规划新画布与新增区域',
+          },
+    tagger: {
+      primary: refs.taggerGo,
+      secondary: refs.taggerCopy,
+      label: '反推标签',
+      secondaryLabel: '复制',
+      hint: '识别结果可送入文生图 / 图像编辑',
+    },
+  };
+
+  function currentAction() {
+    const entry = ACTION_MAP[state.tool];
+    return typeof entry === 'function' ? entry() : entry;
+  }
+
+  function syncActionBar() {
+    const action = currentAction();
+    if (!action) return;
+    const primary = action.primary;
+    const noSource = !state.source;
+    host.querySelector('.page-tools')?.classList.toggle('is-empty', noSource);
+    refs.actionPrimary.textContent = action.label || primary?.textContent?.trim() || '执行';
+    const disabledByAction =
+      action.disabled !== undefined ? Boolean(action.disabled) : Boolean(primary?.disabled);
+    refs.actionPrimary.disabled = noSource || disabledByAction;
+    refs.actionPrimary.title = noSource
+      ? '请先上传图片'
+      : disabledByAction
+        ? action.hint || '当前没有可执行的操作'
+        : primary?.title || '';
+    refs.quickExport.disabled = noSource;
+    refs.actionHint.textContent = noSource
+      ? '请先上传图片，或从素材仓库 / 最近结果导入'
+      : action.hint || '';
+    const secondary = action.secondary;
+    const available =
+      secondary &&
+      !secondary.classList.contains('hidden') &&
+      secondary.offsetParent !== null;
+    refs.actionSecondary.classList.toggle('hidden', !available);
+    if (available) {
+      refs.actionSecondary.textContent =
+        action.secondaryLabel || secondary.textContent.trim();
+      refs.actionSecondary.disabled = Boolean(secondary.disabled);
+      refs.actionSecondary.title = secondary.title || '';
+    }
+  }
+
+  refs.actionPrimary.addEventListener('click', () => {
+    const action = currentAction();
+    if (!action?.primary || refs.actionPrimary.disabled) return;
+    action.primary.click();
+  });
+  refs.actionSecondary.addEventListener('click', () => {
+    const action = currentAction();
+    if (!action?.secondary || refs.actionSecondary.disabled) return;
+    action.secondary.click();
+  });
+
   function syncToolGroups() {
     for (const chip of refs.toolRail.querySelectorAll('[data-tool-group]')) {
       chip.classList.toggle('active', chip.dataset.toolGroup === state.tool);
     }
+    const visible = [];
     for (const fold of host.querySelectorAll('.tool-fold[data-group]')) {
-      fold.hidden = fold.dataset.group !== state.tool;
+      const active = fold.dataset.group === state.tool;
+      fold.hidden = !active;
+      if (active) visible.push(fold);
     }
+    // 点击工具轨后，目标面板至少展开第一个折叠区，避免出现空白面板
+    if (visible.length && !visible.some((fold) => fold.open)) visible[0].open = true;
+    syncActionBar();
   }
+
+  // 「调整」内部是裁剪 / 旋转 / 调色三个分区，同一时间只展开一个
+  host.querySelectorAll('.tool-fold[data-group="adjust"][data-section]').forEach((fold) => {
+    fold.querySelector('summary')?.addEventListener('click', () => {
+      window.setTimeout(() => {
+        if (fold.open) {
+          adjustSection = fold.dataset.section || 'crop';
+          host.querySelectorAll('.tool-fold[data-group="adjust"]').forEach((other) => {
+            if (other !== fold) other.open = false;
+          });
+        }
+        syncActionBar();
+      }, 0);
+    });
+  });
+
   refs.toolRail.addEventListener('click', (event) => {
     const chip = event.target.closest('[data-tool-group]');
     if (!chip) return;
@@ -1134,6 +1319,13 @@ export function createImageToolsPage(host) {
     if (state.source) render();
   });
   syncToolGroups();
+
+  const actionSyncObserver = new MutationObserver(() => syncActionBar());
+  actionSyncObserver.observe(refs.inspectorScroll, {
+    attributes: true,
+    attributeFilter: ['disabled'],
+    subtree: true,
+  });
 
   const RESIZE_MODES = {
     percent: { label: '百分比 %', min: 1, max: 400, step: 1, value: 100 },
@@ -1183,6 +1375,7 @@ export function createImageToolsPage(host) {
     state.outpaint.panoramaAspect = '';
     state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
+    state.crop.suppressed = false;
     state.resize.width = width;
     state.resize.height = height;
     refs.resizeWidth.value = String(width);
@@ -1205,6 +1398,7 @@ export function createImageToolsPage(host) {
     syncUpscaleButton();
     syncTaggerButton();
     syncCompareButton();
+    syncActionBar();
   }
 
   async function loadSourceImage() {
@@ -1227,11 +1421,15 @@ export function createImageToolsPage(host) {
 
   function renderSourceMeta() {
     if (!state.source) {
+      refs.dropzone.classList.remove('hidden');
+      refs.sourceSub.textContent = '上传后开始处理';
       refs.sourceMeta.innerHTML = '<span class="dim">尚未选择图片</span>';
       refs.stageSub.textContent = '上传图片开始';
       return;
     }
     const { width, height, name } = state.source;
+    refs.dropzone.classList.add('hidden');
+    refs.sourceSub.textContent = `已载入 · ${fmtNum(width)} × ${fmtNum(height)} · ${((width * height) / 1e6).toFixed(1)} MP`;
     refs.sourceMeta.innerHTML = `
       <div class="source-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
       <div class="source-dims mono">${fmtNum(width)} × ${fmtNum(height)} · ${((width * height) / 1e6).toFixed(1)} MP</div>`;
@@ -1446,6 +1644,7 @@ export function createImageToolsPage(host) {
 
   function resetCrop() {
     if (!state.source) return;
+    state.crop.suppressed = false;
     const display = currentDisplaySize();
     const ratio = kit?.cropRatio ? kit.cropRatio(state.crop.ratioLabel, { width: currentWorkDims.width, height: currentWorkDims.height }) : null;
     if (ratio && kit?.centeredCrop) {
@@ -1522,6 +1721,9 @@ export function createImageToolsPage(host) {
     updateCropSize();
     updateEstimate();
     updateResizeHint();
+    if (currentWorkDims.width && currentWorkDims.height) {
+      refs.stageSub.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)}`;
+    }
     refs.stageStatus.textContent = `${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)} · 显示 ${Math.round(
       (displayStamp.width / currentWorkDims.width) * 100,
     )}%`;
@@ -1536,6 +1738,10 @@ export function createImageToolsPage(host) {
     const display = currentDisplaySize();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (syncCanvasSize(display, dpr)) drawDisplay();
+    if (!state.crop.rect) {
+      syncStageReadouts();
+      return;
+    }
     state.crop.rect = clampRect(state.crop.rect, displayStamp);
     drawOverlay();
     syncStageReadouts();
@@ -1587,16 +1793,22 @@ export function createImageToolsPage(host) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (syncCanvasSize(display, dpr)) drawDisplay();
 
-    if (!state.crop.rect) resetCrop();
+    if (!state.crop.rect && !state.crop.suppressed) resetCrop();
     // 前面某次操作（如应用裁剪）要求在新尺寸下重排选框
     if (state.crop.pendingReset) {
       state.crop.pendingReset = false;
       state.crop.rect = null;
-      resetCrop();
+      if (!state.crop.suppressed) resetCrop();
+    }
+    if (!state.crop.rect) {
+      syncStageReadouts();
+      syncActionBar();
+      return;
     }
     state.crop.rect = clampRect(state.crop.rect, displayStamp);
     drawOverlay();
     syncStageReadouts();
+    syncActionBar();
   }
 
   function clampRect(rect, display) {
@@ -1785,7 +1997,40 @@ export function createImageToolsPage(host) {
     const row = rects.rows[0];
     // 防御：选框异常小时（<16px）视为「没有单独裁剪」，避免把图切成 1×1
     if (!column || !row || column.size < 16 || row.size < 16) return null;
-    return { op: 'crop', x: column.start, y: row.start, width: column.size, height: row.size };
+    let width = column.size;
+    let height = row.size;
+    // 把显示坐标换算产生的 1–2px 误差修正回目标比例（尤其 1:1 必须是正方形）
+    const ratio = kit.cropRatio
+      ? kit.cropRatio(state.crop.ratioLabel, {
+          width: currentWorkDims.width,
+          height: currentWorkDims.height,
+        })
+      : null;
+    if (ratio) {
+      const maxW = Math.max(1, currentWorkDims.width - column.start);
+      const maxH = Math.max(1, currentWorkDims.height - row.start);
+      if (Math.abs(width / height - ratio) > 0.0005) {
+        const heightFromWidth = Math.round(width / ratio);
+        const widthFromHeight = Math.round(height * ratio);
+        if (
+          heightFromWidth <= maxH &&
+          (widthFromHeight > maxW ||
+            Math.abs(heightFromWidth - height) <= Math.abs(widthFromHeight - width))
+        ) {
+          height = heightFromWidth;
+        } else if (widthFromHeight <= maxW) {
+          width = widthFromHeight;
+        }
+      }
+      if (Math.abs(ratio - 1) < 1e-6) {
+        const side = Math.max(1, Math.min(width, height, maxW, maxH));
+        width = side;
+        height = side;
+      }
+      width = Math.max(1, Math.min(width, maxW));
+      height = Math.max(1, Math.min(height, maxH));
+    }
+    return { op: 'crop', x: column.start, y: row.start, width, height };
   }
 
   function updateCropSize() {
@@ -1819,13 +2064,17 @@ export function createImageToolsPage(host) {
   function updateEstimate() {
     const pixel = pendingCropPixelRect();
     const width = pixel?.width || currentWorkDims.width;
-    const height = pixel?.height || currentWorkDims.height;
-    const bytes =
-      state.format === 'jpeg'
-        ? width * height * 0.16 * (state.quality / 92)
-        : width * height * 1.35;
-    refs.estimate.textContent = `≈ ${(bytes / 1024 / 1024).toFixed(2)} MB（${state.format.toUpperCase()}）`;
-    refs.qualityField.classList.toggle('hidden', state.format !== 'jpeg');
+    const heightPx = pixel?.height || currentWorkDims.height;
+    let bytesPerPixel;
+    if (state.format === 'jpeg') {
+      bytesPerPixel = 0.16 * (state.quality / 92);
+    } else if (state.format === 'webp') {
+      bytesPerPixel = refs.lossless.checked ? 1.1 : 0.28 * (state.quality / 92);
+    } else {
+      bytesPerPixel = 1.35;
+    }
+    const bytes = width * heightPx * bytesPerPixel;
+    refs.estimate.textContent = `约 ${(bytes / 1024 / 1024).toFixed(2)} MB（${state.format.toUpperCase()}，估算）`;
   }
 
   /* ============================================================
@@ -1856,10 +2105,11 @@ export function createImageToolsPage(host) {
       return;
     }
     if (!kit) return;
-    const handle = kit.hitCrop(state.crop.rect, point);
+    const handle = state.crop.rect ? kit.hitCrop(state.crop.rect, point) : null;
     event.preventDefault();
     refs.overlayCanvas.setPointerCapture?.(event.pointerId);
     if (!handle) {
+      state.crop.suppressed = false;
       drag = {
         type: 'draw',
         start: point,
@@ -1931,6 +2181,7 @@ export function createImageToolsPage(host) {
     if (event?.currentTarget?.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    syncActionBar();
   }
   refs.overlayCanvas.addEventListener('pointerup', endDrag);
   refs.overlayCanvas.addEventListener('pointercancel', endDrag);
@@ -1973,6 +2224,15 @@ export function createImageToolsPage(host) {
 
   function renderOps() {
     const ops = state.stagedOps;
+    const kindLabels = {
+      crop: '裁剪',
+      rotate: '旋转',
+      flip: '翻转',
+      resize: '缩放',
+      adjust: '调色',
+      pad32: '对齐',
+      grid: '宫格',
+    };
     refs.opsCount.textContent = `${ops.length} 步`;
     refs.undo.disabled = !ops.length;
     refs.resetAll.disabled = !ops.length && !state.source;
@@ -1985,8 +2245,8 @@ export function createImageToolsPage(host) {
         (op, index) => `
         <div class="op-row" data-op-index="${index}" role="button" tabindex="0" title="点击回退到这一步之前">
           <span class="op-index mono">${String(index + 1).padStart(2, '0')}</span>
-          <span class="op-label">${escapeHtml(op.label || op.op)}</span>
-          <span class="op-kind">${escapeHtml(op.op)}</span>
+          <span class="op-label">${escapeHtml(op.label || kindLabels[op.op] || op.op)}</span>
+          <span class="op-kind">${escapeHtml(kindLabels[op.op] || op.op)}</span>
         </div>`,
       )
       .join('');
@@ -2023,6 +2283,7 @@ export function createImageToolsPage(host) {
     state.outpaint.panoramaAspect = '';
     state.crop.rect = null;
     state.crop.ratioLabel = 'Free';
+    state.crop.suppressed = false;
     refs.outpaintGo.disabled = true;
     refs.outpaintCancel.classList.add('hidden');
     syncPanoramaUi();
@@ -2031,7 +2292,16 @@ export function createImageToolsPage(host) {
     renderOps();
     updateOutpaintSummary();
     render();
+    syncActionBar();
     toast('已重置所有处理步骤', 'info', { timeout: 1800 });
+  });
+
+  refs.quickExport.addEventListener('click', () => {
+    if (!state.source) return;
+    state.tool = 'export';
+    syncToolGroups();
+    refs.inspectorScroll.scrollTop = 0;
+    refs.format?.focus?.();
   });
 
   refs.cropReset.addEventListener('click', () => {
@@ -2051,12 +2321,14 @@ export function createImageToolsPage(host) {
       return;
     }
     pushOp({ op: 'crop', ...pixel }, `裁剪 ${fmtNum(pixel.width)}×${fmtNum(pixel.height)}`);
-    // 裁剪已生效，选框必须回到「整张新图」。注意不能在这里直接调 render()：
-    // 此时 currentWorkDims 还没更新，resetCrop 会算出错误的显示尺寸。
-    // 打标记，交给下一次 render()（它先更新 dims，再按需 resetCrop）。
+    // 裁剪已生效：选框回到「整张新图」，比例切回自由，避免保存时再次裁切
+    state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
+    state.crop.suppressed = true;
     state.crop.pendingReset = true;
-    toastSuccess('已应用裁剪');
+    renderRatios();
+    render();
+    toastSuccess('已应用裁剪，裁剪框已重置为整图');
   });
 
   refs.gridEnabled.addEventListener('change', () => {
@@ -2083,7 +2355,7 @@ export function createImageToolsPage(host) {
       return;
     }
     const ops = [...state.stagedOps, ...(pendingCropPixelRect() ? [pendingCropPixelRect()] : []), { op: 'grid', rows, columns, row_gap: rowGap, column_gap: columnGap }];
-    await processAndSave(ops, { kind: 'grid', label: `宫格 ${rows}×${columns}` });
+    await processAndSave(ops, { kind: 'grid', label: `宫格 ${rows}×${columns}`, button: refs.gridApply });
   }
 
   refs.gridApply.addEventListener('click', () => {
@@ -2186,16 +2458,16 @@ export function createImageToolsPage(host) {
   function bindResizeInput(input, other, key) {
     input.addEventListener('input', () => {
       if (!state.resize.lock) return;
-      const width = Number(refs.resizeWidth.value) || 1;
-      const height = Number(refs.resizeHeight.value) || 1;
-      const aspect = width / height;
+      const baseW = currentWorkDims.width || state.source?.width || 1;
+      const baseH = currentWorkDims.height || state.source?.height || 1;
+      const aspect = baseW / baseH;
       if (key === 'width') {
-        refs.resizeHeight.value = String(Math.max(1, Math.round(width / ((state.source?.width || 1) / (state.source?.height || 1)))));
+        const width = Number(refs.resizeWidth.value) || 1;
+        refs.resizeHeight.value = String(Math.max(1, Math.round(width / aspect)));
       } else {
-        refs.resizeWidth.value = String(Math.max(1, Math.round(height * ((state.source?.width || 1) / (state.source?.height || 1)))));
+        const height = Number(refs.resizeHeight.value) || 1;
+        refs.resizeWidth.value = String(Math.max(1, Math.round(height * aspect)));
       }
-      void aspect;
-      void other;
     });
   }
   bindResizeInput(refs.resizeWidth, refs.resizeHeight, 'width');
@@ -3033,12 +3305,14 @@ export function createImageToolsPage(host) {
     processAndSave(ops, { kind: 'process', label: '处理并保存' }).catch((err) => toastError(err, '处理失败'));
   });
 
-  async function processAndSave(ops, { kind = 'process', label = '处理' } = {}) {
+  async function processAndSave(ops, { kind = 'process', label = '处理', button } = {}) {
     if (!state.source) throw new Error('请先上传图片');
-    const button = refs.processApply;
-    const original = button.textContent;
-    button.disabled = true;
-    button.innerHTML = '<span class="spin"></span>处理中…';
+    const trigger = button || refs.processApply;
+    const original = trigger.textContent;
+    trigger.disabled = true;
+    trigger.innerHTML = '<span class="spin"></span>处理中…';
+    refs.actionPrimary.disabled = true;
+    refs.actionPrimary.textContent = '处理中…';
     try {
       const result = await api.processImage({
         image: state.source.dataUrl,
@@ -3066,8 +3340,9 @@ export function createImageToolsPage(host) {
       renderResults();
       toastSuccess(`${label}完成：${result.images.length} 张${kind === 'grid' ? '宫格' : '结果'}已保存`);
     } finally {
-      button.disabled = false;
-      button.textContent = original;
+      trigger.disabled = false;
+      trigger.textContent = original;
+      syncActionBar();
     }
   }
 
@@ -3588,11 +3863,23 @@ export function createImageToolsPage(host) {
   }
   window.addEventListener('resize', onStageResize);
 
+  // 窄屏工具轨要粘在真实顶栏高度下方，而不是固定的 --topbar-h
+  const topbarEl = document.querySelector('.topbar');
+  const syncStickyTop = () => {
+    const height = topbarEl ? topbarEl.getBoundingClientRect().height : 64;
+    host.style.setProperty('--tools-sticky-top', `${Math.round(height)}px`);
+  };
+  syncStickyTop();
+  const topbarObserver =
+    typeof ResizeObserver === 'function' && topbarEl ? new ResizeObserver(syncStickyTop) : null;
+  topbarObserver?.observe(topbarEl);
+
   renderResults();
   renderOps();
   syncPanoramaUi();
   updateOutpaintSummary();
   updateEstimate();
+  syncActionBar();
 
   return {
     onShow() {
@@ -3602,6 +3889,8 @@ export function createImageToolsPage(host) {
       disposed = true;
       if (overlayRaf) cancelAnimationFrame(overlayRaf);
       resizeObserver?.disconnect();
+      topbarObserver?.disconnect();
+      actionSyncObserver.disconnect();
       window.removeEventListener('resize', onStageResize);
       document.removeEventListener('paste', onPaste);
     },

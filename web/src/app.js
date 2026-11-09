@@ -561,13 +561,16 @@ function route() {
 
 function showPage(id) {
   const viewport = document.getElementById('viewport');
-  // 工作室 / 视频工作台铺满整个视口：其余页面保留原有留白与限宽。
+  // 工作室 / 图像处理铺满整个视口：其余页面保留原有留白与限宽。
   const isStudio = id === 'studio';
+  const isTools = id === 'tools';
   const isVideo = id === 'video';
   viewport.classList.toggle('is-studio', isStudio);
+  viewport.classList.toggle('is-tools', isTools);
   viewport.classList.toggle('is-video', isVideo);
   const appMain = document.querySelector('.app-main');
   appMain?.classList.toggle('is-studio', isStudio);
+  appMain?.classList.toggle('is-tools', isTools);
   appMain?.classList.toggle('is-video', isVideo);
   const definition = TABS.find((tab) => tab.id === id);
   if (!definition) return;

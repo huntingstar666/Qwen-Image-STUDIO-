@@ -785,3 +785,316 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* =============================================================
+ * Phase 0：应用内固定工作区
+ * 目标：页面不滚动；画布、参数、结果同时可见；Inspector 底部固定操作条。
+ * ============================================================= */
+
+.app-main.is-tools {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewport.is-tools {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+}
+
+.viewport.is-tools .page-host,
+.viewport.is-tools .page {
+  height: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+.viewport.is-tools .page {
+  padding: 14px 18px;
+  animation: none;
+}
+
+.page-tools {
+  height: 100%;
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tools-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: 58px minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr) 120px;
+  grid-template-areas:
+    'rail main inspector'
+    'rail film inspector';
+  gap: 12px;
+  align-items: stretch;
+}
+
+.tools-rail {
+  align-self: start;
+}
+
+.tools-main {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tools-main > .panel:first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tools-main > .panel:first-child .panel-head {
+  flex: 0 0 auto;
+}
+
+.tools-main > .panel:first-child .tool-stage {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 240px;
+}
+
+.tools-main > .panel:nth-child(2) {
+  flex: 0 0 auto;
+}
+
+.tools-filmstrip {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tools-filmstrip .panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tools-filmstrip .tool-results {
+  height: 100%;
+  min-height: 0;
+  align-items: center;
+  padding: 2px;
+}
+
+.tools-filmstrip .panel-head {
+  padding: 6px 10px;
+  min-height: 34px;
+}
+
+.tools-filmstrip .tools-film-actions {
+  gap: 4px;
+}
+
+.tools-filmstrip .tools-film-actions .btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.tools-filmstrip .tool-result-card {
+  flex: 0 0 106px;
+}
+
+.tools-filmstrip .tool-result-thumb {
+  height: 58px;
+}
+
+.tools-filmstrip .tool-result-meta {
+  padding: 3px 6px;
+  font-size: 10px;
+}
+
+.tools-inspector {
+  height: 100%;
+  max-height: none;
+  position: relative;
+  top: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-right: 0;
+}
+
+.tools-inspector-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+
+/* Inspector 内联的旧主按钮降级为次按钮，页面只保留底部操作条一个 filled primary */
+.tools-inspector .tool-stack .btn.primary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.tools-inspector .tool-stack .btn.primary:hover {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.tools-actionbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 2px 2px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg);
+}
+
+.tools-actionbar-hint {
+  min-height: 15px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-2);
+}
+
+.tools-actionbar-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.tools-actionbar .btn {
+  min-height: 42px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tools-actionbar .btn.primary {
+  flex: 1 1 auto;
+  box-shadow: 0 6px 16px rgba(47, 107, 98, 0.14);
+}
+
+.tools-actionbar .btn.ghost {
+  flex: 0 0 auto;
+  min-width: 72px;
+}
+
+.tools-actionbar .btn.hidden {
+  display: none;
+}
+
+.tools-quick-export {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--accent);
+}
+
+.page-tools.is-empty .tool-stack button:not(.chip) {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+@media (max-width: 1440px) {
+  .tools-layout {
+    grid-template-columns: 58px minmax(0, 1fr) 300px;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .app-main.is-tools {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .viewport.is-tools {
+    overflow: visible;
+    height: auto;
+  }
+
+  .viewport.is-tools .page {
+    height: auto;
+    padding: 12px 14px 24px;
+  }
+
+  .page-tools {
+    height: auto;
+  }
+
+  .tools-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      'rail'
+      'main'
+      'inspector'
+      'film';
+    gap: 10px;
+  }
+
+  .tools-rail {
+    position: sticky;
+    top: var(--tools-sticky-top, 72px);
+    z-index: 20;
+    align-self: stretch;
+  }
+
+  .tools-main {
+    overflow: visible;
+  }
+
+  .tools-main > .panel:first-child {
+    display: block;
+  }
+
+  .tools-main > .panel:first-child .tool-stage {
+    flex: none;
+    height: clamp(300px, 44vh, 480px);
+  }
+
+  .tools-inspector {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .tools-inspector-scroll {
+    overflow: visible;
+    padding-right: 0;
+    padding-bottom: 96px;
+  }
+
+  .tools-actionbar {
+    position: sticky;
+    bottom: 0;
+    z-index: 25;
+    margin: 0 -2px;
+    padding: 8px 2px calc(8px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(12px);
+  }
+
+  .tools-filmstrip {
+    height: auto;
+  }
+
+  .tools-filmstrip .panel-body {
+    overflow: visible;
+  }
+
+  .tools-filmstrip .tool-results {
+    height: auto;
+    min-height: 96px;
+  }
+}

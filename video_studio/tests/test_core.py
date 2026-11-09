@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from video_studio.core import prompts, schema, segments, subtitle  # noqa: E402
+from video_studio.core import images, prompts, schema, segments, subtitle  # noqa: E402
 
 
 # --------------------------------------------------------------------------- 字幕
@@ -473,3 +473,43 @@ def test_image_and_canvas_size_follow_ratio() -> None:
     width, height = images.canvas_size(project)
     assert height > width
     assert width % 2 == 0 and height % 2 == 0
+
+
+# --------------------------------------------------------------------------- 资产图片锚定
+
+
+def test_asset_ref_images_roundtrip() -> None:
+    patch = schema.validate_patch({"locks": {"content": {"entities": [{
+        "id": "e1", "kind": "character", "name": "小林", "desc": "短发",
+        "refImages": ["assets/e1_v1.png"],
+    }]}}})
+    entity = patch["locks"]["content"]["entities"][0]
+    assert entity["refImages"] == ["assets/e1_v1.png"]
+    assert "refUrls" not in entity
+
+
+def test_apply_defaults_adds_asset_ref_images() -> None:
+    project = schema.default_project("旧项目")
+    project["locks"]["content"]["entities"] = [
+        {"id": "e1", "kind": "character", "name": "小林", "desc": "短发"},
+    ]
+    schema.apply_defaults(project)
+    assert project["locks"]["content"]["entities"][0]["refImages"] == []
+    assert project["locks"]["content"]["imageAnchor"] is True
+
+
+def test_build_anchor_payload_uses_base_and_assets() -> None:
+    project = schema.default_project("锚定")
+    shot = {"id": "s1", "negative": "过曝"}
+    refs = [{
+        "id": "e1", "kind": "character", "name": "小林",
+        "desc": "短发，深蓝工装", "data": b"\x89PNG\r\n\x1a\nref",
+    }]
+    payload = images.build_anchor_payload(
+        project, shot, b"\x89PNG\r\n\x1a\nbase", refs, seed=7)
+    assert len(payload["images"]) == 2
+    assert payload["images"][0]["data"].startswith("data:image/png;base64,")
+    assert payload["seed"] == 7
+    assert payload["meta"]["anchor"] is True
+    assert "图2" in payload["prompt"]
+    assert "小林" in payload["prompt"]

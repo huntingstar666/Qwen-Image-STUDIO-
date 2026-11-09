@@ -2484,7 +2484,7 @@ function drawerFieldsMarkup(fields, values, prefix) {
       return `<div class="field"><label>${escapeHtml(spec.label || key)}</label>
         <div data-entities="1"></div>
         <button class="btn" data-add-entity="1" style="margin-top:6px">＋ 添加角色 / 场景</button>
-        <div class="hint" style="margin-top:6px">只有这里登记过的实体允许出现在画面里；固定外观描述会拼进每一段提示词。</div>
+        <div class="hint" style="margin-top:6px">只有这里登记过的实体允许出现在画面里；固定外观描述会拼进每一段提示词。上传设定图后，生图会自动做一次身份校准。</div>
       </div>`;
     }
     if (spec.type === "text") {
@@ -2823,17 +2823,38 @@ function bindDrawerFields() {
 function entityRow(section, entity, index) {
   const row = document.createElement("div");
   row.className = "entity-row";
+  const refs = Array.isArray(entity.refImages) ? entity.refImages : [];
+  const urls = Array.isArray(entity.refUrls) ? entity.refUrls : [];
+  const kindLabel = entity.kind === "location" ? "场景" : entity.kind === "prop" ? "道具" : "角色";
   row.innerHTML = `
-    <div class="entity-head">
-      <select class="select" data-entity="kind">
-        ${[["character", "角色"], ["location", "场景"], ["prop", "道具"]].map(([value, label]) =>
-          `<option value="${value}" ${entity.kind === value ? "selected" : ""}>${label}</option>`).join("")}
-      </select>
+    <div class="entity-cover">
+      ${urls[0]
+        ? `<img src="${escapeHtml(urls[0])}" alt="${escapeHtml(entity.name || kindLabel)}" />`
+        : `<span class="entity-cover-empty">${kindLabel}<em>无设定图</em></span>`}
+      <button type="button" class="entity-cover-btn" data-upload>上传</button>
+      <button type="button" class="entity-cover-btn ghost" data-material>素材库</button>
     </div>
-    <input class="input" data-entity="name" placeholder="名称（台词里怎么称呼）" value="${escapeHtml(entity.name || "")}" />
-    <input class="input full" data-entity="desc" placeholder="固定外观描述（会拼进每段提示词）" value="${escapeHtml(entity.desc || "")}" />
-    <div class="full" style="display:flex;justify-content:flex-end">
-      <button class="btn danger" data-remove="1" style="height:26px;padding:0 10px;font-size:12px">删除</button>
+    <div class="entity-fields">
+      <div class="entity-head">
+        <select class="select" data-entity="kind">
+          ${[["character", "角色"], ["location", "场景"], ["prop", "道具"]].map(([value, label]) =>
+            `<option value="${value}" ${entity.kind === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+        <input class="input" data-entity="name" placeholder="名称（台词里怎么称呼）" value="${escapeHtml(entity.name || "")}" />
+      </div>
+      <input class="input" data-entity="desc" placeholder="固定外观描述（会拼进每段提示词）" value="${escapeHtml(entity.desc || "")}" />
+      <div class="entity-refs">
+        ${refs.map((file, refIndex) => `
+          <span class="entity-ref" title="设定图 ${refIndex + 1}">
+            <img src="${escapeHtml(urls[refIndex] || "")}" alt="" />
+            <button type="button" data-ref-del="${escapeHtml(file)}" title="删除这张设定图">×</button>
+          </span>`).join("")}
+        ${refs.length ? "" : '<span class="entity-ref-empty">上传一张正面清晰图，同角色镜头会按它校准</span>'}
+      </div>
+      <div class="entity-foot">
+        ${refs.length ? '<span class="entity-anchor-tag">图片锚定已开</span>' : ""}
+        <button class="btn danger entity-del" type="button" data-remove>删除资产</button>
+      </div>
     </div>`;
   row.querySelectorAll("[data-entity]").forEach((input) => {
     input.addEventListener("input", () => {
@@ -2845,11 +2866,156 @@ function entityRow(section, entity, index) {
       drawerDraft[section].content.entities[index] = entity;
     });
   });
+  row.querySelector("[data-upload]").addEventListener("click", () => {
+    const picker = row.querySelector("[data-asset-file]");
+    if (picker) picker.click();
+  });
+  row.querySelector("[data-material]").addEventListener("click", () => {
+    openAssetMaterialPicker(entity);
+  });
+  row.querySelectorAll("[data-ref-del]").forEach((button) => {
+    button.addEventListener("click", () => deleteAssetRef(entity, button.dataset.refDel));
+  });
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.className = "asset-file";
+  picker.dataset.assetFile = "1";
+  picker.accept = "image/png,image/jpeg,image/webp";
+  picker.addEventListener("change", () => {
+    const file = picker.files && picker.files[0];
+    if (file) uploadAssetRef(entity, file);
+    picker.value = "";
+  });
+  row.appendChild(picker);
   row.querySelector("[data-remove]").addEventListener("click", () => {
     drawerDraft[section].content.entities.splice(index, 1);
     bindDrawerFields();
   });
   return row;
+}
+
+/** 资产图操作前先把草稿实体落库：新加的资产卡还没有 id，后台上传会找不到。 */
+async function persistAssetsDraft() {
+  const project = getState().project;
+  if (!project || !drawerDraft) return null;
+  const entities = drawerDraft.locks.content.entities || [];
+  const updated = await api.patch(`/api/projects/${project.id}`, {
+    locks: { content: { entities } },
+  });
+  setState({ project: updated });
+  const saved = (((updated.locks || {}).content || {}).entities) || [];
+  drawerDraft.locks.content.entities = JSON.parse(JSON.stringify(saved));
+  return updated;
+}
+
+async function uploadAssetRef(entity, file) {
+  const project = getState().project;
+  if (!project) return;
+  try {
+    await persistAssetsDraft();
+    const updated = await api.upload(
+      `/api/projects/${project.id}/assets/${encodeURIComponent(entity.id)}/image`, file);
+    setState({ project: updated });
+    syncAssetRefs(updated);
+    toast("设定图已添加，后续生图会做身份锚定", "ok");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+async function deleteAssetRef(entity, file) {
+  const project = getState().project;
+  if (!project) return;
+  try {
+    const updated = await api.del(
+      `/api/projects/${project.id}/assets/${encodeURIComponent(entity.id)}/image`, { file });
+    setState({ project: updated });
+    syncAssetRefs(updated);
+    toast("设定图已删除");
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+/** 把服务端返回的 refImages / refUrls 同步回抽屉草稿并重绘。 */
+function syncAssetRefs(project) {
+  if (!drawerDraft) return;
+  const saved = (((project.locks || {}).content || {}).entities) || [];
+  drawerDraft.locks.content.entities = JSON.parse(JSON.stringify(saved));
+  bindDrawerFields();
+}
+
+function openAssetMaterialPicker(entity) {
+  const project = getState().project;
+  if (!project) return;
+  const wrap = document.createElement("div");
+  wrap.className = "asset-picker-backdrop";
+  wrap.innerHTML = `
+    <div class="asset-picker" role="dialog" aria-modal="true">
+      <header>
+        <strong>从素材仓库选择设定图</strong>
+        <button type="button" class="icon-btn" data-close title="关闭">×</button>
+      </header>
+      <div class="asset-picker-search">
+        <input class="input" data-search placeholder="搜索素材标题" />
+        <span class="hint" data-count></span>
+      </div>
+      <div class="asset-picker-grid" data-grid><div class="asset-picker-empty">载入中…</div></div>
+    </div>`;
+  const close = () => wrap.remove();
+  wrap.addEventListener("click", (event) => {
+    if (event.target === wrap) close();
+  });
+  wrap.querySelector("[data-close]").addEventListener("click", close);
+  document.body.appendChild(wrap);
+
+  const grid = wrap.querySelector("[data-grid]");
+  const count = wrap.querySelector("[data-count]");
+  const search = wrap.querySelector("[data-search]");
+  let timer = 0;
+
+  const load = async () => {
+    grid.innerHTML = '<div class="asset-picker-empty">载入中…</div>';
+    try {
+      const data = await api.get(
+        `/api/main/materials?limit=60&q=${encodeURIComponent(search.value.trim())}`);
+      const items = data.items || [];
+      count.textContent = `${items.length} 张`;
+      grid.innerHTML = items.length
+        ? items.map((item) => `
+          <button type="button" class="asset-picker-item" data-url="${escapeHtml(item.url)}"
+            title="${escapeHtml(item.title || item.id)}">
+            <img src="${escapeHtml(item.thumbUrl || item.url)}" loading="lazy" alt="" />
+            <span>${escapeHtml(item.title || item.id)}</span>
+          </button>`).join("")
+        : `<div class="asset-picker-empty">${escapeHtml(data.error || "没有素材")}</div>`;
+    } catch (err) {
+      grid.innerHTML = `<div class="asset-picker-empty">${escapeHtml(err.message)}</div>`;
+    }
+  };
+
+  grid.addEventListener("click", async (event) => {
+    const item = event.target.closest("[data-url]");
+    if (!item) return;
+    const url = item.dataset.url;
+    close();
+    try {
+      await persistAssetsDraft();
+      const updated = await api.post(
+        `/api/projects/${project.id}/assets/${encodeURIComponent(entity.id)}/image/from-material`,
+        { url });
+      setState({ project: updated });
+      syncAssetRefs(updated);
+      toast("已从素材仓库添加设定图", "ok");
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+  });
+  search.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(load, 260);
+  });
+  load();
 }
 
 function bindDrawer() {

@@ -172,6 +172,31 @@ def save_shot_image(project_id: str, shot_id: str, data: bytes, ext: str = ".png
     return write_bytes(project_id, "images", f"{stem}_v{int(version)}{ext}", data)
 
 
+def save_asset_image(project_id: str, entity_id: str, data: bytes,
+                     ext: str = ".png") -> str:
+    """写入资产设定图（assets/e1_v1.png…），返回相对路径。"""
+    ext = ext if ext.startswith(".") else f".{ext}"
+    stem = _safe_name(entity_id, "asset")
+    numbers = asset_image_numbers(project_id, entity_id)
+    version = (max(numbers) if numbers else 0) + 1
+    return write_bytes(project_id, "assets", f"{stem}_v{version}{ext}", data)
+
+
+def asset_image_numbers(project_id: str, entity_id: str) -> set[int]:
+    """扫描磁盘上该资产的设定图版本号。"""
+    stem = _safe_name(entity_id, "asset")
+    directory = project_dir(project_id) / "assets"
+    numbers: set[int] = set()
+    if not directory.is_dir():
+        return numbers
+    pattern = re.compile(rf"^{re.escape(stem)}_v(\d+)\.")
+    for entry in directory.iterdir():
+        match = pattern.match(entry.name)
+        if match:
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
 def image_version_numbers(project_id: str, shot_id: str) -> set[int]:
     """扫描磁盘上该段的图片版本号；旧版同名文件（s3.png）视为第 1 版。"""
     stem = _safe_name(shot_id, "shot")
@@ -255,6 +280,15 @@ def public_view(project: dict[str, Any]) -> dict[str, Any]:
     bgm["url"] = url_for(project_id, bgm["file"]) if bgm.get("file") else ""
     subtitle = data.get("subtitle") or {}
     subtitle["url"] = url_for(project_id, subtitle["file"]) if subtitle.get("file") else ""
+    # 资产卡：参考图补可直接显示的 URL（refImages 仍保留原始相对路径）
+    content = ((data.get("locks") or {}).get("content") or {})
+    for entity in content.get("entities") or []:
+        if not isinstance(entity, dict):
+            continue
+        entity["refUrls"] = [
+            url_for(project_id, str(file))
+            for file in (entity.get("refImages") or [])
+        ]
     data["shots"] = [_shot_view(project_id, shot) for shot in project.get("shots") or []]
     outputs = []
     for item in project.get("outputs") or []:

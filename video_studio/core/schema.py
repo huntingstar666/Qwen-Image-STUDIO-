@@ -83,6 +83,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
                 "fields": {
                     "enabled": {"type": "bool", "default": True, "label": "启用内容锁"},
                     "strict": {"type": "bool", "default": True, "label": "严格模式"},
+                    "imageAnchor": {"type": "bool", "default": True, "label": "参考图锚定"},
                     "entities": {
                         "type": "entity_list", "default": [], "label": "角色与场景",
                         "kinds": ["character", "location", "prop"],
@@ -269,11 +270,16 @@ def _coerce(spec: dict[str, Any], value: Any, path: str) -> Any:
             kind = str(item.get("kind") or "character")
             if kinds and kind not in kinds:
                 raise ValueError(f"{path}[{index}].kind 只能是 {kinds} 之一")
+            refs = item.get("refImages")
+            if not isinstance(refs, list):
+                refs = []
             out.append({
                 "id": str(item.get("id") or f"e{index + 1}")[:32],
                 "kind": kind,
                 "name": str(item.get("name") or "")[:40],
                 "desc": str(item.get("desc") or "")[:400],
+                # 资产设定图：人物三视图 / 场景定场图，生图时做身份与场景锚定
+                "refImages": [str(entry)[:512] for entry in refs[:4] if str(entry or "").strip()],
             })
         return out
     if kind == "object":
@@ -342,6 +348,12 @@ def apply_defaults(project: dict[str, Any]) -> dict[str, Any]:
     canvas = project["canvas"]
     canvas.pop("width", None)
     canvas.pop("height", None)
+
+    # 老资产卡没有参考图字段：补空数组，避免前端读到 undefined
+    content = ((project.get("locks") or {}).get("content") or {})
+    for entity in content.get("entities") or []:
+        if isinstance(entity, dict) and not isinstance(entity.get("refImages"), list):
+            entity["refImages"] = []
 
     for shot in project.get("shots") or []:
         shot.setdefault("description", "")

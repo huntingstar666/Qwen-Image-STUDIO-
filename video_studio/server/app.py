@@ -106,6 +106,15 @@ def _shot_of(project: dict[str, Any], shot_id: str) -> dict[str, Any]:
     return shot
 
 
+def _entity_of(project: dict[str, Any], entity_id: str) -> dict[str, Any]:
+    content = ((project.get("locks") or {}).get("content") or {})
+    entity = next((item for item in content.get("entities") or []
+                   if str(item.get("id")) == entity_id), None)
+    if entity is None:
+        raise StudioError(f"资产不存在：{entity_id}", code="not_found", status=404)
+    return entity
+
+
 def _shifted_cues(project: dict[str, Any]) -> list[dict[str, Any]]:
     """字幕 cue 平移到音频时间轴（与自动分段同一套偏移规则）。"""
     offset = int((project.get("audio") or {}).get("offsetMs") or 0)
@@ -600,6 +609,74 @@ def api_shot_image(project_id: str, shot_id: str, file: UploadFile = File(...)) 
         shot["height"] = 0
         images.record_image_version(project_id, shot, shot["image"], source="upload")
         store.save(project)
+        return _view(project)
+
+
+def _add_asset_image(project_id: str, entity: dict[str, Any],
+                     data: bytes, suffix: str) -> str:
+    """写入一张资产设定图，最多保留 4 张（超出删最早的文件）。"""
+    relpath = store.save_asset_image(project_id, str(entity.get("id") or "asset"), data, suffix)
+    refs = entity.setdefault("refImages", [])
+    if relpath not in refs:
+        refs.append(relpath)
+    while len(refs) > 4:
+        victim = refs.pop(0)
+        store.delete_media(project_id, victim)
+    return relpath
+
+
+@app.post("/api/projects/{project_id}/assets/{entity_id}/image")
+def api_asset_image(project_id: str, entity_id: str,
+                    file: UploadFile = File(...)) -> dict[str, Any]:
+    """给资产卡上传本地设定图。"""
+    data = _read_upload(file, MAX_IMAGE_BYTES, "图片")
+    suffix = Path(file.filename or "asset.png").suffix.lower() or ".png"
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise StudioError("只支持 PNG / JPG / WEBP", code="unsupported_format")
+    with _lock(project_id):
+        project = store.load(project_id)
+        entity = _entity_of(project, entity_id)
+        _add_asset_image(project_id, entity, data, suffix)
+        store.save(project)
+        return _view(project)
+
+
+@app.post("/api/projects/{project_id}/assets/{entity_id}/image/from-material")
+def api_asset_image_from_material(project_id: str, entity_id: str,
+                                  payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """把素材仓库里的一张图设为资产设定图。"""
+    url = str(payload.get("url") or "")
+    if not url:
+        raise StudioError("缺少素材 url", code="bad_payload")
+    data = images.MainClient().download(url)
+    suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        suffix = ".png"
+    with _lock(project_id):
+        project = store.load(project_id)
+        entity = _entity_of(project, entity_id)
+        _add_asset_image(project_id, entity, data, suffix)
+        store.save(project)
+        return _view(project)
+
+
+@app.delete("/api/projects/{project_id}/assets/{entity_id}/image")
+def api_asset_image_delete(project_id: str, entity_id: str,
+                           payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """删除资产卡的一张设定图。"""
+    file = str(payload.get("file") or "")
+    if not file:
+        raise StudioError("缺少 file", code="bad_payload")
+    with _lock(project_id):
+        project = store.load(project_id)
+        entity = _entity_of(project, entity_id)
+        refs = [str(item) for item in (entity.get("refImages") or [])]
+        if file not in refs:
+            raise StudioError(f"设定图不存在：{file}", code="not_found", status=404)
+        refs.remove(file)
+        entity["refImages"] = refs
+        store.save(project)
+        store.delete_media(project_id, file)
         return _view(project)
 
 

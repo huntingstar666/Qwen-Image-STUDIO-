@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -111,6 +112,14 @@ class MainClient:
             raise MainProjectError(f"主项目没有返回任务 id：{data}", code="main_error")
         return job_id
 
+    def edit(self, payload: dict[str, Any]) -> str:
+        """提交参考图编辑任务（资产锚定用）。"""
+        data = self._request("POST", "/api/edit", payload, timeout=120.0)
+        job_id = str(data.get("job_id") or "")
+        if not job_id:
+            raise MainProjectError(f"主项目没有返回任务 id：{data}", code="main_error")
+        return job_id
+
     def job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/jobs/{job_id}", timeout=30.0)
 
@@ -192,6 +201,135 @@ def build_payload(project: dict[str, Any], shot: dict[str, Any], *, attempt: int
     return payload
 
 
+# --------------------------------------------------------------------------- 资产图片锚定
+
+#: 一次编辑最多带几张资产参考图（不含底稿）
+ANCHOR_MAX_REFS = 4
+KIND_LABEL = {"character": "人物", "location": "场景", "prop": "道具"}
+KIND_FEATURES = {
+    "character": "脸型、五官、发型、服装与配饰",
+    "location": "空间结构、材质、陈设与光线",
+    "prop": "造型、材质、颜色与磨损细节",
+}
+
+
+def _data_url(data: bytes) -> str:
+    """把图片字节转成主项目 /api/edit 能识别的 data URL。"""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif data[:2] == b"\xff\xd8":
+        mime = "image/jpeg"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        mime = "image/png"
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def shot_anchor_refs(project: dict[str, Any], shot: dict[str, Any]) -> list[dict[str, Any]]:
+    """收集本段引用且有设定图的资产，返回 [{id,kind,name,desc,data}]。"""
+    content = (project.get("locks") or {}).get("content") or {}
+    if not content.get("enabled", True) or not content.get("imageAnchor", True):
+        return []
+    entities = content.get("entities") or []
+    used = {str(item) for item in (shot.get("usedEntities") or [])}
+    text = f"{shot.get('text') or ''} {shot.get('prompt') or ''}"
+    refs: list[dict[str, Any]] = []
+    for entity in entities:
+        entity_id = str(entity.get("id") or "")
+        if not entity_id:
+            continue
+        name = str(entity.get("name") or "")
+        # 老项目没有 usedEntities 时按名字回退匹配
+        if used:
+            if entity_id not in used:
+                continue
+        elif not name or name not in text:
+            continue
+        files = [str(item) for item in (entity.get("refImages") or []) if str(item or "")]
+        if not files:
+            continue
+        try:
+            data = store.read_media(project["id"], files[0]).read_bytes()
+        except (StudioError, OSError):
+            continue
+        refs.append({
+            "id": entity_id,
+            "kind": str(entity.get("kind") or "character"),
+            "name": name or entity_id,
+            "desc": str(entity.get("desc") or ""),
+            "data": data,
+        })
+        if len(refs) >= ANCHOR_MAX_REFS:
+            break
+    return refs
+
+
+def build_anchor_prompt(refs: list[dict[str, Any]]) -> str:
+    """身份校准指令：底稿不动，只把主体换成参考图里的同一外观。"""
+    lines = [
+        "以图1为画面底稿：保持它的构图、机位、景别、内容位置与动作、光影、背景",
+        "以及所有非主体细节不变。只做身份校准，让以下主体与对应参考图保持同一外观：",
+    ]
+    for index, ref in enumerate(refs, start=2):
+        kind = KIND_LABEL.get(str(ref.get("kind")), "主体")
+        name = str(ref.get("name") or ref.get("id") or "")
+        desc = str(ref.get("desc") or "").strip()
+        detail = f"（固定外观：{desc}）" if desc else ""
+        features = KIND_FEATURES.get(str(ref.get("kind")), "外观特征")
+        lines.append(f"- 图{index}：{kind}「{name}」{detail}，保持{features}一致。")
+    lines.append("只替换上述主体的身份特征，不新增、不删除任何元素，不改变画幅与画面布局。")
+    return "\n".join(lines)
+
+
+def build_anchor_payload(project: dict[str, Any], shot: dict[str, Any],
+                         base_image: bytes, refs: list[dict[str, Any]],
+                         *, seed: int = 0) -> dict[str, Any]:
+    """把底稿与资产设定图一起提交给 /api/edit。"""
+    image_cfg = project.get("image") or {}
+    images_payload = [{"data": _data_url(base_image)}]
+    images_payload.extend({"data": _data_url(ref["data"])} for ref in refs)
+    payload: dict[str, Any] = {
+        "prompt": build_anchor_prompt(refs),
+        "negative_prompt": str(shot.get("negative") or "").strip(),
+        "images": images_payload,
+        "seed": int(seed or 0),
+        "steps": int(image_cfg.get("steps") or 8),
+        "cfg": float(image_cfg.get("cfg") or 1.0),
+        "meta": {
+            "source": "video_studio",
+            "anchor": True,
+            "projectId": project.get("id"),
+            "shotId": shot.get("id"),
+            "entities": [ref["id"] for ref in refs],
+        },
+    }
+    if image_cfg.get("turbo"):
+        payload["turbo"] = {"enabled": True}
+    return payload
+
+
+def _anchor_shot(project: dict[str, Any], shot: dict[str, Any], client: MainClient,
+                 base_image: bytes, refs: list[dict[str, Any]], *, seed: int,
+                 cancel: CancelFn | None,
+                 progress: ProgressFn | None) -> tuple[bytes, dict[str, Any], str]:
+    """拿底稿 + 资产设定图再跑一次身份校准。"""
+    payload = build_anchor_payload(project, shot, base_image, refs, seed=seed)
+    job_id = client.edit(payload)
+    job = _wait(client, job_id, cancel=cancel, progress=progress)
+    status = str(job.get("status") or "")
+    if status == "canceled":
+        raise CanceledError()
+    if status != "done":
+        raise StudioError(str(job.get("error") or "参考图锚定失败"), code="anchor_failed")
+    items = job.get("images") or []
+    if not items:
+        raise StudioError("参考图锚定没有返回图片", code="anchor_failed")
+    meta = items[0]
+    data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
+    return data, meta, job_id
+
+
 def _wait(client: MainClient, job_id: str, *, cancel: CancelFn | None = None,
           progress: ProgressFn | None = None, timeout: float = 1800.0) -> dict[str, Any]:
     started = time.time()
@@ -226,8 +364,15 @@ def generate_shot(project: dict[str, Any], shot: dict[str, Any], client: MainCli
                           code="empty_prompt")
     shot["status"] = "generating"
     shot["attempts"] = int(shot.get("attempts") or 0) + 1
+
+    def stage_progress(start: int, span: int) -> ProgressFn:
+        def report(value: int, label: str) -> None:
+            if progress is not None:
+                progress(start + int(value * span / 100), label)
+        return report
+
     job_id = client.generate(payload)
-    job = _wait(client, job_id, cancel=cancel, progress=progress)
+    job = _wait(client, job_id, cancel=cancel, progress=stage_progress(0, 58))
     if str(job.get("status")) == "canceled":
         shot["status"] = "pending"
         raise CanceledError()
@@ -241,17 +386,50 @@ def generate_shot(project: dict[str, Any], shot: dict[str, Any], client: MainCli
     meta = images[0]
     data = client.download(str(meta.get("url") or meta.get("thumb_url") or ""))
     suffix = Path(str(meta.get("filename") or "shot.png")).suffix or ".png"
+    seed = int(payload.get("seed") or 0)
+
+    # 底稿先落一版：锚定失败或不启用时，用户至少还有纯文本生图
     relpath = store.save_shot_image(project["id"], str(shot.get("id") or "shot"), data, suffix)
     shot["image"] = relpath
     shot["status"] = "ready"
-    shot["seed"] = int(payload.get("seed") or 0)
+    shot["seed"] = seed
     shot["width"] = int(meta.get("width") or 0)
     shot["height"] = int(meta.get("height") or 0)
     record_image_version(
         project["id"], shot, relpath,
-        seed=shot["seed"], width=shot["width"], height=shot["height"],
+        seed=seed, width=shot["width"], height=shot["height"],
         job_id=job_id, source="generate",
     )
+
+    # 资产图锚定：拿底稿 + 角色设定图再跑一次身份校准
+    refs = shot_anchor_refs(project, shot)
+    anchored = None
+    if refs:
+        if progress is not None:
+            progress(58, f"参考图锚定（{len(refs)} 个资产）")
+        try:
+            anchored = _anchor_shot(
+                project, shot, client, data, refs, seed=seed, cancel=cancel,
+                progress=stage_progress(58, 42),
+            )
+        except CanceledError:
+            raise
+        except (StudioError, OSError) as exc:
+            shot.setdefault("warnings", []).append(f"参考图锚定失败，已保留纯文本版本：{exc}")
+            anchored = None
+    if anchored is not None:
+        anchor_data, anchor_meta, anchor_job = anchored
+        anchor_suffix = Path(str(anchor_meta.get("filename") or "shot.png")).suffix or ".png"
+        anchor_rel = store.save_shot_image(
+            project["id"], str(shot.get("id") or "shot"), anchor_data, anchor_suffix)
+        shot["image"] = anchor_rel
+        shot["width"] = int(anchor_meta.get("width") or shot["width"])
+        shot["height"] = int(anchor_meta.get("height") or shot["height"])
+        record_image_version(
+            project["id"], shot, anchor_rel,
+            seed=seed, width=shot["width"], height=shot["height"],
+            job_id=anchor_job, source="anchor",
+        )
     return shot
 
 

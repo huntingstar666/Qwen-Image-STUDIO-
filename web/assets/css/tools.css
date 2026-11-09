@@ -943,6 +943,12 @@ html[data-theme="dark"] .tool-stage .tool-canvas:not(.tool-overlay) {
   overflow: hidden;
 }
 
+/* 顶栏高度固定：状态文案的亚像素变化不再带动整页上下位移（切换工具时最明显） */
+.app-main.is-tools .topbar {
+  height: var(--topbar-h);
+  min-height: var(--topbar-h);
+}
+
 .viewport.is-tools {
   max-width: none;
   margin: 0;

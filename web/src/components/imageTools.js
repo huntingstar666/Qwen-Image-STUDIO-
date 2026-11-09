@@ -198,6 +198,38 @@ function resizeTargetSize(src, op) {
   return [src.width * scale, src.height * scale];
 }
 
+/** 前端预览用近似 Unsharp Mask；超大图跳过卷积，导出时仍由服务端执行。 */
+function sharpenCanvas(src, amount) {
+  const strength = Math.max(0, Math.min(200, Number(amount) || 0));
+  if (strength <= 0) return src;
+  const width = src.width;
+  const height = src.height;
+  if (width < 3 || height < 3 || width * height > 4_000_000) return src;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  const image = ctx.getImageData(0, 0, width, height);
+  const data = image.data;
+  const base = new Uint8ClampedArray(data);
+  const k = (strength / 200) * 0.8;
+  const center = 1 + 4 * k;
+  const stride = width * 4;
+  for (let y = 1; y < height - 1; y += 1) {
+    let i = y * stride + 4;
+    for (let x = 1; x < width - 1; x += 1, i += 4) {
+      for (let c = 0; c < 3; c += 1) {
+        data[i + c] =
+          center * base[i + c] -
+          k * (base[i - 4 + c] + base[i + 4 + c] + base[i - stride + c] + base[i + stride + c]);
+      }
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas;
+}
+
 function resizeCanvasFit(src, op) {
   const isExact = !op.mode || op.mode === 'exact';
   let [rawWidth, rawHeight] = isExact
@@ -211,26 +243,31 @@ function resizeCanvasFit(src, op) {
   const width = Math.max(1, Math.round(rawWidth || src.width));
   const height = Math.max(1, Math.round(rawHeight || src.height));
   const fit = op.fit || 'contain';
+  const filter = String(op.filter || 'lanczos').toLowerCase();
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
+  // 用 Canvas 的插值质量近似服务端重采样：nearest 关闭平滑，其余按滤镜分档
+  ctx.imageSmoothingEnabled = filter !== 'nearest';
+  ctx.imageSmoothingQuality =
+    filter === 'bilinear' ? 'low' : filter === 'bicubic' ? 'medium' : 'high';
   if (fit === 'stretch') {
     ctx.drawImage(src, 0, 0, width, height);
-    return canvas;
+    return sharpenCanvas(canvas, op.sharpen_after);
   }
   if (fit === 'cover') {
     const scale = Math.max(width / src.width, height / src.height);
     const sw = Math.round(src.width * scale);
     const sh = Math.round(src.height * scale);
     ctx.drawImage(src, 0, 0, src.width, src.height, Math.round((width - sw) / 2), Math.round((height - sh) / 2), sw, sh);
-    return canvas;
+    return sharpenCanvas(canvas, op.sharpen_after);
   }
   const scale = Math.min(width / src.width, height / src.height);
   const sw = Math.max(1, Math.round(src.width * scale));
   const sh = Math.max(1, Math.round(src.height * scale));
   ctx.drawImage(src, 0, 0, src.width, src.height, Math.round((width - sw) / 2), Math.round((height - sh) / 2), sw, sh);
-  return canvas;
+  return sharpenCanvas(canvas, op.sharpen_after);
 }
 
 function pad32Canvas(src) {
@@ -520,8 +557,8 @@ export function createImageToolsPage(host) {
                 <summary>缩放 / 对齐 32</summary>
                 <div class="fold-body">
                   <div class="grid-2">
-                    <label class="field"><span class="field-label">宽度</span><input class="input mono" type="number" min="1" max="8192" step="1" data-ref="resizeWidth" /></label>
-                    <label class="field"><span class="field-label">高度</span><input class="input mono" type="number" min="1" max="8192" step="1" data-ref="resizeHeight" /></label>
+                    <label class="field"><span class="field-label">宽度 px</span><input class="input mono" type="number" min="1" max="8192" step="1" data-ref="resizeWidth" /></label>
+                    <label class="field"><span class="field-label">高度 px</span><input class="input mono" type="number" min="1" max="8192" step="1" data-ref="resizeHeight" /></label>
                   </div>
                   <label class="switch">
                     <input type="checkbox" data-ref="resizeLock" checked />
@@ -529,7 +566,21 @@ export function createImageToolsPage(host) {
                     <span class="switch-label">锁定比例<small>修改一边时同步另一边</small></span>
                   </label>
                   <label class="field">
-                    <span class="field-label">fit 模式</span>
+                    <span class="field-label">缩放方式</span>
+                    <select class="select" data-ref="resizeMode">
+                      <option value="exact">精确宽高</option>
+                      <option value="percent">按百分比</option>
+                      <option value="long_edge">按长边</option>
+                      <option value="short_edge">按短边</option>
+                      <option value="megapixels">按百万像素</option>
+                    </select>
+                  </label>
+                  <label class="field hidden" data-ref="resizeModeField">
+                    <span class="field-label" data-ref="resizeModeLabel">百分比 %</span>
+                    <input class="input mono" type="number" min="1" step="1" value="100" data-ref="resizeModeValue" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">宽高不匹配时</span>
                     <select class="select" data-ref="resizeFit">
                       <option value="contain">contain 等比缩放 + 补边</option>
                       <option value="cover">cover 等比缩放 + 居中裁切</option>
@@ -537,31 +588,15 @@ export function createImageToolsPage(host) {
                     </select>
                   </label>
                   <label class="field">
-                    <span class="field-label">缩放模式</span>
-                    <select class="select" data-ref="resizeMode">
-                      <option value="exact">精确宽高（用上面的宽高 + fit）</option>
-                      <option value="percent">按百分比</option>
-                      <option value="long_edge">按长边</option>
-                      <option value="short_edge">按短边</option>
-                      <option value="megapixels">按百万像素</option>
+                    <span class="field-label">重采样算法</span>
+                    <select class="select" data-ref="resizeFilter">
+                      <option value="lanczos">Lanczos（默认，最清晰）</option>
+                      <option value="bicubic">Bicubic（平滑）</option>
+                      <option value="bilinear">Bilinear（轻量）</option>
+                      <option value="nearest">Nearest（像素风 / 硬边）</option>
+                      <option value="box">Box（缩小时平均）</option>
                     </select>
                   </label>
-                  <div class="grid-2 hidden" data-ref="resizeModeRow">
-                    <label class="field">
-                      <span class="field-label" data-ref="resizeModeLabel">百分比</span>
-                      <input class="input mono" type="number" min="1" step="1" value="100" data-ref="resizeModeValue" />
-                    </label>
-                    <label class="field">
-                      <span class="field-label">滤镜</span>
-                      <select class="select" data-ref="resizeFilter">
-                        <option value="lanczos">lanczos（默认，最清晰）</option>
-                        <option value="bicubic">bicubic</option>
-                        <option value="bilinear">bilinear</option>
-                        <option value="nearest">nearest（像素风）</option>
-                        <option value="box">box</option>
-                      </select>
-                    </label>
-                  </div>
                   <div class="grid-2">
                     <label class="field">
                       <span class="field-label">对齐倍数</span>
@@ -572,11 +607,21 @@ export function createImageToolsPage(host) {
                       <input class="range" type="range" min="0" max="200" step="5" value="0" data-ref="resizeSharpen" />
                     </label>
                   </div>
+                  <div class="resize-target" data-ref="resizeTarget" aria-live="polite">
+                    <div class="resize-target-line">
+                      <span class="resize-target-label">当前</span>
+                      <span class="mono" data-ref="resizeFrom">—</span>
+                      <span class="resize-target-arrow" aria-hidden="true">→</span>
+                      <span class="resize-target-label">输出</span>
+                      <span class="mono strong" data-ref="resizeTo">—</span>
+                    </div>
+                    <div class="resize-target-meta" data-ref="resizeMeta">上传图片后可查看缩放结果</div>
+                  </div>
+                  <div class="field-hint" data-ref="resizeHint">—</div>
                   <div class="row">
                     <button class="btn primary sm" type="button" data-ref="resizeApply">应用缩放</button>
                     <button class="btn ghost sm" type="button" data-ref="pad32Apply">对齐 32</button>
                   </div>
-                  <div class="field-hint" data-ref="resizeHint">当前 —</div>
                 </div>
               </details>
 
@@ -970,13 +1015,16 @@ export function createImageToolsPage(host) {
     resizeHint: ref('resizeHint'),
     toolRail: ref('toolRail'),
     resizeMode: ref('resizeMode'),
-    resizeModeRow: ref('resizeModeRow'),
+    resizeModeField: ref('resizeModeField'),
     resizeModeLabel: ref('resizeModeLabel'),
     resizeModeValue: ref('resizeModeValue'),
     resizeFilter: ref('resizeFilter'),
     resizeSnap: ref('resizeSnap'),
     resizeSharpen: ref('resizeSharpen'),
     resizeSharpenVal: ref('resizeSharpenVal'),
+    resizeFrom: ref('resizeFrom'),
+    resizeTo: ref('resizeTo'),
+    resizeMeta: ref('resizeMeta'),
     losslessField: ref('losslessField'),
     lossless: ref('lossless'),
     targetKb: ref('targetKb'),
@@ -1411,24 +1459,34 @@ export function createImageToolsPage(host) {
     megapixels: { label: '百万像素 MP', min: 0.1, max: 80, step: 0.1, value: 4 },
   };
   function applyResizeModeMeta(meta) {
+    refs.resizeModeField.classList.toggle('hidden', !meta);
     if (!meta) {
-      refs.resizeModeRow.classList.add('hidden');
+      updateResizeHint();
       return;
     }
-    refs.resizeModeRow.classList.remove('hidden');
     refs.resizeModeLabel.textContent = meta.label;
     refs.resizeModeValue.min = String(meta.min);
     refs.resizeModeValue.max = String(meta.max);
     refs.resizeModeValue.step = String(meta.step);
+    updateResizeHint();
   }
   refs.resizeMode.addEventListener('change', () => {
     const meta = RESIZE_MODES[refs.resizeMode.value];
-    applyResizeModeMeta(meta);
     if (meta) refs.resizeModeValue.value = String(meta.value);
+    applyResizeModeMeta(meta);
+    // 精确宽高模式下把输入框恢复为当前工作尺寸，避免上次百分比数值残留在宽高里
+    if (!meta) syncResizeInputs();
   });
   applyResizeModeMeta(null);
   refs.resizeSharpen.addEventListener('input', () => {
     refs.resizeSharpenVal.textContent = refs.resizeSharpen.value;
+  });
+  ['input', 'change'].forEach((type) => {
+    refs.resizeModeValue.addEventListener(type, updateResizeHint);
+    refs.resizeSnap.addEventListener(type, updateResizeHint);
+    refs.resizeFit.addEventListener(type, updateResizeHint);
+    refs.resizeFilter.addEventListener(type, updateResizeHint);
+    refs.resizeLock.addEventListener(type, updateResizeHint);
   });
 
   const syncExportUi = () => {
@@ -2248,19 +2306,78 @@ export function createImageToolsPage(host) {
     refs.cropSize.textContent = `${fmtNum(pixel.width)} × ${fmtNum(pixel.height)}`;
   }
 
+  /** 按当前面板参数算出「实际输出尺寸」，供摘要展示与实际提交共用。 */
+  function resizePlan() {
+    if (!state.source) return null;
+    const baseW = currentWorkDims.width || state.source.width || 1;
+    const baseH = currentWorkDims.height || state.source.height || 1;
+    const mode = refs.resizeMode.value || 'exact';
+    const snap = Math.max(0, Math.round(Number(refs.resizeSnap.value) || 0));
+    let width;
+    let height;
+    if (mode === 'exact') {
+      width = Number(refs.resizeWidth.value) || baseW;
+      height = Number(refs.resizeHeight.value) || baseH;
+    } else {
+      const value = Number(refs.resizeModeValue.value) || 0;
+      if (!(value > 0)) return { baseW, baseH, width: 0, height: 0, snap, mode, invalid: true };
+      [width, height] = resizeTargetSize({ width: baseW, height: baseH }, { mode, [mode]: value });
+    }
+    width = Math.max(1, Math.round(width));
+    height = Math.max(1, Math.round(height));
+    if (snap > 1) {
+      width = Math.max(snap, Math.round(width / snap) * snap);
+      height = Math.max(snap, Math.round(height / snap) * snap);
+    }
+    return { baseW, baseH, width, height, snap, mode };
+  }
+
   function updateResizeHint() {
     if (!state.source) {
+      refs.resizeFrom.textContent = '—';
+      refs.resizeTo.textContent = '—';
+      refs.resizeTo.classList.remove('is-warn');
+      refs.resizeMeta.textContent = '上传图片后可查看缩放结果';
       refs.resizeHint.textContent = '当前 —';
       return;
     }
     // 预览尺寸变化后同步输入框（正在输入时不打扰）
     if (document.activeElement !== refs.resizeWidth && document.activeElement !== refs.resizeHeight) {
-      refs.resizeWidth.value = String(currentWorkDims.width || 0);
-      refs.resizeHeight.value = String(currentWorkDims.height || 0);
+      refs.resizeWidth.value = String(currentWorkDims.width || state.source.width || 0);
+      refs.resizeHeight.value = String(currentWorkDims.height || state.source.height || 0);
     }
-    refs.resizeHint.textContent = `当前 ${fmtNum(currentWorkDims.width)} × ${fmtNum(currentWorkDims.height)}（32 倍数：${
-      currentWorkDims.width % 32 === 0 && currentWorkDims.height % 32 === 0 ? '是' : '否，建议先「对齐 32」'
-    }）`;
+    const plan = resizePlan();
+    const baseW = plan?.baseW || currentWorkDims.width || state.source.width || 0;
+    const baseH = plan?.baseH || currentWorkDims.height || state.source.height || 0;
+    refs.resizeFrom.textContent = `${fmtNum(baseW)} × ${fmtNum(baseH)}`;
+    if (!plan || plan.invalid) {
+      refs.resizeTo.textContent = '待输入';
+      refs.resizeTo.classList.add('is-warn');
+      refs.resizeMeta.textContent = '请输入大于 0 的目标值';
+      refs.resizeHint.textContent = '32 倍数：—';
+      return;
+    }
+    const oversized = plan.width > 8192 || plan.height > 8192;
+    refs.resizeTo.textContent = `${fmtNum(plan.width)} × ${fmtNum(plan.height)}`;
+    refs.resizeTo.classList.toggle('is-warn', oversized);
+    const fromPx = Math.max(1, plan.baseW * plan.baseH);
+    const toPx = plan.width * plan.height;
+    // 用户理解的「缩放 50%」是边长比例；面积比只在等比时与边长平方一致
+    const linear = Math.sqrt(toPx / fromPx) * 100;
+    const sameAspect =
+      Math.abs(plan.width / plan.height - plan.baseW / plan.baseH) < 0.005;
+    const megapixels = toPx / 1e6;
+    const parts = [
+      `${sameAspect ? '边长' : '等效'} ${linear.toFixed(linear >= 100 ? 0 : 1)}%`,
+      `${megapixels < 1 ? megapixels.toFixed(2) : megapixels.toFixed(1)} MP`,
+    ];
+    if (plan.snap > 1) parts.push(`已按 ${plan.snap} 对齐`);
+    if (plan.width === plan.baseW && plan.height === plan.baseH) parts.push('尺寸未变化');
+    if (oversized) parts.push('超出 8192 上限');
+    refs.resizeMeta.textContent = parts.join(' · ');
+    refs.resizeHint.textContent = `32 倍数：${
+      plan.width % 32 === 0 && plan.height % 32 === 0 ? '是' : '否，建议先「对齐 32」'
+    }`;
   }
 
   function updateEstimate() {
@@ -2529,8 +2646,12 @@ export function createImageToolsPage(host) {
     if (workStale()) await render();
     if (!workCanvas || !sourceImage) return;
 
-    // 参考图只应用几何操作，保证和当前画面同尺寸、同构图；调色作为差异显示
-    const geometryOps = state.stagedOps.filter((op) => op.op !== 'adjust');
+    // 参考图停在「第一次缩放」之前：缩放会改变画面尺寸，若把 resize 也应用到参考图，
+    // 两张图会被 fit 成同样的显示大小，用户看到的就是 0 差异（对比失效）。
+    const firstResize = state.stagedOps.findIndex((op) => op.op === 'resize');
+    const referenceOps =
+      firstResize >= 0 ? state.stagedOps.slice(0, firstResize) : state.stagedOps;
+    const geometryOps = referenceOps.filter((op) => op.op !== 'adjust');
     const referenceCanvas = geometryOps.length
       ? applyOpsToCanvas(sourceImage, geometryOps)
       : canvasFromImage(sourceImage);
@@ -2662,45 +2783,56 @@ export function createImageToolsPage(host) {
     refs.resizeHeight.value = String(currentWorkDims.height || state.source?.height || 0);
     state.resize.width = currentWorkDims.width;
     state.resize.height = currentWorkDims.height;
+    updateResizeHint();
   }
   function applyResize() {
     if (!state.source) {
       toastWarn('请先上传图片');
       return;
     }
-    const mode = refs.resizeMode.value || 'exact';
+    const plan = resizePlan();
+    if (!plan || plan.invalid) {
+      toastWarn('请输入有效的缩放目标');
+      return;
+    }
+    if (plan.width > 8192 || plan.height > 8192) {
+      toastWarn(`输出尺寸 ${plan.width}×${plan.height} 超出 8192 上限`);
+      return;
+    }
     const common = {
-      snap: Math.max(0, Math.round(Number(refs.resizeSnap.value) || 0)),
+      snap: plan.snap,
       filter: refs.resizeFilter.value || 'lanczos',
       sharpen_after: Math.max(0, Math.round(Number(refs.resizeSharpen.value) || 0)),
     };
-    if (mode === 'exact') {
-      const width = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeWidth.value) || 0)));
-      const height = Math.max(1, Math.min(8192, Math.round(Number(refs.resizeHeight.value) || 0)));
-      if (!width || !height) {
-        toastWarn('请输入有效的宽高');
-        return;
-      }
+    if (plan.mode === 'exact') {
+      const fit = refs.resizeFit.value || 'contain';
       pushOp(
-        { op: 'resize', width, height, fit: refs.resizeFit.value, ...common },
-        `缩放到 ${fmtNum(width)}×${fmtNum(height)}（${refs.resizeFit.value}）`,
+        { op: 'resize', width: plan.width, height: plan.height, fit, ...common },
+        `缩放到 ${fmtNum(plan.width)}×${fmtNum(plan.height)}（${fit}）`,
       );
-      state.resize.width = width;
-      state.resize.height = height;
-      toastSuccess('已应用缩放');
-      return;
+    } else {
+      const value = Number(refs.resizeModeValue.value) || 0;
+      const meta = RESIZE_MODES[plan.mode];
+      pushOp(
+        { op: 'resize', mode: plan.mode, [plan.mode]: value, ...common },
+        `缩放到 ${fmtNum(plan.width)}×${fmtNum(plan.height)}（${meta ? meta.label : plan.mode} ${value}）`,
+      );
     }
-    const value = Number(refs.resizeModeValue.value) || 0;
-    if (!(value > 0)) {
-      toastWarn('请输入有效的目标值');
-      return;
+    state.resize.width = plan.width;
+    state.resize.height = plan.height;
+    // 应用后把比例型参数重置为「基于新尺寸」的等效值，避免连续点击变成二次缩小
+    if (plan.mode !== 'exact') {
+      const nextValue =
+        plan.mode === 'percent'
+          ? 100
+          : plan.mode === 'long_edge'
+            ? Math.max(plan.width, plan.height)
+            : plan.mode === 'short_edge'
+              ? Math.min(plan.width, plan.height)
+              : Number(((plan.width * plan.height) / 1e6).toFixed(2));
+      refs.resizeModeValue.value = String(nextValue);
     }
-    const meta = RESIZE_MODES[mode];
-    pushOp(
-      { op: 'resize', mode, [mode]: value, ...common },
-      `缩放（${meta ? meta.label : mode} ${value}）`,
-    );
-    toastSuccess('已应用缩放');
+    toastSuccess(`已缩放到 ${fmtNum(plan.width)} × ${fmtNum(plan.height)}`);
   }
   refs.resizeApply.addEventListener('click', applyResize);
   refs.pad32Apply.addEventListener('click', () => {
@@ -2716,17 +2848,19 @@ export function createImageToolsPage(host) {
   });
   function bindResizeInput(input, other, key) {
     input.addEventListener('input', () => {
-      if (!state.resize.lock) return;
-      const baseW = currentWorkDims.width || state.source?.width || 1;
-      const baseH = currentWorkDims.height || state.source?.height || 1;
-      const aspect = baseW / baseH;
-      if (key === 'width') {
-        const width = Number(refs.resizeWidth.value) || 1;
-        refs.resizeHeight.value = String(Math.max(1, Math.round(width / aspect)));
-      } else {
-        const height = Number(refs.resizeHeight.value) || 1;
-        refs.resizeWidth.value = String(Math.max(1, Math.round(height * aspect)));
+      if (state.resize.lock) {
+        const baseW = currentWorkDims.width || state.source?.width || 1;
+        const baseH = currentWorkDims.height || state.source?.height || 1;
+        const aspect = baseW / baseH;
+        if (key === 'width') {
+          const width = Number(refs.resizeWidth.value) || 1;
+          refs.resizeHeight.value = String(Math.max(1, Math.round(width / aspect)));
+        } else {
+          const height = Number(refs.resizeHeight.value) || 1;
+          refs.resizeWidth.value = String(Math.max(1, Math.round(height * aspect)));
+        }
       }
+      updateResizeHint();
     });
   }
   bindResizeInput(refs.resizeWidth, refs.resizeHeight, 'width');

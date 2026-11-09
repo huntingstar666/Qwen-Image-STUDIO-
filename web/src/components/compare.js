@@ -28,9 +28,9 @@ function loadImage(src) {
   });
 }
 
-function fitRect(iw, ih, w, h) {
+function fitRect(iw, ih, w, h, scaleOverride) {
   if (!iw || !ih) return { x: 0, y: 0, w, h };
-  const scale = Math.min(w / iw, h / ih);
+  const scale = scaleOverride || Math.min(w / iw, h / ih);
   const width = iw * scale;
   const height = ih * scale;
   return { x: (w - width) / 2, y: (h - height) / 2, w: width, h: height };
@@ -105,6 +105,7 @@ function mountCompare(container, references, results, initialReference, initialR
     tol: 24,
     stride: 3,
     diffMode: false,
+    actualScale: false,
     amp: 4,
     sat: 1,
     bright: 1,
@@ -138,6 +139,10 @@ function mountCompare(container, references, results, initialReference, initialR
             <select data-ref="resSelect">${resOptions}</select>
           </label>
           <span class="spacer"></span>
+          <label class="cmp-toggle" title="按两图真实像素大小显示，缩放前后差异一眼可见">
+            <input type="checkbox" data-ref="actualScale" />
+            <span>真实比例</span>
+          </label>
           <span class="cmp-tip">拖动竖线 / ← → 逐像素对照</span>
         </div>
         <div class="cmp-stage" data-ref="stage" tabindex="0" aria-label="图像对比画布：左右拖动中缝">
@@ -234,14 +239,24 @@ function mountCompare(container, references, results, initialReference, initialR
     draw();
   }
 
+  /** 「真实比例」下的公共缩放：两图按同一像素比例绘制，缩略图大小直接反映尺寸差。 */
+  function sharedScale(width, height) {
+    if (!state.actualScale || !refImg || !resImg) return 0;
+    const maxW = Math.max(refImg.naturalWidth, resImg.naturalWidth);
+    const maxH = Math.max(refImg.naturalHeight, resImg.naturalHeight);
+    if (!maxW || !maxH) return 0;
+    return Math.min(width / maxW, height / maxH);
+  }
+
   function draw() {
     if (!refImg || !resImg) return;
     const width = stage.clientWidth;
     const height = stage.clientHeight;
     if (!width || !height) return;
     ctx.clearRect(0, 0, width, height);
-    const refRect = fitRect(refImg.naturalWidth, refImg.naturalHeight, width, height);
-    const resRect = fitRect(resImg.naturalWidth, resImg.naturalHeight, width, height);
+    const scale = sharedScale(width, height);
+    const refRect = fitRect(refImg.naturalWidth, refImg.naturalHeight, width, height, scale || undefined);
+    const resRect = fitRect(resImg.naturalWidth, resImg.naturalHeight, width, height, scale || undefined);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(refImg, refRect.x, refRect.y, refRect.w, refRect.h);
@@ -289,8 +304,9 @@ function mountCompare(container, references, results, initialReference, initialR
     analysis.width = width;
     analysis.height = height;
     const actx = analysis.getContext('2d', { willReadFrequently: true });
-    const refRect = fitRect(refImg.naturalWidth, refImg.naturalHeight, width, height);
-    const resRect = fitRect(resImg.naturalWidth, resImg.naturalHeight, width, height);
+    const scale = sharedScale(width, height);
+    const refRect = fitRect(refImg.naturalWidth, refImg.naturalHeight, width, height, scale || undefined);
+    const resRect = fitRect(resImg.naturalWidth, resImg.naturalHeight, width, height, scale || undefined);
 
     actx.clearRect(0, 0, width, height);
     actx.drawImage(refImg, refRect.x, refRect.y, refRect.w, refRect.h);
@@ -337,10 +353,23 @@ function mountCompare(container, references, results, initialReference, initialR
 
     const refColor = meanColorStats(refData, width, height, refRect, step);
     const resColor = meanColorStats(resData, width, height, resRect, step);
-    renderStats({ samples, mean: samples ? sum / samples : 0, max, above, refColor, resColor });
+    renderStats({
+      samples,
+      mean: samples ? sum / samples : 0,
+      max,
+      above,
+      refColor,
+      resColor,
+      sizeInfo: {
+        refW: refImg.naturalWidth,
+        refH: refImg.naturalHeight,
+        resW: resImg.naturalWidth,
+        resH: resImg.naturalHeight,
+      },
+    });
   }
 
-  function renderStats({ samples, mean, max, above, refColor, resColor }) {
+  function renderStats({ samples, mean, max, above, refColor, resColor, sizeInfo }) {
     const abovePct = samples ? (above / samples) * 100 : 0;
     const badge = ref('badge');
     let level = '低差异';
@@ -362,11 +391,23 @@ function mountCompare(container, references, results, initialReference, initialR
       ['色温 R−B', refColor.temp, resColor.temp, 0],
     ];
 
+    const sizeDiffer =
+      sizeInfo && (sizeInfo.refW !== sizeInfo.resW || sizeInfo.refH !== sizeInfo.resH);
+    const areaPct = sizeDiffer
+      ? ((sizeInfo.resW * sizeInfo.resH) / Math.max(1, sizeInfo.refW * sizeInfo.refH)) * 100
+      : 100;
+    const sizeRow = sizeDiffer
+      ? `<div class="cmp-metric"><span>尺寸变化</span><b>${fmtNum(sizeInfo.refW)}×${fmtNum(
+          sizeInfo.refH,
+        )} → ${fmtNum(sizeInfo.resW)}×${fmtNum(sizeInfo.resH)} <em>${areaPct.toFixed(0)}%</em></b></div>`
+      : '';
+
     ref('stats').innerHTML = `
       <div class="cmp-metric"><span>平均像素差异</span><b>${samples ? mean.toFixed(1) : '—'} <em>/ 255</em></b></div>
       <div class="cmp-metric"><span>最大像素差异</span><b>${samples ? max.toFixed(0) : '—'}</b></div>
       <div class="cmp-metric"><span>超容差像素</span><b>${samples ? abovePct.toFixed(1) + '%' : '—'}</b></div>
       <div class="cmp-metric"><span>采样点</span><b>${fmtNum(samples)}</b></div>
+      ${sizeRow}
       <table class="cmp-table">
         <thead><tr><th>指标</th><th>参考</th><th>结果</th><th>Δ</th></tr></thead>
         <tbody>
@@ -383,7 +424,11 @@ function mountCompare(container, references, results, initialReference, initialR
             .join('')}
         </tbody>
       </table>
-      <div class="cmp-hint">统计基于两图重叠区域与当前采样步长；结果图校正参数会实时计入。</div>`;
+      <div class="cmp-hint">${
+        state.actualScale
+          ? '真实比例用于观察缩放前后的大小差异；像素差异请取消勾选「真实比例」后查看。'
+          : '统计基于两图重叠区域与当前采样步长；结果图校正参数会实时计入。'
+      }</div>`;
   }
 
   function schedule(full = true) {
@@ -448,6 +493,11 @@ function mountCompare(container, references, results, initialReference, initialR
   ref('diffMode').addEventListener('change', (event) => {
     state.diffMode = event.target.checked;
     schedule(false);
+  });
+
+  ref('actualScale').addEventListener('change', (event) => {
+    state.actualScale = event.target.checked;
+    schedule(true);
   });
 
   ref('resetColor').addEventListener('click', () => {

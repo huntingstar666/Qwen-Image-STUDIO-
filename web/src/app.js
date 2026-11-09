@@ -19,6 +19,7 @@ import { createHistoryPage } from './components/history.js';
 import { createMaterialsPage } from './components/materials.js';
 import { createGalleryPage } from './components/gallery.js';
 import { createStudioPage } from './components/studio.js';
+import { createVideoStudioPage } from './components/videoStudio.js';
 import { maybeOpenModelWizard, openSettings } from './components/settings.js';
 
 /* ---------------------------------------------------------------- 图标 */
@@ -46,6 +47,8 @@ const NAV_ICONS = {
   chevron:
     '<path d="M14.5 6.5L9 12l5.5 5.5"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  film:
+    '<rect x="3.4" y="5" width="17.2" height="14" rx="2.4"/><path d="M7.4 5v14M16.6 5v14M3.4 9.6h4M3.4 14.4h4M16.6 9.6h4M16.6 14.4h4"/>',
   gear:
     '<circle cx="12" cy="12" r="3.1"/><path d="M12 3.8v1.7M12 18.5v1.7M4.9 4.9l1.2 1.2M17.9 17.9l1.2 1.2M3.8 12h1.7M18.5 12h1.7M4.9 19.1l1.2-1.2M17.9 6.1l1.2-1.2"/>',
 };
@@ -74,6 +77,16 @@ const TABS = [
     icon: 'brush',
     badge: '新',
     factory: createStudioPage,
+  },
+  {
+    id: 'video',
+    label: '视频工作台',
+    sub: '音频驱动分镜与成片',
+    code: 'AUDIO → VIDEO',
+    group: 'create',
+    icon: 'film',
+    badge: '新',
+    factory: createVideoStudioPage,
   },
   {
     id: 'gallery',
@@ -548,10 +561,14 @@ function route() {
 
 function showPage(id) {
   const viewport = document.getElementById('viewport');
-  // 工作室铺满整个视口（D24.1）：其余页面保留原有留白与限宽。
+  // 工作室 / 视频工作台铺满整个视口：其余页面保留原有留白与限宽。
   const isStudio = id === 'studio';
+  const isVideo = id === 'video';
   viewport.classList.toggle('is-studio', isStudio);
-  document.querySelector('.app-main')?.classList.toggle('is-studio', isStudio);
+  viewport.classList.toggle('is-video', isVideo);
+  const appMain = document.querySelector('.app-main');
+  appMain?.classList.toggle('is-studio', isStudio);
+  appMain?.classList.toggle('is-video', isVideo);
   const definition = TABS.find((tab) => tab.id === id);
   if (!definition) return;
   if (!pages.has(id)) {

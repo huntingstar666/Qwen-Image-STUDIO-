@@ -1027,6 +1027,28 @@
   color: var(--accent);
 }
 
+/* Toast 停在画布右侧，不遮挡 Inspector 的源图与参数 */
+.toast-root.tools-toast {
+  top: 120px;
+  right: 380px;
+  width: min(320px, calc(100vw - 420px));
+}
+
+@media (max-width: 1440px) {
+  .toast-root.tools-toast {
+    right: 340px;
+    width: min(320px, calc(100vw - 360px));
+  }
+}
+
+@media (max-width: 1180px) {
+  .toast-root.tools-toast {
+    top: calc(var(--tools-sticky-top, 72px) + 84px);
+    right: 14px;
+    width: min(320px, calc(100vw - 28px));
+  }
+}
+
 .page-tools.is-empty .tool-stack button:not(.chip) {
   opacity: 0.45;
   pointer-events: none;

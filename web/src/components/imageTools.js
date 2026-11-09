@@ -343,6 +343,8 @@ export function createImageToolsPage(host) {
   let displayStamp = { width: 0, height: 0, dpr: 0 };
   let overlayRaf = 0;
   const selectedResultIds = new Set();
+  const toastRoot = document.getElementById('toast-root');
+  toastRoot?.classList.add('tools-toast');
 
   const state = {
     source: null, // {dataUrl,name,width,height}
@@ -3919,7 +3921,7 @@ export function createImageToolsPage(host) {
   const topbarEl = document.querySelector('.topbar');
   const syncStickyTop = () => {
     const height = topbarEl ? topbarEl.getBoundingClientRect().height : 64;
-    host.style.setProperty('--tools-sticky-top', `${Math.round(height)}px`);
+    document.documentElement.style.setProperty('--tools-sticky-top', `${Math.round(height)}px`);
   };
   syncStickyTop();
   const topbarObserver =
@@ -3939,6 +3941,7 @@ export function createImageToolsPage(host) {
     },
     destroy() {
       disposed = true;
+      toastRoot?.classList.remove('tools-toast');
       if (overlayRaf) cancelAnimationFrame(overlayRaf);
       resizeObserver?.disconnect();
       topbarObserver?.disconnect();

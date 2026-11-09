@@ -1121,7 +1121,7 @@ results       已落盘结果（url/thumb/尺寸/类型/时间）
 - 工具分组与中文文案收敛；
 - 画布缩放/平移/100%/前后对比/透明棋盘；
 - IndexedDB 草稿、离开确认、清空/重置确认；
-- 统一任务中心、Toast 位置与数量控制；
+- 统一任务中心、Toast 数量与去重控制；
 - 结果持久化、版本、批量操作收敛；
 - 尺寸/水印/导出预设，批量处理；
 - 窄屏 Inspector 抽屉与结果条常驻；
@@ -1165,6 +1165,30 @@ results       已落盘结果（url/thumb/尺寸/类型/时间）
 | 键盘 | 焦点在「调整」按 ArrowDown → 切到「尺寸」，焦点与 `aria-selected` 同步，主操作变为「应用缩放」 |
 | ARIA | `#tool-panel` role=tabpanel，`aria-labelledby` 随激活 tab 更新 |
 | 控制台 | 0 error |
+
+### 12.2 Toast 位置：不再遮挡 Inspector（2026-11-09）
+
+**改动文件**
+
+- `web/src/components/imageTools.js`
+- `web/assets/css/tools.css`
+
+**内容**
+
+- 图像处理页给 `#toast-root` 加 `tools-toast` 作用域类，离开页面时移除；
+- 桌面端 Toast 从顶栏右侧移到画布右侧：`top:120px; right:380px; width:320px`，不覆盖 Inspector 源图与参数；
+- ≤1440 时右移 340px；≤1180 时移到工具轨下方：`top: calc(var(--tools-sticky-top, 72px) + 84px)`；
+- `--tools-sticky-top` 改写到 `document.documentElement`，供页面内和 Toast 共用；
+- 其他页面的 Toast 行为不变。
+
+**回归**
+
+| 场景 | 结果 |
+|---|---|
+| 1600×950 | Toast x=900–1220；源图面板 x=1242 起，无重叠 |
+| 1280×800 | Toast x=620–940；源图面板 x=962 起，无重叠 |
+| 900×800 | Toast top=204；横向工具轨 bottom=188，无重叠 |
+| 其他页面 | 仍使用原 top-right 规则 |
 
 ---
 

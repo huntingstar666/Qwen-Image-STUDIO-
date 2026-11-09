@@ -98,6 +98,83 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
+// --------------------------------------------------------------------------- 应用内弹窗
+// 主项目用 iframe 内嵌时，跨源 iframe 的原生 prompt / confirm 会被浏览器拦截，
+// 所以所有确认与输入都走自己的工作台弹窗。
+
+let modalResolve = null;
+
+function closeModal(result) {
+  const dialog = $("modalDialog");
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  $("modalBackdrop").hidden = true;
+  const resolve = modalResolve;
+  modalResolve = null;
+  if (resolve) resolve(result);
+}
+
+/**
+ * 打开弹窗。`value` 为字符串时显示输入框（确定返回字符串，取消返回 null）；
+ * 否则是确认框（确定 true，取消 null）。
+ */
+function openModal({ title = "确认", text = "", value = null, okText = "确定", danger = false } = {}) {
+  return new Promise((resolve) => {
+    if (modalResolve) closeModal(null);
+    const dialog = $("modalDialog");
+    const input = $("modalInput");
+    const ok = $("modalOk");
+    $("modalTitle").textContent = title;
+    $("modalText").textContent = text;
+    $("modalText").hidden = !text;
+    const isPrompt = value !== null;
+    input.hidden = !isPrompt;
+    input.value = isPrompt ? String(value) : "";
+    ok.textContent = okText;
+    ok.classList.toggle("primary", !danger);
+    ok.classList.toggle("danger", danger);
+    $("modalBackdrop").hidden = false;
+    dialog.hidden = false;
+    modalResolve = resolve;
+    requestAnimationFrame(() => {
+      if (isPrompt) {
+        input.focus();
+        input.select();
+      } else {
+        ok.focus();
+      }
+    });
+  });
+}
+
+function askConfirm(options) {
+  return openModal(options).then((result) => result === true);
+}
+
+function askText(options) {
+  return openModal({ ...options, value: options.value ?? "" })
+    .then((result) => (typeof result === "string" ? result : null));
+}
+
+function bindModal() {
+  $("modalOk").addEventListener("click", () => {
+    const input = $("modalInput");
+    closeModal(input.hidden ? true : input.value.trim());
+  });
+  $("modalCancel").addEventListener("click", () => closeModal(null));
+  $("modalBackdrop").addEventListener("click", () => closeModal(null));
+  $("modalInput").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    $("modalOk").click();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || $("modalDialog").hidden) return;
+    event.preventDefault();
+    closeModal(null);
+  });
+}
+
 function currentMs() {
   return Math.max(0, (audioEl.currentTime || 0) * 1000);
 }
@@ -145,6 +222,7 @@ async function boot() {
   bindSegmentMode();
   bindSplitDialog();
   bindContextBar();
+  bindModal();
 
   storyboard = new Storyboard(
     {
@@ -188,6 +266,11 @@ async function boot() {
 
   bindTaskCenter();
   startTaskPolling();
+
+  // 切回窗口时刷新项目列表：别的标签页新建/改名后，历史项目下拉也能同步
+  window.addEventListener("focus", () => {
+    refreshProjects().catch(() => {});
+  });
 
   viewSwitch = initSegmented(refs.viewSwitch, (view) => setView(view));
   setView(localStorage.getItem("videoStudio.view") === "storyboard" ? "storyboard" : "timeline");
@@ -432,6 +515,9 @@ function renderProjectPicker() {
     .map((item) => `<option value="${escapeHtml(item.id)}" ${
       state.project && item.id === state.project.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
     .join("");
+  refs.projectSelect.title = options.length
+    ? `共 ${options.length} 个历史项目（含当前）· 选择即切换`
+    : "还没有项目，点右侧 + 新建";
 }
 
 function renderChips() {
@@ -863,7 +949,13 @@ async function applySegmentation() {
     const facts = [manual ? `${manual} 个手动调整段` : "", images ? `${images} 张已生成图片` : ""]
       .filter(Boolean);
     const extra = facts.length ? `将覆盖 ${facts.join("、")}。` : "";
-    if (!window.confirm(`按字幕重新切开全片。${extra}确定继续？`)) return;
+    const confirmed = await askConfirm({
+      title: "重新分段",
+      text: `按字幕重新切开全片。${extra}图片历史仍保留在磁盘，但不再关联到镜头段。`,
+      okText: "仍然重新分段",
+      danger: true,
+    });
+    if (!confirmed) return;
   }
   pushUndo();
   try {
@@ -1184,7 +1276,13 @@ async function useShotVersion(file, shotId = getState().selectedId) {
 async function deleteShotVersion(file, shotId = getState().selectedId) {
   const state = getState();
   if (!state.project || !shotId) return;
-  if (!window.confirm("删除这个版本？图片文件会一起删掉，且不可恢复。")) return;
+  const confirmed = await askConfirm({
+    title: "删除图片版本",
+    text: "删除这个版本？图片文件会一起删掉，且不可恢复。",
+    okText: "删除",
+    danger: true,
+  });
+  if (!confirmed) return;
   try {
     const project = await api.del(
       `/api/projects/${state.project.id}/shots/${shotId}/versions`, { file });
@@ -1552,12 +1650,18 @@ function bindTopbar() {
   });
 
   $("btnNewProject").addEventListener("click", async () => {
-    const name = window.prompt("项目名称", "未命名项目");
+    const name = await askText({
+      title: "新建项目",
+      text: "给新项目起个名字；创建后可在顶部「项目」下拉里随时切回历史项目。",
+      value: "未命名项目",
+      okText: "创建",
+    });
     if (name === null) return;
     try {
       const project = await api.post("/api/projects", { name: name.trim() || "未命名项目" });
       setState({ projects: [{ id: project.id, name: project.name }, ...stateProjects()] });
       await loadProject(project.id, { keepTime: false });
+      toast(`已新建「${project.name}」`, "ok");
     } catch (err) {
       toast(err.message, "bad");
     }
@@ -2104,12 +2208,18 @@ async function saveDrawer() {
   const imageShots = (project.shots || []).filter((shot) => shot.image);
   let regenerateIds = null;
   if (ratioChanged && imageShots.length) {
-    const proceed = window.confirm(
-      `画幅将从 ${oldRatio} 改为 ${patch.canvas.ratio}，已有 ${imageShots.length} 张图会按新画幅居中裁切。继续保存吗？`);
+    const proceed = await askConfirm({
+      title: "修改画幅",
+      text: `画幅将从 ${oldRatio} 改为 ${patch.canvas.ratio}，已有 ${imageShots.length} 张图会按新画幅居中裁切。继续保存吗？`,
+      okText: "继续保存",
+    });
     if (!proceed) return;
-    if (window.confirm(`要顺便按新画幅重新生成这 ${imageShots.length} 张图吗？`)) {
-      regenerateIds = imageShots.map((shot) => shot.id);
-    }
+    const regenerate = await askConfirm({
+      title: "重新生成图片",
+      text: `要顺便按新画幅重新生成这 ${imageShots.length} 张图吗？`,
+      okText: "重新生成",
+    });
+    if (regenerate) regenerateIds = imageShots.map((shot) => shot.id);
   }
 
   try {

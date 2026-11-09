@@ -100,7 +100,8 @@
           <span class="brand-text">视频工作台<em>video studio</em></span>
         </div>
         <div class="project-picker">
-          <select id="projectSelect" aria-label="切换项目"></select>
+          <span class="picker-label">项目</span>
+          <select id="projectSelect" aria-label="切换项目" title="切换历史项目"></select>
           <button class="icon-btn" id="btnNewProject" data-tip="新建项目" aria-label="新建项目">
             <svg class="icon"><use href="#i-plus"></use></svg>
           </button>
@@ -341,6 +342,17 @@
         <button class="btn" type="button" id="splitCancel">取消</button>
         <button class="btn primary" type="button" id="splitConfirm">在切点拆分</button>
       </footer>
+    </div>
+
+    <div class="modal-backdrop" id="modalBackdrop" hidden></div>
+    <div class="modal-dialog" id="modalDialog" hidden role="dialog" aria-modal="true">
+      <h3 id="modalTitle">确认</h3>
+      <p id="modalText"></p>
+      <input class="input" id="modalInput" hidden />
+      <div class="modal-actions">
+        <button class="btn" type="button" id="modalCancel">取消</button>
+        <button class="btn primary" type="button" id="modalOk">确定</button>
+      </div>
     </div>
 
     <aside class="drawer" id="drawer" hidden>

@@ -167,6 +167,7 @@ button { cursor: pointer; }
 }
 
 .project-picker { display: flex; align-items: center; gap: 8px; }
+.picker-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .project-picker select {
   min-width: 200px; max-width: 300px;
   height: 32px; padding: 0 10px;
@@ -1328,6 +1329,32 @@ img.is-loading {
 .preflight-foot .hint { flex: 1; }
 .preflight-foot .btn { height: 30px; font-size: 12px; }
 
+/* ------------------------------------------------------------------ 通用确认 / 输入弹窗 */
+
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(20, 22, 25, 0.32);
+  backdrop-filter: blur(2px);
+}
+.modal-dialog {
+  position: fixed; z-index: 61;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, 92vw);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+  animation: page-in 180ms var(--ease);
+}
+.modal-dialog h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.modal-dialog p { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.75; white-space: pre-wrap; }
+.modal-dialog .input { width: 100%; height: 34px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal-actions .btn { height: 30px; font-size: 12px; }
+
 /* ------------------------------------------------------------------ 拆分弹窗 */
 
 .split-backdrop {
@@ -1374,9 +1401,18 @@ img.is-loading {
 }
 .split-foot .btn { height: 30px; font-size: 12px; }
 
-/* 嵌入主项目：隐藏自身顶栏与多余留白 */
-html[data-embed="1"] .app { grid-template-rows: minmax(0, 1fr) minmax(318px, 38vh); }
-html[data-embed="1"] .topbar { display: none; }
+/* 嵌入主项目：压缩顶栏但保留项目切换 / 新建 / 上传 / 导出 */
+html[data-embed="1"] { --topbar-h: 50px; }
+html[data-embed="1"] .app {
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr) minmax(318px, 38vh);
+}
+html[data-embed="1"] .topbar { display: flex; gap: 10px; padding: 0 12px; }
+html[data-embed="1"] .brand { display: none; }
+html[data-embed="1"] #btnTheme { display: none; }
+html[data-embed="1"] .top-actions .chip { display: none; }
+html[data-embed="1"] .top-actions { gap: 6px; }
+html[data-embed="1"] .project-picker { margin-right: auto; }
+html[data-embed="1"] .project-picker select { min-width: 180px; max-width: 240px; }
 html[data-embed="1"] .workspace { padding: 10px 12px 4px; }
 html[data-embed="1"] .timeline-panel, html[data-embed="1"] .storyboard-panel { margin: 6px 12px 10px; }
 

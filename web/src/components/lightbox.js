@@ -10,17 +10,31 @@ import { downloadUrl, escapeHtml, fmtNum } from '../utils.js';
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 8;
+const ENTER_DURATION = 260;
+const ENTER_EASING = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
 
 function clampZoom(value) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+}
+
+/** 只接受有实际尺寸的 rect，避免 0 尺寸导致从左上角飞入。 */
+function usableRect(rect) {
+  if (!rect) return null;
+  const { left, top, width, height } = rect;
+  if (![left, top, width, height].every((value) => Number.isFinite(value))) return null;
+  return width > 2 && height > 2 ? rect : null;
+}
+
 /**
  * @param {Array<{url:string,width?:number,height?:number,filename?:string,label?:string}>} images
  * @param {number} [startIndex]
- * @param {{title?:string, onClose?:Function}} [options]
+ * @param {{title?:string, onClose?:Function, origin?:DOMRect}} [options]
  */
-export function openLightbox(images, startIndex = 0, { title = '高清大图', onClose } = {}) {
+export function openLightbox(images, startIndex = 0, { title = '高清大图', onClose, origin = null } = {}) {
   const list = (images || []).filter((item) => item?.url);
   if (!list.length) return null;
 
@@ -134,6 +148,46 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   };
 
   let modal = null;
+  let entered = false;
+
+  /**
+   * 打开动画：从来源缩略图的位置/尺寸“长”到灯箱里的最终尺寸。
+   * 目标 rect 要等图片加载后才有意义，所以由 img.load 触发。
+   */
+  const playEnter = () => {
+    if (entered) return;
+    entered = true;
+    if (prefersReducedMotion() || typeof img.animate !== 'function') return;
+    const target = img.getBoundingClientRect();
+    if (!target.width || !target.height) return;
+    const from = usableRect(origin);
+    if (!from) {
+      img.animate(
+        [
+          { opacity: 0, transform: 'scale(1.02)' },
+          { opacity: 1, transform: 'none' },
+        ],
+        { duration: 220, easing: ENTER_EASING },
+      );
+      return;
+    }
+    const scaleX = Math.min(1, from.width / target.width);
+    const scaleY = Math.min(1, from.height / target.height);
+    const dx = from.left + from.width / 2 - (target.left + target.width / 2);
+    const dy = from.top + from.height / 2 - (target.top + target.height / 2);
+    img.animate(
+      [
+        {
+          transform: `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`,
+          opacity: 0.9,
+          borderRadius: '10px',
+        },
+        { transform: 'none', opacity: 1, borderRadius: '0px' },
+      ],
+      { duration: ENTER_DURATION, easing: ENTER_EASING },
+    );
+  };
+
   const onKey = (event) => {
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
@@ -232,6 +286,8 @@ export function openLightbox(images, startIndex = 0, { title = '高清大图', o
   img.addEventListener('load', () => {
     resetView();
     updateInfo();
+    // 等一帧让灯箱布局稳定，再读取目标尺寸做共享元素动画。
+    requestAnimationFrame(playEnter);
   });
   img.addEventListener('error', () => {
     ref('info').textContent = '图片加载失败，请稍后重试';

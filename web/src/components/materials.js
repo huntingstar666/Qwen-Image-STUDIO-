@@ -569,7 +569,11 @@ export function createMaterialsPage(host) {
         toastWarn('没有可预览的图片');
         return;
       }
-      openLightbox(previewList, startIndex, { title: '素材高清预览', onClose: () => showDetail(item) });
+      openLightbox(previewList, startIndex, {
+        title: '素材高清预览',
+        onClose: () => showDetail(item),
+        origin: content.querySelector('[data-main-preview]')?.getBoundingClientRect() || null,
+      });
     };
 
     openModal({

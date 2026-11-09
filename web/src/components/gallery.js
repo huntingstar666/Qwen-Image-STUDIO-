@@ -414,7 +414,12 @@ export function createGalleryPage(host) {
       openLightbox(
         [{ url: item.image, width: width || undefined, height: height || undefined, label: item.title }],
         0,
-        { title: '作品高清预览', onClose: () => showDetail(item) },
+        {
+          title: '作品高清预览',
+          onClose: () => showDetail(item),
+          // 详情弹窗里的封面作为共享元素起点；关闭后详情会重新弹出
+          origin: content.querySelector('.gallery-cover.is-large')?.getBoundingClientRect() || null,
+        },
       );
     };
     dialog = openModal({

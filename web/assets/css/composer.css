@@ -2092,6 +2092,8 @@ html[data-theme="dark"] .feed-empty {
   height: min(88vh, 900px);
   background: #0f1214;
   border-color: rgba(255, 255, 255, 0.12);
+  /* 打开由共享元素 FLIP 负责，避免容器整体上移 + 缩放造成二次运动 */
+  animation: none;
 }
 
 .lightbox-modal .modal-head {

@@ -579,34 +579,39 @@ export function createImageToolsPage(host) {
                     <span class="field-label" data-ref="resizeModeLabel">百分比 %</span>
                     <input class="input mono" type="number" min="1" step="1" value="100" data-ref="resizeModeValue" />
                   </label>
-                  <label class="field">
-                    <span class="field-label">宽高不匹配时</span>
-                    <select class="select" data-ref="resizeFit">
-                      <option value="contain">contain 等比缩放 + 补边</option>
-                      <option value="cover">cover 等比缩放 + 居中裁切</option>
-                      <option value="stretch">stretch 拉伸铺满</option>
-                    </select>
-                  </label>
-                  <label class="field">
-                    <span class="field-label">重采样算法</span>
-                    <select class="select" data-ref="resizeFilter">
-                      <option value="lanczos">Lanczos（默认，最清晰）</option>
-                      <option value="bicubic">Bicubic（平滑）</option>
-                      <option value="bilinear">Bilinear（轻量）</option>
-                      <option value="nearest">Nearest（像素风 / 硬边）</option>
-                      <option value="box">Box（缩小时平均）</option>
-                    </select>
-                  </label>
-                  <div class="grid-2">
-                    <label class="field">
-                      <span class="field-label">对齐倍数</span>
-                      <input class="input mono" type="number" min="0" max="256" step="1" value="0" data-ref="resizeSnap" />
-                    </label>
-                    <label class="field">
-                      <span class="field-label">缩放后锐化 <span class="tag-hint" data-ref="resizeSharpenVal">0</span></span>
-                      <input class="range" type="range" min="0" max="200" step="5" value="0" data-ref="resizeSharpen" />
-                    </label>
-                  </div>
+                  <details class="tool-subfold">
+                    <summary>高级参数 <span class="subfold-tip" data-ref="resizeAdvancedTip">Lanczos · contain</span></summary>
+                    <div class="subfold-body">
+                      <label class="field">
+                        <span class="field-label">宽高不匹配时</span>
+                        <select class="select" data-ref="resizeFit">
+                          <option value="contain">contain 等比缩放 + 补边</option>
+                          <option value="cover">cover 等比缩放 + 居中裁切</option>
+                          <option value="stretch">stretch 拉伸铺满</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span class="field-label">重采样算法</span>
+                        <select class="select" data-ref="resizeFilter">
+                          <option value="lanczos">Lanczos（默认，最清晰）</option>
+                          <option value="bicubic">Bicubic（平滑）</option>
+                          <option value="bilinear">Bilinear（轻量）</option>
+                          <option value="nearest">Nearest（像素风 / 硬边）</option>
+                          <option value="box">Box（缩小时平均）</option>
+                        </select>
+                      </label>
+                      <div class="grid-2">
+                        <label class="field">
+                          <span class="field-label">对齐倍数</span>
+                          <input class="input mono" type="number" min="0" max="256" step="1" value="0" data-ref="resizeSnap" />
+                        </label>
+                        <label class="field">
+                          <span class="field-label">缩放后锐化 <span class="tag-hint" data-ref="resizeSharpenVal">0</span></span>
+                          <input class="range" type="range" min="0" max="200" step="5" value="0" data-ref="resizeSharpen" />
+                        </label>
+                      </div>
+                    </div>
+                  </details>
                   <div class="resize-target" data-ref="resizeTarget" aria-live="polite">
                     <div class="resize-target-line">
                       <span class="resize-target-label">当前</span>
@@ -1025,6 +1030,7 @@ export function createImageToolsPage(host) {
     resizeFrom: ref('resizeFrom'),
     resizeTo: ref('resizeTo'),
     resizeMeta: ref('resizeMeta'),
+    resizeAdvancedTip: ref('resizeAdvancedTip'),
     losslessField: ref('losslessField'),
     lossless: ref('lossless'),
     targetKb: ref('targetKb'),
@@ -2333,12 +2339,18 @@ export function createImageToolsPage(host) {
   }
 
   function updateResizeHint() {
+    const filterLabel = (refs.resizeFilter.selectedOptions?.[0]?.textContent || 'Lanczos')
+      .split('（')[0]
+      .trim();
+    refs.resizeAdvancedTip.textContent = `${filterLabel} · ${refs.resizeFit.value}`;
     if (!state.source) {
       refs.resizeFrom.textContent = '—';
       refs.resizeTo.textContent = '—';
       refs.resizeTo.classList.remove('is-warn');
       refs.resizeMeta.textContent = '上传图片后可查看缩放结果';
       refs.resizeHint.textContent = '当前 —';
+      refs.pad32Apply.disabled = true;
+      refs.pad32Apply.title = '请先上传图片';
       return;
     }
     // 预览尺寸变化后同步输入框（正在输入时不打扰）
@@ -2350,6 +2362,9 @@ export function createImageToolsPage(host) {
     const baseW = plan?.baseW || currentWorkDims.width || state.source.width || 0;
     const baseH = plan?.baseH || currentWorkDims.height || state.source.height || 0;
     refs.resizeFrom.textContent = `${fmtNum(baseW)} × ${fmtNum(baseH)}`;
+    const aligned = baseW > 0 && baseH > 0 && baseW % 32 === 0 && baseH % 32 === 0;
+    refs.pad32Apply.disabled = aligned;
+    refs.pad32Apply.title = aligned ? '当前尺寸已是 32 的倍数' : '按 32 倍数延伸边缘像素';
     if (!plan || plan.invalid) {
       refs.resizeTo.textContent = '待输入';
       refs.resizeTo.classList.add('is-warn');
@@ -2537,7 +2552,34 @@ export function createImageToolsPage(host) {
     render();
   });
 
+  /** 幂等操作：重复提交同一目标不会产生新画面，直接拦掉。 */
+  function isRepeatableNoop(op) {
+    const prev = state.stagedOps[state.stagedOps.length - 1];
+    if (!prev || prev.op !== op.op) return false;
+    if (op.op === 'pad32') return true;
+    if (op.op === 'resize') {
+      return [
+        'mode',
+        'width',
+        'height',
+        'percent',
+        'long_edge',
+        'short_edge',
+        'megapixels',
+        'fit',
+        'filter',
+        'snap',
+        'sharpen_after',
+      ].every((key) => (prev[key] ?? null) === (op[key] ?? null));
+    }
+    return false;
+  }
+
   function pushOp(op, label) {
+    if (isRepeatableNoop(op)) {
+      toastWarn('这一步与上一步相同，未重复记录');
+      return false;
+    }
     // 扩图预览是独立模式，一旦应用几何操作就回到普通处理
     if (state.outpaint.active) {
       state.outpaint.active = false;
@@ -2552,6 +2594,7 @@ export function createImageToolsPage(host) {
     state.crop.suppressed = true;
     renderOps();
     render();
+    return true;
   }
 
   function renderOps() {
@@ -2804,20 +2847,27 @@ export function createImageToolsPage(host) {
       filter: refs.resizeFilter.value || 'lanczos',
       sharpen_after: Math.max(0, Math.round(Number(refs.resizeSharpen.value) || 0)),
     };
+    // 尺寸没变且没有锐化需求时，提交上去也不会产生新画面，直接拦住
+    if (plan.width === plan.baseW && plan.height === plan.baseH && common.sharpen_after <= 0) {
+      toastWarn(`输出尺寸与当前相同（${fmtNum(plan.width)} × ${fmtNum(plan.height)}），未新增操作`);
+      return;
+    }
+    let pushed = false;
     if (plan.mode === 'exact') {
       const fit = refs.resizeFit.value || 'contain';
-      pushOp(
+      pushed = pushOp(
         { op: 'resize', width: plan.width, height: plan.height, fit, ...common },
         `缩放到 ${fmtNum(plan.width)}×${fmtNum(plan.height)}（${fit}）`,
       );
     } else {
       const value = Number(refs.resizeModeValue.value) || 0;
       const meta = RESIZE_MODES[plan.mode];
-      pushOp(
+      pushed = pushOp(
         { op: 'resize', mode: plan.mode, [plan.mode]: value, ...common },
         `缩放到 ${fmtNum(plan.width)}×${fmtNum(plan.height)}（${meta ? meta.label : plan.mode} ${value}）`,
       );
     }
+    if (!pushed) return;
     state.resize.width = plan.width;
     state.resize.height = plan.height;
     // 应用后把比例型参数重置为「基于新尺寸」的等效值，避免连续点击变成二次缩小
@@ -2840,8 +2890,14 @@ export function createImageToolsPage(host) {
       toastWarn('请先上传图片');
       return;
     }
-    pushOp({ op: 'pad32' }, '对齐 32');
-    toastSuccess('已按 32 倍数补边');
+    const width = currentWorkDims.width || state.source.width;
+    const height = currentWorkDims.height || state.source.height;
+    if (width % 32 === 0 && height % 32 === 0) {
+      toastWarn(`当前 ${fmtNum(width)} × ${fmtNum(height)} 已是 32 的倍数`);
+      return;
+    }
+    if (!pushOp({ op: 'pad32' }, '对齐 32')) return;
+    toastSuccess(`已按 32 倍数补边到 ${fmtNum(snapUp(width, 32))} × ${fmtNum(snapUp(height, 32))}`);
   });
   refs.resizeLock.addEventListener('change', () => {
     state.resize.lock = refs.resizeLock.checked;

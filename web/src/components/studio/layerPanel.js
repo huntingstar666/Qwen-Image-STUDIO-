@@ -54,6 +54,7 @@ export function createLayerColumn(host, ctx) {
       <button type="button" data-lc-act="copy" title="复制图层（Ctrl/Cmd + J）"><span class="glyph">⧉</span><span class="label">复制</span></button>
       <button type="button" data-lc-act="del" title="删除图层（Delete）"><span class="glyph">✕</span><span class="label">删除</span></button>
       <button type="button" data-lc-act="export" title="把选中图层导出为 PNG（画布尺寸）"><span class="glyph">⭳</span><span class="label">导出</span></button>
+      <button type="button" data-lc-act="material" title="把选中图层存入素材仓库（PNG，画布尺寸、透明底）"><span class="glyph">☆</span><span class="label">素材</span></button>
       <button type="button" data-lc-act="group" title="把选中图层编成一个组（组可整体显隐 / 调不透明度 / 改混合）"><span class="glyph">▣</span><span class="label">成组</span></button>
       <button type="button" data-lc-act="ungroup" title="解散选中图层所在的组"><span class="glyph">▢</span><span class="label">解组</span></button>
       <button type="button" data-lc-act="merge" title="合并图层" aria-haspopup="menu" aria-expanded="false"><span class="glyph">⇩</span><span class="label">合并</span></button>
@@ -479,6 +480,7 @@ export function createLayerColumn(host, ctx) {
       else if (action === 'copy') ctx.cloneLayer?.(id);
       else if (action === 'del') ctx.removeLayer?.(id);
       else if (action === 'export') void ctx.exportLayer?.(id);
+      else if (action === 'material') void ctx.saveSelectedToMaterials?.(id);
     }
   });
 

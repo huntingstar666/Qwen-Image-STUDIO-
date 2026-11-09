@@ -1852,6 +1852,37 @@ export function createStudioPage(host) {
     }
   }
 
+  /** D25.3：把选中图层烘成画布尺寸 PNG 存进素材仓库（含蒙版/变换/文字/形状）。 */
+  async function saveSelectedToMaterialsAction(id) {
+    if (!doc) return false;
+    const layer = doc.findLayer(id || selectedLayerId);
+    if (!layer) {
+      toastWarn('请先选中一个图层');
+      return false;
+    }
+    if (layer.isAdjustment) {
+      toastWarn('调整图层没有可保存的画面');
+      return false;
+    }
+    try {
+      const canvas = makeCanvas(doc.size.width, doc.size.height);
+      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
+      const blob = await canvasToBlob(canvas, 'image/png');
+      await favoriteImage({
+        image: await readFileAsDataURL(blob),
+        kind: 'studio',
+        category: '图层',
+        title: `${baseName(doc.name || 'studio')} · ${layer.name || '图层'}`,
+        source: 'studio',
+        sourceRef: projectId || '',
+      });
+      return true;
+    } catch (err) {
+      toastError(err, '存入素材仓库失败');
+      return false;
+    }
+  }
+
   /** 复制选中图层到内存缓冲（限图片图层；文字/形状/调整层暂不支持）。 */
   async function copySelectedLayersAction() {
     if (!doc) return 0;
@@ -2654,6 +2685,9 @@ export function createStudioPage(host) {
     },
     exportLayer(id) {
       return exportLayerAction(id);
+    },
+    saveSelectedToMaterials(id) {
+      return saveSelectedToMaterialsAction(id);
     },
     listLayerAssets() {
       return fetchLayerAssetsAction();

@@ -1190,6 +1190,11 @@ DOM 结构：
   - 素材仓库选择器复用 `openImportPicker({ initialSource:'warehouse' })`，标题「从素材仓库添加图层」；`addMaterialLayer()` 增加 `focusSticker` 选项，从菜单/图层栏加入时不再把右栏切到贴纸分页。
   - 实测（1440×900）：＋ 菜单三行、点画布自动收起；「从素材仓库…」弹出选择器；普通拖入 图层 3→4（新增 `plain-layer.png`）且参考图不变；Shift+拖入 参考图 2→3 且图层不变；画布全程恒 515；`node --test web/tests/studio/*.test.mjs` **139 passed**。
 
+- **D25.3 图层无法存进素材仓库（已修复）** —— 之前只有「导出 → 收藏到素材仓库」（烘整张合成图）和「图层库 → 存入当前图层」（本机 IndexedDB），图层本身没有进素材仓库的路径。
+  - 图层栏底部新增「☆ 素材」：把选中图层按 **画布尺寸** 烘焙成透明 PNG（`drawLayers(ctx, [layer], { crop })`，含位置/缩放/旋转/翻转/蒙版/文字/形状），再走 `favoriteImage({ kind:'studio', category:'图层', sourceRef: projectId })`。
+  - 调整图层没有画面，点击只提示「调整图层没有可保存的画面」；「存入图层库」保持原样，两个入口 `title` 已写明差别（本机复用 vs 进素材仓库）。
+  - 实测：选位图层 → 素材数 12→13，新记录 `title=qa-a002 · plain-layer.png`、`category=图层`、`kind=studio`；选调整图层 → 提示且数量不变；画布恒 515；`node --test web/tests/studio/*.test.mjs` **139 passed**。
+
 - **D0.2 功能开关（不实施，合并进 D18.1）** —— `studio/flags.js` 未创建，也不建议现在创建：工作室自 D1 起就是 `studio.js` 原地增量扩展，计划里的「旧面板」已不存在，强行加 `studioV2` 开关没有可回退目标，只会留下死代码。运行时唯一的降级/诊断开关收敛为 D18.1 的 `localStorage['wb.studio.perf']`（默认关闭、零成本）。若 §13 的 D7 图层系统启动时引入并行渲染路径，再按「新路径可关、旧路径可回退」的原则重新设计开关，届时把本条改为 D7 的前置子项。台账据此销项。
 
 ---
@@ -1741,7 +1746,7 @@ DOM 结构：
 | D24.3 | 版本槽手动删除 | 已完成 | 本次提交 | 卡片悬停/聚焦左上角 16×16 `×`（原始卡不显示）；抽出共用 `deleteVersion()`，二次确认、删当前版本先切前一版；实测见 §12.11 |
 | D25.1 | 顶栏定高，消灭切 tab 画布跳变 | 已完成 | 本次提交 | `.app-main.is-studio .topbar` 定 64px；实测 `#topbar` 恒 64 / `.studio` 恒 736 / canvas 恒 515，其它页顶栏不受影响；详见 §12.11 |
 | D25.2 | 图层栏「＋ 添加图层」统一入口 | 已完成 | 本次提交 | 图层栏「＋」= 本地 / 素材仓库 / 图层库；空态改成可点；有工程时拖入/导入/粘贴默认加为图层，「添加为参考图…」降为菜单项，Shift+拖入进参考图；详见 §12.11 |
-| D25.3 | 选中图层存入素材仓库 | 待实施 | — | 现在只有「存入图层库（本机）」与「收藏整张合成图」；新增按图层 `layerBlobFor()` → `favoriteImage()`；方案见 §22.4 |
+| D25.3 | 选中图层存入素材仓库 | 已完成 | 本次提交 | 图层栏底部新增「☆ 素材」：按画布尺寸烘透明 PNG（含蒙版/变换/文字/形状）→ `favoriteImage(kind=studio, category=图层)`；调整层提示无画面；详见 §12.11 |
 | D25.4 | 图层属性可折叠 / 快照区收进抽屉 | 已完成 | 本次提交 | 两块都改「32px 折叠头 + 可收起正文」；属性展开状态记 `localStorage`，快照抽屉本会话有效；AI 分页可见区 208.5→409.5px；顺带补 `addOverlayFile()` 漏掉的 `syncLayerProps()`；详见 §12.11 |
 | D25.5 | 项目历史双实现去重 | 待实施 | — | dock 书脊内联列表与顶栏「历史项目…」弹窗各写一份列表渲染；方案见 §22.6 |
 
@@ -3501,9 +3506,11 @@ mergeLayers(ids, { keepBase = false }):
 | 方向 | 现状 | 缺什么 |
 | --- | --- | --- |
 | 图层 → 素材仓库 | 只有「导出 ▾ → 收藏到素材仓库」= `doc.bakeBlob()` 整张合成图；图层栏「导出」= 下载 PNG | 按选中图层烘焙 PNG 后 `favoriteImage({kind:'studio', category:'图层'})` |
-| 素材仓库 → 画布图层 | 素材仓库详情弹窗两个按钮（D23.12 已完成） | 精修内部没有「从素材仓库取图层」；图层栏「库」实际是本机图层库，命名冲突 |
+| 素材仓库 → 画布图层 | 素材仓库详情弹窗两个按钮（D23.12 已完成）+ 图层栏「＋ → 从素材仓库…」（D25.2） | 无障碍 |
 
 补充：`layerBlobFor(layer)` 已经能把任意位图层（含蒙版/智能对象/翻转）导成 Blob，`favoriteImage()` 接受 dataURL，两者拼起来即可，不需要新后端。
+
+> 两条断链已由 **D25.3**（图层 → 素材仓库，图层栏「☆ 素材」）与 **D25.2**（素材仓库 → 画布图层）补齐，详见 §22.6。
 
 ### 22.4 问题 D：项目历史到底几个入口
 
@@ -3573,20 +3580,13 @@ mergeLayers(ids, { keepBase = false }):
 - 素材仓库选择器：`openImportPicker({ title:'从素材仓库添加图层', accept:'ref', multiple:true, initialSource:'warehouse' })`；`addMaterialLayer()` 增加 `focusSticker` 选项，从菜单加入时不再切到贴纸分页。
 - 验收：三条来源都能新增并自动选中图层；普通拖入只加图层、Shift+拖入只加参考图；画布尺寸不变。
 
-#### D25.3 选中图层 → 存入素材仓库
+#### D25.3 选中图层 → 存入素材仓库（已完成）
 
-- 图层栏底部工具条在「导出」旁加「素材」（或在「导出」菜单里加一项）；`layerPanel.js` 只发事件，`studio.js` 实现：
-  ```js
-  const blob = await layerBlobFor(layer);            // 已支持蒙版/智能对象/翻转
-  await favoriteImage({
-    image: await readFileAsDataURL(blob),
-    kind: 'studio', category: '图层',
-    title: `${baseName(doc.name)} · ${layer.name}`,
-    source: 'studio-layer', sourceRef: projectId,
-  });
-  ```
-- 保留现有「存入图层库」不动（一个本机快速复用、一个进素材仓库长期沉淀），两个入口的 `title` 要写清差别。
-- 验收：选中贴纸/文字/形状/智能对象各存一次 → 素材仓库出现 4 条 `kind=studio`、分类「图层」的记录，缩略图与图层内容一致（不是整张画布）；文字/形状层按画布尺寸导出，透明底。
+- 图层栏底部新增「☆ 素材」：按**画布尺寸**把选中图层烘成透明 PNG（`drawLayers(ctx, [layer], { crop })`，含位置/缩放/旋转/翻转/蒙版/文字/形状），再 `favoriteImage({ kind:'studio', category:'图层', sourceRef: projectId })`。
+- 调整图层没有画面：点击只提示「调整图层没有可保存的画面」，不产生空素材。
+- 保留「图层库 → 存入当前图层」（本机 IndexedDB、跨工程复用），两处 `title` 写明差别：图层库 = 本机快速复用；素材 = 进素材仓库长期沉淀。
+- 注：`source` 走素材后端白名单，统一记 `studio`，工程归属放 `sourceRef`。
+- 验收：选位图层存入后素材仓库新增 `kind=studio / category=图层` 记录，缩略图是图层内容而非整张画布；调整层不新增记录。
 
 #### D25.4 图层属性可折叠 + 快照区收进抽屉（已完成）
 
@@ -3624,7 +3624,7 @@ mergeLayers(ids, { keepBase = false }):
 | --- | --- |
 | D25.1 顶栏定高 | 已实施（2026-11-09，`app.css` 加 `.app-main.is-studio .topbar` 定高规则） |
 | D25.2 图层栏「＋ 添加图层」 | 已实施（＋ 菜单三来源；拖入/导入/粘贴默认加图层，Shift 进参考图） |
-| D25.3 选中图层存入素材仓库 | 待实施 |
+| D25.3 选中图层存入素材仓库 | 已实施（图层栏「☆ 素材」，按画布尺寸烘透明 PNG） |
 | D25.4 图层属性折叠 + 快照抽屉 | 已实施（两块改折叠头，AI 分页可见区 208.5→409.5px） |
 | D25.5 项目历史去重 | 待实施 |
 

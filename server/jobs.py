@@ -374,6 +374,10 @@ class JobQueue:
 
         这样即使进程被 OOM / CUDA 崩溃直接带走，重启后也能看到那条「跑到一半」的记录，
         并在 _load_history 里标成「中断」，而不是凭空消失。
+
+        注意：读快照 + 写临时文件 + 替换必须整体串行。以前只锁了读快照，
+        提交任务（请求线程）和任务结束（worker 线程）会同时写同一个 .tmp，
+        可能写出 ``[...]]}`` 这种半个 JSON，重启后整份历史解析失败。
         """
         try:
             with self._lock:
@@ -386,11 +390,11 @@ class JobQueue:
                     # 列表摘要保持轻量，但落盘要留下可回放参数（图片除外）。
                     item["params"] = replay_persisted_params(job.params)
                     payload.append(item)
-            os.makedirs(config.STORAGE_DIR, exist_ok=True)
-            tmp = self._history_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, ensure_ascii=False)
-            os.replace(tmp, self._history_path)
+                os.makedirs(config.STORAGE_DIR, exist_ok=True)
+                tmp = f"{self._history_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False)
+                os.replace(tmp, self._history_path)
         except Exception:
             pass  # 历史落盘失败不影响出图
 
@@ -415,6 +419,16 @@ class JobQueue:
                     meta=item.get("meta") or {},
                 )
                 job.status = str(item.get("status") or "done")
+                # 还原原始时间：否则每次重启后所有历史都会变成「刚刚」，排序和显示全乱
+                created = item.get("created_at")
+                if isinstance(created, str) and created.strip():
+                    try:
+                        job.created_at = time.mktime(
+                            time.strptime(created.strip(), "%Y-%m-%d %H:%M:%S"))
+                    except ValueError:
+                        pass
+                elif isinstance(created, (int, float)):
+                    job.created_at = float(created)
                 job.images = item.get("images") or []
                 job.align = item.get("align")
                 job.quality = item.get("quality")

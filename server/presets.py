@@ -499,6 +499,8 @@ NUMERIC_LIMITS: dict[str, dict[str, Any]] = {
     "local.crop_max_side": {"min": 0, "max": 4096, "step": 32},
     "local.crop_floor": {"min": 0, "max": 2048, "step": 32},
     "consistency.strength": {"min": 0, "max": 2, "step": 0.01},
+    # Turbo 档位可覆盖加速 LoRA 的强度（MOSS 的 8 步 LoRA）；与 loras[].strength 同区间。
+    "turbo.lora_strength": {"min": 0, "max": 2, "step": 0.05},
     "sampling.steps": {"min": 1, "max": 200, "step": 1},
     "sampling.cfg": {"min": 0, "max": 30, "step": 0.5},
     # denoise=0 等于「不采样、原样返回」，没有实际意义，统一从 0.05 起。
@@ -634,6 +636,7 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
         ("local.color_strength", "颜色强度"),
         ("local.color_restore_strength", "还原强度"),
         ("consistency.strength", "一致性强度"),
+        ("turbo.lora_strength", "加速 LoRA 强度"),
         ("sampling.cfg", "CFG"),
         ("sampling.denoise", "降噪"),
     ):

@@ -82,6 +82,39 @@ def test_rejects_bad_lora_strength():
         main._validate_edit_params({"loras": [{"strength": 3}]})
 
 
+def test_rejects_bad_consistency_lora_strength():
+    """consistency_lora.strength 与预设 consistency.strength 共用 0~2 区间（P3-1）。"""
+    with pytest.raises(main.ApiError, match="consistency_lora.strength"):
+        main._validate_lora_strengths({
+            "consistency_lora": {"name": "x.safetensors", "strength": 99}})
+    with pytest.raises(main.ApiError, match="consistency_lora.strength"):
+        main._validate_lora_strengths({"consistency_lora": {"strength": "strong"}})
+    # 合法值与「关闭一致性」的 false 都要放行
+    main._validate_lora_strengths({"consistency_lora": {"name": "x", "strength": 0.48}})
+    main._validate_lora_strengths({"consistency_lora": False})
+
+
+def test_rejects_bad_turbo_lora_strength():
+    """turbo.lora_strength / turbo.strength 也必须落在 0~2（P3-1）。"""
+    with pytest.raises(main.ApiError, match="turbo.lora_strength"):
+        main._validate_lora_strengths({"turbo": {"enabled": True, "lora_strength": 3}})
+    with pytest.raises(main.ApiError, match="turbo.strength"):
+        main._validate_lora_strengths({"turbo": {"enabled": True, "strength": -0.1}})
+    with pytest.raises(main.ApiError, match="turbo 必须是对象"):
+        main._validate_lora_strengths({"turbo": True})
+    main._validate_lora_strengths({"turbo": {"enabled": True, "lora_strength": 0.8}})
+
+
+def test_edit_endpoint_rejects_bad_consistency_strength():
+    """入队前拦下，避免 99 这种强度被送到引擎（P3-1）。"""
+    with pytest.raises(main.ApiError, match="consistency_lora.strength"):
+        main.api_edit({
+            "prompt": "换成蓝天",
+            "images": [{"data": "data:image/png;base64,QUJD"}],
+            "consistency_lora": {"name": "x.safetensors", "strength": 99},
+        })
+
+
 def test_remove_allows_empty_prompt():
     """remove 的训练指令由后端补，第三方只传 task.mode + 遮罩也能直接出图。"""
     original = main._submit
@@ -241,7 +274,8 @@ def test_rejects_mask_wrong_type():
 def test_param_limits_single_source():
     """数值区间只有 presets.NUMERIC_LIMITS 一份，请求校验与预设校验读同一张表（P1-8）。"""
     for path in ("sampling.denoise", "local.blend_pixels", "preprocess.max_side",
-                 "local.crop_min_side", "outpaint.max_side", "panorama.long_side"):
+                 "local.crop_min_side", "outpaint.max_side", "panorama.long_side",
+                 "turbo.lora_strength"):
         lim = presets.limits(path)
         assert lim["min"] is not None and lim["max"] is not None, path
 

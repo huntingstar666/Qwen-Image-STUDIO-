@@ -491,8 +491,9 @@ preprocess.* / panorama.* / task / consistency / steps / cfg / sampler / schedul
 ### 17.9 后端链路审计（第三轮，只读核对）
 
 审计方式：只读代码 + payload / `presets.merge` 快照 + 回归测试（`test_edit_presets` /
-`test_edit_validation` / `test_pipeline_guards`，**61 passed**）+ 浏览器实测，未改任何代码。
-结论：**后端主干没有会阻断出图或产生「两套行为」的问题**；只有边界语义与一个接口校验缺口。
+`test_edit_validation` / `test_pipeline_guards`，**64 passed**）+ 浏览器实测。
+结论：**后端主干没有会阻断出图或产生「两套行为」的问题**；边界语义见 17.9.4，
+唯一的接口校验缺口 P3-1 已补齐。
 
 #### 17.9.1 参数传递
 
@@ -540,11 +541,15 @@ preprocess.* / panorama.* / task / consistency / steps / cfg / sampler / schedul
 3. 润色是建议而非自动注入，必须用户采纳。
 4. 单卡单任务：并发只会排队。
 
-#### 17.9.5 待补缺口（等通知再改）
+#### 17.9.5 接口校验缺口（P3-1，已补齐）
 
-| # | 缺口 | 影响 | 建议修法 | 状态 |
+| # | 缺口 | 影响 | 修法 | 状态 |
 | --- | --- | --- | --- | --- |
-| P3-1 | `consistency_lora.strength` 与 `turbo.lora_strength` 未纳入 `NUMERIC_LIMITS` / 请求校验 | 前端 `clampStrength` 已夹到 0~2，页面提交安全；第三方 API 直接传 `99` 会原样送进引擎 | `main._validate_edit_params` 补两条 0~2 校验（复用 `presets.limits`），`_preset_view` 同步映射 | **待补（未改代码）** |
+| P3-1 | `consistency_lora.strength` 与 `turbo.lora_strength` 未纳入 `NUMERIC_LIMITS` / 请求校验 | 前端 `clampStrength` 已夹到 0~2，页面提交安全；第三方 API 直接传 `99` 会原样送进引擎 | 新增 `main._validate_lora_strengths()`（文生图 / 编辑共用，在 `_submit` 入队前调用），区间读 `presets.limits()`；`turbo.strength` 历史别名同区间；`turbo` 非对象直接 400。`NUMERIC_LIMITS` 新增 `turbo.lora_strength`（0~2），`validate_params` 同步覆盖 | **已修复** |
+
+验收：新增 3 条测试（`test_rejects_bad_consistency_lora_strength` /
+`test_rejects_bad_turbo_lora_strength` / `test_edit_endpoint_rejects_bad_consistency_strength`），
+并把 `turbo.lora_strength` 纳入区间单源断言；回归 **64 passed**。
 
 **复核结论**：后端只有一份合并后的参数，不存在「预设 / 用户设置两套状态」；上述边界均为设计
 语义或第三方接口收口问题，不影响当前工作台三页的正常出图。

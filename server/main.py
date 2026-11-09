@@ -747,7 +747,39 @@ def api_angle_prompt(azimuth: str | None = None, elevation: str | None = None,
 # --------------------------------------------------------------------------- 生成
 
 
+def _validate_lora_strengths(payload: dict[str, Any]) -> None:
+    """校验 API 顶层的 LoRA 强度（文生图 / 编辑共用，P3-1）。
+
+    ``consistency_lora`` 与 ``turbo.lora_strength`` 不在预设结构里，
+    ``_preset_view`` 覆盖不到；前端会夹到 0~2，但第三方 API 可以绕过，
+    这里统一按 ``presets.NUMERIC_LIMITS`` 拦下。
+    """
+    def check(value: Any, label: str, path: str) -> None:
+        if value is None:
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ApiError(f"{label} 必须是数字")
+        lim = presets.limits(path)
+        if not lim["min"] <= number <= lim["max"]:
+            raise ApiError(f"{label} 必须在 {lim['min']:g}~{lim['max']:g}")
+
+    consistency = payload.get("consistency_lora")
+    if isinstance(consistency, dict):
+        check(consistency.get("strength"), "consistency_lora.strength", "consistency.strength")
+
+    turbo = payload.get("turbo")
+    if turbo is not None and not isinstance(turbo, dict):
+        raise ApiError("turbo 必须是对象")
+    if isinstance(turbo, dict):
+        check(turbo.get("lora_strength"), "turbo.lora_strength", "turbo.lora_strength")
+        # 历史别名：pipeline 里 turbo.strength 与 lora_strength 同义
+        check(turbo.get("strength"), "turbo.strength", "turbo.lora_strength")
+
+
 def _submit(kind: str, payload: dict[str, Any], *, prompt: str) -> dict[str, Any]:
+    _validate_lora_strengths(payload)
     queue = get_queue()
     pipe = get_pipeline()
     job = queue.submit(

@@ -572,6 +572,8 @@ function showPage(id) {
   appMain?.classList.toggle('is-studio', isStudio);
   appMain?.classList.toggle('is-tools', isTools);
   appMain?.classList.toggle('is-video', isVideo);
+  // 图像处理页在窄屏会退化为文档滚动：预留滚动条槽位，避免切换工具时整页宽度跳动
+  document.documentElement.classList.toggle('is-tools-page', isTools);
   const definition = TABS.find((tab) => tab.id === id);
   if (!definition) return;
   if (!pages.has(id)) {

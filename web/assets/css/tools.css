@@ -1077,6 +1077,8 @@ html[data-theme="dark"] .tool-stage .tool-canvas:not(.tool-overlay) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* 工具内容高度切换时滚动条出现/消失会改变内容宽度，预留槽位避免参数区左右抖动 */
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1180,6 +1182,11 @@ html[data-theme="dark"] .tool-stage .tool-canvas:not(.tool-overlay) {
 }
 
 @media (max-width: 1180px) {
+  /* 窄屏由文档滚动：固定预留滚动条宽度，展开/收起工具不再改变整页宽度 */
+  html.is-tools-page {
+    scrollbar-gutter: stable;
+  }
+
   .app-main.is-tools {
     height: auto;
     min-height: 100vh;

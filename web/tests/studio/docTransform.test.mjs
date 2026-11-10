@@ -84,3 +84,30 @@ test('对象级变换：文字连续旋转 / 镜像后视觉中心不漂移', as
   assert.equal(layer.flipH, true);
   assert.equal(Math.round(layer.rotation) % 360, 180);
 });
+
+test('命名快照：回跳后新建快照保存的是当前画面，而不是回跳前', async () => {
+  installCanvasStub();
+  const { StudioDoc } = await import('../../src/components/studio/studioDoc.js');
+  const { TextLayer } = await import('../../src/components/studio/textLayer.js');
+
+  const doc = new StudioDoc({ width: 600, height: 400 }, 'test.png');
+  const layer = new TextLayer({ text: '快照', x: 100, y: 100 });
+  doc.layers = [layer];
+
+  const first = doc.addSnapshot('A');
+  assert.ok(first);
+
+  // 改到另一个状态并入栈（模拟用户继续编辑）
+  layer.x = 300;
+  doc.snapshot();
+
+  // 回跳 A：文档回到 x=100，但撤销栈顶仍是 x=300
+  assert.equal(doc.restoreSnapshot(first.id), true);
+  assert.equal(doc.layers[0].x, 100);
+
+  // 立刻新建快照：必须是当前画面（x=100），不能是回跳前（x=300）
+  const second = doc.addSnapshot('B');
+  assert.ok(second);
+  assert.equal(second.state.layers[0].x, 100);
+});
+

@@ -297,7 +297,7 @@ export function createLayerColumn(host, ctx) {
           const mask = layer.mask ? (layer.maskVisible ? 1 : 0) : 2;
           return `l:${layer.id}:${layer.name}:${layer.visible}:${layer.locked}:${layer.opacity}:${
             layer.indent ? 1 : 0
-          }:${mask}:${layer._maskStamp || 0}:${Math.round(layer.x || 0)},${Math.round(layer.y || 0)}:${
+          }:${mask}:${layer._maskStamp || 0}:${layer._contentStamp || 0}:${Math.round(layer.x || 0)},${Math.round(layer.y || 0)}:${
             Math.round((layer.scale || 1) * 1000)
           }:${layer.rotation || 0}:${layer.flipH ? 1 : 0}${layer.flipV ? 1 : 0}:${
             ctx.isLayerOutside?.(layer) ? 1 : 0
@@ -352,6 +352,12 @@ export function createLayerColumn(host, ctx) {
       const value = Math.round((alphaTarget.opacity ?? 1) * 100);
       refs.alpha.value = String(value);
       refs.alphaVal.textContent = `${value}%`;
+      refs.alpha.title = '';
+    } else {
+      // 没有目标时复位，避免显示上一个图层的百分比，看起来像「主图 60%」。
+      refs.alpha.value = '100';
+      refs.alphaVal.textContent = '100%';
+      refs.alpha.title = '先选中一个图层或组';
     }
   }
 
@@ -608,7 +614,9 @@ export function createLayerColumn(host, ctx) {
           finish(false);
         }
       });
-      input.addEventListener('blur', () => finish(true));
+      // 延后一帧再重建：mousedown→blur→mouseup→click 的顺序里，立刻重建会让
+      // 这一次 click 落在已被替换的节点上（改名后想直接点另一层要点两次）。
+      input.addEventListener('blur', () => requestAnimationFrame(() => finish(true)));
       return;
     }
     const name = event.target.closest('[data-layer-pick]');
@@ -649,13 +657,15 @@ export function createLayerColumn(host, ctx) {
         finish(false);
       }
     });
-    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('blur', () => requestAnimationFrame(() => finish(true)));
   });
 
   /* ---------------------------------------------------------- 拖拽排序 */
 
   const clearDrop = () => {
-    for (const el of host.querySelectorAll('.studio-layer.is-drop')) el.classList.remove('is-drop');
+    for (const el of host.querySelectorAll('.studio-layer.is-drop, .studio-layer.is-drop-above, .studio-layer.is-drop-below')) {
+      el.classList.remove('is-drop', 'is-drop-above', 'is-drop-below');
+    }
   };
 
   const stopDrag = () => {
@@ -690,7 +700,10 @@ export function createLayerColumn(host, ctx) {
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     clearDrop();
-    row.classList.add('is-drop');
+    // 上半 / 下半决定「插到目标上面 / 下面」，并画出插入线。
+    const rect = row.getBoundingClientRect();
+    const above = event.clientY < rect.top + rect.height / 2;
+    row.classList.add(above ? 'is-drop-above' : 'is-drop-below');
   });
 
   host.addEventListener('drop', (event) => {
@@ -706,11 +719,23 @@ export function createLayerColumn(host, ctx) {
       return;
     }
     if (!row.dataset.layer) return;
-    // 面板顶层在上：落点 = 目标图层在 doc.layers 里的下标；主图行 = 0。
-    const to =
-      row.dataset.layer === 'base'
-        ? 0
-        : (ctx.getLayers?.() || []).findIndex((layer) => layer.id === row.dataset.layer);
+    // 面板顶层在上：按落点在行的上半 / 下半决定插到目标上面还是下面。
+    const layers = ctx.getLayers?.() || [];
+    const from = layers.findIndex((layer) => layer.id === id);
+    let to = 0;
+    if (row.dataset.layer !== 'base') {
+      const targetId = row.dataset.layer;
+      const targetIndex = layers.findIndex((layer) => layer.id === targetId);
+      if (targetIndex < 0) {
+        stopDrag();
+        return;
+      }
+      const rect = row.getBoundingClientRect();
+      const above = event.clientY < rect.top + rect.height / 2;
+      // 先摘除再插入：目标在源之上时下标要减 1。
+      const insertAt = targetIndex - (from >= 0 && from < targetIndex ? 1 : 0);
+      to = above ? insertAt + 1 : insertAt;
+    }
     stopDrag();
     // 把组内图层拖到组外 = 移出该组（PS 的同一手势，D23.4 L4）。
     const sourceGroup = ctx.getLayerGroupId?.(id) || '';

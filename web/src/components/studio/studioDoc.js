@@ -163,13 +163,24 @@ export class StudioDoc {
   /* ---------------------------------------------------------- 状态快照 */
 
   snapshot() {
+    this._history.push(this._stateSnapshot());
+    this._base = null;
+    return this;
+  }
+
+  /**
+   * 当前文档状态的可恢复副本。
+   * snapshot() 与命名快照共用：命名快照不能再假定「撤销栈顶 == 当前状态」
+   * （回跳快照后栈顶仍是回跳前的画面），必须显式抓当前文档。
+   */
+  _stateSnapshot() {
     // 估算内存：蒙版 + 修复层 + 各图层蒙版（克隆时都会复制一份像素）。
     let bytes = this.mask.width * this.mask.height * 4;
     if (this.repair) bytes += this.repair.width * this.repair.height * 4;
     for (const layer of this.layers) {
       if (layer.mask) bytes += layer.mask.width * layer.mask.height * 4;
     }
-    const state = {
+    return {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       // lut 是对象：必须浅拷贝一层，否则历史状态共享同一个 lut，撤销改不回强度。
       adjust: { ...this.adjust, lut: this.adjust.lut ? { ...this.adjust.lut } : null },
@@ -182,9 +193,6 @@ export class StudioDoc {
       groups: this.groups.map((group) => ({ ...group })),
       bytes,
     };
-    this._history.push(state);
-    this._base = null;
-    return this;
   }
 
   restore(state) {
@@ -257,10 +265,8 @@ export class StudioDoc {
 
   /** 把当前状态另存为命名快照（不占撤销步数）。 */
   addSnapshot(name = '') {
-    const past = this._history.past;
-    const state = past[past.length - 1];
-    if (!state) return null;
-    return this._history.addSnapshot(state, name);
+    // 显式抓当前文档：回跳快照后 past 顶部仍是回跳前的状态，不能再用栈顶。
+    return this._history.addSnapshot(this._stateSnapshot(), name);
   }
 
   /**

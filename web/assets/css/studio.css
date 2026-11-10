@@ -551,6 +551,15 @@
   box-shadow: inset 0 2px 0 var(--accent);
 }
 
+/* 拖动排序：上半插入到目标上方，下半插入到目标下方。 */
+.studio-layer.is-drop-above {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.studio-layer.is-drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .studio-layer-thumb {
   display: flex;
   align-items: center;

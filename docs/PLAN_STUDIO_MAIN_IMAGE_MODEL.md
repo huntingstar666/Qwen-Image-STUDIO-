@@ -204,7 +204,7 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 | --- | --- | --- |
 | 1 | **D1** 主图渲染语义 + **D5** 切主图不再重建文档 | D1/D5 **已完成**（主图语义以 `exportMainCanvas()` / `bakeMain()` 落地，`renderBase()` 保留为合成图） |
 | 2 | **D3 + D4** AI 默认仅送底图、结果回流只换底图 | **已完成**（送图默认不含图层 + 「送图包含图层」开关；「设为新主图」原地换底图、图层保留） |
-| 3 | **D6 + D7** 快门只记录主图、旧快照兼容提示 | 待做 |
+| 3 | **D6 + D7** 快门只记录主图、旧快照兼容提示 | D6 **已完成**（快门存 `exportMainCanvas()`，缩略图另外合成展示）；D7 部分完成（旧 `manual` 快照按“可能含图层”提示，一键隐藏待做） |
 | 4 | **D8 + D9 + D10** 尺寸策略、持久化拆分、收敛临时补丁 | D8 **已完成**（旋转 / 翻转按中心映射换算图层几何），D9/D10 待做 |
 
 > 阶段 1 已完成的部分：`switchVersion()` 不再 `new StudioDoc`，改为 `doc.replaceMainImage(image)`；图层 / 组保留，并按“旧裁剪尺寸 → 新图”的对应关系做平移或等比缩放补偿；主图级状态（变换 / 调色 / 蒙版 / 修复 / 撤销栈 / 选区）重置。
@@ -232,6 +232,8 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 | 9 | **D4**：「设为新主图」原地换底图、图层保留；尺寸差异走 `planBaseSwap()` 补偿，结果含图层时提示重复 | `studio.js adoptResult()` |
 | 10 | **D8**：旋转 / 翻转不再清空图层，按中心映射换算位置与自身角度（形状交换宽高） | `studioDoc.js _rotateLayersBy90()` / `_flipLayerGeometry()` |
 | 11 | 抽出 `planBaseSwap()` / `afterBaseSwap()`，切版本与结果采用共用同一条换底图路径 | `studio.js` |
+| 12 | **D6**：快门改为 `exportMainCanvas()`（仅主图），卡片缩略图按合成观感单独生成、不写入快照槽 | `studio.js captureSnapshot()` |
+| 13 | **D7（部分）**：快照 `meta.containsLayers` 标记；旧 `manual` 卡缺标记时按“可能含图层”提示重复 | `studio.js switchVersion()` / `recordVersion` 调用处 |
 
 ### 7.2 用户验证
 
@@ -239,7 +241,7 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 
 ### 7.3 未完成（按 §6 继续）
 
-- D6/D7 快门只记录主图、旧快照兼容提示
+- D7 收尾：切回含图层旧快照时提供「一键隐藏当前图层」按钮
 - D9/D10 持久化拆分、收敛临时补丁
 
 ### 7.4 分支约定

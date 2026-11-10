@@ -1931,7 +1931,7 @@ export function createStudioPage(host) {
         label: '合并主图',
         width: doc.size.width,
         height: doc.size.height,
-        meta: { task: 'merge' },
+        meta: { task: 'merge', containsLayers: true },
       });
     }
     toastSuccess(kind === 'flatten' ? '已拼合为主图（AI 编辑仍以主图为对象）' : '已合并到主图');
@@ -6556,6 +6556,10 @@ export function createStudioPage(host) {
       const plan = planBaseSwap(doc, nw, nh);
       compensateLayersForBase(doc.layers, plan);
       const keptLayers = doc.layers.length;
+      // 旧快照没有 containsLayers 标记：manual（快门 / 合并）按“可能含图层”处理，
+      // edit / upscale / original 视为不含图层，避免每次切卡都提示重复。
+      const baked = version.meta?.containsLayers;
+      const mayRepeat = baked === true || (baked === undefined && version.kind === 'manual');
       doc.replaceMainImage(image);
       sourceBlob = blob;
       afterBaseSwap(plan);
@@ -6563,7 +6567,7 @@ export function createStudioPage(host) {
       renderDock();
       if (plan.unsure) {
         toastWarn(`已切换到「${version.label}」 · 尺寸变化较大，图层保持原坐标，可能需要手动微调`);
-      } else if (keptLayers && version.kind !== 'original') {
+      } else if (keptLayers && mayRepeat) {
         toast(
           `已切换到「${version.label}」 · 保留 ${keptLayers} 个图层` +
             '（该快照已含图层像素，如出现重复可在图层面板隐藏）',
@@ -6793,7 +6797,37 @@ export function createStudioPage(host) {
 
     const fx = prefersReducedMotion() ? null : buildShutterFx();
     const startRect = fx ? stageEl.getBoundingClientRect() : null;
-    const bake = current.bakeBlob('image/png');
+    // 快门只记录「主图」（底图 + 变换 + 调色 + 修复），图层不烘焙进去：
+    // 否则切回该快照时，底图里的图层像素会和面板里的图层叠成两份。
+    // 卡片缩略图仍按合成观感生成，只用于展示，不写进快照槽。
+    const bake = (async () => {
+      const mainCanvas = current.exportMainCanvas('image/png');
+      const blob = await canvasToBlob(mainCanvas, 'image/png');
+      let thumbUrl = '';
+      try {
+        if (current.layers.length) {
+          const thumbWidth = 160;
+          const thumbHeight = Math.max(
+            1,
+            Math.round((mainCanvas.height / mainCanvas.width) * thumbWidth),
+          );
+          const thumb = makeCanvas(thumbWidth, thumbHeight);
+          const thumbCtx = thumb.getContext('2d');
+          thumbCtx.drawImage(mainCanvas, 0, 0, thumbWidth, thumbHeight);
+          thumbCtx.save();
+          thumbCtx.scale(thumbWidth / mainCanvas.width, thumbHeight / mainCanvas.height);
+          drawLayers(thumbCtx, current.layers, {
+            crop: current.transform.crop,
+            groups: current.groups,
+          });
+          thumbCtx.restore();
+          thumbUrl = thumb.toDataURL('image/webp', 0.8);
+        }
+      } catch {
+        thumbUrl = '';
+      }
+      return { blob, thumbUrl };
+    })();
     // 提前中止时可能不再 await，先挂一个空 catch 避免未处理的 rejection。
     bake.catch(() => {});
 
@@ -6805,12 +6839,14 @@ export function createStudioPage(host) {
         fx.flash.classList.add('is-on');
         await fxWait(30);
       }
-      const blob = await bake;
+      const baked = await bake;
+      const blob = baked?.blob;
       if (!blob || doc !== current) throw new Error('__abort');
       const recordPromise = recordVersion('manual', blob, {
         width,
         height,
-        meta: { task: 'manual', layers: layerCount },
+        thumbUrl: baked.thumbUrl || undefined,
+        meta: { task: 'manual', layers: layerCount, containsLayers: false },
       });
       if (fx) {
         fx.flash.classList.remove('is-on');
@@ -6823,7 +6859,7 @@ export function createStudioPage(host) {
       if (fx) await flyToDock(record, startRect);
       toastSuccess(
         `已保存快照 · ${fmtNum(width)} × ${fmtNum(height)}${
-          layerCount ? `（已烘焙 ${layerCount} 个图层）` : ''
+          layerCount ? `（${layerCount} 个图层仍可编辑，未写入快照）` : ''
         }`,
       );
     } catch (err) {

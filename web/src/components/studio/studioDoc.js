@@ -1044,7 +1044,11 @@ export class StudioDoc {
       quad: options.quad ?? null,
       locked: options.locked ?? false,
       visible: options.visible ?? true,
+      smart: options.smart ?? false,
     });
+    // 复制 / 粘贴需要连带图层蒙版，才能在历史与刷新后保持同一画面（§20.3.2）。
+    if (options.mask) layer.mask = cloneCanvas(options.mask);
+    if (options.maskVisible === false) layer.maskVisible = false;
     addLayer(this._doc, layer);
     this._base = null;
     this.snapshot();

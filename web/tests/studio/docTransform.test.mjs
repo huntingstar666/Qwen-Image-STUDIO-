@@ -111,3 +111,51 @@ test('命名快照：回跳后新建快照保存的是当前画面，而不是�
   assert.equal(second.state.layers[0].x, 100);
 });
 
+test('复制图层：透视四点随副本一起偏移（§20.3.2）', async () => {
+  installCanvasStub();
+  const { createDocument, addLayer, cloneLayer } = await import('../../src/components/studio/document.js');
+  const { OverlayLayer } = await import('../../src/components/studio/layers.js');
+
+  const doc = createDocument({ width: 400, height: 400 });
+  const layer = new OverlayLayer(
+    { naturalWidth: 100, naturalHeight: 100, width: 100, height: 100 },
+    {
+      x: 0,
+      y: 0,
+      quad: [
+        { x: 0, y: 0 },
+        { x: 100, y: 0 },
+        { x: 100, y: 100 },
+        { x: 0, y: 100 },
+      ],
+    },
+  );
+  addLayer(doc, layer);
+
+  const copy = cloneLayer(doc, layer.id, { offset: 16 });
+  assert.ok(copy);
+  assert.deepEqual(
+    copy.quad.map((point) => [point.x, point.y]),
+    layer.quad.map((point) => [point.x + 16, point.y + 16]),
+  );
+});
+
+test('弯曲文字：0 ↔ 非 0 切换时左端与基线保持不动（§20.3.6）', async () => {
+  installCanvasStub();
+  const { TextLayer } = await import('../../src/components/studio/textLayer.js');
+
+  const layer = new TextLayer({ text: '弯曲测试', x: 120, y: 80 });
+  const width = layer._textWidth();
+  const halfLine = (layer.fontSize * layer.lineHeight) / 2;
+  const startX = layer.x;
+  const startY = layer.y;
+
+  layer.setArc(30);
+  assertClose(layer.x - width / 2, startX, '弯曲后左端');
+  assertClose(layer.y - halfLine, startY, '弯曲后基线');
+
+  layer.setArc(0);
+  assertClose(layer.x, startX, '取消弯曲后 x');
+  assertClose(layer.y, startY, '取消弯曲后 y');
+});
+

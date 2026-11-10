@@ -25,6 +25,12 @@ export const SHAPE_DEFAULTS = {
   opacity: 1,
 };
 
+/** 几何上限（与面板滑杆共用，保证「写进去的值 = 刷新后能画出来的值」，§20.3.3）。 */
+export const SHAPE_LIMITS = {
+  strokeWidth: [0, 64],
+  radius: [0, 400],
+};
+
 /** 图层样式默认值（D12.2）：外阴影 / 外发光 / 渐变叠加 / 颜色叠加。 */
 export const SHAPE_STYLE_DEFAULTS = {
   shadow: { enabled: false, color: '#000000', blur: 18, distance: 10, angle: 135 },
@@ -139,8 +145,11 @@ export class ShapeLayer {
     this.shape = KIND_IDS.has(options.shape) ? options.shape : SHAPE_DEFAULTS.kind;
     this.fill = options.fill || SHAPE_DEFAULTS.fill;
     this.stroke = options.stroke || SHAPE_DEFAULTS.stroke;
-    this.strokeWidth = clamp(options.strokeWidth ?? SHAPE_DEFAULTS.strokeWidth, 0, 64);
-    this.radius = clamp(options.radius ?? SHAPE_DEFAULTS.radius, 0, 400);
+    this.strokeWidth = clamp(
+      options.strokeWidth ?? SHAPE_DEFAULTS.strokeWidth,
+      ...SHAPE_LIMITS.strokeWidth,
+    );
+    this.radius = clamp(options.radius ?? SHAPE_DEFAULTS.radius, ...SHAPE_LIMITS.radius);
     this.opacity = clamp(options.opacity ?? 1, 0, 1);
     this.locked = Boolean(options.locked);
     this.visible = options.visible !== false;

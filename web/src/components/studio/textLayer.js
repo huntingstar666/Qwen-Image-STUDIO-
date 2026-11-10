@@ -31,6 +31,13 @@ export const TEXT_DEFAULTS = {
   shadowColor: 'rgba(0, 0, 0, 0.45)',
 };
 
+/** 样式上限（与面板滑杆共用，保证「写进去的值 = 刷新后能画出来的值」，§20.3.3）。 */
+export const TEXT_LIMITS = {
+  fontSize: [8, 400],
+  strokeWidth: [0, 40],
+  shadowBlur: [0, 80],
+};
+
 let seq = 0;
 let measureCanvas = null;
 
@@ -102,13 +109,13 @@ export class TextLayer {
     this.groupId = String(groupId || '');
     this.text = typeof text.text === 'string' ? text.text : TEXT_DEFAULTS.text;
     this.fontFamily = text.fontFamily || TEXT_DEFAULTS.fontFamily;
-    this.fontSize = clamp(Number(text.fontSize) || TEXT_DEFAULTS.fontSize, 8, 400);
+    this.fontSize = clamp(Number(text.fontSize) || TEXT_DEFAULTS.fontSize, ...TEXT_LIMITS.fontSize);
     this.fontWeight = clamp(Number(text.fontWeight) || TEXT_DEFAULTS.fontWeight, 100, 900);
     this.color = text.color || TEXT_DEFAULTS.color;
     this.lineHeight = clamp(Number(text.lineHeight) || TEXT_DEFAULTS.lineHeight, 0.8, 3);
-    this.strokeWidth = clamp(Number(text.strokeWidth) || 0, 0, 40);
+    this.strokeWidth = clamp(Number(text.strokeWidth) || 0, ...TEXT_LIMITS.strokeWidth);
     this.strokeColor = text.strokeColor || TEXT_DEFAULTS.strokeColor;
-    this.shadowBlur = clamp(Number(text.shadowBlur) || 0, 0, 80);
+    this.shadowBlur = clamp(Number(text.shadowBlur) || 0, ...TEXT_LIMITS.shadowBlur);
     this.shadowX = Number(text.shadowX) || 0;
     this.shadowY = Number(text.shadowY) || 0;
     this.shadowColor = text.shadowColor || TEXT_DEFAULTS.shadowColor;
@@ -132,13 +139,36 @@ export class TextLayer {
     return String(this.text ?? '').split('\n');
   }
 
-  /** 未旋转的文字包围盒（文档坐标）。 */
-  _localBounds() {
+  /** 最长一行的排版宽度（弯曲切换补偿与包围盒共用）。 */
+  _textWidth() {
     const ctx = measureContext();
     ctx.font = this.font;
-    const lines = this.lines();
     let width = 0;
-    for (const line of lines) width = Math.max(width, ctx.measureText(line || ' ').width);
+    for (const line of this.lines()) width = Math.max(width, ctx.measureText(line || ' ').width);
+    return width;
+  }
+
+  /**
+   * 设置弯曲度并保持位置不跳（§20.3.6）。
+   * 非弯曲以左上角为锚点，弯曲以中心为锚点；0 ↔ 非 0 切换时补偿半个字宽 / 半行高，
+   * 文字左端与首行基线因此保持不动。
+   */
+  setArc(next) {
+    const value = clamp(Number(next) || 0, -100, 100);
+    const was = Boolean(this.arc);
+    const will = Boolean(value);
+    if (was !== will) {
+      const sign = will ? 1 : -1;
+      this.x += (sign * this._textWidth()) / 2;
+      this.y += (sign * this.fontSize * this.lineHeight) / 2;
+    }
+    this.arc = value;
+  }
+
+  /** 未旋转的文字包围盒（文档坐标）。 */
+  _localBounds() {
+    const width = this._textWidth();
+    const lines = this.lines().length;
     const lineHeight = this.fontSize * this.lineHeight;
     const pad = this.strokeWidth + this.shadowBlur;
     if (this.arc) {
@@ -148,14 +178,14 @@ export class TextLayer {
         x: this.x - width / 2 - extra - pad,
         y: this.y - this.fontSize * 0.9 - extra - pad,
         width: Math.max(8, width + (extra + pad) * 2),
-        height: Math.max(8, lineHeight * lines.length + extra + pad * 2),
+        height: Math.max(8, lineHeight * lines + extra + pad * 2),
       };
     }
     return {
       x: this.x - pad,
       y: this.y - pad,
       width: Math.max(8, width + pad * 2),
-      height: Math.max(8, lineHeight * lines.length + pad * 2),
+      height: Math.max(8, lineHeight * lines + pad * 2),
     };
   }
 

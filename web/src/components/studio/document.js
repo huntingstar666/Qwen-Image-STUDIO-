@@ -112,6 +112,11 @@ export function cloneLayer(doc, id, { offset = 0, name = '', index = -1 } = {}) 
   if (shift) {
     copy.x = (Number(copy.x) || 0) + shift;
     copy.y = (Number(copy.y) || 0) + shift;
+    // 透视层按四点绘制、不读 x/y：只平移 x/y 会让副本与原图完全重合（§20.3.2）。
+    if (Array.isArray(copy.quad)) {
+      copy.quad = copy.quad.map((point) => ({ x: point.x + shift, y: point.y + shift }));
+      copy._warpCache = null;
+    }
   }
   addLayer(doc, copy, { index: index < 0 ? indexOf(doc, id) + 1 : index, activate: true });
   return copy;

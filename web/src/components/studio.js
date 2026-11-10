@@ -18,7 +18,7 @@ import { api, pollJob } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { favoriteImage } from './favorites.js';
-import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, makeCanvas } from './studio/studioDoc.js';
+import { StudioDoc, ADJUST_DEFAULTS, supportsCanvasFilter, canvasToBlob, cloneCanvas, makeCanvas } from './studio/studioDoc.js';
 import { createLayerColumn } from './studio/layerPanel.js';
 import { mountAiPanel } from './studio/aiPanel.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
@@ -80,9 +80,9 @@ import { normalizeVector, smudgeDab, smudgeShift } from './studio/smudge.js';
 import { skinDab } from './studio/skin.js';
 import { warpPatch } from './studio/liquify.js';
 import { mosaicDab } from './studio/mosaic.js';
-import { TEXT_DEFAULTS, TEXT_FONTS } from './studio/textLayer.js';
+import { TEXT_DEFAULTS, TEXT_FONTS, TEXT_LIMITS } from './studio/textLayer.js';
 import { BLEND_MODES } from './studio/layers.js';
-import { SHAPE_DEFAULTS, SHAPE_KINDS, SHAPE_STYLE_DEFAULTS, ShapeLayer, normalizeShapeStyle } from './studio/shapeLayer.js';
+import { SHAPE_DEFAULTS, SHAPE_KINDS, SHAPE_LIMITS, SHAPE_STYLE_DEFAULTS, ShapeLayer, normalizeShapeStyle } from './studio/shapeLayer.js';
 import { patternDab } from './studio/pattern.js';
 import { SEGMENT_MODES, maskGrayToAlpha, segmentSendSize, sortSegmentMasks, toSendBox, toSendPoints } from './studio/segment.js';
 import { drawLayers } from './studio/renderer.js';
@@ -112,7 +112,13 @@ const BASE_EDIT_TOOLS = new Set([
   'skin',
   'liquify',
   'mosaic',
+  'pattern',
 ]);
+
+/** 把数值夹到模型区间（limits 为 [min, max]），与图层构造函数的夹紧保持一致。 */
+function clampNumber(value, [min, max]) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
+}
 
 const TOOLS = [
   {
@@ -862,7 +868,7 @@ export function createStudioPage(host) {
                 <div class="studio-pane-title">描边</div>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>宽度</span><span class="mono" data-ref="textStrokeVal">0</span></span>
-                  <input type="range" min="0" max="40" step="1" value="0" data-ref="textStrokeWidth" />
+                  <input type="range" min="0" max="${TEXT_LIMITS.strokeWidth[1]}" step="1" value="0" data-ref="textStrokeWidth" />
                 </label>
                 <div class="studio-row">
                   <label class="studio-check studio-text-color"><span>描边色</span><input type="color" data-ref="textStrokeColor" value="#000000" /></label>
@@ -870,7 +876,7 @@ export function createStudioPage(host) {
                 <div class="studio-pane-title">投影</div>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>模糊</span><span class="mono" data-ref="textShadowVal">0</span></span>
-                  <input type="range" min="0" max="40" step="1" value="0" data-ref="textShadow" />
+                  <input type="range" min="0" max="${TEXT_LIMITS.shadowBlur[1]}" step="1" value="0" data-ref="textShadow" />
                 </label>
                 <div class="studio-pane-title">路径文字</div>
                 <label class="studio-slider">
@@ -927,14 +933,14 @@ export function createStudioPage(host) {
               </div>
               <label class="studio-slider">
                 <span class="studio-slider-head"><span>描边宽度</span><span class="mono" data-ref="shapeStrokeVal">0</span></span>
-                <input type="range" min="0" max="40" step="1" value="0" data-ref="shapeStrokeWidth" />
+                <input type="range" min="0" max="${SHAPE_LIMITS.strokeWidth[1]}" step="1" value="0" data-ref="shapeStrokeWidth" />
               </label>
               <div class="studio-row">
                 <label class="studio-check studio-text-color"><span>描边色</span><input type="color" data-ref="shapeStroke" value="${SHAPE_DEFAULTS.stroke}" /></label>
               </div>
               <label class="studio-slider">
                 <span class="studio-slider-head"><span>圆角</span><span class="mono" data-ref="shapeRadiusVal">0</span></span>
-                <input type="range" min="0" max="200" step="1" value="0" data-ref="shapeRadius" />
+                <input type="range" min="0" max="${SHAPE_LIMITS.radius[1]}" step="1" value="0" data-ref="shapeRadius" />
               </label>
               <div class="studio-pane-title">图层样式</div>
               <label class="studio-check"><input type="checkbox" data-ref="styleShadow" /><span>外阴影</span></label>
@@ -1014,7 +1020,7 @@ export function createStudioPage(host) {
             class="studio-dock-shutter"
             type="button"
             data-ref="dockShutter"
-            title="快门：把当前主图存入版本槽（会烘焙当前图层）"
+            title="快门：把当前主图存入版本槽（只保存主图，图层仍可编辑）"
             aria-label="快门：把当前主图存入版本槽"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5h3l1.4-2.2a1 1 0 0 1 .85-.47h6.5a1 1 0 0 1 .85.47L17.5 8.5h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.4" r="3.6"/><path d="M18.5 11.2h.01"/></svg>
@@ -1801,14 +1807,16 @@ export function createStudioPage(host) {
       x: view.x + (point.x - (crop?.x || 0)) * view.scale,
       y: view.y + (point.y - (crop?.y || 0)) * view.scale,
     });
-    if (perspectiveEdit && active.quad && !active.isText && !active.isShape) {
-      const hit = active.quad.some((point) => {
-        const v = toView(point);
-        return Math.hypot(v.x - px, v.y - py) <= 11;
-      });
-      if (hit) return 'persp';
-    }
-    if (!active.isAdjustment && !active.isText && !active.isShape) {
+    const isQuad = Boolean(active.quad) && !active.isText && !active.isShape;
+    if (isQuad) {
+      if (perspectiveEdit) {
+        const hit = active.quad.some((point) => {
+          const v = toView(point);
+          return Math.hypot(v.x - px, v.y - py) <= 11;
+        });
+        if (hit) return 'persp';
+      }
+    } else if (!active.isAdjustment && !active.isText && !active.isShape) {
       const handles = stickerHandles(active);
       const centerView = toView(handles.centerDoc);
       if (Math.hypot(handles.knobView.x - px, handles.knobView.y - py) <= 11) return 'rotate';
@@ -2230,10 +2238,11 @@ export function createStudioPage(host) {
   async function exportLayersAction(mode = 'current') {
     if (!doc) return false;
     const name = baseName(doc.name || 'studio');
-    const bake = (layer) => {
-      const canvas = makeCanvas(doc.size.width, doc.size.height);
-      drawLayers(canvas.getContext('2d'), [layer], { crop: doc.transform.crop });
-      return canvasToBlob(canvas, 'image/png');
+    // 与「存到素材仓库」共用同一套烘焙语义：隐藏 / 0% 临时可见，空图回退原始位图（§20.3.4）。
+    const bake = async (layer) => {
+      const result = await bakeLayerToPng(layer);
+      if (!result.blob) throw new Error(`图层「${layer.name}」没有可导出的像素`);
+      return result.blob;
     };
     const save = async (blob, filename) => {
       const url = URL.createObjectURL(blob);
@@ -2243,9 +2252,13 @@ export function createStudioPage(host) {
     };
 
     if (mode === 'visible') {
-      const list = (doc.layers || []).filter(
-        (layer) => layer.kind !== 'base' && !layer.isAdjustment && layer.visible !== false,
+      const all = (doc.layers || []).filter((layer) => layer.kind !== 'base');
+      const hiddenGroup = (layer) =>
+        Boolean(layer.groupId) && doc.findGroup(layer.groupId)?.visible === false;
+      const list = all.filter(
+        (layer) => !layer.isAdjustment && layer.visible !== false && !hiddenGroup(layer),
       );
+      const skipped = all.length - list.length;
       if (!list.length) {
         toastWarn('没有可见图层可以导出');
         return false;
@@ -2262,7 +2275,9 @@ export function createStudioPage(host) {
         for (const layer of list) {
           await save(await bake(layer), `${name}-${safeFilePart(layer.name)}.png`);
         }
-        toastSuccess(`已导出 ${list.length} 个图层`);
+        toastSuccess(
+          `已导出 ${list.length} 个图层${skipped ? `，跳过 ${skipped} 个（隐藏 / 调整层）` : ''}`,
+        );
         return true;
       } catch (err) {
         toastError(err, '批量导出失败');
@@ -2273,6 +2288,11 @@ export function createStudioPage(host) {
     const layer = doc.findLayer(selectedLayerId);
     if (!layer) {
       toastWarn('请先选中一个图层');
+      return false;
+    }
+    // 调整层没有独立像素（draw 是空实现），单独导出只会得到透明 PNG。
+    if (layer.isAdjustment) {
+      toastWarn('调整层没有独立像素，无法单独导出');
       return false;
     }
     try {
@@ -2310,6 +2330,11 @@ export function createStudioPage(host) {
         flipV: layer.flipV,
         opacity: layer.opacity,
         blend: layer.blend,
+        clipped: Boolean(layer.clipped),
+        smart: Boolean(layer.smart),
+        quad: Array.isArray(layer.quad) ? layer.quad.map((point) => ({ ...point })) : null,
+        mask: layer.mask ? cloneCanvas(layer.mask) : null,
+        maskVisible: layer.maskVisible !== false,
       });
     }
     if (!items.length) {
@@ -2330,6 +2355,16 @@ export function createStudioPage(host) {
       try {
         const image = await loadImage(url);
         const fit = Math.min(1, (doc.size.width * 0.6) / Math.max(1, image.naturalWidth || image.width));
+        // 透视层按四点定位、不读 x/y：粘贴时按包围盒中心对齐画布中心，确保副本可见（§20.3.2）。
+        let quad = Array.isArray(item.quad) ? item.quad.map((point) => ({ ...point })) : null;
+        if (quad) {
+          const crop = doc.transform.crop;
+          const cx = quad.reduce((sum, point) => sum + point.x, 0) / quad.length;
+          const cy = quad.reduce((sum, point) => sum + point.y, 0) / quad.length;
+          const dx = (crop?.x || 0) + doc.size.width / 2 - cx;
+          const dy = (crop?.y || 0) + doc.size.height / 2 - cy;
+          quad = quad.map((point) => ({ x: point.x + dx, y: point.y + dy }));
+        }
         const layer = doc.addOverlay(image, {
           name: `${item.name || '粘贴图层'} 副本`,
           scale: item.scale || fit,
@@ -2338,6 +2373,11 @@ export function createStudioPage(host) {
           flipV: Boolean(item.flipV),
           opacity: item.opacity ?? 1,
           blend: item.blend || 'source-over',
+          clipped: Boolean(item.clipped),
+          smart: Boolean(item.smart),
+          quad,
+          mask: item.mask || null,
+          maskVisible: item.maskVisible !== false,
         });
         layerBlobs.set(layer.id, item.blob);
         selectedLayerIds.clear();
@@ -2947,6 +2987,11 @@ export function createStudioPage(host) {
       if (!doc) return false;
       const layer = doc.findLayer(id);
       if (!layer) return false;
+      // 透视图层用四角单应性绘制，蒙版仿射映射不到正确像素：创建入口一并拒绝（§20.4-9）。
+      if (Array.isArray(layer.quad)) {
+        toastWarn('透视（四角）图层暂不支持蒙版：请先在图层面板「重置透视」');
+        return false;
+      }
       // 文字 / 形状图层没有像素蒙版（D11.2 / D11.4）。
       if (layer.isText || layer.isShape) {
         toastWarn(layer.isText ? '文字图层不支持蒙版' : '形状图层不支持蒙版');
@@ -3127,7 +3172,9 @@ export function createStudioPage(host) {
           selectedLayerIds.delete(layer.id);
           if (selectedLayerId === layer.id) selectedLayerId = null;
         }
-        if (selectedLayerId === null) syncLayerProps();
+        // 主选回落到剩余集合：否则行仍高亮、底部图层按钮全禁用、Delete 无效（§20.4-4）。
+        if (selectedLayerId === null) selectedLayerId = [...selectedLayerIds].pop() || null;
+        syncLayerProps();
       }
       syncLayersPanel();
       scheduleDraw();
@@ -3212,6 +3259,7 @@ export function createStudioPage(host) {
       const next = groupId && doc.findGroup(groupId) ? groupId : '';
       if ((layer.groupId || '') === next) return false;
       layer.groupId = next;
+      pruneEmptyGroups();
       doc.touchLayers();
       doc.commitLayers();
       updateHistoryUi();
@@ -4075,8 +4123,9 @@ export function createStudioPage(host) {
         x: view.x + (point.x - (crop?.x || 0)) * view.scale,
         y: view.y + (point.y - (crop?.y || 0)) * view.scale,
       });
-      if (perspectiveEdit && activeLayer.quad && !activeLayer.isText && !activeLayer.isShape) {
-        // 透视四角编辑（D13.3）：画四边形 + 四个可拖圆点。
+      if (activeLayer.quad && !activeLayer.isText && !activeLayer.isShape) {
+        // 透视层始终按 quad 四点画框：关掉「编辑四角」后仍要贴合梯形，
+        // 且不再画会骗人的旋转圆点（§20.3.1）。
         const points = activeLayer.quad.map(toViewPoint);
         ctx.save();
         ctx.strokeStyle = 'rgba(255,255,255,0.95)';
@@ -4090,11 +4139,13 @@ export function createStudioPage(host) {
         ctx.closePath();
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        for (const point of points) {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
-          ctx.fill();
+        if (perspectiveEdit) {
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          for (const point of points) {
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
         ctx.restore();
       } else if (activeLayer.isText || activeLayer.isShape || activeLayer.locked || tool === 'view') {
@@ -4635,6 +4686,12 @@ export function createStudioPage(host) {
   function commitSelectionToMask(armRemove) {
     if (!doc || !selection) {
       toastWarn('还没有选区：先用魔棒点选要处理的区域');
+      return;
+    }
+    // 正在涂抹图层蒙版时，这两个入口写的是主图蒙版：直接拒绝并说明原因（§20.4-14）。
+    if (editingLayerMaskId) {
+      const target = doc.findLayer(editingLayerMaskId);
+      toastWarn(`正在编辑图层蒙版「${target?.name || ''}」：退出蒙版涂抹后再转为主图蒙版`);
       return;
     }
     const rect = selection.rect || { x: 0, y: 0, width: selection.width, height: selection.height };
@@ -5789,6 +5846,7 @@ export function createStudioPage(host) {
       start: point,
       originX: layer.x,
       originY: layer.y,
+      originQuad: Array.isArray(layer.quad) ? layer.quad.map((point) => ({ ...point })) : null,
       group: group.length > 1 ? group : null,
     };
   }
@@ -5816,6 +5874,16 @@ export function createStudioPage(host) {
     const point = clampPoint(freePoint);
 
     if (tool === 'text' && event.button === 0) {
+      // 画面外点击不创建文字：否则锚点被夹到边界，会在画布边缘生成一条文字层（§20.4-1）。
+      if (
+        freePoint.x < 0 ||
+        freePoint.y < 0 ||
+        freePoint.x > doc.size.width ||
+        freePoint.y > doc.size.height
+      ) {
+        toastWarn('请在画面内点击创建文字');
+        return;
+      }
       // 在画面上点一下即创建文字图层，并切到「文字」分页直接编辑（D11.2）。
       const at = maskPoint(point);
       const count = doc.layers.filter((layer) => layer.isText).length + 1;
@@ -6032,7 +6100,8 @@ export function createStudioPage(host) {
 
       // 选中贴纸的角手柄 / 旋转圆点优先于普通拖动（D11.3）；透视编辑时改拖四角（D13.3）。
       const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
-      if (perspectiveEdit && active?.quad && !active.isText && !active.isShape) {
+      const isQuadLayer = Boolean(active?.quad) && !active.isText && !active.isShape;
+      if (isQuadLayer) {
         const px = event.clientX - dragRect.left;
         const py = event.clientY - dragRect.top;
         const nearCorner = (point) => {
@@ -6042,6 +6111,11 @@ export function createStudioPage(host) {
         };
         const index = active.quad.findIndex(nearCorner);
         if (index >= 0) {
+          // 透视层只认四角：关掉「编辑四角」时不写 scale / rotation 脏数据（§20.3.1）。
+          if (!perspectiveEdit) {
+            toast('该图层已透视：勾选「编辑四角」后拖角调整');
+            return;
+          }
           drag = { mode: 'perspCorner', layer: active, index };
           return;
         }
@@ -6360,6 +6434,14 @@ export function createStudioPage(host) {
       } else {
         layer.x = round(drag.originX + dx);
         layer.y = round(drag.originY + dy);
+        if (drag.originQuad) {
+          // 透视层按四点绘制：单层拖动也要同步平移 quad，否则看起来「拖不动」。
+          layer.quad = drag.originQuad.map((point) => ({
+            x: round(point.x + dx),
+            y: round(point.y + dy),
+          }));
+          layer._warpCache = null;
+        }
       }
       refs.canvas.style.cursor = 'grabbing';
       doc.touchLayers();
@@ -6387,7 +6469,9 @@ export function createStudioPage(host) {
               item.layer.y !== item.y ||
               (item.quad && item.layer.quad?.[0]?.x !== item.quad[0]?.x),
           )
-        : drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
+        : drag.layer.x !== drag.originX ||
+          drag.layer.y !== drag.originY ||
+          (drag.originQuad && drag.layer.quad?.[0]?.x !== drag.originQuad[0]?.x));
     drag = null;
     if (mode === 'selpaint') {
       commitSelectionPaint();
@@ -6661,6 +6745,8 @@ export function createStudioPage(host) {
     } else if (!persistDisabled) {
       setSaveState('idle');
     }
+    // 只读标签不允许写共享版本链：快门状态跟着租约一起更新（§20.4-19）。
+    updateShutterState();
   }
 
   function stopLease() {
@@ -7005,10 +7091,10 @@ export function createStudioPage(host) {
     updateShutterState();
   }
 
-  /** 无文档或快门烘焙中禁用快门按钮。 */
+  /** 无文档、快门烘焙中或只读标签（租约被占用）时禁用快门按钮。 */
   function updateShutterState() {
     if (!refs.dockShutter) return;
-    refs.dockShutter.disabled = !doc || versionBusy;
+    refs.dockShutter.disabled = !doc || versionBusy || leaseLocked;
   }
 
   /**
@@ -7061,11 +7147,11 @@ export function createStudioPage(host) {
     return record;
   }
 
-  /** 载入某个版本为主图：清空蒙版/选区/撤销栈，当前指针同步。 */
+  /** 载入某个版本为主图：清空蒙版/选区/撤销栈，当前指针同步。 @returns {Promise<boolean>} 是否切换成功 */
   async function switchVersion(versionId) {
-    if (!doc || !versionId || versionId === currentVersionId) return;
+    if (!doc || !versionId || versionId === currentVersionId) return false;
     const version = versions.find((item) => item.id === versionId);
-    if (!version) return;
+    if (!version) return false;
     const token = ++openSeq;
     const owner = doc;
     let blob = version.blob || null;
@@ -7080,17 +7166,17 @@ export function createStudioPage(host) {
     if (!blob && version.meta?.resultUrl) {
       blob = await fetchBlob(version.meta.resultUrl);
     }
-    if (token !== openSeq || doc !== owner) return;
+    if (token !== openSeq || doc !== owner) return false;
     if (!blob) {
       toastWarn('该版本的原图不在本机，无法切换');
-      return;
+      return false;
     }
     setPreview(null);
     flushAdjustPreview();
     const url = URL.createObjectURL(blob);
     try {
       const image = await loadImage(url);
-      if (token !== openSeq || doc !== owner) return;
+      if (token !== openSeq || doc !== owner) return false;
       // 换主图 = 只换底图：图层继续留在原文档里，先按尺寸 / 原点差异换算坐标。
       const nw = image.naturalWidth || image.width;
       const nh = image.naturalHeight || image.height;
@@ -7120,8 +7206,10 @@ export function createStudioPage(host) {
       } else {
         toast(`已切换到「${version.label}」 · 保留 ${keptLayers} 个图层`);
       }
+      return true;
     } catch (err) {
       toastError(err, '切换版本失败');
+      return false;
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -7244,16 +7332,17 @@ export function createStudioPage(host) {
       layer.x = (layer.x || 0) * k + dx;
       layer.y = (layer.y || 0) * k + dy;
       if (layer.isText) {
-        layer.fontSize = (layer.fontSize || 0) * k;
-        layer.strokeWidth = (layer.strokeWidth || 0) * k;
-        layer.shadowBlur = (layer.shadowBlur || 0) * k;
+        // 缩放后夹到模型上限，避免「撤销 / 刷新时被构造函数静默夹紧」（§20.3.3）。
+        layer.fontSize = clampNumber((layer.fontSize || 0) * k, TEXT_LIMITS.fontSize);
+        layer.strokeWidth = clampNumber((layer.strokeWidth || 0) * k, TEXT_LIMITS.strokeWidth);
+        layer.shadowBlur = clampNumber((layer.shadowBlur || 0) * k, TEXT_LIMITS.shadowBlur);
         layer.shadowX = (layer.shadowX || 0) * k;
         layer.shadowY = (layer.shadowY || 0) * k;
       } else if (layer.isShape) {
         layer.width = (layer.width || 0) * k;
         layer.height = (layer.height || 0) * k;
-        layer.strokeWidth = (layer.strokeWidth || 0) * k;
-        layer.radius = (layer.radius || 0) * k;
+        layer.strokeWidth = clampNumber((layer.strokeWidth || 0) * k, SHAPE_LIMITS.strokeWidth);
+        layer.radius = clampNumber((layer.radius || 0) * k, SHAPE_LIMITS.radius);
       } else if (layer.scale) {
         layer.scale *= k;
       }
@@ -7563,7 +7652,11 @@ export function createStudioPage(host) {
     const index = versions.findIndex((item) => item.id === version.id);
     if (version.id === currentVersionId) {
       const prev = versions[index - 1] || versions.find((item) => item.id !== version.id);
-      if (prev) await switchVersion(prev.id);
+      // 删当前版本前必须先切走；切失败就中止，避免 currentVersionId 指向已删除的 id（§20.4-18）。
+      if (!prev || !(await switchVersion(prev.id))) {
+        toastWarn('当前版本切换失败，已取消删除');
+        return;
+      }
     }
     try {
       await deleteStudioVersion(projectId, version.id);
@@ -8933,7 +9026,8 @@ export function createStudioPage(host) {
     refs.textShadowVal.textContent = refs.textShadow.value;
   });
   bindTextInput(refs.textArc, (target) => {
-    target.arc = Number(refs.textArc.value);
+    // 0 ↔ 非 0 切换时补偿锚点，文字左端与基线保持不动（§20.3.6）。
+    target.setArc(Number(refs.textArc.value));
     refs.textArcVal.textContent = refs.textArc.value;
   });
 
@@ -10189,6 +10283,21 @@ export function createStudioPage(host) {
   }
 
   /**
+   * 抠图取像素的图层来源（单次 / 批量共用）：
+   * - 选区带 `source.layerId`（AI 主体选择产生）→ 按该图层抠；
+   * - 否则只有用户在下拉里「固定」了某个图层才按该层；
+   *   `__current__` 是自动跟随当前选中层，不参与，否则魔棒圈合成图会被静默截断（§20.3.5）；
+   * - 其余一律按合成图。
+   */
+  function cutoutPixelLayer() {
+    if (!doc || !selection) return null;
+    const id = selection.source?.layerId
+      || (aiTargetId && aiTargetId !== '__current__' ? aiTargetId : '');
+    const layer = id ? doc.findLayer(id) : null;
+    return layer && !layer.isAdjustment ? layer : null;
+  }
+
+  /**
    * 当前选区的抠图结果；`raw` 保持原图尺寸（抠图层需要原坐标），
    * `canvas` 按固定尺寸预设缩放（导出用）。
    */
@@ -10197,10 +10306,7 @@ export function createStudioPage(host) {
     const alphaRect = selection.rect || { x: 0, y: 0, width: selection.width, height: selection.height };
     const crop = doc.transform.crop;
     const oriented = doc.oriented;
-    // 取像素来源优先级：AI 专门针对某图层生成的选区 > 「抠图对象 / 当前选中图层」，
-    // 与下拉框、toast 使用同一份解析结果，避免「说的和抠的不是同一层」。
-    const explicitLayer = aiTargetLayer();
-    const layer = (selection.source?.layerId && doc.findLayer(selection.source.layerId)) || explicitLayer;
+    const layer = cutoutPixelLayer();
     const renderSource = (sourceLayer) => {
       if (sourceLayer) {
         // 按该图层区域重新取像素（区域可能在画面之外）。
@@ -10222,19 +10328,15 @@ export function createStudioPage(host) {
         alphaRect,
       });
     let raw = composeSource(source);
-    let usedLayer = layer;
+    const usedLayer = layer;
     if (!canvasHasPixels(raw.canvas)) {
-      if (layer && !selection.source?.layerId) {
-        // 下拉 / 当前选中层在选区内没有像素：退回合成图，避免「选对了对象却抠不出来」。
-        toastWarn(`图层「${layer.name || '当前图层'}」在选区内没有像素，已改从合成图抠出`);
-        source = renderSource(null);
-        usedLayer = null;
-        raw = composeSource(source);
-      }
-      if (!canvasHasPixels(raw.canvas)) {
-        toastWarn('选区内没有可抠出的像素，检查一下对象是不是选对了图层');
+      if (layer) {
+        // 选区明确来自该图层：没有像素就如实拒绝，不再偷换来源。
+        toastWarn(`选区来自图层「${layer.name || '当前图层'}」，但选区内没有该层像素`);
         return null;
       }
+      toastWarn('选区内没有可抠出的像素，检查一下对象是不是选对了图层');
+      return null;
     }
     const fitted = fitCutoutCanvas(raw.canvas);
     return { canvas: fitted.canvas, raw: raw.canvas, rect: source.rect, target: fitted.target, sourceLayer: usedLayer };
@@ -10413,10 +10515,10 @@ export function createStudioPage(host) {
     refs.cutBtn.textContent = '批量导出中…';
     try {
       flushAdjustPreview();
-      // 批量导出同样跟随「对象」选择；选区来自图层时按该图层区域取像素。
+      // 批量导出与单次抠图共用同一套来源解析，避免两套结果（§20.3.5）。
       const crop = doc.transform.crop;
       const oriented = doc.oriented;
-      const layerSel = selection.source?.layerId ? doc.findLayer(selection.source.layerId) : null;
+      const layerSel = cutoutPixelLayer();
       const useLayer = Boolean(selectionHasArea() && layerSel);
       const base = useLayer ? doc.renderLayer(layerSel.id, { region: selection.rect }) : doc.renderBase();
       const rect = useLayer
@@ -10432,8 +10534,12 @@ export function createStudioPage(host) {
       const alphaH = useLayer ? selection.height : oriented.height;
       const name = baseName(doc.name);
       let done = 0;
+      let skipped = 0;
       for (const group of groups) {
-        if (group.width !== alphaW || group.height !== alphaH) continue;
+        if (group.width !== alphaW || group.height !== alphaH) {
+          skipped += 1;
+          continue;
+        }
         const { canvas, target } = composeCutout(base, rect, group.alpha, group.width, group.height, {
           baseRect,
           alphaRect,
@@ -10446,7 +10552,13 @@ export function createStudioPage(host) {
         // 连续下载之间留出间隔，避免被浏览器拦截。
         await new Promise((resolve) => setTimeout(resolve, 220));
       }
-      toastSuccess(done ? `已批量导出 ${done} 个选区` : '没有尺寸匹配的选区');
+      toastSuccess(
+        done
+          ? `已批量导出 ${done} 个选区${skipped ? `，跳过 ${skipped} 个尺寸不匹配的选区` : ''}`
+          : skipped
+            ? `跳过 ${skipped} 个尺寸不匹配的选区`
+            : '没有尺寸匹配的选区',
+      );
     } catch (err) {
       toastError(err, '批量导出失败');
     } finally {
@@ -11236,6 +11348,12 @@ export function createStudioPage(host) {
     refs.stage.classList.remove('is-base-hidden');
     syncAdjustInputs();
     tintDirty = true;
+    // 破坏性重置必须把「主图级现场」一起清掉：否则 reset 后仍能对旧选区做 AI 消除 / 抠图（§20.4-20）。
+    selectionSets = [];
+    cropRect = null;
+    refs.cropbar.hidden = true;
+    clearSelection(true);
+    resetSegmentHints();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();

@@ -311,6 +311,9 @@ export class StudioDoc {
     const W = old.width;
     const H = old.height;
     const oriented = this.oriented;
+    // 图层文档尺寸跟随旋转后的整图，保持与 replaceMainImage 一致。
+    this._doc.width = oriented.width;
+    this._doc.height = oriented.height;
     const mapPoint =
       direction > 0 ? (x, y) => ({ x: H - y, y: x }) : (x, y) => ({ x: y, y: W - x });
     (this.layers || []).forEach((layer) => {
@@ -337,7 +340,8 @@ export class StudioDoc {
         layer.y = center.y - w / 2;
         return;
       }
-      layer.rotation = ((Number(layer.rotation) || 0) + (direction > 0 ? 90 : -90)) % 360;
+      const nextRotation = ((Number(layer.rotation) || 0) + (direction > 0 ? 90 : -90)) % 360;
+      layer.rotation = nextRotation < 0 ? nextRotation + 360 : nextRotation;
       // 90° 旋转会把水平翻转轴换到垂直方向，否则两者叠加顺序不同会镜像错。
       if (layer.flipH !== undefined || layer.flipV !== undefined) {
         const flipH = layer.flipH;

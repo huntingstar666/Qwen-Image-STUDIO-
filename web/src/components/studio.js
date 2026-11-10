@@ -2619,7 +2619,7 @@ export function createStudioPage(host) {
      * AI 出图后自动入槽（D22.1 增强）：只建卡、不切换主图，
      * 用户点卡片时再走 switchVersion 载入；同一结果 URL 只入槽一次。
      */
-    async recordAiResult({ url, width, height, task } = {}) {
+    async recordAiResult({ url, width, height, task, containsLayers = false } = {}) {
       if (!url || !doc) return null;
       if (versions.some((item) => item.meta?.resultUrl === url)) return null;
       let blob = await fetchBlob(url);
@@ -2650,6 +2650,8 @@ export function createStudioPage(host) {
           auto: true,
           width: width || 0,
           height: height || 0,
+          // 送图勾了「包含图层」时结果里已有图层像素，切回这张卡要提示重复。
+          containsLayers: Boolean(containsLayers),
         },
         select: false,
         reveal: true,
@@ -3578,6 +3580,8 @@ export function createStudioPage(host) {
     // 展示 AI 结果时不再画底图：扩图结果比原图大，旧底图会从四周露出来，
     // 看起来就是「结果外面围了一圈亮框」（D29.1）。
     const showPreview = Boolean(preview.image && !preview.flash);
+    /** 结果预览在画布上的实际绘制矩形；蒙版与图层都按这个矩形对齐。 */
+    let previewRect = null;
     const image = showPreview
       ? null
       : adjustPreview
@@ -3618,23 +3622,27 @@ export function createStudioPage(host) {
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(preview.image, px, py, dw, dh);
       ctx.restore();
+      previewRect = { x: px, y: py, width: dw, height: dh };
       // 预览的是「结果将作为新主图」：图层必须继续画在结果之上。
       // 之前这里直接跳过图层，AI 出结果后画布上图层集体消失，
       // 只有切到别的版本（清掉预览）才重新出现。
-      // 图层坐标是文档空间，按「画面 → 预览显示矩形」的同一比例映射，位置才对得上。
+      // 用统一比例映射（取宽高比的较小值），避免结果比例与画面不同时图层被拉变形。
       if (doc.layers.length) {
         const crop = doc.transform.crop;
-        const fx = dw / Math.max(1, doc.size.width);
-        const fy = dh / Math.max(1, doc.size.height);
+        const fit = Math.min(
+          dw / Math.max(1, doc.size.width),
+          dh / Math.max(1, doc.size.height),
+        );
         ctx.save();
         ctx.translate(px, py);
-        ctx.scale(fx, fy);
+        ctx.scale(fit, fit);
         drawLayers(ctx, doc.layers, { crop, groups: doc.groups });
         ctx.restore();
       }
     }
 
-    if (showMask && doc.hasMask() && !preview.image) {
+    // 蒙版色纱：结果预览时也要显示，否则在结果上继续圈选会看不到笔触。
+    if (showMask && doc.hasMask()) {
       if (tintDirty || !tint) {
         tint = doc.renderMaskTint();
         tintDirty = false;
@@ -3643,10 +3651,11 @@ export function createStudioPage(host) {
         tint = doc.renderMaskTint(tintRect);
         tintRect = null;
       }
+      const area = previewRect || { x: view.x, y: view.y, width: w, height: h };
       ctx.save();
       ctx.globalAlpha = 0.42;
       ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(tint, view.x, view.y, w, h);
+      ctx.drawImage(tint, area.x, area.y, area.width, area.height);
       ctx.restore();
     }
 
@@ -6660,6 +6669,11 @@ export function createStudioPage(host) {
     updateHistoryUi();
     updateMaskStatus();
     renderSnapshots();
+    // 蒙版已换成新主图的空画布：红色色纱缓存必须作废，
+    // 否则下次落笔会先画出上一张图的旧蒙版。
+    tint = null;
+    tintDirty = true;
+    tintRect = null;
     if (sizeChanged) requestAnimationFrame(() => fitView());
     // 150ms 淡入：只动 opacity，不做位移，避免切换时晕。
     refs.canvas.classList.remove('is-version-fade');
@@ -6681,6 +6695,8 @@ export function createStudioPage(host) {
       if (Array.isArray(layer.quad)) {
         layer.quad = layer.quad.map((point) => ({ x: point.x * k + dx, y: point.y * k + dy }));
         layer._warpCache = null;
+        // 透视层只用 quad 定位，不能再按 x/y/scale 二次变换，否则缩放版本会错位。
+        return;
       }
       layer.x = (layer.x || 0) * k + dx;
       layer.y = (layer.y || 0) * k + dy;
@@ -6689,6 +6705,7 @@ export function createStudioPage(host) {
         layer.strokeWidth = (layer.strokeWidth || 0) * k;
         layer.shadowBlur = (layer.shadowBlur || 0) * k;
         layer.shadowX = (layer.shadowX || 0) * k;
+        layer.shadowY = (layer.shadowY || 0) * k;
       } else if (layer.isShape) {
         layer.width = (layer.width || 0) * k;
         layer.height = (layer.height || 0) * k;
@@ -9228,7 +9245,7 @@ export function createStudioPage(host) {
   /** AI 预览只画在画布上，导出/复制/收藏/送编辑都读底图，先拦住避免「所见非所得」。 */
   function previewBlocked(action) {
     if (!preview.image) return false;
-    toastWarn(`当前显示的是 AI 预览，导出的是载入前的底图。请先点「载入为新底图」或关闭预览再${action}`);
+    toastWarn(`当前显示的是 AI 预览，导出的是替换前的底图。请先点「设为新主图」或关闭预览再${action}`);
     return true;
   }
 

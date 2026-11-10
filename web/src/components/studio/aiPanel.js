@@ -403,7 +403,7 @@ export function mountAiPanel(host, ctx) {
       height: entry.result?.height,
     });
     if (!info) return;
-    // 载入新底图会清空现场，这里把该次记录的参考图与指令补回去，便于继续修改。
+    // 换主图会重置现场，这里把该次记录的参考图与指令补回去，便于继续修改。
     const restored = await storeRef.refsFor(entry.id);
     state.refs = restored.slice(0, MAX_REFS);
     syncEditorRefs();
@@ -1428,7 +1428,7 @@ export function mountAiPanel(host, ctx) {
           refs.resultActions.hidden = false;
           renderQuality(job);
           if (state.resultInfo.width && state.resultInfo.height) {
-            refs.adoptHint.textContent = `结果 ${state.resultInfo.width}×${state.resultInfo.height}：可「作为新图层」保留主图叠加，或「载入为新底图」直接替换主图。`;
+            refs.adoptHint.textContent = `结果 ${state.resultInfo.width}×${state.resultInfo.height}：可「作为新图层」保留主图叠加，或「设为新主图」替换底图（图层保留）。`;
             refs.adoptHint.hidden = false;
           }
           state.previewOn = true;
@@ -1441,6 +1441,7 @@ export function mountAiPanel(host, ctx) {
             width: state.resultInfo.width,
             height: state.resultInfo.height,
             task: actualTask,
+            containsLayers: state.resultContainsLayers === true,
           });
           notifyPersist();
 
@@ -1973,6 +1974,7 @@ export function mountAiPanel(host, ctx) {
       setStrength(persist.consistencyStrength ?? state.consistencyStrength);
       state.sendLayers = persist.sendLayers === true;
       refs.sendLayers.checked = state.sendLayers;
+      state.resultContainsLayers = persist.resultContainsLayers === true;
       state.customLoras = Array.isArray(persist.customLoras)
         ? persist.customLoras.slice(0, MAX_LORAS).map((item) => ({ ...item }))
         : [];
@@ -2039,6 +2041,7 @@ export function mountAiPanel(host, ctx) {
         consistencyOn: state.consistencyOn,
         consistencyStrength: state.consistencyStrength,
         sendLayers: state.sendLayers,
+        resultContainsLayers: state.resultContainsLayers === true,
         resultUrl: state.resultUrl,
         resultInfo: state.resultInfo ? { ...state.resultInfo } : null,
       };

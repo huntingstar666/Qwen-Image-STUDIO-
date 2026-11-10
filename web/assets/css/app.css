@@ -1648,6 +1648,14 @@ details.fold > .fold-body {
   background: rgba(0, 0, 0, 0.075);
 }
 
+html[data-theme="dark"] .toast-action {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .toast-action:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 /* ---------- 空状态 / 加载 ---------- */
 .empty {
   display: flex;

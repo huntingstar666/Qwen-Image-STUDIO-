@@ -608,7 +608,7 @@ function mountPicker(container, references, results, initialReference, initialRe
       .map(
         (item, index) => `
         <button class="cmp-thumb ${index === active ? 'active' : ''}" type="button" data-kind="${kind}" data-index="${index}">
-          <img src="${escapeHtml(item.url)}" alt="" loading="lazy" />
+          <img src="${escapeHtml(item.thumbUrl || item.url)}" alt="" loading="lazy" />
           <span>${escapeHtml(item.label || `${kind === 'ref' ? '参考图' : '结果'} ${index + 1}`)}</span>
         </button>`,
       )
@@ -665,13 +665,14 @@ function mountPicker(container, references, results, initialReference, initialRe
  * 对外入口
  * ============================================================ */
 /**
- * @param {{references?: Array<{url:string,label?:string}>, results?: Array<{url:string,label?:string}>, initialReference?:number, initialResult?:number}} options
+ * @param {{references?: Array<{url:string,thumbUrl?:string,label?:string}>, results?: Array<{url:string,thumbUrl?:string,label?:string}>, initialReference?:number, initialResult?:number, onClose?: () => void}} options
  */
 export function openCompareDialog({
   references = [],
   results = [],
   initialReference = 0,
   initialResult = 0,
+  onClose = null,
 } = {}) {
   const refs = references.filter((item) => item?.url);
   const outs = results.filter((item) => item?.url);
@@ -698,6 +699,7 @@ export function openCompareDialog({
     onClose: () => {
       dispose();
       dispose = () => {};
+      onClose?.();
     },
   });
 

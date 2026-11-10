@@ -159,3 +159,23 @@ test('弯曲文字：0 ↔ 非 0 切换时左端与基线保持不动（§20.3.6
   assertClose(layer.y, startY, '取消弯曲后 y');
 });
 
+test('弯曲文字：旋转 90° 后切换弯曲，补偿向量也随图层旋转（§22.7）', async () => {
+  installCanvasStub();
+  const { TextLayer } = await import('../../src/components/studio/textLayer.js');
+
+  const layer = new TextLayer({ text: '弯曲测试', x: 120, y: 80, rotation: 90 });
+  const halfWidth = layer._textWidth() / 2;
+  const halfLine = (layer.fontSize * layer.lineHeight) / 2;
+  const startX = layer.x;
+  const startY = layer.y;
+
+  layer.setArc(30);
+  // R(90°) 把局部 (halfWidth, halfLine) 变成 (-halfLine, halfWidth)。
+  assertClose(layer.x - startX, -halfLine, '旋转 90° 后 x 补偿');
+  assertClose(layer.y - startY, halfWidth, '旋转 90° 后 y 补偿');
+
+  layer.setArc(0);
+  assertClose(layer.x, startX, '取消弯曲后 x');
+  assertClose(layer.y, startY, '取消弯曲后 y');
+});
+

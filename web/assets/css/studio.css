@@ -1919,6 +1919,13 @@
   background: var(--accent-dim);
 }
 
+/* 选区画笔的实时预览层：独立画布增量绘制，不参与主画布整帧重绘 */
+.studio-canvas-wrap canvas.studio-sel-preview {
+  filter: none;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .studio-canvas-wrap canvas {
   position: absolute;
   inset: 0;

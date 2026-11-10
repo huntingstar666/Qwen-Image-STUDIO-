@@ -301,6 +301,10 @@ export function createLayerColumn(host, ctx) {
             Math.round((layer.scale || 1) * 1000)
           }:${layer.rotation || 0}:${layer.flipH ? 1 : 0}${layer.flipV ? 1 : 0}:${
             ctx.isLayerOutside?.(layer) ? 1 : 0
+          }:${Math.round((layer.stretchX || 1) * 1000)}x${Math.round((layer.stretchY || 1) * 1000)}:${
+            layer.smart ? 1 : 0
+          }${layer.clipped ? 1 : 0}:${layer.blend || ''}:${
+            layer.isText ? 't' : layer.isShape ? 's' : layer.isAdjustment ? 'a' : 'b'
           }`;
         })
         .join('|');

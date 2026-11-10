@@ -68,6 +68,9 @@ export class OverlayLayer {
       quad = null,
       groupId = '',
       smart = false,
+      /** 单方向拉伸（1 = 不拉伸）：最终尺寸 = 原始像素 × scale × stretch。 */
+      stretchX = 1,
+      stretchY = 1,
       id = '',
     } = {},
   ) {
@@ -80,6 +83,9 @@ export class OverlayLayer {
     this.x = Number(x) || 0;
     this.y = Number(y) || 0;
     this.scale = Number(scale) || 1;
+    /** 单方向拉伸（非等比缩放）：拖左右 / 上下边手柄时单独改一个轴。 */
+    this.stretchX = Math.max(0.01, Number(stretchX) || 1);
+    this.stretchY = Math.max(0.01, Number(stretchY) || 1);
     this.opacity = opacity === undefined ? 1 : Number(opacity);
     this.rotation = Number(rotation) || 0;
     /** 贴纸翻转（D11.3）：围绕图层中心镜像，不影响 x/y/scale。 */
@@ -119,11 +125,11 @@ export class OverlayLayer {
   }
 
   get width() {
-    return (this.image?.naturalWidth || this.image?.width || 0) * this.scale;
+    return (this.image?.naturalWidth || this.image?.width || 0) * this.scale * this.stretchX;
   }
 
   get height() {
-    return (this.image?.naturalHeight || this.image?.height || 0) * this.scale;
+    return (this.image?.naturalHeight || this.image?.height || 0) * this.scale * this.stretchY;
   }
 
   get naturalWidth() {
@@ -335,6 +341,8 @@ export class OverlayLayer {
       clipped: this.clipped,
       groupId: this.groupId,
       smart: this.smart,
+      stretchX: this.stretchX,
+      stretchY: this.stretchY,
       quad: this.quad ? this.quad.map((point) => ({ ...point })) : null,
     });
     if (this.mask) {

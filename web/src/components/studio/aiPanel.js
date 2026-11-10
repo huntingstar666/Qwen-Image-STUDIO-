@@ -418,10 +418,11 @@ export function mountAiPanel(host, ctx) {
   }
 
   /**
-   * 统一对比入口：references = 本次结果 + 参考图 + 编辑历史，results = 当前主图。
+   * 统一对比入口：references = 本次结果 + 参考图 + 编辑历史 + 版本槽快照，
+   * results = 当前主图 + 版本槽快照（默认「最近快照 vs 当前主图」，两侧可任选）。
    * 顶部「对比」、结果卡片、历史卡片都走这里，避免三套数据组装。
    */
-  async function compareAll({ extra = [], initialHistoryId = '', initialUrl = '' } = {}) {
+  async function compareAll({ extra = [], initialHistoryId = '', initialSnapshotId = '', initialUrl = '' } = {}) {
     if (state.busy) {
       toastWarn('修改进行中，完成后再对比');
       return null;
@@ -432,8 +433,13 @@ export function mountAiPanel(host, ctx) {
       getRefs: () => state.refs,
       getHistory: () => store.entries,
       getHistoryUrl: (entry) => store.ensureResultUrl(entry.id, { pin: true }),
+      // 版本槽快照：默认「最近快照 vs 当前主图」，也能任选两张。
+      getSnapshots: () => ctx.getSnapshots?.() || [],
+      getSnapshotBlob: (version) => ctx.getSnapshotBlob?.(version) || null,
+      getCurrentSnapshotId: () => ctx.getCurrentSnapshotId?.() || '',
       extra,
       initialHistoryId,
+      initialSnapshotId,
       initialUrl,
     });
   }

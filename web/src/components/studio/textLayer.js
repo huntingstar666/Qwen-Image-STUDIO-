@@ -149,9 +149,9 @@ export class TextLayer {
   }
 
   /**
-   * 设置弯曲度并保持位置不跳（§20.3.6）。
-   * 非弯曲以左上角为锚点，弯曲以中心为锚点；0 ↔ 非 0 切换时补偿半个字宽 / 半行高，
-   * 文字左端与首行基线因此保持不动。
+   * 设置弯曲度并保持位置不跳（§20.3.6 / §22.7）。
+   * 非弯曲以左上角为锚点，弯曲以中心为锚点；0 ↔ 非 0 切换时补偿半个字宽 / 半行高。
+   * 补偿向量在图层局部坐标里算，再按 rotation 转回文档坐标，旋转后的文字才不会跳位。
    */
   setArc(next) {
     const value = clamp(Number(next) || 0, -100, 100);
@@ -159,8 +159,13 @@ export class TextLayer {
     const will = Boolean(value);
     if (was !== will) {
       const sign = will ? 1 : -1;
-      this.x += (sign * this._textWidth()) / 2;
-      this.y += (sign * this.fontSize * this.lineHeight) / 2;
+      const halfWidth = this._textWidth() / 2;
+      const halfLine = (this.fontSize * this.lineHeight) / 2;
+      const rad = ((Number(this.rotation) || 0) * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      this.x += sign * (halfWidth * cos - halfLine * sin);
+      this.y += sign * (halfWidth * sin + halfLine * cos);
     }
     this.arc = value;
   }

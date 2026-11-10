@@ -186,6 +186,8 @@ export class StudioDoc {
       adjust: { ...this.adjust, lut: this.adjust.lut ? { ...this.adjust.lut } : null },
       // 记录主图身份：换底图后旧状态/旧快照不能再恢复。
       baseId: this.baseId,
+      /** 主图显隐既影响画布也影响导出像素，必须随撤销 / 快照一起回滚（§22.4）。 */
+      baseVisible: this.baseVisible !== false,
       mask: cloneCanvas(this.mask),
       /** 污点修复层（D10.1）：透明 = 未修，像素 = 已修 */
       repair: this.repair ? cloneCanvas(this.repair) : null,
@@ -204,6 +206,7 @@ export class StudioDoc {
     };
     this.mask = cloneCanvas(state.mask);
     this.repair = state.repair ? cloneCanvas(state.repair) : null;
+    this.baseVisible = state.baseVisible !== false;
     this.layers = (state.layers || []).map((layer) => layer.clone());
     this.groups = (state.groups || []).map((group) => ({ ...group }));
     this._base = null;
@@ -1045,6 +1048,8 @@ export class StudioDoc {
       locked: options.locked ?? false,
       visible: options.visible ?? true,
       smart: options.smart ?? false,
+      stretchX: options.stretchX ?? 1,
+      stretchY: options.stretchY ?? 1,
     });
     // 复制 / 粘贴需要连带图层蒙版，才能在历史与刷新后保持同一画面（§20.3.2）。
     if (options.mask) layer.mask = cloneCanvas(options.mask);
@@ -1676,15 +1681,48 @@ export class StudioDoc {
    * 否则结果图里已经烘焙了图层像素，回流成新主图后图层再叠一次就是重影。
    */
   exportMainCanvas(type = 'image/png') {
-    const base = this.renderUnderlay();
+    // 隐藏主图时「主图」= 透明底 + 修复层：与画布所见一致，避免「画布看不到、送图看得到」（§22.4）。
+    const hidden = this.baseVisible === false;
+    const base = hidden ? this._mainWithoutBase() : this.renderUnderlay();
     // 返回副本：调用方可能在画面上画角标/水印，直接返回会把 _underlay 缓存污染，
     // 之后画布与导出都会带着那块内容。
-    if (type !== 'image/jpeg') return cloneCanvas(base);
+    if (type !== 'image/jpeg') return hidden ? base : cloneCanvas(base);
     const flat = makeCanvas(base.width, base.height);
     const ctx = flat.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, flat.width, flat.height);
     ctx.drawImage(base, 0, 0);
+    return flat;
+  }
+
+  /** 主图隐藏时的「主图」：透明底 + 修复层（尺寸与 renderUnderlay 一致）。 */
+  _mainWithoutBase() {
+    const size = this.size;
+    const canvas = makeCanvas(size.width, size.height);
+    this._drawRepair(canvas.getContext('2d'));
+    return canvas;
+  }
+
+  /**
+   * 合成图，但**排除调整层**：AI「送图包含图层」用。
+   * 调整层的调色已经作用在送图结果里，若把调整层一起烘进去、结果回流成新主图后
+   * 调整层会再作用一次（§22.6）；这里只烘叠加 / 文字 / 形状。
+   */
+  exportCanvasWithLayers(type = 'image/png') {
+    const size = this.size;
+    const canvas = makeCanvas(size.width, size.height);
+    const ctx = canvas.getContext('2d');
+    if (this.baseVisible !== false) ctx.drawImage(this.renderUnderlay(), 0, 0);
+    drawLayers(ctx, this.layers.filter((layer) => !layer.isAdjustment), {
+      crop: this.transform.crop,
+      groups: this.groups,
+    });
+    if (type !== 'image/jpeg') return canvas;
+    const flat = makeCanvas(size.width, size.height);
+    const fctx = flat.getContext('2d');
+    fctx.fillStyle = '#ffffff';
+    fctx.fillRect(0, 0, flat.width, flat.height);
+    fctx.drawImage(canvas, 0, 0);
     return flat;
   }
 
@@ -1704,6 +1742,11 @@ export class StudioDoc {
   /** 仅主图的异步编码（换主图时作为工程源文件兜底）。 */
   bakeMainBlob(type = 'image/png', quality = 0.92) {
     return canvasToBlob(this.exportMainCanvas(type), type, quality);
+  }
+
+  /** 合成图（含叠加层、不含调整层）的 dataURL，供 AI「送图包含图层」使用。 */
+  bakeWithLayers(type = 'image/png', quality = 0.92) {
+    return this.exportCanvasWithLayers(type).toDataURL(type, quality);
   }
 
   /** 异步编码，避免 4K 导出时同步 toDataURL 冻结主线程。 */

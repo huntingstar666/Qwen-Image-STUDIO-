@@ -1859,3 +1859,302 @@ const e = naturalWidth / 2 - (cos * cx + sin * cy) / scale + a * dx + c * dy;
 1. 删掉 / 重写 §20.4-2（误报）；
 2. §20.3.2 / §20.3.3 按 21.2 修正描述后再进排期，避免修的人按错误前提设计（例如误以为「undo 会夹紧」，从而加错保护）；
 3. §20.3.5 与 §20.4-15 建议合并为同一个「选区来源解析」改造（抽一个 `resolveCutoutSource(selection)` 给单次 / 批量共用），这是我们自己在 §19 引入的回归，优先级应高于一般 P2。
+
+---
+
+## 22. 第九轮审查：面板全量走查 + 新发现（含工作区在途整改）
+
+> 审查对象：`feat/studio-main-image-model` @ `4d979a6` **+ 工作区未提交改动**（`studio.js` / `studioDoc.js` / `document.js` / `textLayer.js` / `shapeLayer.js` 正在应用 §20 整改，审查时 `git status` 为 `M`）。
+> 行号是审查时的快照；文件仍在被编辑，落改前请以函数名重新定位。
+> 范围：左栏工具轨与画布交互、图层面板（选择 / 组 / 排序 / 缩略图 / 批量 / 删除 / 导出 / 复制粘贴 / 智能对象）、右栏 6 个分页 + 图层属性 + 历史快照、蒙版条 / 选区条、底部版本槽与快门、工程保存与恢复。
+> 已执行：`node --check`（6 个改动文件全部通过）、`node --test web/tests/studio/*.test.mjs`（**143 pass / 0 fail**）。单测仍只覆盖纯算法模块，`studio.js` 的面板逻辑以下结论来自静态推演 + 公式验证；涉及浏览器事件顺序的条目标了「待真机确认」。
+> 与 §20/§21 的关系：本轮只写「§20/§21 未覆盖」或「工作区整改新引入」的问题；§20 已修的项集中在 §22.1。
+
+### 22.0 面板覆盖表（本轮实际走查到的范围）
+
+| 面板 / 区域 | 检查点 | 本轮结论 |
+| --- | --- | --- |
+| 工具轨 + 画布 | 单击 / 双击 / 空格平移 / 中键 / 手柄命中 / 锁定与隐藏层点选 / 光标 | 主路径无新问题；`setTool` 退出图层蒙版的状态同步见 §22.10 |
+| 左侧图层面板 | 选择 / 多选 / Shift 连选 / 组 / 拖拽排序 / 入组出组 / 重命名 / 缩略图 / 底部批量操作 / 删除 / 复制 / 导出 / 素材 / 图层库 | 见 §22.8（角标与缩略图）、§22.9（隐藏丢主选）、§22.13-4/7/9 |
+| 变换分页 | 旋转 / 翻转 / 裁剪 / 恢复原始图片 | 见 §22.5（选区组坐标）；§17.6 裁剪外扩仍开放 |
+| 调整分页 | 6 个滑杆 / 直方图 / LUT / 局部渐变与画笔 / 调整图层 | 无新 P1/P2；`updateMaskStatus` 的全图扫描见 §22.13-6 |
+| 文字分页 | 创建 / 聚焦 / 双击编辑 / 字体 / 字号 / 描边 / 投影 / 弯曲 / 删除 | 见 §22.7（旋转后弯曲）、§22.13-4；占位文字仍会进导出（§20.4-10 未修） |
+| 贴纸分页 | 导入 / 缩放 / 旋转 / 翻转 / 混合 / 透视四角 / 重置 / 删除 | 见 §22.13-2/3；§20.3.1 的 quad 手柄已修 |
+| 形状分页 | 类型 / 填充 / 描边 / 圆角 / 四种图层样式 / 删除 | 见 §22.11；形状无旋转输入、样式无角度仍开放（§17.11） |
+| 图层属性 | 混合 / 剪贴 / 智能对象 / 原始尺寸 / 替换内容 | 见 §22.8 |
+| 历史快照 | 新建 / 回跳 / 重命名 / 删除 / 上限提示 | 无新问题；快照与撤销共用字节预算仍开放（§18.4 / §15.9） |
+| 蒙版条 + 选区条 | 主图蒙版 / 图层蒙版 / 反选羽化扩展 / 选区组 / 抠图与批量导出 | 见 §22.4、§22.12、§22.13-6；图层蒙版无覆盖率/色纱仍开放（§18.8） |
+| 版本槽 + 快门 | 快门 / 切卡 / 删除 / 右键菜单 / 租约 / 缩略图 | 见 §22.4、§22.6；删除当前版本的悬空指针仍开放（§17.9） |
+| 保存 / 恢复 | 层序 z / 组 / 蒙版 / 修复层 / baseVisible / 视口 / 工具 | 见 §22.4、§22.13-1 |
+
+### 22.1 工作区在途整改复核（只列 diff 里能看到的）
+
+| 条目 | 现状 | 结论 |
+| --- | --- | --- |
+| §20.3.1 quad 层关闭「编辑四角」后手柄错位 | `draw()` 只要 `layer.quad` 就按四角画框；`pointerdown` 在未开透视时不写 `scale/rotation`，改为提示 | **已修**（方向正确） |
+| §20.3.2 复制 quad 层完全重合 / 粘贴丢透视与蒙版 | `cloneLayer` 平移 quad；复制缓冲补 `quad/mask/clipped/smart`，粘贴传给 `addOverlay`，`studioDoc.addOverlay` 接收 `mask/smart` | **已修** |
+| §20.3.3 换大图后样式越界、撤销/刷新被夹紧 | 新增 `TEXT_LIMITS / SHAPE_LIMITS`，补偿时 `clampNumber`，滑杆 max 共用常量 | **已修**（形状描边/圆角、文字描边/投影） |
+| §20.3.4 隐藏层 / 0% / 调整层导出全透明仍提示成功 | `exportLayersAction` 复用 `bakeLayerToPng`；「所有可见」过滤隐藏组成员并汇报跳过数；调整层明确拒绝 | **已修** |
+| §20.3.6 弯曲 0 ↔ 非 0 跳位 | 新增 `TextLayer.setArc()` 做半字宽 / 半行高补偿 | **已修（rotation=0 时）**；旋转后的补偿仍有问题，见 §22.7 |
+| §20.4-1 画面外点击建文字 / §20.4-3 pattern 不在 `BASE_EDIT_TOOLS` | 已加画面内判定；`pattern` 已补进集合 | **已修** |
+| §20.4-20 恢复原始图片不清选区/选区组/裁剪框 | `resetAll` handler 已清 `selectionSets / cropRect / selection / segment hints` | **已修** |
+
+> 仍未修、且本轮不再重复展开的：§17.6 二次裁剪外扩、§17.9 / §20.4-18 删除当前版本悬空、§17.10-1 多选不透明度只作用主选、§18.8 图层蒙版无覆盖率/色纱、§18.11 选中图层抢走 AI 分页、§18.14 版本链无租约保护。这些仍建议按原条目排期。
+
+### 22.2 P1：向下合并会丢掉「下面那一层」的像素（数据丢失）
+
+**用户路径（PS 心智：合并向下 = 把当前层并进下面一层，两层像素都保留）**
+
+1. 图层栈 `[A（底）, B（顶）]`，两层都有内容；
+2. 选中 B → `Ctrl/Cmd + E`（或图层面板「合并 → 向下合并」）；
+3. 结果只剩 B 的内容，**A 的像素整层消失**；撤销可以救回来，但用户会先以为「合并把图吃了」。
+
+**根因**（`studio.js:mergeLayersAction()`，`down` 分支）
+
+```js
+const below = layers[primaryIndex - 1];
+targets = [below, layers[primaryIndex]];
+stack = layers.slice(0, primaryIndex + 1);
+// ↓ 跳过的是「除主选以外的一切」，below 也被跳过了
+skip = new Set(stack.filter((layer) => layer.id !== layers[primaryIndex].id).map((layer) => layer.id));
+...
+drawLayers(c2, stack, { crop, skip, groups: doc.groups });
+const layer = doc.replaceOverlaysWithCanvas(removeIds, canvas, { name }); // removeIds = [below, B]
+```
+
+`drawLayers()` 对 `skip` 的语义是「不绘制」（`renderer.js:156`），所以合并画布里只有 B；随后 `replaceOverlaysWithCanvas([below, B])` 把两层都删掉、换成一个只含 B 的新层 → **A 的内容丢失**。
+
+> 同一段代码在 `down` 目标恰好是**调整层**时更糟：画布上只执行 `applyAdjustmentLayer()`（作用于空画布），输出几乎全透明，然后下方图层和调整层一起被删。
+
+**建议**
+
+```js
+// down：只跳过「既不是 below 也不是主选」的层
+skip = new Set(stack.filter((layer) => !targets.includes(layer)).map((layer) => layer.id));
+```
+
+`selected` 分支用的是 `targetSet`（正确），说明只是 `down` 写漏了。建议顺手把「合并目标集合 → skip」抽成一行 helper，避免两处再分叉；并补一条纯逻辑回归（两层都画进合并画布、`removeIds` 与画布内容一致）。
+
+### 22.3 P2：合并选中时，调整图层被 `skip` 掉，调色效果被静默删除
+
+**现象**：`图层 A + 调整图层（曝光 +30）+ 文字 B`，同时选中 A 与调整层 → 「合并选中」→ 调整层消失，画面回到未调色状态；选中「调整层 + 上面一层」合并也一样。
+
+**根因**
+
+- `selected` 分支的 `skip` = 「所有未选中的层」，调整层若在选中集合里也会被跳过 → `drawLayers()` 根本不会调用 `applyAdjustmentLayer()`，合并画布里没有调色结果；
+- 随后 `removeIds` 包含这个调整层 → 效果随层一起被删；
+- 若调整层**没被选中**但夹在选中层之间：它不参与合并，但合并层落回最低被选层位置后，调整层会开始作用于合并层（作用范围被悄悄扩大），同样不是用户预期。
+
+**建议（产品口径先定，再改代码）**
+
+1. 最简单且安全：**禁止合并调整层**——`targets` 里出现 `isAdjustment` 时提示「调整层请用『合并可见 / 拼合图像』，或先转为普通图层」，并从目标里剔除；
+2. 若要做完整语义：按 z 序逐层渲染到累积画布，遇到选中的调整层就地对已画内容执行 `applyAdjustmentLayer()`（这需要绕过 `drawLayers` 的一次性 skip，改成顺序合成）；非连续选择时给出一次说明；
+3. 无论选哪条，`confirmRasterize()` 的文案都要写清「调整层会被删除 / 效果会被烘焙」。
+
+### 22.4 P2：「隐藏主图」跨越了视图与文档：AI 送图 / 快门 / 对比不遵守，历史也不记录
+
+**现象**
+
+1. 点主图行眼睛隐藏主图（画布只剩图层，导出 PNG 为透明底）；
+2. 此时点 AI 修改 / 按快门 / 打开对比：送出去和存下来的**仍然包含主图**；
+3. 隐藏主图后再做任意编辑并 `Ctrl+Z`，或回跳命名快照：主图仍然是隐藏状态（隐藏本身也撤不回来）。
+
+**根因**
+
+- `renderBase()` 尊重 `baseVisible`（`studioDoc.js:1473`），但「仅主图」路径 `exportMainCanvas()`（`:1678`）→ `renderUnderlay()`（`:1452`）完全不检查 `baseVisible`；而 AI 送图 `doc.bakeMain()`、快门 `current.exportMainCanvas()`、对比 `getMainImage()` 都走这一条；
+- `_stateSnapshot()`（`:176-196`）没有 `baseVisible`，`restore()`（`:198-217`）也不恢复它；`afterBaseSwap` / 快照回跳只改局部 `baseVisible` 变量或不动，所以它既不可撤销、也不随快照回滚；
+- 它又确实影响导出像素（`renderBase()` 的透明底分支），所以不能简单当作「纯视图状态」。
+
+**建议**
+
+1. 给 `_stateSnapshot()` 加 `baseVisible: this.baseVisible`，`restore()` 里同步写回，并让 `afterSnapshotJump` / `undo / redo` 刷新 `refs.stage.is-base-hidden` 与图层面板眼睛；
+2. 让 `exportMainCanvas()` 在 `baseVisible === false` 时返回「只有修复层 / 透明底」的等价结果，或在 AI / 快门入口显式提示「主图已隐藏，仍将按完整主图送图」——二者选一，但**不要出现「画布看不到、送图看得到」**；
+3. 若产品坚持「隐藏主图只是视图操作」，那就让它不影响导出（`renderBase` 也忽略它），并在 UI 文案里写清。
+
+### 22.5 P2：旋转 / 翻转画布后，已保存的选区组仍按旧坐标保留
+
+**复现**
+
+1. 圈选一块主体 → 「存为选区组」（最多 6 组）；
+2. 「向右旋转 90° / 水平翻转」（作用于主图）；
+3. 打开抠图菜单 → 载入刚才的选区组：蚂蚁线出现在错误位置；批量导出会把错误区域的像素切出来。
+
+**根因**：`commitTransform()`（`studio.js:9942`）只 `clearSelection()`（当前选区）与 `selectedLayerId = null`，没有处理 `selectionSets`；而 `doc.rotateRight/flip` 只旋转 / 镜像 `mask`、`repair` 与图层几何，**保存在 UI 层的选区 alpha 不会跟着变**。对比：`afterBaseSwap()` 在尺寸/原点变化时会清空选区组（`§15.8` 的整改），旋转这条路径漏了。
+
+**建议**
+
+1. 首选：旋转 / 翻转时对 `selectionSets` 逐个做同样的 alpha 旋转 / 镜像（矩形 `rect` 同步变换），这样「先存选区、后转图」仍然可用；
+2. 最低成本：`commitTransform` 里在 `selectionSets.length` 时清空并 toast「旋转/翻转后，已保存的选区组已失效（可选：先导出再转图）」；
+3. 与 §20.4-16（裁剪不清选区组）合并成一份「坐标空间变化 → 选区组策略」清单，避免每条路径各写一遍。
+
+### 22.6 P2：「送图包含图层」+ 调整层 → 设为主图后调色叠加两次，且「隐藏图层」跳过调整层
+
+**复现**：新建调整图层（曝光 +30）→ AI 面板勾选「送图包含图层」→ 出图 → 「设为新主图」→ 画面比结果更亮（调色被应用了两次）；提示里建议「可在图层面板隐藏」，但切版本时那个「隐藏图层」按钮**故意跳过调整层**，用户无法一键修复。
+
+**根因**
+
+- `getImage()` 的 `withLayers` 分支用 `doc.bake()`（含调整层，`:2601`），结果像素里已经带调色；
+- `adoptResult()` → `replaceMainImage()`（`studioDoc.js:722`）保留全部图层（含调整层）并重置其蒙版，于是调整层再次作用在已调色的结果上；
+- `hideAllLayersQuick()`（`studio.js:7222`）里 `if (layer.isAdjustment || layer.visible === false) return;`，所以「隐藏图层」救不了双调色；`adoptResult` 的 `containsLayers` 警告本身也没有操作按钮。
+
+**建议**
+
+1. 送图时「包含图层」默认**排除调整层**（只烘叠加 / 文字 / 形状），或把「调整层也包含」做成独立开关并写明后果；
+2. 采用结果时若 `containsLayers`：把提示改成带操作按钮的 toast「隐藏已烘焙图层」，并让 `hideAllLayersQuick({ includeAdjustments: true })` 支持调整层；
+3. 更彻底：采用结果时把调整层参数「烘焙进新底图并删除调整层」作为可选动作（与「合并到主图」一致）。
+
+### 22.7 P3：弯曲补偿没有考虑图层旋转（刚加的 `setArc` 的遗漏）
+
+`textLayer.js:setArc()`（`:156-171`）用「半字宽 / 半行高」补偿锚点：
+
+```js
+this.x += (sign * this._textWidth()) / 2;
+this.y += (sign * this.fontSize * this.lineHeight) / 2;
+```
+
+但文字绘制是 `translate(x, y) → rotate(θ)` 后再按弧线以局部中心排布，补偿向量也应经过 `R(θ)`：
+
+```js
+const dx = w / 2, dy = (fontSize * lineHeight) / 2;
+this.x += sign * (dx * cos - dy * sin);
+this.y += sign * (dx * sin + dy * cos);
+```
+
+否则「画布旋转 90°（文字 `rotation=90`）后再把弯曲从 0 拖到 20」仍会跳位（方向从「右下」变成「左下」），只是把 §20.3.6 的问题从 0° 挪到了 90°。`flipH/flipV` 打开时也建议一并验证。
+
+**建议**：补偿时按 `layer.rotation` 旋转向量，并在 `textLayer.test.mjs` 里加一条「rotation=90 + 0↔20 切换，视觉中心不动」的纯几何断言（不需要真 canvas，stub `measureText` 即可）。
+
+### 22.8 P3：图层行签名漏字段：智能对象 / 剪贴角标不刷新；替换智能对象内容后缩略图可能不刷新
+
+`layerPanel.js:290-306` 的重建签名包含名称/显隐/锁定/不透明度/几何/蒙版版本/内容戳，但**不含 `smart` 与 `clipped`**，而 `rowHtml()` 会渲染这两个 chip（`:234`、`:236`）。于是：
+
+- 勾选「智能对象」→ 面板行**不出现「智能」角标**（`setLayerSmart` 里 `syncLayersPanel()` 因签名未变而跳过 DOM 重建）；
+- 勾选「剪贴到下层」→ 不出现「剪贴」角标；
+- 直到下一次改名字/拖动/切选中，角标才「突然出现」——用户会以为开关没生效。
+
+另：`applySmartReplacement()`（`studio.js:9666`）替换图片后只 `layerThumbs.clear()`，没有自增 `_contentStamp` / `_maskStamp`。若新图与旧图宽高比相同（x/y 不变），行签名完全不变 → 已挂载的 `<img>` 仍是旧缩略图；面板里「名字对、图不对」。
+
+**建议**
+
+1. 签名补 `${layer.smart ? 1 : 0}${layer.clipped ? 1 : 0}`（顺手把 `blend` 也加上，未来加 chip 不用再改）；
+2. `applySmartReplacement` 里 `layer._contentStamp = (layer._contentStamp || 0) + 1`，若蒙版被 `fitMaskCover` 重采样再 `layer.touchMask()`；
+3. 回归：同尺寸替换内容后，面板 32px 缩略图立刻变成新图；勾选智能对象 / 剪贴后 chip 立刻出现。
+
+### 22.9 P3：多选时隐藏「当前层」会丢掉主选，右栏面板还残留旧值
+
+`toggleLayerVisible()`（`studio.js:2946-2969`）在隐藏时只做：
+
+```js
+if (selectedLayerId === layer.id) selectedLayerId = null;
+selectedLayerIds.delete(layer.id);
+```
+
+没有从剩余集合里补主选。于是 Ctrl 选中 A、B（B 为主选）→ 点 B 的眼睛：
+
+- 图层面板里 A 仍是高亮 `is-selected`，但底部「上移 / 复制 / 删除 / 导出」与不透明度全部禁用（`canEdit` / `alphaTarget` 都以 `selectedLayerId` 为准）；
+- `Delete` 无反应（`onKeyDown` 需要 `selectedLayerId`）；
+- 与 §20.4-4（折叠组）同一类问题，但隐藏路径没跟着修。
+
+同时这里没有调用 `syncTextPane / syncStickerPane / syncShapePane`：如果隐藏的是当前文字 / 贴纸 / 形状层，右栏仍显示它的文案与参数，用户继续拖滑杆会被 `textTarget()` 判空而**静默无效**。
+
+**建议**：隐藏复用 `dropLayerFromSelection(id)`（它已有「主选回落到剩余集合」的逻辑），并在 `!nextVisible` 时补 `syncTextPane / syncStickerPane / syncShapePane / updateMaskStatus`。
+
+### 22.10 P3：切工具退出图层蒙版后，底部状态与按钮仍停在「图层蒙版」语义
+
+`setTool()`（`studio.js:3567-3611`）里有：
+
+```js
+if (editingLayerMaskId && !MASK_TOOLS.has(next)) {
+  editingLayerMaskId = '';
+  ai?.refresh();
+}
+```
+
+但没有 `updateMaskStatus()` / `syncLayersPanel()` / `syncLayerProps()`。用户用 ✎ 进入贴纸蒙版涂抹后，直接按 `V` / 点移动工具退出：
+
+- 底部状态栏仍是「图层蒙版 · 贴纸 1」；
+- 「清除蒙版 / 导出蒙版」仍是禁用；
+- 图层面板那一行的 ✎ 仍是高亮 `is-on`；
+- 直到下一次任何会触发 `updateMaskStatus` 的操作才恢复。
+
+**建议**：退出时补 `updateMaskStatus() + syncLayersPanel() + syncLayerProps()`（这是纯 UI 状态，无副作用），并在 `setTool` 里只在这一处收口。
+
+### 22.11 P3：形状分页首次打开时「类型」为空、圆角禁用；且无法做「无填充」形状
+
+- `const shapeStyle = { ...SHAPE_DEFAULTS, style: normalizeShapeStyle() }`（`studio.js:391`）里 `SHAPE_DEFAULTS` 用的是 `kind: 'rect'`，**没有 `shape` 字段**；而 `syncShapePane()`（`:9259`）读的是 `style.shape`：
+
+```js
+refs.shapeKind.value = style.shape;              // undefined → select 显示空白
+refs.shapeRadius.disabled = style.shape !== 'rect'; // undefined !== 'rect' → 圆角被禁用
+```
+
+未选中形状时（刚打开工程 / 选中主图），「类型」下拉是空白、圆角不可用，但界面提示写着「参数将用于新形状」，用户会以为面板坏了。选中任意已有形状后恢复正常。
+
+- 形状「填充」只有 `<input type="color">`，模型虽然支持 `fill: 'none'`，UI 却**无法表达透明填充**——做「只有描边、无填充」的空心矩形/椭圆只能靠把描边调 0 或选同色，属于 PS 形状面板的高频缺口。
+
+**建议**：`shapeStyle.shape = SHAPE_DEFAULTS.kind`（或直接删掉 `kind` 字段改成 `shape: 'rect'`）；填充增加「无 / 纯色」切换（或色块旁一个「透明」checkbox，勾选写 `fill='none'`）。
+
+### 22.12 P3：批量导出选区组时忽略每组自己的 `rect / source`
+
+`saveSelectionSet()`（`studio.js:10474`）保存了 `{alpha, width, height, rect, source}`，载入时也确实用 `rect/source` 重建（`:10586` 附近）；但 `runCutoutBatch()`（`:10497`）只比较宽高，合成时全部复用**当前选区**的 `base / rect / alphaRect`：
+
+```js
+const layerSel = cutoutPixelLayer();               // 只看当前选区
+const useLayer = Boolean(selectionHasArea() && layerSel);
+const base = useLayer ? doc.renderLayer(layerSel.id, { region: selection.rect }) : doc.renderBase();
+...
+if (group.width !== alphaW || group.height !== alphaH) { skipped += 1; continue; }
+composeCutout(base, rect, group.alpha, group.width, group.height, { baseRect, alphaRect });
+```
+
+**复现**：先按某个图层区域（`rect = (1200, 800)`，400×300）存「选区1」；再在当前合成图上圈一块 400×300 存「选区2」；批量导出 → 选区1 的 alpha 没有按它自己的 `rect` 偏移，被贴到当前画布 `(0,0)` 附近，导出内容错位；若两者宽高不同则直接被标记为「尺寸不匹配」跳过。
+
+**建议**：`groups` 里带上 `rect / source`，循环内按每组自己解析 `renderSource`（`renderLayer(region=set.rect)` 或 `renderBase`）后再 `composeCutout`；把单次 / 批量共用成一个 `cutoutFor(alpha, rect, source)`。这样也顺手解决 §20.4-15 的「静默跳过」。
+
+### 22.13 P3：其它小问题（按面板归类）
+
+| # | 位置 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| 1 | `studio.js:8090-8093` `collectProject()` | `sourceBlob` 为空时用 `current.bakeBlob('image/png')` 兜底，这是**含图层**的合成图；一旦触发，主图里会烘进图层像素，重开工程后图层再叠一次 → 重影 | 改 `bakeMainBlob('image/png')`（与 AI 送图 / 换主图路径一致），并写一条注释说明「主图 = 仅底图」 |
+| 2 | `studio.js:9063` `setStickerScale` / 面板 `min="5"` | 模型允许 2%，滑杆最小 5：换主图缩小到 2% 后，标签显示 2% 但滑块停在 5%，一拖就跳到 5% | 滑杆 `min="2"`，或让模型下限与滑杆一致 |
+| 3 | `studio.js:9194` `stickerReset` | 「重置变换」把 `blend` 也重置成「正常」，但按钮语义只有几何；用户会以为混合被误改 | 只重置 scale/rotation/flip/quad；混合模式由用户显式改 |
+| 4 | 文字 / 贴纸 / 形状分页的「删除」按钮 | 走 `doc.removeOverlay()` 后只 `dropLayerFromSelection`，**没有 `pruneEmptyGroups()`**：删掉组内最后一个成员后，组记录仍在但面板无组行，无法删除；`createGroupFromSelection` 把成员从旧组移走也会留下空组 | 三个删除入口 + 成组统一调用 `pruneEmptyGroups()`（可再抽一个 `deleteLayerEverywhere(id)`） |
+| 5 | `studio.js:onKeyDown` 的 `Ctrl+D` | 只在**有像素选区**时 `preventDefault`；有对象选择但没选区时按键落到浏览器，Chrome 会弹「添加书签」 | 只要存在对象选择 / 选区之一就拦截：有选区清选区，否则 `clearObjectSelection()`；两者都没有时再让给浏览器 |
+| 6 | `studio.js:8801` `updateMaskStatus()` | 先无条件 `doc.maskStats()` 全图扫描，再判断是否在涂图层蒙版；图层蒙版模式下这次扫描完全没用（4K ≈ 千万像素 `getImageData`），每次抬笔都白跑 | 先取 `layerMaskTarget()`，命中时直接设置文案并 return，再扫主图蒙版 |
+| 7 | `studio.js:4752` `syncAiTargets()` | 每次 `syncLayersPanel()` 都重建 `segTarget / cutTarget` 的 `innerHTML`；撤销、重命名、拖动提交都会触发，用户展开下拉时会被关掉，选中项也会闪一下（§15.11-7 未修） | 只在 options 签名变化时重建，`select.value` 单独同步 |
+| 8 | `layerPanel.js:289-306` | 签名不含 `isText / isShape / isAdjustment`：理论上如果图层类型被替换（智能对象替换不会改类型，但未来功能可能）chip 不更新；与 #22.8 同批补上即可 | 与 §22.8 一起改 |
+| 9 | `studio.js:setBaseVisibleTo` | 隐藏主图后 `syncLayersPanel()` 会重算主图缩略图（`renderUnderlay()` 忽略 `baseVisible`），主图行缩略图仍显示图片内容，看起来「眼睛关了但图还在」 | 主图缩略图在 `baseVisible === false` 时画棋盘格 / 半透明蒙层 |
+| 10 | `studio.js:addLayerFromSidecar` | 从图层库置入文字层时只缩放 `fontSize`，`strokeWidth / shadowBlur / shadowX / shadowY` 仍按原尺寸；形状的 `style.shadow.distance/blur` 也不缩放 → 跨尺寸工程置入后样式比例不对 | 文字 / 形状的所有几何相关样式统一乘 `factor`（并夹到 `TEXT_LIMITS / SHAPE_LIMITS`） |
+
+### 22.14 本轮确认做得对的点
+
+- **quad 整改**：只要 `layer.quad` 存在就按四点画框，关闭「编辑四角」时既不画假手柄、也不把 `scale/rotation` 写进脏数据；`hitLayerHandle` 与 `pointerdown` 同步，画布与面板终于说同一件事。
+- **导出语义统一**：`exportLayersAction` 复用 `bakeLayerToPng`（临时可见 + 0% 兜底 + 原图兜底），并过滤隐藏组、明确拒绝调整层——§20.3.4 这一类「导出全透明还提示成功」被一次收掉。
+- **复制粘贴补齐 `quad / mask / clipped / smart`**：且 `cloneLayer` 对 quad 层平移四个点，副本终于「看得见」。
+- **上限单一来源**：`TEXT_LIMITS / SHAPE_LIMITS` 同时给构造器、补偿和滑杆用，`compensateLayersForBase` 也做了夹紧，堵住「刷新后画风变了」。
+- **`setArc` 位置补偿**：0↔非 0 的锚点补偿方向正确（rotation=0 场景），把「一拖弯曲就跳半个字」修掉了。
+- **键盘语义**：`Delete` 主选优先、`Esc` 先清选区再清对象选择、`Ctrl+E` 合并、`F2` 重命名，整体已经接近 PS。
+- **列表签名重建 + `renaming` 门闩**：`layerPanel` 只在数据签名变化时重建，单击不再把双击重命名的目标节点换掉。
+
+### 22.15 本轮建议补的回归项
+
+1. **向下合并**：两层都有内容 → 合并后两层内容都在、层名/位置正确；撤销一次完整恢复（§22.2）。
+2. **合并选中含调整层**：调整层效果要么被烘焙、要么明确禁止并解释，不能静默丢（§22.3）。
+3. **隐藏主图**：隐藏后 AI 送图 / 快门 / 对比 / 导出四处的像素语义一致；隐藏与取消隐藏都能被撤销、快照回跳能同步（§22.4）。
+4. **旋转后选区组**：存一组选区 → 旋转 90° → 载入 / 批量导出，位置正确或明确失效（§22.5）。
+5. **送图包含图层 + 调整层**：设为主图后画面不应二次调色；提示里的「隐藏图层」应能真正消除重复（§22.6）。
+6. **旋转文字切弯曲**：画布旋转 90° 后 0↔20 切换，文字不跳位（§22.7）。
+7. **面板角标 / 缩略图**：勾选智能对象、剪贴，chip 立刻出现；同尺寸替换智能对象内容，缩略图立刻更新（§22.8）。
+8. **多选隐藏当前层**：剩余选中层仍可上移 / 删除 / 调不透明度，右栏面板不残留被隐藏层（§22.9）。
+9. **退出图层蒙版**：按 `V` 退出后，状态栏 / 清除 / 导出 / ✎ 高亮全部恢复主图蒙版语义（§22.10）。
+10. **形状分页首开**：未选中形状时「类型」显示矩形、圆角可用；能画出无填充的空心矩形（§22.11）。
+11. **批量导出多空间选区组**：来自图层区域的选区组与合成图选区组混存，导出时各自对齐（§22.12）。
+
+### 22.16 建议处理顺序
+
+1. **§22.2**（向下合并丢层）——唯一会「静默吃像素」的问题，改动 1 行，先落；
+2. **§22.3 + §22.6**（合并 / 送图 × 调整层）——先定产品口径，再改 `mergeLayersAction` 与 `hideAllLayersQuick`，两处一起避免「调色丢一次 / 加两次」；
+3. **§22.4**（`baseVisible` 进状态 + `exportMainCanvas` 语义）——涉及 AI / 快门 / 导出三条链路，单独一次提交；
+4. **§22.5**（选区组随旋转/翻转）——与 §20.4-16 合并做一份「坐标空间变化 → 选区组策略」；
+5. **§22.8 / §22.9 / §22.10 / §22.11**（面板一致性小修）——同一批提交，成本低、体感明显；
+6. **§22.7 / §22.12 / §22.13** 按顺手程度排；§22.13-1（`bakeBlob` 兜底）建议直接跟 §22.2 一起改掉，避免以后排查「重影」时再绕一圈。

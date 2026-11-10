@@ -1651,6 +1651,10 @@ export function createStudioPage(host) {
     selectedLayerIds.clear();
     selectedGroupId = '';
     editingLayerMaskId = '';
+    // AI「对象」同步回合成图：否则会继续沿用上一次选中的图层。
+    aiTargetId = '';
+    aiTargetFollow = false;
+    syncAiTargets();
     syncAdjustInputs();
     syncTextPane();
     syncStickerPane();
@@ -1658,6 +1662,17 @@ export function createStudioPage(host) {
     syncLayerProps();
     scheduleDraw();
     syncLayersPanel();
+  }
+
+  /** 删除某个图层后同步选择状态，避免集合里留下已经不存在的 id。 */
+  function dropLayerFromSelection(id) {
+    if (!id) return;
+    selectedLayerIds.delete(id);
+    if (selectedLayerId === id || (selectedLayerId && !doc?.findLayer(selectedLayerId))) {
+      selectedLayerId = [...selectedLayerIds].pop() || null;
+    }
+    if (selectedGroupId && !doc?.findGroup?.(selectedGroupId)) selectedGroupId = '';
+    baseSelected = false;
   }
 
   /** 删掉已经没有组员的组记录（删除 / 合并 / 解组后调用）。 */
@@ -2524,14 +2539,18 @@ export function createStudioPage(host) {
     async adoptResult(url, meta = {}) {
       if (!url) return null;
       const token = ++openSeq;
+      // 记录发起时的工程：轮询 / 加载期间切换或关闭工程后，结果不能再写进新工程。
+      const owner = doc;
       try {
         const image = await loadImage(url);
         if (token !== openSeq) return null;
         if (imageTooLarge(image, 'AI 结果')) return null;
         const stem = (doc?.name || 'result').replace(/\.[^.]+$/, '') || 'result';
-        const suffix = meta.task === 'outpaint' ? '-扩图' : '-精修';
+        const suffix =
+          meta.task === 'outpaint' ? '-扩图' : meta.task === 'upscale' ? '-放大' : '-精修';
         const blob = await fetchBlob(url);
         if (token !== openSeq) return null;
+        if (doc !== owner) return null;
 
         let result = null;
         if (doc) {
@@ -2585,7 +2604,7 @@ export function createStudioPage(host) {
           currentVersionId = existing.id;
           renderDock();
         } else {
-          void recordVersion('edit', sourceBlob, {
+          void recordVersion(meta.kind === 'upscale' ? 'upscale' : 'edit', sourceBlob, {
             label: meta.task === 'outpaint' ? nextVersionLabel('outpaint') : undefined,
             meta: {
               task: meta.task || '',
@@ -2969,7 +2988,8 @@ export function createStudioPage(host) {
     },
     /** 主图是否作为对象被选中（旋转/翻转跟随选择目标）。 */
     getBaseSelected() {
-      return baseSelected;
+      // 有图层/组选中时以图层为准，避免图层面板出现「主图 + 图层」两行同时高亮。
+      return baseSelected && !selectedLayerId && !selectedLayerIds.size && !selectedGroupId;
     },
     getBaseVisible() {
       return baseVisible;
@@ -4067,17 +4087,23 @@ export function createStudioPage(host) {
       }
     }
 
-    // 多选：主选之外的选中图层补一圈细虚线框，明确「它们会一起被拖动/变换」。
-    if (selectedLayerIds.size > 1) {
+    // 多选 / 选中组：主选之外的成员补一圈细虚线框，明确「它们会一起被拖动/变换」。
+    const highlightIds = new Set(selectedLayerIds);
+    if (selectedGroupId) {
+      for (const layer of doc.layers) {
+        if (layer.groupId === selectedGroupId) highlightIds.add(layer.id);
+      }
+    }
+    if (highlightIds.size > 1) {
       const crop = doc.transform.crop;
       ctx.save();
       ctx.strokeStyle = 'rgba(120,190,255,0.95)';
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
-      for (const id of selectedLayerIds) {
+      for (const id of highlightIds) {
         if (id === selectedLayerId) continue;
         const layer = doc.findLayer?.(id);
-        if (!layer || layer.isAdjustment || layer.visible === false) continue;
+        if (!layer || layer.isAdjustment || layer.locked || layer.visible === false) continue;
         const box = typeof layer.bounds === 'function' ? layer.bounds() : null;
         if (!box) continue;
         ctx.strokeRect(
@@ -4203,6 +4229,33 @@ export function createStudioPage(host) {
   function segmentPoint(rawPoint) {
     const crop = doc?.transform.crop;
     return { x: rawPoint.x + (crop?.x || 0), y: rawPoint.y + (crop?.y || 0) };
+  }
+
+  /**
+   * AI 这次真正能看到的区域（「旋转后未裁剪」空间）。
+   * 图层对象 = 该图层外框；合成图 = 裁剪矩形；与 aiTargetSource / 提示点判定共用，
+   * 避免「提示点判越界、送图区域却没变」的两份边界。
+   */
+  function segmentRegion() {
+    const layer = aiTargetLayer();
+    if (layer) {
+      const bounds = layerBox(layer);
+      return {
+        x: Math.floor(bounds.x) - 2,
+        y: Math.floor(bounds.y) - 2,
+        width: Math.max(8, Math.ceil(bounds.width) + 4),
+        height: Math.max(8, Math.ceil(bounds.height) + 4),
+      };
+    }
+    const crop = doc?.transform.crop;
+    const oriented = doc?.oriented || { width: 0, height: 0 };
+    return crop
+      ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+      : { x: 0, y: 0, width: oriented.width, height: oriented.height };
+  }
+
+  function segmentBounds() {
+    return segmentRegion();
   }
 
   /**
@@ -4404,7 +4457,6 @@ export function createStudioPage(host) {
     // 表现为「怎么涂都涂不上」。
     if (!selectionHasPixels(selection.alpha)) {
       clearSelection(true);
-      selection.docCanvas = null;
       return;
     }
     selPath = null;
@@ -4608,6 +4660,8 @@ export function createStudioPage(host) {
 
   function aiTargetLayer() {
     if (!doc) return null;
+    // 主图被选中 = 用户明确要操作整幅画面，不要再沿用上一次选中的图层。
+    if (baseSelected) return null;
     const id = aiTargetId === '__current__' ? selectedLayerId || aiTargetLastId : aiTargetId;
     const layer = id ? doc.findLayer(id) : null;
     return layer && !layer.isAdjustment ? layer : null;
@@ -4688,13 +4742,7 @@ export function createStudioPage(host) {
     if (layer) {
       // 只送这一层自己的外框区域：不裁剪、也不要求它在画面里，
       // 这样摆在画布外面的贴纸/产品图同样能被框选和抠出。
-      const bounds = layer.bounds ? layer.bounds() : { x: layer.x, y: layer.y, width: layer.width, height: layer.height };
-      const region = {
-        x: Math.floor(bounds.x) - 2,
-        y: Math.floor(bounds.y) - 2,
-        width: Math.max(8, Math.ceil(bounds.width) + 4),
-        height: Math.max(8, Math.ceil(bounds.height) + 4),
-      };
+      const region = segmentRegion();
       const canvas = doc.renderLayer(layer.id, { region });
       if (canvas && canvasHasPixels(canvas)) return { canvas, region, layer };
       if (canvas) {
@@ -4875,11 +4923,15 @@ export function createStudioPage(host) {
       width: rect.width,
       height: rect.height,
     });
-    // 点提示同样裁进发送图：落点可能在图层外，超出部分后端不认。
-    const toViewPoint = (point) => ({
-      x: Math.max(0, Math.min(region.width, point.x - region.x)),
-      y: Math.max(0, Math.min(region.height, point.y - region.y)),
-    });
+    // 点提示换算到发送图：越界点直接丢弃（夹到边缘会变成伪前景点，后端也要求 x < width），
+    // 并且必须保留 label，否则 Alt 排除点会被当成前景点。
+    const toViewPoint = (point) => {
+      const x = point.x - region.x;
+      const y = point.y - region.y;
+      if (x < 0 || y < 0 || x >= region.width || y >= region.height) return null;
+      return { x, y, label: point.label === 0 ? 0 : 1 };
+    };
+    const mapPoints = (points) => points.map(toViewPoint).filter(Boolean);
     // 提示可能落在送图之外（例如框比图层大），先裁到图内再发，避免后端拒绝坐标。
     const clampToSend = (rect) => {
       const x0 = Math.max(0, Math.min(region.width, Math.min(rect.x, rect.x + rect.width)));
@@ -4910,7 +4962,11 @@ export function createStudioPage(host) {
       }
       payload.text = text;
       // 文字 + 框：框只用来限制搜索范围（SAM 3.1 会把两者合在一起做提示）。
-      if (segBox) payload.box = toSendBox(clampToSend(toViewRect(segBox)), send.scale, null);
+      // 框整体落在送图外时不带框——空框会让后端直接判「框选区域无效」。
+      if (segBox) {
+        const local = clampToSend(toViewRect(segBox));
+        if (local.width >= 3 && local.height >= 3) payload.box = toSendBox(local, send.scale, null);
+      }
     }
     if (mode === 'box') {
       const rect = hint.box || segBox;
@@ -4926,7 +4982,7 @@ export function createStudioPage(host) {
       payload.box = toSendBox(local, send.scale, null);
       // 框 + 点：框内补正点、Alt 点排除，一起送给 SAM 3.1。
       if (segPoints.length) {
-        payload.points = toSendPoints(segPoints.map(toViewPoint), send.scale, null);
+        payload.points = toSendPoints(mapPoints(segPoints), send.scale, null);
       }
     }
     if (mode === 'points') {
@@ -4935,7 +4991,12 @@ export function createStudioPage(host) {
         toastWarn('先在主体上点一下');
         return;
       }
-      payload.points = toSendPoints(points.map(toViewPoint), send.scale, null);
+      const mapped = mapPoints(points);
+      if (!mapped.length) {
+        toastWarn('提示点不在可分割范围内，换个位置再点');
+        return;
+      }
+      payload.points = toSendPoints(mapped, send.scale, null);
     }
 
     segBusy = true;
@@ -5586,7 +5647,13 @@ export function createStudioPage(host) {
     const group = ids
       .map((id) => doc.findLayer?.(id))
       .filter((item) => item && !item.locked && !item.isAdjustment)
-      .map((item) => ({ layer: item, x: item.x, y: item.y }));
+      .map((item) => ({
+        layer: item,
+        x: item.x,
+        y: item.y,
+        // 透视层的绘制完全按四点走、忽略 x/y，整组拖动时要同步平移 quad。
+        quad: Array.isArray(item.quad) ? item.quad.map((point) => ({ ...point })) : null,
+      }));
     drag = {
       mode: 'moveLayer',
       layer,
@@ -5602,7 +5669,8 @@ export function createStudioPage(host) {
     // 右键 / 侧键不落笔：右键菜单交给 contextmenu，中键保留给平移。
     if (event.button !== 0 && event.button !== 1) return;
     // 画笔 / 修补 / 分割等直接改底图的工具：有结果预览时先退出预览再落笔。
-    if (BASE_EDIT_TOOLS.has(tool) && (preview.image || previewPending)) {
+    // 只拦左键：中键平移 / 空格拖动画布不该被吞掉。
+    if (event.button === 0 && BASE_EDIT_TOOLS.has(tool) && (preview.image || previewPending)) {
       // 本次点击只用于退出预览，不落笔：否则预览消失的瞬间会多画一笔。
       enterBaseEdit();
       return;
@@ -6142,6 +6210,10 @@ export function createStudioPage(host) {
         for (const item of drag.group) {
           item.layer.x = round(item.x + dx);
           item.layer.y = round(item.y + dy);
+          if (item.quad) {
+            item.layer.quad = item.quad.map((point) => ({ x: round(point.x + dx), y: round(point.y + dy) }));
+            item.layer._warpCache = null;
+          }
         }
       } else {
         layer.x = round(drag.originX + dx);
@@ -6167,7 +6239,12 @@ export function createStudioPage(host) {
     const movedLayer =
       drag.mode === 'moveLayer' &&
       (drag.group?.length
-        ? drag.group.some((item) => item.layer.x !== item.x || item.layer.y !== item.y)
+        ? drag.group.some(
+            (item) =>
+              item.layer.x !== item.x ||
+              item.layer.y !== item.y ||
+              (item.quad && item.layer.quad?.[0]?.x !== item.quad[0]?.x),
+          )
         : drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
     drag = null;
     if (mode === 'selpaint') {
@@ -6330,20 +6407,22 @@ export function createStudioPage(host) {
   refs.canvas.addEventListener('pointercancel', () => {
     if (!drag) return;
     const mode = drag.mode;
-    // 已经就地改过像素的操作：走一次提交，保证「画面 = 历史」，避免出现
-    // 不可撤销的半截笔触（自动保存还会把半截写进工程）。
-    const painted = new Set([
+    // 已经就地改过像素 / 几何的操作：走一次提交，保证「画面 = 历史」，避免出现
+    // 不可撤销的半截状态（自动保存还会把它写进工程）。
+    const commitModes = new Set([
       'paint',
       'spot',
       'clone',
-      'clone-blocked',
       'smudge',
       'skin',
       'liquify',
       'mosaic',
       'selpaint',
+      'perspCorner',
+      'stickerScale',
+      'stickerRotate',
     ]);
-    if (painted.has(mode)) {
+    if (commitModes.has(mode)) {
       endDrag();
       return;
     }
@@ -6353,6 +6432,10 @@ export function createStudioPage(host) {
         for (const item of drag.group) {
           item.layer.x = item.x;
           item.layer.y = item.y;
+          if (item.quad) {
+            item.layer.quad = item.quad.map((point) => ({ ...point }));
+            item.layer._warpCache = null;
+          }
         }
       } else {
         drag.layer.x = drag.originX;
@@ -6936,10 +7019,12 @@ export function createStudioPage(host) {
     const oldOriented = target.oriented;
     const crop = target.transform.crop;
     if (nw === oldSize.width && nh === oldSize.height) {
-      return { scale: 1, dx: -(crop?.x || 0), dy: -(crop?.y || 0), unsure: false, sizeChanged: false };
+      const dx = -(crop?.x || 0);
+      const dy = -(crop?.y || 0);
+      return { scale: 1, dx, dy, unsure: false, sizeChanged: false, originChanged: Boolean(dx || dy) };
     }
     if (nw === oldOriented.width && nh === oldOriented.height) {
-      return { scale: 1, dx: 0, dy: 0, unsure: false, sizeChanged: true };
+      return { scale: 1, dx: 0, dy: 0, unsure: false, sizeChanged: true, originChanged: false };
     }
     if (
       oldSize.width > 0 &&
@@ -6947,29 +7032,36 @@ export function createStudioPage(host) {
       Math.abs(nw / oldSize.width - nh / oldSize.height) < 0.02
     ) {
       const scale = nw / oldSize.width;
+      const dx = -(crop?.x || 0) * scale;
+      const dy = -(crop?.y || 0) * scale;
       return {
         scale,
-        dx: -(crop?.x || 0) * scale,
-        dy: -(crop?.y || 0) * scale,
+        dx,
+        dy,
         unsure: false,
         sizeChanged: true,
+        originChanged: Boolean(dx || dy),
       };
     }
-    return { scale: 1, dx: 0, dy: 0, unsure: true, sizeChanged: true };
+    return { scale: 1, dx: 0, dy: 0, unsure: true, sizeChanged: true, originChanged: true };
   }
 
   /**
    * 换底图后的统一收尾：主图级现场（选区 / 裁剪框 / 蒙版画笔 / 隐藏底图）作废，
    * 图层与图层组原样保留。切换版本与 AI 结果采用共用这一条路径。
    */
-  function afterBaseSwap({ sizeChanged = false } = {}) {
+  function afterBaseSwap({ sizeChanged = false, originChanged = false } = {}) {
     // 同尺寸换主图（AI 修图 / 同尺寸版本）画面坐标没变，用户存的选区组仍可用；
-    // 尺寸变了才作废。
-    if (sizeChanged) selectionSets = [];
+    // 尺寸或坐标原点变了（例如从裁剪空间换到整图空间）才作废，否则选区会整体偏移。
+    if (sizeChanged || originChanged) selectionSets = [];
     cropRect = null;
     refs.cropbar.hidden = true;
     clearSelection(true);
     resetSegmentHints();
+    // 仿制图章的取样点属于上一张底图的坐标，换图后继续用会「画不出来」。
+    cloneAnchor = null;
+    cloneOffset = null;
+    syncCloneHint();
     editingLayerMaskId = '';
     baseVisible = true;
     refs.stage.classList.remove('is-base-hidden');
@@ -8675,7 +8767,7 @@ export function createStudioPage(host) {
     const target = textTarget();
     if (!target) return;
     if (doc.removeOverlay(target.id)) {
-      selectedLayerId = null;
+      dropLayerFromSelection(target.id);
       syncTextPane();
       updateHistoryUi();
       scheduleDraw();
@@ -8846,7 +8938,7 @@ export function createStudioPage(host) {
     const layer = stickerTarget();
     if (!layer) return;
     if (doc.removeOverlay(layer.id)) {
-      selectedLayerId = null;
+      dropLayerFromSelection(layer.id);
       syncStickerPane();
       updateHistoryUi();
       scheduleDraw();
@@ -9065,7 +9157,7 @@ export function createStudioPage(host) {
     const target = shapeTarget();
     if (!target) return;
     if (doc.removeOverlay(target.id)) {
-      selectedLayerId = null;
+      dropLayerFromSelection(target.id);
       syncShapePane();
       updateHistoryUi();
       scheduleDraw();
@@ -9561,8 +9653,6 @@ export function createStudioPage(host) {
 
   async function commitTransform(label, action) {
     if (!doc) return;
-    // 旋转 / 翻转改的是底图：结果预览还开着时先退出，避免改的是看不见的底图。
-    enterBaseEdit();
     // 旋转 / 翻转不再清空图层，只有裁剪区域会被重置，提示语要跟着改。
     if (doc.transform.crop) {
       const ok = await confirmDialog({
@@ -9572,12 +9662,13 @@ export function createStudioPage(host) {
       });
       if (!ok || !doc) return;
     }
-    // 记录变换前画面中心在视口中的位置：变换后保持缩放与视觉中心不变，
-    // 避免「点一下方向按钮，画布突然放大 / 缩小 / 位移」。
-    const old = doc.oriented;
-    const crop = doc.transform.crop;
-    const anchorX = view.x + (old.width / 2 - (crop?.x || 0)) * view.scale;
-    const anchorY = view.y + (old.height / 2 - (crop?.y || 0)) * view.scale;
+    // 确认之后再退出 AI 预览：用户点「取消」时不该顺手关掉预览。
+    enterBaseEdit();
+    // 记录变换前「可见画面」中心在视口中的位置：变换后保持缩放与视觉中心不变。
+    // 视口坐标对应的是裁剪后的画面，所以要用 doc.size 而不是整张 oriented。
+    const before = doc.size;
+    const anchorX = view.x + (before.width / 2) * view.scale;
+    const anchorY = view.y + (before.height / 2) * view.scale;
     action();
     const size = doc.size;
     view.x = anchorX - (size.width / 2) * view.scale;
@@ -9594,22 +9685,26 @@ export function createStudioPage(host) {
     scheduleSave();
   }
 
-  /** 当前变换目标：有选中图层 → 图层；只选中主图 → 主图；都没选 → 主图（沿用旧行为）。 */
-  function selectionTarget() {
-    if (selectedLayerIds.size || selectedLayerId) return 'layers';
-    if (baseSelected) return 'base';
-    return 'none';
+  /** 当前实际可变换的图层 id：选中组 → 组员；否则多选 / 单选；过滤已删除的层。 */
+  function transformTargetIds() {
+    if (!doc) return [];
+    if (selectedGroupId) {
+      const ids = doc.layers.filter((layer) => layer.groupId === selectedGroupId).map((layer) => layer.id);
+      if (ids.length) return ids;
+    }
+    const ids = selectedLayerIds.size ? [...selectedLayerIds] : selectedLayerId ? [selectedLayerId] : [];
+    return ids.filter((id) => Boolean(doc.findLayer(id)));
   }
 
   /** 顶部旋转 / 翻转按钮的分发：跟随当前选中对象，而不是永远改整幅画面。 */
   async function transformSelection(kind) {
     if (!doc) return;
-    if (selectionTarget() === 'layers') {
-      if (preview.image) {
+    const ids = transformTargetIds();
+    if (ids.length) {
+      if (preview.image || previewPending) {
         toastWarn('当前显示的是 AI 预览：请先「设为新主图」或关闭预览，再变换图层');
         return;
       }
-      const ids = selectedLayerIds.size ? [...selectedLayerIds] : [selectedLayerId];
       const count =
         kind === 'rotateRight'
           ? doc.rotateLayers(ids, 1)
@@ -9617,7 +9712,7 @@ export function createStudioPage(host) {
             ? doc.rotateLayers(ids, -1)
             : doc.flipLayers(ids, kind === 'flipH' ? 'h' : 'v');
       if (!count) {
-        toastWarn('选中的图层不可变换（已锁定或是调整图层）');
+        toastWarn('选中的图层已锁定，不能变换');
         return;
       }
       updateHistoryUi();
@@ -10500,7 +10595,9 @@ export function createStudioPage(host) {
       // 放大只处理主图（与 AI 送图一致）：把图层烘焙进去会产生重复像素。
       getImage: () => doc.bakeMain('image/png'),
       getSize: () => doc.size,
-      onAdopt: (url, name) => openUrl(url, name, { kind: 'upscale' }),
+      onAdopt: (url, name) =>
+        // 有工程时走「原地换主图」：放大结果只替换底图，图层与编组保留。
+        doc ? ai.adoptResult(url, { task: 'upscale', kind: 'upscale' }) : openUrl(url, name, { kind: 'upscale' }),
       onCompare: (url) => ai?.compareAll?.({ extra: [{ url, label: '放大结果' }] }),
     });
   });
@@ -10940,7 +11037,14 @@ export function createStudioPage(host) {
     updateHistoryUi();
     updateMaskStatus();
     fitView();
+    // resetAll 会清空所有图层：选择状态必须一起清，否则旋转/翻转会拿着已不存在的 id
+    // 误判成「图层被锁定」，主图反而转不动。
     selectedLayerId = null;
+    selectedLayerIds.clear();
+    selectedGroupId = '';
+    baseSelected = false;
+    editingLayerMaskId = '';
+    syncLayerProps();
     ai?.refresh?.();
     scheduleSave();
   });
@@ -11228,6 +11332,13 @@ export function createStudioPage(host) {
       }
     }
     // D23.2：删除 / 重命名（仅有主选时生效）。
+    if (doc && !selectedLayerId && !selectedLayerIds.size && baseSelected) {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        toast('主图是背景层，不能删除；可在图层面板隐藏它');
+        return;
+      }
+    }
     if (doc && selectedLayerId) {
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();

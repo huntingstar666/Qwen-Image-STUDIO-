@@ -459,8 +459,11 @@ export function createLayerColumn(host, ctx) {
     }
     const pick = event.target.closest('[data-layer-pick]');
     if (pick) {
-      if (pick.dataset.layerPick === 'base') ctx.selectBase?.();
-      else
+      if (pick.dataset.layerPick === 'base') {
+        // 主图行是 toggle：已选中再点一次 = 取消选择。
+        if (ctx.getBaseSelected?.()) ctx.selectNone?.();
+        else ctx.selectBase?.();
+      } else
         ctx.selectLayer?.(pick.dataset.layerPick, {
           additive: event.metaKey || event.ctrlKey,
           range: event.shiftKey,

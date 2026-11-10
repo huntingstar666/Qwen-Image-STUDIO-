@@ -492,7 +492,8 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 
 补充修复：
 
-- 文字层旋转/镜像的锚点换算：先按“新角度下的本地盒中心偏移”反算锚点，已有角度的文字不再漂移（`rotateLayers`、`flipLayers`、全局 `_flipLayerGeometry` 三处统一）。
+- 文字层旋转的锚点换算：旋转直接映射锚点（对象原点），镜像用「真实视觉中心镜像 + 按 -θ 反算锚点」。
+  > 订正（2026-11-10，评审 §16.1）：最初把 `_localBounds()` 的未旋转盒中心当成文档中心，已有角度的文字连点两次旋转会漂移约 150px；现已改为上述精确解，并补了纯几何单测。
 - 全局翻转不再改 `shadowX/shadowY` 数据，改由 `TextLayer.draw` 在镜像时取反，来回翻转可逆。
 - 画布 Ctrl 点击已选图层 = 取消选中，不再顺手拖走。
 
@@ -504,3 +505,59 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 - 文字层旋转 90° + 水平镜像：无控制台错误，字形按镜像绘制。
 
 仍未做（不阻塞当前体验）：顶部/状态栏「当前操作对象」文字提示、多选对齐/分布、图层组独立变换矩阵（按 §12.3 明确不引入）。
+
+---
+
+## 13. 同行评审第 4 / 5 轮整改（2026-11-10）
+
+> 依据：`docs/REVIEW_STUDIO_MAIN_IMAGE_MODEL.md` §15（第 4 轮）与 §16（第 5 轮）。
+> 结论：评审意见**基本成立**；§15.2、§15.3、§15.4、§15.5、§15.6、§15.7、§16.1、§16.2 都是可复现的真实问题，已整改。
+> 验证：`node --check` 4 个前端模块全部通过；`node --test web/tests/studio/*.test.mjs` **140 pass / 0 fail**（新增 1 个对象级变换几何用例）；浏览器实机复测见 §13.3。
+
+### 13.1 已整改
+
+| 评审项 | 结论 | 改法 |
+| --- | --- | --- |
+| §15.2 P1 `segmentBounds` 未定义 | 成立（主体选择必抛 `ReferenceError`） | 新增 `segmentRegion()` / `segmentBounds()`，`aiTargetSource()` 复用同一份区域，提示点判定与送图区域不再各写一份 |
+| §15.3 擦空选区后对 null 赋值 | 成立 | 删掉 `clearSelection()` 之后那行 `selection.docCanvas = null` |
+| §15.4 `resetAll()` 自增 `baseId` | 成立（重置后不可撤销、命名快照失效） | 移除 `baseId += 1`，只保留 `maskVersion / repairVersion`；`baseId` 只属于真正换底图的路径 |
+| §15.5 点提示丢 `label` / 边缘点 | 成立（Alt 排除点全部变成前景点） | 换算时保留 `label`；越界点直接丢弃（不再夹到 `width/height`），全部越界时提示「提示点不在可分割范围内」 |
+| §15.6 `pointercancel` 漏几何类拖拽 | 成立 | 提交集合补 `perspCorner / stickerScale / stickerRotate`；移除本来就没落笔的 `clone-blocked` |
+| §15.7 放大「载入为主图」丢图层 | 成立 | 有工程时改走 `ai.adoptResult(url, {task:'upscale'})`，原地换主图并保留图层；命名加「-放大」，版本 kind 记 `upscale` |
+| §15.8 同尺寸换主图漏「原点变化」 | 成立 | `planBaseSwap` 增加 `originChanged`，`afterBaseSwap` 按 `sizeChanged \|\| originChanged` 作废命名选区组 |
+| §15.11-1 文字 + 空框 | 成立 | 框在送图内小于 3px 时不带 `box`，避免后端整次判「框无效」 |
+| §15.11-2 取消裁剪确认却已退出预览 | 成立 | `enterBaseEdit()` 移到确认框之后 |
+| §15.11-3 中键被预览拦截吞掉 | 成立 | 预览退出判断只拦左键 |
+| §15.11-4 换主图后仿制取样点残留 | 成立 | `afterBaseSwap` 清 `cloneAnchor / cloneOffset` 并刷新提示 |
+| §15.11-6 迟到的 AI 结果写进新工程 | 成立 | `adoptResult` 记录 `owner = doc`，await 后校验 `doc === owner` |
+| §16.1 P1 文字连续旋转/镜像漂移 | 成立（数值验证误差约 152px） | 旋转：直接映射锚点（对象原点）；镜像：先算真实视觉中心 `A + R(θ)·c`，镜像后再按 `-θ` 反算锚点；新增 `docTransform.test.mjs` 纯几何回归 |
+| §16.2 选中组后旋转仍改主图 | 成立（会静默旋转画布） | 新增 `transformTargetIds()`：组选中优先取组员，其次多选/单选，并过滤已删除 id |
+| §16.3 选择状态三处不同步 | 成立 | `getBaseSelected()` 以图层/组优先（不再两行同时高亮）；文字/贴纸/形状面板删除走 `dropLayerFromSelection()`；「恢复原始图片」清空全部选择状态 |
+| §16.4 裁剪后旋转视口仍跳 | 成立 | 视口锚点改用 `doc.size`（裁剪后可见画面）中心，不再用整张 `oriented` |
+| §16.5 多选含透视层拖动只动一部分 | 成立 | `drag.group` 冻结 `quad` 四点，拖动时同步平移并清 `_warpCache`，取消时一并复位 |
+| §16.6 主图行不能取消选中 / Delete 静默 | 成立 | 主图行改为 toggle（再点一次 `selectNone`）；主图选中时 Delete 给明确提示 |
+| §16.7 主图选中后 AI 仍送上一个图层 | 成立 | `aiTargetLayer()` 在 `baseSelected` 时返回 null；`selectBaseObject()` 把对象同步为「合成图」 |
+| §16.8 图层变换漏「预览加载中」 | 成立 | 改成 `preview.image \|\| previewPending` |
+| §16.9-2 隐藏层把轴心拉偏 | 成立 | `layersBounds` 只按可见层算轴心；全隐藏时回退全部选中层 |
+| §16.9-4 锁定层也画多选虚线框 | 成立 | 虚线框跳过 `locked` |
+| §16.9-5 提示语误导 | 成立 | 有可变换层但全锁定时提示「选中的图层已锁定」 |
+
+### 13.2 暂缓（已确认问题，但本轮不动）
+
+| 评审项 | 原因 |
+| --- | --- |
+| §15.9 快照 `bytes` 双向漂移 | 需要重做快照内存模型（同一 state 被撤销栈与快照共享），影响面大，单独排期 |
+| §15.10 旋转后切回「原始」卡，图层方向不一致 | 需要在 `planBaseSwap` 增加 `rotateDelta` 并反向旋转图层，属于换主图语义扩展 |
+| §16.9-3 形状 90° 旋转未同步渐变/投影角度 | 仅影响带渐变/投影的闭合形状，视觉小问题 |
+| §16.6 顶部常驻「操作对象」提示 | 图层面板已有高亮，右栏说明已更新；状态栏提示待做 |
+| §11-8 选区每笔全图 scan | 性能优化，等真机 4K 反馈 |
+| §11-10 预览蒙版色纱错位（扩图比例不同时） | 需要预览矩形与旧底图矩形分离，单独改 |
+| §15.11-5 toast 参数透传、§16.9-6 变换后刷新面板 | 低价值 / 已由 `updateHistoryUi()` 覆盖 |
+
+### 13.3 实机验证（Chromium，8700）
+
+- 主体选择（`A`）+ 画布点选：状态栏进入「正在分割… 0%」，控制台不再出现 `segmentBounds is not defined`。
+- 主图行点击 toggle：第一次选中高亮，第二次取消；不再只能选不能撤。
+- Ctrl 选两层 → 成组 → 点「向右旋转」：画布尺寸保持 `1200 × 675`，组行保持选中，不再误转主图。
+- 文字连续旋转 + 镜像：新增单测断言视觉中心不漂移（误差 < 0.01px）。
+- 控制台全程无 error / exception。

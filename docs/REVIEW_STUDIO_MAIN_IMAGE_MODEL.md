@@ -841,3 +841,229 @@ return { scale: 1, dx: -(crop?.x || 0), dy: -(crop?.y || 0), unsure: false, size
 4. **§15.5**（`label` + 边界）—— 点选/框选才能真正用上排除点；
 5. **§15.6 / §15.7**（一个补 `pointercancel` 集合，一个改放大采用路径）；
 6. §15.8–§15.11 按顺手程度合并进同一次提交。
+
+---
+
+## 16. 第五轮审查（提交 `2ad0da6`「对象级变换与多选」）
+
+> 审查对象：`feat/studio-main-image-model` @ `4a89609`，对比 `71d2ad0`
+> 范围：`web/src/components/studio.js`、`studio/studioDoc.js`、`studio/textLayer.js`、`studio/layerPanel.js`（+441 −46）；规格见 `docs/PLAN_STUDIO_MAIN_IMAGE_MODEL.md` §12
+> 已执行：`node --check`（4 个文件全部通过）、`node --test web/tests/studio/*.test.mjs`（139 pass / 0 fail）。**本轮新增的 `rotateLayers` / `flipLayers` 没有任何单测覆盖**，下面 §16.1 的结论来自真实 `TextLayer` + 复刻数学公式的数值验证（非肉眼判断）。
+
+### 16.1 P1：已有角度的文字图层，对象级旋转 / 翻转会整体跳位（实测 152px）
+
+**现象**
+
+1. 选中一个文字层，连点两次「向右旋转」：**第二次点击文字整体跳走约 150px**（画布尺寸不变，所以不是视图问题）；
+2. 画布先「向右旋转」90°（文字随之 `rotation=90`），再点「水平翻转」：文字跳到别的位置；
+3. 先旋转一次再翻转、或翻转后再旋转，同理。
+
+**根因**
+
+`_localBounds()` 返回的是 **未旋转的本地盒**（以锚点 `(x, y)` 为原点，见 `textLayer.js:136-160`），而 `bounds()` 才是旋转后的文档外接盒（`:163-187`）。三处文字分支都把 `_localBounds()` 当成了**文档坐标**：
+
+```js
+// studioDoc.js:571-589（rotateLayers）
+const geom = layer.isText ? layer._localBounds() : null;
+const offsetX = geom.x + geom.width / 2 - layer.x;   // 本地偏移（未旋转）
+const center = map(geom.x + geom.width / 2, ...);    // ← 把本地盒中心当成文档中心
+layer.x = center.x - (offsetX * cos - offsetY * sin);
+```
+
+文字的真实文档中心是 `锚点 + R(θ)·本地偏移`，不是 `锚点 + 本地偏移`。θ=0 时两者相同，所以首屏测试看不出来；一旦 `rotation ≠ 0`（画布旋转过、或已经点过一次图层旋转），中心就算错，反算出的锚点自然偏移。
+
+`flipLayers()`（`studioDoc.js:650-665`）和全局 `_flipLayerGeometry()`（`studioDoc.js:437-462`，本次刚重写过）用的是同一套「本地盒 + 新角度反算」写法，因此同错。**PLAN §12.6 里「已有角度的文字不再漂移（三处统一）」的结论不成立**，需要一并订正文档。
+
+**数值验证**（200×80 的文字、`rotation` 分别为 0 / 90，比较操作后的真实文档中心）：
+
+| 场景 | 期望中心 | 实际中心 | 误差 |
+| --- | --- | --- | --- |
+| rotation=0，连点第 2 次旋转 | (400, 340) | (460, 480) | **152.3px** |
+| rotation=90，第一次旋转 | (260, 400) | (320, 540) | **152.3px** |
+| 画布旋转 90° 后水平翻转 | (1340, 400) | (1200, 340) | **152.3px** |
+| 图层水平翻转（rotation=90） | (260, 400) | (120, 340) | **152.3px** |
+
+**建议改法**
+
+文字层的锚点 `(x, y)` 就是对象原点，**不需要包围盒**：直接对角点做变换，再累加角度 / 翻转即可，数学上是精确解（旋转、翻转都是等距变换，锚点随对象一起被映射）。
+
+```js
+// rotateLayers：文字层走「点 + 角度」，不用 _localBounds
+if (layer.isText) {
+  const p = map(layer.x, layer.y);          // 绕选择集中心转 90°
+  layer.x = p.x;
+  layer.y = p.y;
+  layer.rotation = normalize360(layer.rotation + add);
+  continue;
+}
+
+// flipLayers / _flipLayerGeometry：镜像锚点 + 角度取反 + 翻转位
+if (layer.isText) {
+  if (axis === 'h') layer.x = 2 * cx - layer.x;   // 画布翻转为 W - x
+  else layer.y = 2 * cy - layer.y;                // 画布翻转为 H - y
+  layer.rotation = normalize360(-layer.rotation);
+  if (axis === 'h') layer.flipH = !layer.flipH;
+  else layer.flipV = !layer.flipV;
+  continue;
+}
+```
+
+只有 overlay 层需要「中心 + 宽高反算左上角」（它用 `x/y` 当左上角、绕中心绘制）；文字是「锚点 + 本地盒」，两者不能套同一段代码。
+
+**建议补单测**：`web/tests/studio/` 里已经有 `textLayer.test.mjs`，可加一个纯几何用例（stub `document.createElement` 的 `measureText` 即可，不需要真实 canvas），断言「rotation=0 连转两次」「rotation=90 转一次 / 翻一次」后锚点与文档中心位置。本轮这两个方法目前 0 覆盖，`node --test` 完全拦不住这类回归。
+
+### 16.2 P2：选中图层组后点旋转 / 翻转，实际转的是整幅画面
+
+`selectGroup()`（`studio.js:3030-3043`）只设 `selectedGroupId`，并清空 `selectedLayerIds / selectedLayerId / baseSelected`。于是 `selectionTarget()`（`:9598-9602`）判定为 `'none'`，而 `transformSelection()` 把 `'none'` 当成主图处理：
+
+```js
+if (selectionTarget() === 'layers') { ...图层分支... }
+// 其余（'base' 和 'none'）都走 doc.rotateRight() / doc.flip()
+```
+
+结果：**用户选中一个图层组 → 点「向右旋转」→ 画布尺寸变了、裁剪被清空、蒙版跟着转**，组员一个都没转。这与 PLAN §12.3「组操作 = 批量对成员应用同一变换」以及阶段 4 的验收直接冲突，而且是对主图的破坏性操作（虽可撤销，但用户完全没预期）。
+
+**建议**：`selectionTarget()` 先解析「实际可变换对象」，组选中时返回 `'layers'`：
+
+```js
+function selectionTarget() {
+  if (selectedLayerIds.size || selectedLayerId) return 'layers';
+  if (selectedGroupId) {
+    const ids = doc?.layers?.filter((l) => l.groupId === selectedGroupId).map((l) => l.id) || [];
+    return ids.length ? 'layers' : 'none';
+  }
+  if (baseSelected) return 'base';
+  return 'none';
+}
+```
+
+`transformSelection()` 的 `ids` 也按同一顺序取（组员 → 多选 → 单选）。另外建议补：组选中时把组员一起画成虚线框（现在多选框只遍历 `selectedLayerIds`，`studio.js:4067-4091`），否则用户看不到「这一转会转哪些对象」。
+
+### 16.3 P2：选择状态三处不同步，导致旋转/翻转偶发失效 + 主图行与图层行同时高亮
+
+`baseSelected` 是一个**独立布尔**，但代码里仍有 10 余处直接写 `selectedLayerId = ...` 而不清它：
+
+| 位置 | 场景 |
+| --- | --- |
+| `studio.js:1290`（`afterLayerAdded`） | 拖入 / 粘贴一张素材 |
+| `studio.js:5630` / `:6239` | 文字工具点一下建文字、拖框建形状 |
+| `studio.js:2772`、`:2282` | 复制图层、粘贴图层 |
+| `studio.js:10630` / `:10641` | 新建调整图层 / 「返回整图」 |
+| `studio.js:8679` / `:8849` / `:9068` | 文字 / 贴纸 / 形状面板的删除按钮 |
+| `studio.js:10943`（「恢复原始图片」） | `selectedLayerId = null`，但**没有**清 `selectedLayerIds / selectedGroupId` |
+
+前一组（新增 / 选中类）：`baseSelected` 仍为 true，`getBaseSelected()` 让主图行保持高亮，图层面板出现**两行同时选中**；`selectionTarget()` 因为优先判图层，行为上还算「对」，但 UI 在说谎。
+
+后一组（删除 / 重置类）更严重：`selectedLayerIds` 里留着**已经不存在的 id**，`selectionTarget()` 仍返回 `'layers'`，`doc.rotateLayers()` 过滤后返回 0，于是：
+
+- 「恢复原始图片」之后点旋转 / 翻转 → 只弹「选中的图层不可变换（已锁定或是调整图层）」，主图再也转不动，直到用户重新点一下画布；
+- 用文字 / 贴纸 / 形状面板的删除按钮删完图层后，同样失效。
+
+这与 §15.4 的 `resetAll()` 问题叠加，会让「恢复原始图片」变成一连串看起来坏掉的操作（撤销无变化、旋转报错）。
+
+**建议**
+
+1. 收敛成一个入口，所有改选择的地方都走它（`selectLayerById` / `selectBaseObject` / `selectGroup` 内部也调用）：
+
+```js
+function setSelection({ layerIds = [], primaryId = null, groupId = '', base = false } = {}) {
+  selectedLayerIds.clear();
+  for (const id of layerIds) if (id && doc?.findLayer(id)) selectedLayerIds.add(id);
+  selectedLayerId = primaryId && selectedLayerIds.has(primaryId) ? primaryId : ([...selectedLayerIds].pop() || null);
+  selectedGroupId = groupId;
+  baseSelected = base;
+  editingLayerMaskId = '';
+}
+```
+
+2. `selectionTarget()` 不要只看集合是否非空，**要解析出真实存在且可变换的图层**；没有就回退 `'base'`（或者 `'none'` 但给明确提示），别把「图层已被删」误报成「图层被锁定」。
+3. 「恢复原始图片」的 handler（`studio.js:10924-10946`）补 `selectedLayerIds.clear() / selectedGroupId = '' / baseSelected = false / syncLayersPanel()`，并按 §15.4 决定到底要不要 `clearHistory()`。
+
+### 16.4 P2：裁剪状态下旋转 / 翻转主图，视口仍会跳（「视口稳定」只在无裁剪时成立）
+
+```js
+// studio.js:9577-9584
+const old = doc.oriented;
+const crop = doc.transform.crop;
+const anchorX = view.x + (old.width / 2 - (crop?.x || 0)) * view.scale;
+...
+view.x = anchorX - (size.width / 2) * view.scale;
+```
+
+视口里可见内容的中心，文档坐标是 `crop.x + doc.size.width / 2`，代码用的是整张未裁剪图的中心 `old.width / 2`。只有「裁剪框居中且宽度等于整图」时两者才相等；否则每翻转 / 旋转一次，画面就在屏幕上平移 `((old.width - crop.width)/2 - crop.x) * scale`。而这正是**裁剪后才更容易点旋转按钮**的场景（旋转会弹「会清空裁剪」确认框）。
+
+**建议**
+
+```js
+const anchorX = view.x + (doc.size.width / 2) * view.scale;
+const anchorY = view.y + (doc.size.height / 2) * view.scale;
+```
+
+（`toImage()` 里 `view.x` 对应的是裁剪后画面左上角，所以这就是可见中心，不需要再碰 `crop`。）
+
+顺带：`enterBaseEdit()` 仍在「会清空裁剪」确认框**之前**调用（§15.11-2 未修），用户点取消时预览已经被关掉了。
+
+### 16.5 P3：多选整组拖动不处理透视层（quad），会出现「只动一部分 + 多一条撤销步」
+
+`pointermove` 的 `moveLayer` 分支对组内成员统一改 `layer.x / layer.y`（`studio.js:6140-6149`），但 `OverlayLayer` 有 `quad` 时**绘制完全按四点走、忽略 x/y**（`layers.js:272-293`）。于是多选里包含透视层时：其它层动了，透视层原地不动；`movedLayer` 又因为 x/y 变过而落了一条快照（撤销一次看不到画面变化）。
+
+**建议**：组拖动时对 `quad` 层平移四个点（顺便 `_warpCache = null`），或干脆把 quad 层从 `drag.group` 里排除并在光标上体现「不可整组拖动」。旋转 / 翻转已经正确处理了 quad（`studioDoc.js:547-551`、`:615-622`），这里补齐即可。
+
+### 16.6 P3：「主图可选中」缺状态提示，且选中后无法再点一次取消
+
+- PLAN §12.3 要求「顶部常驻提示当前操作对象：主图 / 图层 3 / 已选 4 个图层」，本轮只改了右栏一行说明文字；用户点主图行后，画布上没有任何反馈，右栏属性面板仍显示「未选中图层」，很容易以为按钮坏了（尤其 §16.2/§16.3 的失效场景）。
+- `layerPanel` 把主图行的点击从 `selectNone()` 改成了 `selectBase()`（`layerPanel.js:459-463`），于是**再点一次已选中的主图行也无法取消选中**；`selectNone()`（`studio.js:3238-3252`）现在没有任何调用方，成为死代码，`layerPanel.js:6` 的注释也还写着 `selectNone()`。
+- PLAN §12.5 要求「主图被选中时，删除 / 方向键要明确禁用或提示」，当前 `Delete` 是静默无反应（`selectedLayerId` 为 null，走不到删除分支）。
+
+**建议**：给主图行做 toggle（已选中 → `selectNone()`）；在主图选中时画一圈画布描边或画布角标；状态栏补「操作对象：主图」；`Delete` 在 `baseSelected` 时给一句提示。
+
+### 16.7 P3：选中主图后，AI「对象」仍停在上一个图层
+
+`selectBaseObject()` 没有调用 `syncAiTargets()`，而 `aiTargetLayer()`（`studio.js:4609-4614`）在 `aiTargetId === '__current__'` 时取 `selectedLayerId || aiTargetLastId`。于是「先选图层 A → 再点主图 → 主体选择 / 送图」仍然只送图层 A，用户以为已经在操作整幅画面。
+
+**建议**：`selectBaseObject()` 里把 `aiTargetId` 归一为 `''`（合成图）并 `syncAiTargets()`；或者让 `aiTargetLayer()` 在 `baseSelected` 时直接返回 null。
+
+### 16.8 P3：图层变换只判断 `preview.image`，漏了「预览加载中」
+
+`transformSelection()`（`studio.js:9608`）用 `preview.image` 拦截 AI 预览，但预览图加载期间 `preview.image === null`、`previewPending === true`（`:3290`）。此时旋转图层会被允许，图加载完后又把刚改过的画面盖住（与 §15.11-4 同类）。改成 `if (preview.image || previewPending)`，或统一复用 `enterBaseEdit()` 的判定。
+
+### 16.9 P3：其它小问题
+
+| # | 位置 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| 1 | `studioDoc.js:579`、`:656`、`:445` | 三处文字分支重复同一套「本地盒中心 + 新角度反算」，且都错（§16.1） | 抽成 `_transformTextAnchor(layer, { pivot, mode, axis })`，或按 §16.1 直接映射锚点，删掉三份重复 |
+| 2 | `studioDoc.js:494-506` | `_transformableLayers` 不过滤 `visible === false`；隐藏图层也会被算进 `layersBounds`，多选时轴心被看不见的层拉偏 | 轴心计算用可见图层，变换本身仍可作用于隐藏层（或明确提示） |
+| 3 | `studioDoc.js:561-568` | 旋转闭合形状只交换宽高，未同步 `style.gradient.angle` / `style.shadow.angle`，旋转后渐变与投影方向仍是旧的 | 90° 旋转时 `angle += 90`（画布 `_rotateLayersBy90` 同样遗漏，可一次改完） |
+| 4 | `studio.js:4067-4091` | 多选虚线框会画在锁定图层上（这些层实际不参与拖动 / 变换） | 跳过 `locked` / 调整层，或用不同颜色区分「选中但不可变换」 |
+| 5 | `studio.js:9612` | `ids = selectedLayerIds.size ? [...] : [selectedLayerId]`，当集合里全是已删除 / 被锁定的层时提示语误导为「已锁定或是调整图层」 | 提示拆成「没有可变换的图层」/「选中的图层已锁定」两种 |
+| 6 | `studio.js:9623-9628` | 图层旋转后没有 `syncLayersPanel()`，面板里与几何相关的状态（如选中框、复制偏移）可能滞后 | 顺手补一次，代价可忽略 |
+
+### 16.10 本轮确认做得对的点
+
+- **透视层（quad）的旋转 / 翻转**：直接映射四个点并清 `_warpCache`，比改 x/y 正确，也和 `bounds()` 一致。
+- **直线 / 箭头**：`rotateLayers` / `flipLayers` 都按两个端点映射，方向不会反（闭合形状才用「中心 + 交换宽高」），这个区分是对的。
+- **多选拖动**：`drag.group` 在 `pointerdown` 时冻结每个成员的起点，`pointermove` 只用同一增量；`pointercancel` 也能整组复位，历史与画面不会脱节。
+- **Ctrl 点已选图层 = 取消选中**：`beginLayerDrag` 里先判断「加选后是否还在集合里」再决定是否起拖，避免了「想取消选中却把它拖走」。
+- **文字镜像绘制**：绕本地盒中心 `scale`、阴影偏移在 `draw` 里按翻转位取反（数据不变，来回翻转可逆），`flipH/flipV` 也进了 `clone()` 与 `layerPropsFor()`，刷新能恢复。
+- **无裁剪时**主图旋转的视口稳定性是有效的（`view.scale` 不变、中心不跳），`updateZoomLabel()` 也补上了。
+
+### 16.11 本轮建议补的回归项
+
+1. **文字层连续变换**：选中文字 → 连点两次「向右旋转」→ 文字应原地转 180°，不位移；再点「水平翻转」→ 位置也不变（§16.1）。
+2. **画布旋转后翻转**：向右旋转 90°（文字跟着转）→ 水平翻转 → 文字位置与字形镜像都正确（§16.1）。
+3. **组选中变换**：选中一个含 3 个图层的组 → 点旋转 → 三个组员绕组中心转，画布尺寸与裁剪不变（§16.2）。
+4. **恢复原始图片后的按钮**：恢复 → 点旋转 / 翻转 → 应作用于主图；撤销按钮不应「点了没变化」（§16.3 + §15.4）。
+5. **面板删除后旋转**：用文字 / 贴纸 / 形状面板的删除按钮删掉当前层 → 点旋转不应弹「已锁定」提示（§16.3）。
+6. **裁剪后旋转**：非居中裁剪成 4:3 → 旋转 90° → 画面中心不应跳（§16.4）。
+7. **多选含透视层拖动**：Ctrl 选中普通层 + 透视层一起拖 → 两者位移一致（§16.5）。
+8. **主图选中态**：点主图行 → 有明确提示；再点一次主图行可取消（§16.6）。
+9. **主图选中后送图**：选中主图 → 主体选择应基于合成图，而不是上一次选中的图层（§16.7）。
+
+### 16.12 建议处理顺序
+
+1. **§16.1** 文字锚点直接映射（三处一起改，附纯几何单测）—— 功能主路径重复操作即错位；
+2. **§16.2** 组选中走图层分支 —— 现在会静默改主图；
+3. **§16.3** 选择状态收敛到 `setSelection()` + `selectionTarget()` 解析真实图层 —— 顺带修「恢复原始图片后按钮失效」；
+4. **§16.4** 视口锚点改 `doc.size` 中心（两行）+ `enterBaseEdit` 挪到确认之后（§15.11-2）；
+5. **§16.5 / §16.6 / §16.7** 按顺手程度合并；
+6. §16.9 里的 1–3 可与 §16.1 同批，其余按用户反馈排。

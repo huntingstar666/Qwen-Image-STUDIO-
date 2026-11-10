@@ -415,50 +415,65 @@ export class StudioDoc {
         layer._warpCache = null;
         return;
       }
-      // 文字层没有 width/height 字段：用本地包围盒，否则宽高按 0 算，
-      // 翻转后锚点直接镜像到 W-x，文字会整段飞出画布。
-      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
-      const w = geom ? geom.width : layer.width || 0;
-      const h = geom ? geom.height : layer.height || 0;
-      if (layer.isShape) {
-        // 端点镜像：斜线/箭头翻转后方向才对。
-        const p1 = { x: axis === 'h' ? W - layer.x : layer.x, y: axis === 'v' ? H - layer.y : layer.y };
-        const p2 = {
-          x: axis === 'h' ? W - (layer.x + w) : layer.x + w,
-          y: axis === 'v' ? H - (layer.y + h) : layer.y + h,
+      if (layer.isText) {
+        // 与 flipLayers 同一套数学：镜像真实视觉中心，再按 -θ 反算锚点。
+        const geom = layer._localBounds();
+        const c = {
+          x: geom.x + geom.width / 2 - layer.x,
+          y: geom.y + geom.height / 2 - layer.y,
         };
-        layer.x = p1.x;
-        layer.y = p1.y;
-        layer.width = p2.x - p1.x;
-        layer.height = p2.y - p1.y;
+        const th = ((Number(layer.rotation) || 0) * Math.PI) / 180;
+        const cos = Math.cos(th);
+        const sin = Math.sin(th);
+        const center = {
+          x: layer.x + c.x * cos - c.y * sin,
+          y: layer.y + c.x * sin + c.y * cos,
+        };
+        const mirrored = {
+          x: axis === 'h' ? W - center.x : center.x,
+          y: axis === 'v' ? H - center.y : center.y,
+        };
+        const th2 = -th;
+        const cos2 = Math.cos(th2);
+        const sin2 = Math.sin(th2);
+        layer.x = mirrored.x - (c.x * cos2 - c.y * sin2);
+        layer.y = mirrored.y - (c.x * sin2 + c.y * cos2);
+        const flipped = -Number(layer.rotation || 0);
+        layer.rotation = ((flipped % 360) + 360) % 360;
+        if (axis === 'h') layer.flipH = !layer.flipH;
+        else layer.flipV = !layer.flipV;
         return;
       }
-      // 文字的锚点在盒左上（含描边留白），镜像时要用盒中心反算锚点。
-      const boxX = geom ? geom.x : layer.x;
-      const boxY = geom ? geom.y : layer.y;
-      const localCx = boxX + w / 2;
-      const localCy = boxY + h / 2;
-      // 反射关系 F·R(θ)=R(-θ)·F：整图翻转 = 旋转角取反 + 图层自身对应轴翻转。
+      if (layer.isShape) {
+        if (layer.isOpenPath) {
+          // 直线 / 箭头按端点镜像，方向（起点/终点）才对。
+          const p1 = { x: axis === 'h' ? W - layer.x : layer.x, y: axis === 'v' ? H - layer.y : layer.y };
+          const p2 = {
+            x: axis === 'h' ? W - (layer.x + layer.width) : layer.x + layer.width,
+            y: axis === 'v' ? H - (layer.y + layer.height) : layer.y + layer.height,
+          };
+          layer.x = p1.x;
+          layer.y = p1.y;
+          layer.width = p2.x - p1.x;
+          layer.height = p2.y - p1.y;
+        } else {
+          const box = this._layerBox(layer);
+          if (axis === 'h') layer.x = W - box.x - box.width;
+          else layer.y = H - box.y - box.height;
+        }
+        return;
+      }
+      // 反射关系 F·R(θ)=R(-θ)·F：整图翻转 = 位置镜像 + 旋转角取反 + 图层自身对应轴翻转。
+      const w = layer.width || 0;
+      const h = layer.height || 0;
       if (layer.rotation !== undefined) {
         const flipped = -Number(layer.rotation || 0);
         layer.rotation = ((flipped % 360) + 360) % 360;
       }
-      if (geom) {
-        const center = {
-          x: axis === 'h' ? W - localCx : localCx,
-          y: axis === 'v' ? H - localCy : localCy,
-        };
-        const offsetX = localCx - layer.x;
-        const offsetY = localCy - layer.y;
-        const rad = ((Number(layer.rotation) || 0) * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        layer.x = center.x - (offsetX * cos - offsetY * sin);
-        layer.y = center.y - (offsetX * sin + offsetY * cos);
-      } else if (axis === 'h') {
-        layer.x = W - boxX - w;
+      if (axis === 'h') {
+        layer.x = W - layer.x - w;
       } else {
-        layer.y = H - boxY - h;
+        layer.y = H - layer.y - h;
       }
       if (axis === 'h') {
         if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
@@ -475,11 +490,15 @@ export class StudioDoc {
   layersBounds(ids) {
     const list = this._transformableLayers(ids);
     if (!list.length) return null;
+    // 轴心只按可见图层算：隐藏层不参与画面，不该把选择集中心拉偏；
+    // 若整组都隐藏，则退回按全部选中层算，保证变换仍能执行。
+    const visible = list.filter((layer) => layer.visible !== false);
+    const forBox = visible.length ? visible : list;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (const layer of list) {
+    for (const layer of forBox) {
       const box = this._layerBox(layer);
       if (!box) continue;
       minX = Math.min(minX, box.x);
@@ -568,25 +587,18 @@ export class StudioDoc {
         }
         continue;
       }
-      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
-      const w = geom ? geom.width : Number(layer.width) || 0;
-      const h = geom ? geom.height : Number(layer.height) || 0;
-      if (geom) {
-        // 文字层绕锚点旋转：先把「本地盒中心」按新角度换算回锚点，
-        // 否则已有角度的文字旋转后会以未旋转的盒中心定位，位置会漂。
-        const offsetX = geom.x + w / 2 - layer.x;
-        const offsetY = geom.y + h / 2 - layer.y;
-        const center = map(geom.x + w / 2, geom.y + h / 2);
+      if (layer.isText) {
+        // 文字以锚点 (x, y) 为原点绘制并绕锚点旋转：旋转整个对象时锚点随对象映射即可，
+        // 再累加自身角度即可，不需要包围盒（把未旋转的本地盒当文档中心会随角度漂移）。
+        const anchor = map(layer.x, layer.y);
+        layer.x = anchor.x;
+        layer.y = anchor.y;
         const next = ((Number(layer.rotation) || 0) + add) % 360;
-        const normalized = next < 0 ? next + 360 : next;
-        const rad = (normalized * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        layer.x = center.x - (offsetX * cos - offsetY * sin);
-        layer.y = center.y - (offsetX * sin + offsetY * cos);
-        layer.rotation = normalized;
+        layer.rotation = next < 0 ? next + 360 : next;
         continue;
       }
+      const w = Number(layer.width) || 0;
+      const h = Number(layer.height) || 0;
       const center = map(layer.x + w / 2, layer.y + h / 2);
       layer.x = center.x - w / 2;
       layer.y = center.y - h / 2;
@@ -620,7 +632,6 @@ export class StudioDoc {
         layer._warpCache = null;
         continue;
       }
-      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
       if (layer.isShape) {
         if (layer.isOpenPath) {
           const p1 = { x: layer.x, y: layer.y };
@@ -638,32 +649,46 @@ export class StudioDoc {
         }
         continue;
       }
-      const w = geom ? geom.width : Number(layer.width) || 0;
-      const h = geom ? geom.height : Number(layer.height) || 0;
-      const boxX = geom ? geom.x : Number(layer.x) || 0;
-      const boxY = geom ? geom.y : Number(layer.y) || 0;
+      if (layer.isText) {
+        // 文字绘制绕锚点旋转、镜像绕本地盒中心：先算出真实视觉中心，
+        // 镜像中心后按新角度反算锚点，中心才不会漂（直接用锚点会差一个盒中心偏移）。
+        const geom = layer._localBounds();
+        const c = {
+          x: geom.x + geom.width / 2 - layer.x,
+          y: geom.y + geom.height / 2 - layer.y,
+        };
+        const th = ((Number(layer.rotation) || 0) * Math.PI) / 180;
+        const cos = Math.cos(th);
+        const sin = Math.sin(th);
+        const center = {
+          x: layer.x + c.x * cos - c.y * sin,
+          y: layer.y + c.x * sin + c.y * cos,
+        };
+        const mirrored = {
+          x: axis === 'h' ? 2 * cx - center.x : center.x,
+          y: axis === 'v' ? 2 * cy - center.y : center.y,
+        };
+        const th2 = -th;
+        const cos2 = Math.cos(th2);
+        const sin2 = Math.sin(th2);
+        layer.x = mirrored.x - (c.x * cos2 - c.y * sin2);
+        layer.y = mirrored.y - (c.x * sin2 + c.y * cos2);
+        const flipped = -Number(layer.rotation || 0);
+        layer.rotation = ((flipped % 360) + 360) % 360;
+        if (axis === 'h') layer.flipH = !layer.flipH;
+        else layer.flipV = !layer.flipV;
+        continue;
+      }
+      const w = Number(layer.width) || 0;
+      const h = Number(layer.height) || 0;
+      const boxX = Number(layer.x) || 0;
+      const boxY = Number(layer.y) || 0;
       // 反射关系 F·R(θ)=R(-θ)·F：镜像 = 位置镜像 + 旋转角取反 + 自身对应轴翻转。
       if (layer.rotation !== undefined) {
         const flipped = -Number(layer.rotation || 0);
         layer.rotation = ((flipped % 360) + 360) % 360;
       }
-      if (geom) {
-        // 文字绕锚点旋转：用「镜像后的中心 + 新角度下的本地偏移」反算锚点，
-        // 否则旋转过的文字镜像后位置会漂。
-        const localCx = boxX + w / 2;
-        const localCy = boxY + h / 2;
-        const center = {
-          x: axis === 'h' ? 2 * cx - localCx : localCx,
-          y: axis === 'v' ? 2 * cy - localCy : localCy,
-        };
-        const offsetX = localCx - layer.x;
-        const offsetY = localCy - layer.y;
-        const rad = ((Number(layer.rotation) || 0) * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        layer.x = center.x - (offsetX * cos - offsetY * sin);
-        layer.y = center.y - (offsetX * sin + offsetY * cos);
-      } else if (axis === 'h') {
+      if (axis === 'h') {
         layer.x = 2 * cx - boxX - w;
       } else {
         layer.y = 2 * cy - boxY - h;
@@ -748,10 +773,10 @@ export class StudioDoc {
     this.repair = null;
     this.baseVisible = true;
     this._maskHas = null;
-    // 重置 = 换了蒙版/修复画布，且旧历史/旧快照不再适用。
+    // 重置 = 换了蒙版/修复画布，版本号必须自增；但底图没换，baseId 不能动，
+    // 否则这一步会变成「属于上一张主图」而不可撤销，命名快照也一起失效。
     this.maskVersion += 1;
     this.repairVersion += 1;
-    this.baseId += 1;
     this.invalidateBase();
     this.snapshot();
   }

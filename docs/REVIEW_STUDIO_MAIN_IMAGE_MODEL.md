@@ -1,0 +1,843 @@
+# 代码审查：`feat/studio-main-image-model`（主图模型重构）
+
+> 审查对象：`feat/studio-main-image-model` @ `8e2f483`，对比基线 `main` @ `370d265`
+> 范围：15 个文件 / +2155 −248（`studio.js` 为主），重点看「主图 = 仅底图」重构后的状态机、缓存与持久化
+> 方式：静态审查 + 关键路径推演（未跑真机交互）；每条都给了可复现步骤与建议改法
+> 分支：`review/studio-main-image-model`（仅新增本文档，未改代码）
+
+---
+
+## 0. 结论摘要
+
+整体方向是对的：`replaceMainImage()` 取代 `new StudioDoc()`、`planBaseSwap()` 统一切主图路径、`bakeMain()` 把「主图」语义和「合成图」拆开，这三件事把用户反馈的「AI 修改后图层全丢」真正修掉了。缓存失效、异步竞态（`openSeq` / token + owner）、AI 出图跨工程校验这些坑也都补得比较干净。
+
+但有 **1 个 P1 回归**和 **2 个 P2 数据一致性问题**值得在合并前处理：
+
+| 级别 | 问题 | 位置 |
+| --- | --- | --- |
+| P1 | 90° 旋转后**撤销/重做被静默吞掉**，且历史指针已前移（后续撤销会跳步） | `studioDoc.js:209-221` + `:245` |
+| P2 | `resetAll()` / `replaceBaseFromCanvas()` 换了蒙版画布**却不自增 `maskVersion`** → 保存复用旧蒙版 Blob，**刷新后蒙版「复活」** | `studioDoc.js:489-500`、`:836-853`、`studio.js:7574-7589` |
+| P2 | 命名快照只按**尺寸**判断归属：换成同尺寸主图后，旧快照仍可恢复，会把上一张图的修复/蒙版像素套到新图上 | `studioDoc.js:245-250`、`history.js:73` |
+
+P1 和 P2-2 其实是同一个根因：**用「尺寸」当「主图身份」的代理**。建议一次性换成显式的 `baseId`，两个问题一起消失。
+
+---
+
+## 1. P1：撤销/重做跨 90° 旋转失效，且会吃掉历史
+
+### 现象
+
+1. 打开一张图 → 旋转 90°；
+2. `Ctrl+Z`：画面**没有任何变化**，但撤销按钮的步数少了一步；
+3. 再按一次 `Ctrl+Z`：画面一次退回两步（跳过了旋转前的那一步）。
+
+### 根因
+
+```js
+// studioDoc.js:209
+undo() {
+  const state = this._history.undo();     // 指针已经前移
+  if (!state) return false;
+  this.restore(state);                    // 可能直接 return false
+  return true;                            // 仍然报告"撤销成功"
+}
+```
+
+`restore()` 开头新增了守卫：
+
+```js
+// studioDoc.js:179 / 245
+if (!this._canRestore(state)) return false;
+...
+_canRestore(state) {
+  const target = state?.oriented;
+  if (!target) return true;
+  return target.width === this.oriented.width && target.height === this.oriented.height;
+}
+```
+
+而 `rotateRight()` 会改变 `oriented`（W×H → H×W），并且没有清历史（这是对的）。于是旋转前那个 state 的 `oriented` 与当前不一致 → `restore()` 拒绝 → `undo()` 却照样返回 `true`，指针已经动了。**历史栈与画布从此不同步**。
+
+### 建议改法
+
+旋转是历史里的正常一步，天然应该可撤销；「不可恢复」只应发生在**换了另一张主图**之后。所以不要拿尺寸当身份，给状态记一个 `baseId`：
+
+```js
+// studioDoc.js 构造函数
+this.baseId = 0;
+
+// snapshot()
+const state = { baseId: this.baseId, /* ...原有字段... */ };
+
+// replaceMainImage() 里（换底图才算换身份）
+this.baseId += 1;
+this.clearHistory();
+this.snapshot();
+
+// _canRestore
+_canRestore(state) {
+  return !state?.baseId || state.baseId === this.baseId;
+}
+```
+
+同时 `undo()/redo()` 必须尊重失败：
+
+```js
+undo() {
+  const state = this._history.undo();
+  if (!state) return false;
+  if (!this.restore(state)) {
+    this._history.redo();   // 回滚指针，别让历史与画面对不上
+    return false;
+  }
+  return true;
+}
+```
+
+UI 侧（`studio.js:10238`）失败时补一句 toast，避免"点了没反应"。
+
+---
+
+## 2. P2：重置 / 合并图层后保存复用旧蒙版 Blob，刷新后蒙版复活
+
+### 现象
+
+1. 画笔圈一块 → 等自动保存落盘；
+2. 「重置全部」（或「与主图合并」，合并前同样有蒙版）；
+3. 再等一次保存 → 刷新页面；
+4. 之前那块**红色蒙版又回来了**（画布上并没有蒙版）。
+
+### 根因
+
+保存缓存用「像素版本号 + 尺寸」当 key：
+
+```js
+// studio.js:7578
+const maskKey = `${current.maskVersion}:${current.mask.width}x${current.mask.height}`;
+if (maskBlobCache.doc !== current || maskBlobCache.key !== maskKey) { /* 重新编码 */ }
+```
+
+但 `resetAll()` 换成了同尺寸的空白画布，**却没有自增版本号**：
+
+```js
+// studioDoc.js:489
+resetAll() {
+  ...
+  this.mask = makeCanvas(this.oriented.width, this.oriented.height); // 新画布，同尺寸
+  this.repair = null;
+  this._maskHas = null;
+  this.invalidateBase();
+  this.snapshot();
+}
+```
+
+`replaceBaseFromCanvas()`（`:836`，「与主图合并」的落点）也有同样的问题：它同样重建了蒙版画布、清空了修复层，但版本号没动。
+
+key 没变 → 命中缓存 → 存进工程 session 的还是**上一次带像素的蒙版 Blob**。而 `bakeMain` 等其它路径都没问题，只有"存盘"这一环是脏的。
+
+`repair` 侥幸没事，只是因为它的 key 里带了 `repair?.width || 0`（`null` → `0x0`）——这反过来说明这个 key 的设计不可靠。
+
+> 对照：`clearMask()`、`rotateMaskRight/Left()`、`flipMask()`、`clearRepair()`、`rotateRepairRight/Left()`、`flipRepair()`、`ensureRepair()`、`replaceMainImage()` 全都记得自增。**偏偏这两个"整块换新"的路径漏了**，说明靠人工逐个记得并不可靠。
+
+### 建议改法
+
+1. 立刻补上：
+
+```js
+resetAll() {
+  ...
+  this.maskVersion += 1;
+  this.repairVersion += 1;
+  ...
+}
+```
+
+`replaceBaseFromCanvas()` 同样补两行。
+
+2. 更值得做的是**把"换蒙版画布"收敛成一个入口**，让版本号没法漏：
+
+```js
+_setMaskCanvas(canvas) {
+  this.mask = canvas;
+  this._maskHas = null;
+  this.maskVersion += 1;
+}
+_setRepairCanvas(canvas) {
+  this.repair = canvas;
+  this.repairVersion += 1;
+}
+```
+
+上面 8 个方法 + `resetAll` / `replaceBaseFromCanvas` / `replaceMainImage` 全部改走它，以后新增"换画布"的路径就不会再踩。
+
+3. 长期建议把「像素身份」也纳入 key，别只靠版本号：`maskBlobCache` 里同时存 `maskCanvasRef`，`current.mask !== cache.maskCanvas` 时强制重编码。这样即使再漏一次也不会存错。
+
+---
+
+## 3. P2：命名快照只按尺寸判归属，换同尺寸主图后会"套"上旧像素
+
+`clearHistory()` 只清 `past/future`，不清命名快照（`history.js:73`）；`_canRestore()` 又只比尺寸。于是：
+
+1. AI 修改主图（结果尺寸不变）→ 「设为新主图」→ 图层保留、历史清空；
+2. 但「项目历史」里之前存的命名快照还在，点它 → 尺寸一致 → **允许恢复**；
+3. 恢复的是**上一张主图**的 `repair`（污点修复）与 `mask` 像素，叠在新图上就是"凭空出现的修复痕迹/蒙版"。
+
+### 建议
+
+同 §1 的 `baseId`：快照里记 `baseId`，恢复时 `baseId` 不一致就拒绝，并提示「该快照属于上一张主图」。若产品希望保留这类快照，可提供「仅恢复调色/图层」的降级恢复（明确不含修复层与蒙版）。
+
+另外 `studio.js:9227` 现在的拒绝文案是「尺寸对不上，无法恢复」——在真正的坏场景（尺寸相同、身份不同）里这句话根本不会出现，反而会静默恢复错像素。换成 `baseId` 后文案也要同步改成「属于上一张主图」，才不会误导用户去反复重试。
+
+---
+
+## 4. P3：`exportMainCanvas()` 直接返回缓存引用
+
+```js
+// studioDoc.js:1377
+exportMainCanvas(type = 'image/png') {
+  const base = this.renderUnderlay();
+  if (type !== 'image/jpeg') return base;   // ← 就是 _underlay 缓存本体
+  ...
+}
+```
+
+目前唯一调用方 `captureSnapshot()` 只做 `toBlob` / `drawImage`（只读），暂时安全；但这个返回值的语义很容易被下一个调用方误用（例如"给快照画个角标"直接在上面 `fillRect`，就会把 `_underlay` 缓存永久污染，画布/导出全带角标）。
+
+建议返回副本（`cloneCanvas(base)`，4K 图约 30MB 一次，只在快门/换主图时发生，可接受），或在 JSDoc 上明确写"返回内部缓存，只读，禁止就地绘制"，并在函数名上体现（如 `peekMainCanvas`）。
+
+---
+
+## 5. 其他小问题（P3）
+
+| # | 位置 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| 1 | `studio.js:5465` | 有 AI 预览时用画笔点一下：先 `enterBaseEdit()` 退出预览，然后**同一笔继续落到画布** | 退出预览后直接 `return`，本次点击只用于退出 |
+| 2 | `studio.js:3286` | `enterBaseEdit()` 里 `ai.exitPreview()` 内部已 `ctx.showResult(null)`，后面又 `setPreview(null)`，重复退出 | 只保留一处 |
+| 3 | `studioDoc.js:730` | `addOverlay()` 为了拿尺寸调用 `renderBase()`（整张合成），4K 图上每次加图层都白跑一遍 | 用 `this.size` + `transform.crop` 偏移即可 |
+| 4 | `history.js:79-89` | 命名快照不计入 `bytes` 预算，也不上限：4K 图每张约 30MB+，连续存十几张就吃满内存，且被 `trim()` 挤出的状态仍被快照引用 | 快照入栈时累加字节、删除时扣减，并给一个「最多 N 张 / 总字节上限」的软限制，超限提示用户删旧快照 |
+
+---
+
+## 6. 确认没问题的点（避免只挑刺）
+
+- `replaceMainImage()` 之后 **`sourceBlob` 有同步更新**（`studio.js:6686`、`:2528`），刷新不会把旧源文件存回工程。
+- `switchVersion()` 有 `versionId === currentVersionId` 早退 + `token !== openSeq || doc !== owner` 双校验，快速连点不会串图。
+- 形状层负宽高有 `normalizeBox()` 兜底；直线/箭头走 `_paintArrowStroke()` 直接读 `this.x/this.width`，方向不会被 `abs` 抹平（`_rotateLayersBy90` 用负宽表示反向是对的）。
+- `planBaseSwap()` 对"比例不同"（扩图）返回 `unsure` 且不缩放图层，符合 §0.1 决策 2/5；对"等比放大"按倍数缩放也符合。
+- `repair` 的裁剪原点偏移（`_drawRepair` 减 `crop.x/y`）与 `renderSample()` 临时去裁剪这两处修得对，是有价值的隐蔽 bug 修复。
+
+---
+
+## 7. 建议补的回归清单
+
+现有 `node --test web/tests/studio/*.test.mjs`（139 条）覆盖不到 DOM 与历史指针，建议手动/Playwright 补这几条：
+
+1. **旋转后撤销**：旋转 90° → 撤销 3 次 → 再重做 3 次，画面与图层几何都要回到正确状态（对应 §1）。
+2. **重置后刷新**：画蒙版 → 等保存 → 重置全部 → 等保存 → 刷新，蒙版必须为空（对应 §2）。
+3. **同尺寸换主图**：AI 修改 → 设为新主图 → 点旧命名快照，应拒绝或明确提示（对应 §3）。
+4. **预览态直接画**：有预览时选画笔点一下，应只退出预览、不落笔（对应 §5-1）。
+5. **合并后刷新**：画蒙版 → 「与主图合并」→ 等保存 → 刷新，蒙版必须为空（对应 §2 的第二个入口）。
+6. **送图包含图层**：勾选「送图包含图层」→ 生成 → 设为新主图，画面上应只有一份图层像素（当前靠 `containsLayers` 提示，建议顺带验证一键隐藏）。
+
+---
+
+## 8. 建议处理顺序
+
+1. **P1 撤销跨旋转**（影响面最大，用户每天按 Ctrl+Z）；
+2. **P2 `resetAll` 版本号**（一行修复，避免脏数据落盘）；
+3. **P2 快照归属 + `baseId`**（与 P1 同一改动，建议一起做）；
+4. P3 各项按顺手程度合并进同一次提交。
+
+---
+
+## 9. 第三轮追加审查（代码 @ `8e2f483`，文档 @ `2ec4cd9`）
+
+> 只补充 §1–§8 之外的新问题，不重复已记录项。
+> 已执行：`node --check`（本次改动涉及的 6 个前端模块全部通过）、`node --test web/tests/studio/*.test.mjs`（139 pass / 0 fail），没有语法或单测回归；以下结论来自静态审查 + 路径推演。
+
+### 9.0 先复核前两轮的结论（都在最新代码里）
+
+| 原问题 | 现状 | 结论 |
+| --- | --- | --- |
+| §1 撤销跨 90° 旋转被吞、指针已前移 | `studioDoc.js:209-221`、`:245-249` 未改 | **仍存在**；`redo()` 有同样问题（见 §11-1） |
+| §2 重置 / 合并后蒙版 Blob 复用旧像素 | `resetAll()`（`studioDoc.js:489-500`）、`replaceBaseFromCanvas()`（`:836-853`）仍不自增 `maskVersion / repairVersion` | **仍存在** |
+| §3 命名快照只按尺寸判归属 | `_canRestore()` 仍只比 `oriented` | **仍存在** |
+
+### 9.1 新增问题总览
+
+| 级别 | 问题 | 位置 |
+| --- | --- | --- |
+| P2 | `pointercancel` 只丢掉 drag，不回滚**已经落下**的像素 / **已经移动**的图层 | `studio.js:6167-6174`（对照 `:6010-6047`） |
+| P2 | 选区带 `rect` 后，蒙版画笔 / 修复 / 形状 / 提交蒙版仍按 `(0,0)` 贴 alpha → 在图层对象上涂抹整笔被裁掉 | `studio.js:1351-1354`、`:5011`、`:5051`、`:5093`、`:5121`、`:5204` |
+| P2 | 文字层翻转按 `width=0` 算中心 → 位置偏移自身宽度，可能整段飞出画布 | `studioDoc.js:397-425` |
+| P2 | 左 / 上扩图（及自定义比例）不补偿图层，与 PLAN §4.4 的结论不一致 | `studio.js:6740-6765`、`aiPanel.js:1871-1876` |
+| P2 | 选区橡皮把选区擦空后不清 `selection`，之后画笔 / 修复全部「涂不上」 | `studio.js:4294-4301`、`:5082-5128` |
+| P3 | `redo()` 同样无视 `restore()` 失败 | `studioDoc.js:216-221` |
+| P3 | 换主图放大后，撤销回来的文字字号被 `TextLayer` 构造夹取 | `textLayer.js:102-113`、`:268-295` |
+| P3 | 「设为新主图」后 AI 面板 `previewOn` 未复位 | `aiPanel.js:1866-1887` |
+| P3 | 预览仍在加载时 `enterBaseEdit()` 不生效，图加载完又盖回画布 | `studio.js:3286-3292` |
+| P3 | 换主图无条件清空命名的选区组 | `studio.js:6772` |
+| P3 | 快门缩略图在 `await` 编码之后才绘制；JSDoc 仍是旧语义 | `studio.js:6958-6985` |
+| P3 | 每次图层 / 历史刷新都重建两个「对象」下拉的 innerHTML | `studio.js:4474-4492`、`:1380-1383` |
+| P3 | 选区每一笔提交都全图 scan，4K 图上明显卡顿 | `studio.js:4294-4300`、`selection.js:299-306/349-356` |
+| P3 | 恢复工程时无上限并发解码所有图层位图 | `studio.js:7793-7809` |
+| P3 | 结果预览上的蒙版色纱按预览矩形拉伸，比例不同时错位 | `studio.js:3746-3761` |
+| P3 | `history.bytes` 只算蒙版，不计修复层与图层蒙版克隆 | `studioDoc.js:159-172`、`history.js:29-35` |
+| P3 | 放大仍送合成图，但 `switchVersion` 把 `upscale` 当「不含图层」 | `studio.js:10229-10231`、`:6683-6684` |
+| P3 | 分割回退只覆盖「提交请求抛错」，异步任务失败 / 空蒙版不回退 | `studio.js:4836-4850` |
+| P3 | 图层对象的点提示越界被 clamp 到边缘，变成伪前景点 | `studio.js:4766-4769` |
+| P3 | 抠图菜单的「对象」不影响已有选区的取像 | `studio.js:9838-9860` |
+
+---
+
+## 10. P2 详述与改法
+
+### 10.1 P2：`pointercancel` 丢弃 drag，但像素与图层已经改过
+
+**现象**
+
+用触控笔 / 触屏涂抹蒙版、污点修复或拖动图层时，如果系统取消了手势（来电、通知、多指误触、拖出窗口），抬手后：
+
+1. 画面上笔触 / 位移**已经生效**；
+2. 撤销按钮步数没有增加，`Ctrl+Z` 会直接退回到**上一次提交之前**的状态（多退一步）；
+3. 自动保存已经把半截笔触写进工程（`markMaskChanged` / `stampRepairLive` 已经自增了版本号），刷新后半截笔触还在，历史里却没有它。
+
+**根因**
+
+`pointermove` 里的 `strokeTo` / `healStroke` / `cloneStroke` / `moveLayer` 都是**就地改文档**；快照只在 `endDrag` 的提交分支里落（`studio.js:6010-6047`）。新的取消分支只把 `drag` 置空：
+
+```js
+// studio.js:6167
+refs.canvas.addEventListener('pointercancel', () => {
+  drag = null;      // ← 文档已经变了，但没有回滚也没有提交
+  dragRect = null;
+  cursor = null;
+  scheduleDraw();
+});
+```
+
+原来的实现走 `endDrag`，虽然会「误落笔」，但至少历史与画布是同步的；现在改成丢弃，反而制造了**不可撤销的半成品状态**。
+
+`selpaint` 还额外有一份不一致：`selection.canvas` 上已经画了笔触，但 `selection.alpha` 没同步（`commitSelectionPaint` 才是同步点），随后的抠图 / 转蒙版用的是旧 alpha。
+
+**建议**
+
+按「是否需要回滚」区分，而不是一律丢弃：
+
+| drag.mode | 取消时 |
+| --- | --- |
+| `paint` / `spot` / `clone` / `clone-blocked` / `smudge` / `skin` / `liquify` / `mosaic` / `selpaint` | 已经改像素：走 `endDrag` 提交（`selpaint` 至少调一次 `commitSelectionPaint`），或统一回滚到上一帧快照 |
+| `moveLayer` | 用 `drag.originX/originY` 复位并 `doc.touchLayers()` + `scheduleDraw()`，不落新快照 |
+| `crop` / `segBox` / `shapeDraw` / `local` / `patternPick` / `pan` | 无副作用，维持现在的丢弃逻辑 |
+
+若选择「回滚」，建议在 `StudioDoc` 上加一个明确入口，避免 UI 直接摸 `_history`：
+
+```js
+// studioDoc.js
+rollback() {
+  const past = this._history.past;
+  const last = past[past.length - 1];
+  if (!last) return false;
+  return this.restore(last);   // restore 内部会重建蒙版副本并自增版本号
+}
+```
+
+### 10.2 P2：`selection.rect` 只被「画」和「抠图」认，蒙版侧仍按 `(0,0)` 贴
+
+**现象**
+
+「对象 = 某个叠加层」发起主体选择后（选区可能落在裁剪区外，`selection.rect` 不是 0）：
+
+1. 选中画笔 `I` / 橡皮 `Q` 加减选区正常；
+2. 但切回普通画笔 `B`、污点修复、套索 / 矩形填充、或直接提交 AI，笔触**整笔消失 / 只掉了一个角**——看起来就是「画笔坏了」。
+
+**根因**
+
+`setSelectionAlpha()` 现在支持 `rect`（`studio.js:4191`），但所有「把选区 alpha 贴进蒙版坐标系」的调用点仍是旧约定（选区左上角 = 文档 0,0）：
+
+```js
+// studio.js:5051（stampMask，画笔）
+sctx.drawImage(selection.canvas, -x0, -y0);
+// :5011（stampLayerMask）、:5121 / :5093（commitShapePaint）、
+// :5204（repairPaint）、:1351-1354（submissionMask 合并）
+```
+
+当 `selection.rect = {x: 1200, y: 800}`、画布只有 `1600×1200` 时，alpha 只覆盖画布左上角；在图层真实位置落笔时，`destination-in` 取到的是全透明 → 整笔被裁掉。`submissionMask()` 的 `canMerge` 还会因为「选区尺寸 ≠ 蒙版尺寸」直接把选区和蒙版分成两条路，选区被静默忽略。
+
+**建议**
+
+给选区保留一份**文档蒙版坐标**的 alpha 画布（`rect = 0,0`），只在「区域选择」入口生成一次，后面所有蒙版侧消费者统一用它：
+
+```js
+function selectionAlphaInDocSpace() {
+  if (!selection?.canvas) return null;
+  if (selection.docCanvas) return selection.docCanvas;           // 缓存
+  const rect = selection.rect || { x: 0, y: 0 };
+  if (!rect.x && !rect.y) return (selection.docCanvas = selection.canvas);
+  const canvas = document.createElement('canvas');
+  canvas.width = doc.mask.width;
+  canvas.height = doc.mask.height;
+  canvas.getContext('2d').drawImage(selection.canvas, rect.x, rect.y);
+  return (selection.docCanvas = canvas);
+}
+```
+
+`setSelectionAlpha` / `commitSelectionPaint` / `clearSelection` 时置空缓存；`stampMask`、`stampLayerMask`、`commitShapePaint`、`repairPaint`、`submissionMask` 全部改用它。这样也顺手把 `canMerge` 恢复成「尺寸恒等于蒙版」，选区能正常并入提交蒙版。
+
+### 10.3 P2：文字层翻转位置错误（`width` 不存在）
+
+**现象**
+
+画布 2000×1000，文字放在 `x = 100`（左侧），文字宽约 300 → 水平翻转后文字跑到 `x = 1900`，右侧 200px 被画布裁掉（视觉上「翻一下文字就没了」）；垂直翻转同理（单行文字被推到画布下方）。
+
+**根因**
+
+`_flipLayerGeometry()` 统一用 `layer.width / layer.height` 取尺寸：
+
+```js
+// studioDoc.js:397
+const w = layer.width || 0;
+const h = layer.height || 0;
+...
+layer.x = W - cx - w / 2;   // w = 0 → x = W - x
+```
+
+`OverlayLayer` 有 `get width()`，`ShapeLayer` 有字段，但 **`TextLayer` 两者都没有**（只有 `_localBounds()`）。于是文字被当成 0 尺寸对象，只镜像了锚点，没有考虑自身包围盒。
+
+> 旋转不受影响：文字以锚点 `(x, y)` 为圆心旋转，锚点按整图旋转映射本身就是精确解；只有「翻转镜像包围盒」这一步需要宽高。
+
+**建议**
+
+翻转时对文字单独取本地包围盒尺寸（不要直接给 `TextLayer` 加 `width/height`，那会让 `_rotateLayersBy90()` 的中心映射也被启用，反而破坏当前正确的旋转逻辑）：
+
+```js
+const geom = layer.isText ? layer._localBounds() : { width: layer.width || 0, height: layer.height || 0 };
+```
+
+同时把 `shadowX / shadowY` 按轴取反（现在翻转后投影方向仍是旧的），这与 §8.1-2「缩放时补 `shadowY`」是同一类遗漏。
+
+### 10.4 P2：左 / 上扩图不补偿图层，与 PLAN §4.4 冲突
+
+`planBaseSwap()` 对「比例变化」一律返回 `unsure` 并保持原坐标：
+
+```js
+// studio.js:6764
+return { scale: 1, dx: 0, dy: 0, unsure: true, sizeChanged: true };
+```
+
+但 PLAN §4.4 已经拍板：**向右 / 向下扩天然不动；向左 / 向上扩按扩展量 (dx, dy) 平移图层**。现在的实现里，左 / 上扩图后原图内容被推到右下，图层却停在左上，整组图层错位一个 padding（只给一句「可能需要手动微调」）。
+
+同样的问题在**结果预览**阶段：`aiPanel` 只把 `url` 交给画布（`showResult`），画布用 `fit = min(dw/doc.size.width, dh/doc.size.height)` 铺图层（`studio.js:3733-3741`），相当于假设「旧底图占满整张结果」，扩图预览时图层会被缩小并贴到左上角。
+
+**建议**
+
+扩图面板本来就有四向百分比（`outpaint.top/bottom/left/right`），提交时一并带给宿主即可：
+
+```js
+// aiPanel submit / recordAiResult / adoptResult
+const pad = {
+  left: Number(inputs['outpaint.left'] || 0),
+  top: Number(inputs['outpaint.top'] || 0),
+  right: Number(inputs['outpaint.right'] || 0),
+  bottom: Number(inputs['outpaint.bottom'] || 0),
+};
+```
+
+`planBaseSwap(target, nw, nh, pad)` 里在「比例不一致」之前先处理扩图：
+
+```js
+if (pad) {
+  const dx = Math.round(oldSize.width * pad.left / 100);
+  const dy = Math.round(oldSize.height * pad.top / 100);
+  return { scale: 1, dx, dy, unsure: false, sizeChanged: true };
+}
+```
+
+预览侧用同一组 padding 决定图层绘制偏移（`translate(px + dx*fit, py + dy*fit)`），预览与采用后的画面才一致。若本轮不想动 API，至少把提示文案改成「左/上扩图后图层不会自动平移」，别让用户以为是自己点错了。
+
+### 10.5 P2：选区擦空后不清选区，画笔「涂不上」
+
+`commitSelectionPaint()`（`studio.js:4294`）只同步 alpha，不检查空选区：
+
+```js
+selection.alpha = canvasToAlpha(selection.canvas);
+```
+
+用选区橡皮 `Q` 把选区全部擦掉后，`selection` 对象仍然存在（`updateSelectionUi` 显示「选区 0%」，`selbar` 还在），而 `stampMask` / `repairPaint` / `commitShapePaint` 都会用这份**全透明**选区做 `destination-in` → 画笔、修复、套索全部无效，只能按 Esc 清选区才恢复。
+
+**建议**
+
+```js
+function commitSelectionPaint() {
+  if (!selection?.canvas) return;
+  selection.alpha = canvasToAlpha(selection.canvas);
+  if (!selectionHasPixels(selection.alpha)) {
+    clearSelection();                 // 擦干净 = 取消选区
+    return;
+  }
+  ...
+}
+```
+
+（`selectionWidth/Height` 为 0 的边界也一并兜住。）
+
+---
+
+## 11. P3 清单（建议随手下改）
+
+| # | 位置 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| 1 | `studioDoc.js:216-221` | `redo()` 与 §1 的 `undo()` 同构：`restore()` 失败仍返回 `true` 并已把状态 push 回 `past` | 与 `undo()` 一起改，失败时把状态退回 `future` 并 toast |
+| 2 | `textLayer.js:102-113`、`:268-295` | 换主图等比放大 2× 后 `fontSize` 可 > 400、`strokeWidth` > 40；但每次 `snapshot()` 的 `layer.clone()` 会在构造器里夹回上限 → 撤销一次文字就变小/描边变细 | 夹取只放在 UI 输入处，或 `clone()` 时原样透传 |
+| 3 | `aiPanel.js:1866-1887` | 「设为新主图」成功后没有复位 `state.previewOn`，按钮仍写「回到主图」；再点一次会重新把旧结果盖到新主图上 | 与 `asLayerBtn` 一致：置 false、文案改回「画布预览」、`showResult(null)`（或直接调 `controller.exitPreview()`） |
+| 4 | `studio.js:3286-3292` | `enterBaseEdit()` 只判断 `preview.image`；预览图还在加载时（`preview.image === null`、`previewSeq` 已自增）不退出，加载完成后又盖住刚画的笔触 | 记录 `preview.pendingUrl`，或让 `enterBaseEdit()` 无条件 `++previewSeq` + `ai.exitPreview()` |
+| 5 | `studio.js:6772` | `afterBaseSwap()` 无条件 `selectionSets = []`：同尺寸换主图（AI 修图、切同尺寸版本）时，用户存的多组命名选区全部丢失 | 尺寸与原点都没变（`!plan.sizeChanged`）时保留，或给每组记 `baseKey` 在不可用时置灰 |
+| 6 | `studio.js:6958-6985`、`:6936-6939` | 快门缩略图在 `await canvasToBlob()` **之后**才 `drawLayers`，编码期间拖动图层会让缩略图与快照内容不一致；同函数 JSDoc 还写着「烘焙…图层」 | 先同步画好缩略图再 await 编码；顺手改注释 |
+| 7 | `studio.js:4474-4492` + `:1380-1383` | `syncLayersPanel()` 每次都重建 `segTarget / cutTarget` 的 `innerHTML`：撤销、切图层、AI 刷新都会触发，用户正展开下拉时会被关掉 | 只在 options 签名（id + name 列表 + 当前选中）变化时重建 |
+| 8 | `studio.js:4294-4300`、`selection.js:299-306`、`:349-356` | 选区每笔结束都 `canvasToAlpha`（整图 `getImageData`）+ `coverageAlpha`（8M 次循环）+ 蚂蚁线重建，4K 上明显掉帧 | 记录笔触 dirty bbox，只把该矩形写回 alpha；覆盖率增量维护 |
+| 9 | `studio.js:7793-7809` | 恢复工程把**所有**图层位图 + 蒙版同时解码，10 个 4K 图层峰值可达数百 MB（低端机 OOM 风险） | 并发上限 2–3（简单信号量），主图仍优先 |
+| 10 | `studio.js:3746-3761` | 预览图上按 `previewRect` 拉伸蒙版色纱：扩图 / 自定义比例时红色区域与内容错位（蒙版属于旧底图，不应该覆盖新补出来的区域） | 用「旧底图在预览中的矩形」绘制，比例差异过大时干脆不画并提示 |
+| 11 | `studioDoc.js:159-172`、`history.js:29-35` | `bytes` 只算 `mask`，`repair` 与各图层蒙版克隆都没计 → 256MB 预算实际可能吃 2–3 倍内存 | `bytes` 累加 `repair` 与 `layer.mask` 的尺寸，或按「内存预算 ÷ 系数」下调 |
+| 12 | `studio.js:10229-10231`、`:6683-6684` | 放大仍送 `doc.bake()`（含图层，结果被烘焙进新工程），而 `switchVersion` 把 `kind === 'upscale'` 一律当「不含图层」，`containsLayers` 标记与事实不符 | 统一改送 `bakeMain()`（与 AI 送图一致）；若保持现状，放大卡要写 `containsLayers: true` |
+| 13 | `studio.js:4836-4850` | 「SAM 不可用回退 BiRefNet」只包住 `api.segment()` 抛错；异步任务返回 `no_subject` / 空蒙版时不回退（点背景是常见误操作） | 在 `job.status !== 'done'` 或 `masks.length === 0` 且 `segMode === 'subject' && !segModel` 时重试一次 `mode: 'subject'` |
+| 14 | `studio.js:4766-4769` | 图层对象的点提示越界时被 clamp 到区域边缘，等于凭空加了一个边缘前景/排除点 | 越界点直接丢弃（记录丢弃数并提示「N 个点不在对象范围内」） |
+| 15 | `studio.js:9838-9860` + `cutTarget` | 抠图菜单的「对象」下拉只影响下一次分割；已有选区的抠图仍按 `selection.source` / 合成图取像，用户会以为下拉无效 | 要么下拉只放在主体选择条里，要么抠图时按当前「对象」重新取像（与 `selection.rect` 对齐） |
+
+---
+
+## 12. 本轮确认做得对的点
+
+- **SAM 3.1 提示组合**：前后端契约一致（点坐标 scale 到发送图、框转 xyxy 后统一 `max_side` 缩放），`manager` 在 `mode=text/points` 叠加框时统一 `clip_to_box`，语义是「框 = 范围限制」，与 UI 文案一致。
+- **选区空间重构**：`selection.rect / source` 在绘制（`studio.js:3765-3776`）、反选 / 羽化 / 扩展、转蒙版、抠图、批量导出这几处都正确换算了原点，`buildCutoutCanvas()` 也按 `baseRect / alphaRect` 重新取样，画布外图层可以正常抠图。
+- **结果预览绘制**：`previewRect` + 统一比例 `fit`（`min`）叠图层，比例不同不再把图层拉变形；`setPreview` 的 `previewSeq` 也堵住了旧请求覆盖新状态。
+- **换主图路径收敛**：`switchVersion()` / `adoptResult()` 共用 `planBaseSwap()` + `compensateLayersForBase()` + `afterBaseSwap()`，`sourceBlob`、`currentVersionId`、`containsLayers` 都同步了，没有再出现「刷新把旧源文件存回工程」。
+- **租约**：`visibilitychange` 回前台立即 `beat()`，配合 `storage` 兜底，「后台标签带着过期租约继续保存」的场景基本堵住。
+- **恢复工程**：主图与图层解码并行，4K 多图层恢复时间明显下降（代价见 §11-9 的内存峰值）。
+- **交互细节**：`pointerdown` 过滤右键/侧键、`pointerleave` 清光标、`blur` 复位空格平移与 `preview.flash`，都是有效的小修。
+
+---
+
+## 13. 本轮建议补的回归项
+
+1. **取消手势一致性**：触控笔涂抹蒙版时来电 / 切后台再回来 → 笔触与撤销栈必须一致（对应 §10.1）。
+2. **图层对象选区 + 涂抹**：选中画布外 / 裁剪外的图层 → 主体选择 → 切画笔 `B` / 污点修复涂抹 → 笔触应落在选区内（对应 §10.2）。
+3. **文字翻转**：左边缘文字 → 水平翻转 → 文字留在画布内且位置镜像；垂直翻转同理（对应 §10.3）。
+4. **左 / 上扩图**：设 20% 左扩 + 10% 上扩 → 设为新主图 → 图层随原内容平移（对应 §10.4）。
+5. **选区擦空**：选区橡皮擦光 → 切画笔 → 应能正常涂抹；Esc 前后行为一致（对应 §10.5）。
+6. **放大链路**：带图层的图放大 → 图层是否还在 / 是否出现重影（对应 §11-12）。
+
+---
+
+## 14. 第三轮建议处理顺序
+
+1. §2 的 `maskVersion / repairVersion` 两行补丁（已记录，一行修复，先落）；
+2. §10.1 `pointercancel` 回滚/提交 + §10.5 空选区清理（都是「文档与历史不同步」，一起改）；
+3. §10.2 选区 `rect` 收敛到 `selectionAlphaInDocSpace()`（影响画笔可用性）；
+4. §10.3 文字翻转（一行尺寸来源修正 + 阴影方向）；
+5. §10.4 扩图 padding（要动 aiPanel → studio 的参数，单独一次提交）；
+6. §11 里挑 1–3、4、12 三条顺手改，其余按用户反馈再排。
+
+---
+
+## 15. 第四轮审查（整改提交 `71d2ad0` / `9cb6872`）
+
+> 审查对象：`feat/studio-main-image-model` @ `71d2ad0`（与 `review/studio-main-image-model` @ `9cb6872` 的 `web/src` 完全一致，blob 相同）
+> 范围：只看这次整改新增/修改的代码，以及它和主图模型的交互；前三轮已记录、本次未动的不再重复。
+> 已执行：`node --check`（`studio.js` / `studioDoc.js` / `history.js` 全部通过）、`node --test web/tests/studio/*.test.mjs`（139 pass / 0 fail）。**注意：§15.2 是运行时 `ReferenceError`，语法检查与单测都覆盖不到。**
+
+### 15.1 整改复核
+
+| 评审项 | 现状 | 结论 |
+| --- | --- | --- |
+| §1 撤销跨旋转 | `baseId` + `_canRestore` + 指针回滚 + UI 提示 | 已修（但 `resetAll` 误用，见 §15.4） |
+| §2 重置 / 合并后蒙版复活 | 两处补版本号，保存缓存再比对画布引用 | 已修 |
+| §3 快照只按尺寸判归属 | 快照随 `baseId` 判归属，文案已改 | 已修 |
+| §4 `exportMainCanvas` 返回缓存引用 | `cloneCanvas` 副本 | 已修 |
+| §5-1 预览态同一笔落画布 | `pointerdown` 退出预览后直接 `return` | 已修 |
+| §5-3 `addOverlay` 整张合成 | 改读 `this.size` + crop 偏移 | 已修 |
+| §5-4 快照不计内存 | 上限 20 张 ✓，但计数会双向漂移 | 部分修（§15.9） |
+| §10.1 `pointercancel` 半成品 | 覆盖了像素类与 `moveLayer`，漏 3 个几何类 | 部分修（§15.6） |
+| §10.2 选区 `rect` 未进蒙版坐标 | `selectionAlphaInDocSpace()` 统一消费 | 已修 |
+| §10.3 文字翻转飞出画布 | `_localBounds()` + 阴影按轴取反 | 已修 |
+| §10.5 选区擦空后涂不上 | 清理了选区，但引入 null 赋值 | 有回归（§15.3） |
+| §11-1 / 3 / 4 / 6 / 11 | — | 已修 |
+| §11-5 同尺寸换主图丢选区组 | 只按 `sizeChanged` 判断 | 部分修（§15.8） |
+| §11-12 放大送合成图 | 改送 `bakeMain()`，但「载入为主图」路径没跟上 | 有回归（§15.7） |
+| §11-14 越界提示点 | 新增 `segmentPointWithin()`，但依赖的函数不存在 | 未生效且更糟（§15.2） |
+
+### 15.2 P1（阻断）：`segmentBounds()` 未定义，主体选择一按就抛错
+
+**现象**
+
+选中「主体选择」工具后，在画布上点一下（主体 / 点选）、Shift/Alt 加点、拖框，控制台立刻：
+
+```
+Uncaught ReferenceError: segmentBounds is not defined
+```
+
+画布没有任何反应，分割请求根本没发出去。等于主体选择、点选、框选、文字 + 框全部不可用。
+
+**根因**
+
+`studio.js:5620` 在进入任何模式分支之前先算了一次提示点判定：
+
+```js
+if (tool === 'segment') {
+  const at = segmentPoint(freePoint);
+  // 点提示不做夹取：夹到区域边缘会凭空多出一个「边缘前景点」，分割反而跑偏。
+  const hint = segmentPointWithin(freePoint);   // ← 所有 segment 模式都会走到
+```
+
+而 `segmentPointWithin()`（`studio.js:4158-4167`）内部调用的 `segmentBounds()` **全仓库只有这一处引用，没有定义、也没有 import**：
+
+```js
+function segmentPointWithin(rawPoint) {
+  const crop = doc?.transform.crop;
+  const box = segmentBounds();   // ← ReferenceError
+```
+
+这是本次为了修 §11-14 新加的函数，函数漏写了；`node --check` 只查语法、单测不加载 DOM，所以都没拦住。
+
+**建议**
+
+补一个与 `aiTargetSource()`（`studio.js:4631-4666`）同源的可分割区域，别再手写第二份边界计算：
+
+```js
+/** AI 这次真正能看到的区域（「旋转后未裁剪」空间）。 */
+function segmentBounds() {
+  const layer = aiTargetLayer();
+  if (layer) {
+    const b = layerBox(layer);
+    return {
+      x: Math.floor(b.x) - 2,
+      y: Math.floor(b.y) - 2,
+      width: Math.max(8, Math.ceil(b.width) + 4),
+      height: Math.max(8, Math.ceil(b.height) + 4),
+    };
+  }
+  const crop = doc?.transform.crop;
+  const oriented = doc?.oriented || { width: 0, height: 0 };
+  return crop
+    ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+    : { x: 0, y: 0, width: oriented.width, height: oriented.height };
+}
+```
+
+并让 `aiTargetSource()` 复用它的返回值作为 `region`：现在两处各写一遍（`-2` / `+4` / crop），一旦改了一边，就会变成"提示点判越界、送图区域却没变"的错位。
+
+### 15.3 P2：擦空选区后 `commitSelectionPaint()` 对 null 赋值
+
+**现象**
+
+选区橡皮 `Q` 把选区擦干净再松手（或手势被系统取消），控制台每次抛一次：
+
+```
+TypeError: Cannot set properties of null (setting 'docCanvas')
+```
+
+选区本身已经被清掉，但 `pointerup` / `pointercancel` 回调在这里中断，同一事件里后面的收尾（`updateHistoryUi` 等）会被跳过。
+
+**根因**（`studio.js:4345-4360`）
+
+```js
+if (!selectionHasPixels(selection.alpha)) {
+  clearSelection(true);        // ← 内部执行 selection = null
+  selection.docCanvas = null;  // ← TypeError
+  return;
+}
+```
+
+**建议**
+
+删掉 `selection.docCanvas = null;` 这一行（函数开头已经置过一次）。顺手补一条"擦空选区后松手"的用例（§15.12-2）。
+
+### 15.4 P2：`resetAll()` 自增 `baseId` → 「恢复原始图片」从此不可撤销
+
+**现象**
+
+点「恢复原始图片」→ 再按 Ctrl+Z 或撤销按钮：画面不动，弹「这一步属于上一张主图，无法撤销」；撤销按钮始终保持可用，点一次弹一次。之前存的命名快照也全部变成"属于上一张主图"，点了也不能恢复。
+
+**根因**
+
+`resetAll()`（`studioDoc.js:521-536`）里加了：
+
+```js
+this.maskVersion += 1;
+this.repairVersion += 1;
+this.baseId += 1;      // ← 但底图并没有换，也没清历史
+this.invalidateBase();
+this.snapshot();
+```
+
+而 `_canRestore()`（`studioDoc.js:267-270`）现在只认 `baseId`：
+
+```js
+_canRestore(state) {
+  if (!state || state.baseId === undefined) return true;
+  return state.baseId === this.baseId;
+}
+```
+
+`undo()` 恢复失败会把指针退回去并返回 false，UI 就弹那句"属于上一张主图"。但 `resetAll()` 只是清调色 / 裁剪 / 蒙版 / 图层，**底图没变**，本应是可正常撤销的一步，命名快照也理应继续有效。
+
+> 这次 §1 的整改方向是对的：只让"真的换底图"改 `baseId`。而 `replaceMainImage()`（`studioDoc.js:481-484`）与 `replaceBaseFromCanvas()`（`:885-890`）都会 `clearHistory()`，所以"恢复被拒"这个分支本来只该是防御性的；`resetAll()` 误加之后，它变成了每次重置后必现的用户可见问题。
+
+**建议**
+
+1. 去掉 `resetAll()` 里的 `this.baseId += 1;`，只保留 `maskVersion / repairVersion`（这两行是本次要的，别一起删）。
+2. 如果产品确实要求"恢复原始图片不可撤销"，就显式 `this.clearHistory()`，并把确认框文案改成"不可撤销"——不要让按钮变成点了没反应。
+3. 收紧语义：`baseId` 只应在 `replaceMainImage()` / `replaceBaseFromCanvas()`（真正换底图且 `clearHistory()`）里自增。
+
+### 15.5 P2：点提示换算丢掉 `label`（Alt 排除点全部变成正点）
+
+**现象**
+
+- 「点选」模式：按住 Alt 点几下，状态栏明确显示"已 N 点，含 M 个排除点"，但输出蒙版完全不排除这些点；
+- 「框选」模式：Shift 加点 / Alt 排除点同样失效，全部被当成前景点。
+
+**根因**（`studio.js:4825-4828`，消费点 `:4875`、`:4884`）
+
+```js
+// 点提示同样裁进发送图：落点可能在图层外，超出部分后端不认。
+const toViewPoint = (point) => ({
+  x: Math.max(0, Math.min(region.width, point.x - region.x)),
+  y: Math.max(0, Math.min(region.height, point.y - region.y)),
+});                                    // ← label 被丢掉
+...
+payload.points = toSendPoints(segPoints.map(toViewPoint), send.scale, null);
+```
+
+`toSendPoints()` 里是 `label: point?.label === 0 ? 0 : 1`；`label` 已是 `undefined`，于是全部按 1 发送。这是本次「按 region 偏移提示坐标」重构引入的回归——上一版是 `toSendPoints(segPoints, send.scale, crop)`，`label` 原样保留。
+
+**顺带一个边界问题**：上面用 `Math.min(region.width, …)` 夹取，允许正好取到 `width` / `height`（再乘 `send.scale` 后正好等于送图宽高）；而后端 `validate_points()`（`server/segmenters/maskops.py:76`）要求 `x < width && y < height` → 在右/下边缘点一下（或越界点被夹到边缘）会让**整次分割**报「取样点无效」，而不是忽略那一个点。
+
+**建议**
+
+```js
+const toViewPoint = (point) => ({
+  x: Math.max(0, Math.min(region.width - 0.5, point.x - region.x)),
+  y: Math.max(0, Math.min(region.height - 0.5, point.y - region.y)),
+  label: point.label === 0 ? 0 : 1,
+});
+```
+
+更好的做法：既然刚加了 `segmentPointWithin()`，区域外的点直接**丢弃**（含 Alt 点），不要夹取——夹取本身就是"边缘伪点"的来源。
+
+### 15.6 P2：`pointercancel` 仍漏掉三个「已经改过几何」的拖拽模式
+
+本次把已改像素的模式统一走 `endDrag()`、`moveLayer` 复位，方向是对的。但下面三个模式在 `pointermove` 里**已经就地改了文档**，既不在 `painted` 集合里、也没有复位逻辑：
+
+| 模式 | 拖动中改了什么 | `endDrag` 里的提交 |
+| --- | --- | --- |
+| `perspCorner`（`studio.js:6038-6048`） | 直接改 `layer.quad[drag.index]` | `doc.commitLayers()`（`:6187-6191`） |
+| `stickerScale`（`:6011-6021`） | `setStickerScale()` 改 `layer.scale` | `commitSticker()`（`:6192-6194`） |
+| `stickerRotate`（`:6023-6036`） | 改 `layer.rotation` | `commitSticker()` |
+
+于是触控笔/触屏手势被系统取消（来电、切后台、多指误触）时：画面已经变了，但既没有快照也没有回滚——和 §10.1 描述的问题一模一样，只是换了工具；自动保存还会把这个半成品写进工程。
+
+**建议**
+
+```js
+const commitModes = new Set([...painted, 'perspCorner', 'stickerScale', 'stickerRotate']);
+if (commitModes.has(mode)) {
+  endDrag();
+  return;
+}
+```
+
+两点补充：
+
+- `clone-blocked`（`studio.js:6248`）本来就没落笔，走 `endDrag()` 会 `doc.snapshot()` 多出一条无变化的撤销步，建议从集合里去掉；
+- 如果想做到"真正回滚"而不是"提交"，需要在 `pointerdown` 时就备份 `{ scale, rotation, quad }`（目前没有备份，`perspCorner` 只能提交）。
+
+### 15.7 P2：放大「载入为主图」仍是新工程，图层静默丢失
+
+**现象**
+
+带贴纸 / 文字 / 形状的图 → 放大 → 点「载入为主图」→ 进入的是一个**新工程**，只剩放大后的底图，图层全部消失，也没有任何提示或确认。
+
+**根因**
+
+这次把放大送图改成了主图（`studio.js:10345`，`doc.bakeMain()`，正确），但采用路径没改：
+
+```js
+// studio.js:10345-10348
+getImage: () => doc.bakeMain('image/png'),
+onAdopt: (url, name) => openUrl(url, name, { kind: 'upscale' }),
+```
+
+`openUrl()`（`studio.js:8266-8287`）内部是 `new StudioDoc()` + `beginProject()` + `setDoc()`，等价"新开一个工程"。改之前图层像素烘焙在放大图里，所以看起来"没丢"；现在不烘焙了，图层就真空了。而按钮文案是「载入为主图」，与本分支主张的「主图 = 仅底图，图层保留」直接冲突。
+
+**建议（二选一）**
+
+1. 走与 AI 结果相同的路径：抽一个 `adoptAsMain(url, name, { kind })`，内部复用 `planBaseSwap() + compensateLayersForBase() + replaceMainImage() + afterBaseSwap()`，再 `recordVersion(...)`。放大是等比尺寸变化，`planBaseSwap()` 的 `scale = nw / oldSize.width` 分支正好能把图层按倍数缩放（文字字号、形状宽高、透视 quad 都已覆盖）。
+2. 若产品就是要"放大 = 另存新工程"，把按钮改成「放大并新建工程」，并在确认框里写明"当前 N 个图层不会带过去"。
+
+### 15.8 P3：`afterBaseSwap()` 只在尺寸变化时清选区组，漏了「裁剪原点变化」
+
+`afterBaseSwap()` 现在是 `if (sizeChanged) selectionSets = []`（`studio.js:6870`）。但 `planBaseSwap()` 的第一个分支（`:6841`）在"新图尺寸 == 当前画面尺寸"时返回 `sizeChanged: false`，**同时 `dx/dy = -crop.x/-crop.y`**：
+
+```js
+// 新图尺寸 == 当前画面（裁剪后）
+return { scale: 1, dx: -(crop?.x || 0), dy: -(crop?.y || 0), unsure: false, sizeChanged: false };
+```
+
+因为 `replaceMainImage()` 会把 crop 清掉，图层与选区的坐标空间从「旋转后未裁剪」变成了「裁剪后」。结果：有裁剪时做一次同尺寸换主图（AI 修图、同尺寸版本卡），图层被正确平移了，但保存的选区组仍按旧原点解释 → 载入后整体偏移一个 crop 偏移。
+
+**建议**：给 plan 补 `originChanged: Boolean(dx || dy)`，`afterBaseSwap` 改成 `if (plan.sizeChanged || plan.originChanged) selectionSets = []`；或在 `replaceMainImage()` 里随 `baseId` 一起作废，语义更不容易漏。
+
+### 15.9 P3：命名快照计入 `history.bytes` 的方式会让预算双向漂移
+
+`addSnapshot(state)` 直接 `bytes += sizeOf(state)`（`history.js:95`），但 `StudioDoc.addSnapshot()`（`studioDoc.js:255-260`）传进来的就是 **`past` 里已经存在的那个 state 对象**：
+
+- 并存快照时没撤销 → 同一份状态被 `push()`（`history.js:54`）和 `addSnapshot()` 各算一次 → 预算虚高，`trim()` 提前裁掉撤销步（用户会觉得"只存了两张快照，撤销就少了好几步"）；
+- 之后 `undo()`（`:63`）又把这份 state 减一次，而快照仍持有它 → 预算虚低，`trim()` 不再裁，内存反而失控。
+
+另外 20 张 × 4K 全状态克隆（蒙版 + 修复 + 各图层蒙版）仍可能到几百 MB，`budget` 对快照完全没有约束。
+
+**建议**
+
+1. 计数与真实引用一致：`addSnapshot` 不计 `bytes`，但 `trim()` 的"总占用"里把 `snapshots` 的 `sizeOf` 也算进去（用 `Set` 对同一 state 去重）；
+2. 或让快照存自己的克隆（`cloneState(state)`）并只计一次，历史里那份被裁剪时不会漏计；
+3. 除 20 张上限外再给一个字节上限，超限提示用户删旧快照。
+
+### 15.10 P3：切回「旋转之前」的版本卡，图层方向和底图不一致
+
+**场景**：横图 → 向右旋转 90° → 在底部版本槽点最早那张「原始」卡。
+
+- `planBaseSwap()`（`studio.js:6836-6856`）先比 `nw/nh == oldSize`，再比 `nw/nh == oldOriented`。旋转 90° 且无裁剪时 `oldSize === oldOriented`（都是 H×W），而「原始」卡是 W×H，于是走比例分支：非方图返回 `unsure`，图层保持"旋转后"的坐标与自身 `rotation += 90`，而新底图已回到未旋转方向 → 画面上图层相对底图转了 90°。
+- 方图时 W == H，尺寸刚好相等，会走"完全匹配"分支（`unsure: false`），静默错位，连提示都没有。
+- 提示语仍是"尺寸变化较大，图层保持原坐标，可能需要手动微调"，用户很难联想到"方向不一致"。
+
+**建议**：`planBaseSwap` 明确识别"目标尺寸 == 当前 `sourceSize` 且 `transform.rotate % 360 !== 0`"，返回 `rotateDelta: -rotate`；`compensateLayersForBase` 按 `rotateDelta` 反向旋转图层几何（复用 `_rotateLayersBy90` 的中心映射）。本轮不做的话，至少把它标成 `unsure` 并把文案改成「图层方向与新主图不一致，可能需要手动旋转」。
+
+### 15.11 P3：其它小问题
+
+| # | 位置 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| 1 | `studio.js:4859`、`maskops.py:51` | 文字模式下框整体落在送图外 → `clampToSend` 得到 0 宽框 → 后端报「框选区域无效，请重新框选」，与"限制搜索范围"的语境不符，且会让整次请求失败 | `width/height < 3` 时干脆不带 `box`，前端先提示"框不在可分割范围内" |
+| 2 | `studio.js:9465-9475` | `commitTransform()` 先 `enterBaseEdit()` 再弹"会清空裁剪区域"确认框；用户取消时预览已经被关掉 | 把 `enterBaseEdit()` 挪到确认之后 |
+| 3 | `studio.js:5524-5529` | 有预览时 `BASE_EDIT_TOOLS` 内的工具任何按键都先退出预览并 `return`，中键（平移）也被吞掉，第一下拖不动 | 只在 `event.button === 0` 时拦截 |
+| 4 | `studio.js:6867-6890` | `afterBaseSwap()` 没清 `cloneAnchor / cloneOffset`（`setDoc()` 里有清，`:8313-8315`），换主图后仿制图章取样点仍指旧图坐标 | 一并清掉并 `syncCloneHint()` |
+| 5 | `aiPanel.js:1429`、`toast.js:70` | `toastWarn(msg, { timeout: 8000 })` 的第二个参数被 `toastWarn(message)` 丢掉，实际仍是 5.5s | 给 `toastWarn` 加 options 透传 |
+| 6 | `studio.js:2504-2516`、`:6393-6425` | `adoptResult()` 只校验 `openSeq`、不校验 `doc === owner`；而 `closeProject()` 不递增 `openSeq` → 关闭工程后迟到的结果会新建一个工程并写入 | 补 `const owner = doc;` 与 `if (doc !== owner) return null;` |
+
+### 15.12 本轮建议补的回归项
+
+1. **主体选择基本可用**：主体 / 点选 / 框选各点一下、Shift 加点、Alt 排除 → 不报错，排除点真的生效（§15.2、§15.5）。
+2. **选区橡皮擦空**：擦光后松手无报错；接着切画笔 `B` 能正常涂抹（§15.3）。
+3. **恢复原始图片**：点「恢复原始图片」→ Ctrl+Z 应完整回退，命名快照仍可恢复（§15.4）。
+4. **手势取消覆盖几何类**：透视四角拖动、贴纸缩放/旋转中切后台再回来 → 画面与撤销栈一致（§15.6）。
+5. **带图层放大**：「载入为主图」后图层是否保留（或至少明确告知会丢）（§15.7）。
+6. **先裁剪再 AI 修图**：裁剪成 4:3 → 同尺寸 AI 修图 → 载入已存选区组是否仍对齐（§15.8）。
+7. **快照与撤销预算**：连存 5 张命名快照 → 撤销步数不应骤减；删掉快照后预算应回落（§15.9）。
+8. **旋转后切版本**：旋转 90° → 切回「原始」卡 → 图层方向是否正确（§15.10）。
+
+### 15.13 建议处理顺序
+
+1. **§15.2**（补 `segmentBounds`）—— 不修则主体选择整套不可用；
+2. **§15.3**（删一行）—— 每次擦空选区都会抛错；
+3. **§15.4**（删 `baseId += 1`）—— 恢复"可撤销的重置"，顺带让快照恢复重新可用；
+4. **§15.5**（`label` + 边界）—— 点选/框选才能真正用上排除点；
+5. **§15.6 / §15.7**（一个补 `pointercancel` 集合，一个改放大采用路径）；
+6. §15.8–§15.11 按顺手程度合并进同一次提交。

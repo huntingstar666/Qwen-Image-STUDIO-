@@ -279,3 +279,43 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 2. **预览态命中测试**：命中换算仍按 `view.scale`，假设预览图与画面同比例。AI 输出通常同比例；比例不同时点选可能偏。
 3. **隐藏底图时送图仍含底图**：`bakeMain()` 语义是“主图”，与画布上的“隐藏底图”展示状态无关。
 4. **撤销不跨换主图**：换主图是原子操作，会清空撤销栈（见 §4.7）。
+
+---
+
+## 9. 彻底审查（第二轮，2026-11-10）
+
+三条线并行审查：几何/渲染（studioDoc、renderer、layers、textLayer、shapeLayer、adjustments）、交互与版本状态（studio.js）、AI 与持久化（aiPanel、persistence、segment、cutout、importPicker）。
+
+### 9.1 已修
+
+| # | 问题 | 位置 |
+| --- | --- | --- |
+| 1 | 旋转主图时错误交换 `flipH/flipV`：正确关系是 `R(θ+90)·S`，翻转轴不变 | `studioDoc._rotateLayersBy90()` |
+| 2 | 翻转时未取反旋转角：反射关系 `F·R(θ)=R(-θ)·F`，旋转图层朝向会错 | `studioDoc._flipLayerGeometry()` |
+| 3 | 直线/箭头按「中心+交换宽高」换算会变成另一条对角线 | 同上，改用端点映射 |
+| 4 | 修复层（污点修复/仿制）未减裁剪原点，导出与预览不一致 | `studioDoc._drawRepair()` |
+| 5 | 取样画布是裁剪后尺寸，但取样坐标是未裁剪空间 → 有裁剪时仿制/图案取样偏移 | `studioDoc.renderSample()` 临时去裁剪 |
+| 6 | 调色拖动预览重复画图层（`renderPreviewBase` 已含图层，draw 又画一遍） | `studio.js liveLayers` 恢复 `!adjustPreview` |
+| 7 | 「设为新主图」后未撤预览：画布仍显示预览，导出/复制持续被拦 | `adoptResult()` 末尾 `setPreview(null)` |
+| 8 | 撤销/重做后仍处于「图层蒙版编辑」，涂抹会落到主图蒙版 | undo/redo 清 `editingLayerMaskId` |
+| 9 | 合并到主图漏清选区/裁剪框/蒙版色纱/分割提示 | `mergeIntoBaseAction()` 补齐 |
+| 10 | 右键/侧键在画布上也会落笔、拉裁剪框 | `pointerdown` 只接受左/中键 |
+| 11 | `pointercancel` 直接提交本次操作（误落笔、多一条撤销步） | 改为丢弃 drag |
+| 12 | 预览加载异步竞态：旧请求完成会覆盖新状态 | `setPreview` 加请求序号 |
+| 13 | 按住 `\` 时切窗，回来永久停在底图并拦截导出 | `blur` 时清 `preview.flash` |
+| 14 | 有裁剪时蒙版 `size` 报未裁剪尺寸，与 `maskPng()` 实际尺寸不一致 | `submissionMask()` 用 `maskCanvas()` 尺寸 |
+| 15 | 「设为新主图」自建卡缺 `containsLayers`（与 `recordAiResult` 竞态） | `adoptResult()` 建卡带标记 |
+| 16 | 隐藏图层后选中集/蒙版编辑残留 | `toggleLayerVisible()` 同步清理 |
+| 17 | 恢复工程时待应用的裁剪框被 `setDoc` 清空，刷新后丢失 | `applyRestore()` 调整赋值顺序并 `syncCropOverlay()` |
+| 18 | 出图期间切换工程，旧结果会写进新工程 | AI `onDone` 校验 `projectId` |
+| 19 | 换主图后命名快照仍可恢复，图层坐标/蒙版尺寸错位 | 快照记录 `oriented` 尺寸，维度不符拒绝恢复并提示 |
+| 20 | 旋转图层的 `bounds()` 与文字层命中忽略旋转：选中框错、AI 区域截角、点不中 | `OverlayLayer.bounds()` 返回外接盒；`TextLayer` 外接盒 + 反旋转命中 |
+
+### 9.2 待办（已确认但本轮未改）
+
+1. **文字层翻转不镜像**：`TextLayer` 没有 `flipH/flipV` 绘制支持，翻转主图时文字位置镜像、字形不镜像。
+2. **「作为新图层」尺寸适配**：`sizeMode=ratio/custom` 或扩图时结果尺寸 ≠ 主图，蒙版按 `iw/ih` 硬拉伸，修改区域会错位。
+3. **自动保存整条重写（性能）**：`maskBlob` 每次新建对象，签名必然变化，有蒙版时每次保存都判定主图变更。
+4. **租约后台节流**：标签页后台心跳约 1 次/分，超过 12s TTL 可能被另一标签接管（需多标签真机验证）。
+5. **预览态下的编辑入口**：旋转/裁剪/调色/笔刷未统一拦截或提示，改的是不可见底图，观感像“没生效”。
+6. **移除预设降级**：选「元素移除」会自动写入显式 `task`，无蒙版降级后仍按 `remove` 提交，需后端确认是否导致“移除没生效”。

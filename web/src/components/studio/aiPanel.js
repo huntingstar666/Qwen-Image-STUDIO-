@@ -1382,6 +1382,8 @@ export function mountAiPanel(host, ctx) {
       sampling: sampling(),
       task,
     });
+    // 记下提交时的工程：出图回调如果已经换了工程，结果不能写进新工程。
+    const projectAtSubmit = ctx.getProjectId?.() || '';
 
     state.busy = true;
     state.previewOn = false;
@@ -1414,6 +1416,11 @@ export function mountAiPanel(host, ctx) {
         onDone: (job) => {
           state.busy = false;
           syncBusy();
+          // 出图期间切了工程 / 关掉了工程：结果不能落到新工程画布或历史里。
+          if ((ctx.getProjectId?.() || '') !== projectAtSubmit) {
+            toastWarn('出图期间已切换工程，本次结果未写入当前工程');
+            return;
+          }
           const image = job?.images?.[0];
           if (!image) return;
           const url = api.fileUrl(image.url || image.path || '');

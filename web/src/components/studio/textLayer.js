@@ -129,8 +129,8 @@ export class TextLayer {
     return String(this.text ?? '').split('\n');
   }
 
-  /** 文字包围盒（文档坐标，未考虑旋转）。 */
-  bounds() {
+  /** 未旋转的文字包围盒（文档坐标）。 */
+  _localBounds() {
     const ctx = measureContext();
     ctx.font = this.font;
     const lines = this.lines();
@@ -156,10 +156,50 @@ export class TextLayer {
     };
   }
 
+  /** 文字包围盒：绕锚点 (x,y) 旋转后的外接盒。 */
+  bounds() {
+    const box = this._localBounds();
+    const rotation = Number(this.rotation) || 0;
+    if (!rotation) return box;
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const corners = [
+      [box.x, box.y],
+      [box.x + box.width, box.y],
+      [box.x + box.width, box.y + box.height],
+      [box.x, box.y + box.height],
+    ].map(([px, py]) => {
+      const dx = px - this.x;
+      const dy = py - this.y;
+      return { x: this.x + dx * cos - dy * sin, y: this.y + dx * sin + dy * cos };
+    });
+    const xs = corners.map((point) => point.x);
+    const ys = corners.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+  }
+
   hitTest(px, py) {
     if (this.locked || this.visible === false) return false;
-    const box = this.bounds();
-    return px >= box.x && py >= box.y && px <= box.x + box.width && py <= box.y + box.height;
+    const box = this._localBounds();
+    let x = px;
+    let y = py;
+    const rotation = Number(this.rotation) || 0;
+    if (rotation) {
+      // 反旋转到文字本地坐标再判矩形，旋转后的文字才点得准。
+      const rad = (-rotation * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const dx = px - this.x;
+      const dy = py - this.y;
+      x = this.x + dx * cos - dy * sin;
+      y = this.y + dx * sin + dy * cos;
+    }
+    return x >= box.x && y >= box.y && x <= box.x + box.width && y <= box.y + box.height;
   }
 
   draw(ctx) {

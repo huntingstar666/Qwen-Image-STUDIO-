@@ -155,6 +155,8 @@ export class StudioDoc {
     const state = {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       adjust: { ...this.adjust },
+      // 记录当时的整图尺寸：换主图后旧快照尺寸对不上，恢复会错位，需拒绝。
+      oriented: { width: this.oriented.width, height: this.oriented.height },
       mask: cloneCanvas(this.mask),
       /** 污点修复层（D10.1）：透明 = 未修，像素 = 已修 */
       repair: this.repair ? cloneCanvas(this.repair) : null,
@@ -168,6 +170,7 @@ export class StudioDoc {
   }
 
   restore(state) {
+    if (!this._canRestore(state)) return false;
     this.transform = { ...state.transform, crop: state.transform.crop ? { ...state.transform.crop } : null };
     this.adjust = { ...state.adjust };
     this.mask = cloneCanvas(state.mask);
@@ -179,6 +182,7 @@ export class StudioDoc {
     this._clean = null;
     this._tint = null;
     this._maskHas = null;
+    return true;
   }
 
   get canUndo() {
@@ -226,10 +230,21 @@ export class StudioDoc {
     return this._history.addSnapshot(state, name);
   }
 
+  /**
+   * 快照属于哪张主图：尺寸不一致时不能恢复。
+   * 换主图后旧快照里的图层坐标 / 蒙版尺寸都是上一张图的，硬恢复会整体错位。
+   */
+  _canRestore(state) {
+    const target = state?.oriented;
+    if (!target) return true;
+    return target.width === this.oriented.width && target.height === this.oriented.height;
+  }
+
   /** 回跳到命名快照：先把当前状态入栈，所以回跳本身也能撤销。 */
   restoreSnapshot(id) {
     const item = this._history.findSnapshot(id);
     if (!item) return false;
+    if (!this._canRestore(item.state)) return false;
     this.snapshot();
     this.restore(item.state);
     return true;
@@ -332,22 +347,20 @@ export class StudioDoc {
       }
       const w = layer.width || 0;
       const h = layer.height || 0;
-      const center = mapPoint(layer.x + w / 2, layer.y + h / 2);
       if (layer.isShape) {
-        layer.width = h;
-        layer.height = w;
-        layer.x = center.x - h / 2;
-        layer.y = center.y - w / 2;
+        // 形状（含直线 / 箭头）用两个端点映射：
+        // 「中心 + 交换宽高」会把斜线换到另一条对角线，方向直接反了。
+        const p1 = mapPoint(layer.x, layer.y);
+        const p2 = mapPoint(layer.x + w, layer.y + h);
+        layer.x = p1.x;
+        layer.y = p1.y;
+        layer.width = p2.x - p1.x;
+        layer.height = p2.y - p1.y;
         return;
       }
+      const center = mapPoint(layer.x + w / 2, layer.y + h / 2);
       const nextRotation = ((Number(layer.rotation) || 0) + (direction > 0 ? 90 : -90)) % 360;
       layer.rotation = nextRotation < 0 ? nextRotation + 360 : nextRotation;
-      // 90° 旋转会把水平翻转轴换到垂直方向，否则两者叠加顺序不同会镜像错。
-      if (layer.flipH !== undefined || layer.flipV !== undefined) {
-        const flipH = layer.flipH;
-        layer.flipH = layer.flipV;
-        layer.flipV = flipH;
-      }
       layer.x = center.x - w / 2;
       layer.y = center.y - h / 2;
     });
@@ -375,8 +388,26 @@ export class StudioDoc {
       }
       const w = layer.width || 0;
       const h = layer.height || 0;
+      if (layer.isShape) {
+        // 端点镜像：斜线/箭头翻转后方向才对。
+        const p1 = { x: axis === 'h' ? W - layer.x : layer.x, y: axis === 'v' ? H - layer.y : layer.y };
+        const p2 = {
+          x: axis === 'h' ? W - (layer.x + w) : layer.x + w,
+          y: axis === 'v' ? H - (layer.y + h) : layer.y + h,
+        };
+        layer.x = p1.x;
+        layer.y = p1.y;
+        layer.width = p2.x - p1.x;
+        layer.height = p2.y - p1.y;
+        return;
+      }
       const cx = layer.x + w / 2;
       const cy = layer.y + h / 2;
+      // 反射关系 F·R(θ)=R(-θ)·F：整图翻转 = 旋转角取反 + 图层自身对应轴翻转。
+      if (layer.rotation !== undefined) {
+        const flipped = -Number(layer.rotation || 0);
+        layer.rotation = ((flipped % 360) + 360) % 360;
+      }
       if (axis === 'h') {
         if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
         layer.x = W - cx - w / 2;
@@ -588,11 +619,13 @@ export class StudioDoc {
   /** 修复内容画进底图合成（在调色/LUT 之后、叠加层之前）。 */
   _drawRepair(ctx) {
     if (!this.repair) return;
+    const crop = this.transform.crop;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.drawImage(this.repair, 0, 0);
+    // repair 与蒙版一样存「旋转后未裁剪」空间，而目标画布是裁剪后尺寸，必须减去裁剪原点。
+    ctx.drawImage(this.repair, -(crop?.x || 0), -(crop?.y || 0));
     ctx.restore();
   }
 
@@ -604,19 +637,29 @@ export class StudioDoc {
   renderSample() {
     const repair = this.repair;
     const underlay = this._underlay;
+    const clean = this._clean;
+    const base = this._base;
+    const crop = this.transform.crop;
     this.repair = null;
     this._underlay = null;
-    let clean;
+    // 取样坐标是「旋转后未裁剪」空间（仿制/图案都是按整图坐标落点），
+    // 这里临时去掉裁剪渲染整张，避免有裁剪时取样整体偏移。
+    this._clean = null;
+    this._base = null;
+    this.transform.crop = null;
+    let sample;
     try {
-      const base = this.renderUnderlay();
-      clean = makeCanvas(base.width, base.height);
-      // 图层坐标是「旋转后未裁剪」空间，取样时不做裁剪平移。
-      composite(clean.getContext('2d'), base, this.layers, { crop: null, groups: this.groups });
+      const under = this.renderUnderlay();
+      sample = makeCanvas(under.width, under.height);
+      composite(sample.getContext('2d'), under, this.layers, { crop: null, groups: this.groups });
     } finally {
       this.repair = repair;
       this._underlay = underlay;
+      this._clean = clean;
+      this._base = base;
+      this.transform.crop = crop;
     }
-    return clean;
+    return sample;
   }
 
   rotateRepairRight() {

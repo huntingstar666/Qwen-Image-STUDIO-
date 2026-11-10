@@ -1309,11 +1309,17 @@ export function createStudioPage(host) {
       && sel.height === mask.height
       && selectionHasPixels(sel.alpha);
     if (!canMerge) {
+      if (!stats.has) {
+        return { dataUrl: null, size: doc.maskSize, coverage: 0, has: false };
+      }
+      // 有裁剪时 maskPng 输出的是裁剪后尺寸，size 必须报同一张图的尺寸，
+      // 否则后端按 size 定位蒙版会整体偏移。
+      const canvas = doc.maskCanvas();
       return {
-        dataUrl: stats.has ? doc.maskPng() : null,
-        size: doc.maskSize,
-        coverage: stats.has ? stats.coverage : 0,
-        has: stats.has,
+        dataUrl: canvas.toDataURL('image/png'),
+        size: { width: canvas.width, height: canvas.height },
+        coverage: stats.coverage,
+        has: true,
       };
     }
     const layer = makeCanvas(mask.width, mask.height);
@@ -1909,6 +1915,15 @@ export function createStudioPage(host) {
     selectedLayerIds.clear();
     selectedGroupId = '';
     editingLayerMaskId = '';
+    // 合并后坐标空间没变，但选区 / 裁剪框 / 蒙版色纱都属于合并前的画面，必须作废。
+    selectionSets = [];
+    cropRect = null;
+    refs.cropbar.hidden = true;
+    clearSelection(true);
+    resetSegmentHints();
+    tint = null;
+    tintDirty = true;
+    tintRect = null;
     baseVisible = true;
     refs.stage.classList.remove('is-base-hidden');
     refs.fileName.textContent = doc.name;
@@ -2422,6 +2437,10 @@ export function createStudioPage(host) {
       return Boolean(doc?.hasMask?.())
         || Boolean(selection && selectionHasPixels(selection.alpha));
     },
+    /** 当前工程 id：AI 面板用它识别「出图时工程已被切换」。 */
+    getProjectId() {
+      return projectId || '';
+    },
     getSource({ includeLayers = false } = {}) {
       if (!doc) return null;
       const size = doc.size;
@@ -2489,6 +2508,9 @@ export function createStudioPage(host) {
             }
           }
           afterBaseSwap(plan);
+          // 主图已经换成结果，预览必须立刻撤掉；否则画布仍画预览、
+          // 导出/复制又被 previewBlocked 拦住，提示还让用户「先点设为新主图」。
+          setPreview(null);
           result = { width: doc.size.width, height: doc.size.height, name: doc.name };
           if (meta.containsLayers && keptLayers) {
             toastWarn(
@@ -2525,6 +2547,8 @@ export function createStudioPage(host) {
               width: meta.width || 0,
               height: meta.height || 0,
               resultUrl: url,
+              // 结果是否已含图层像素：切回这张卡时据此提示重复。
+              containsLayers: Boolean(meta.containsLayers),
             },
           });
         }
@@ -2751,7 +2775,12 @@ export function createStudioPage(host) {
       const nextVisible = layers[0].visible === false;
       for (const layer of layers) {
         layer.visible = nextVisible;
-        if (!nextVisible && selectedLayerId === layer.id) selectedLayerId = null;
+        if (!nextVisible) {
+          if (selectedLayerId === layer.id) selectedLayerId = null;
+          selectedLayerIds.delete(layer.id);
+          // 正在编辑的图层被隐藏时退出蒙版编辑，否则涂抹会落到主图蒙版上。
+          if (editingLayerMaskId === layer.id) editingLayerMaskId = '';
+        }
       }
       doc.touchLayers();
       doc.commitLayers();
@@ -3177,7 +3206,12 @@ export function createStudioPage(host) {
   syncLayersForWidth();
   syncLayersPanel();
 
+  let previewSeq = 0;
+
   function setPreview(url) {
+    // 连续切换（连点预览按钮、加载中又切版本）时只认最后一次请求，
+    // 否则旧图加载完会把新状态覆盖回去。
+    const seq = ++previewSeq;
     if (!url) {
       preview = { url: '', image: null, flash: false };
       scheduleDraw();
@@ -3185,10 +3219,14 @@ export function createStudioPage(host) {
     }
     loadImage(url)
       .then((image) => {
+        if (seq !== previewSeq) return;
         preview = { url, image, flash: false };
         scheduleDraw();
       })
-      .catch((err) => toastError(err, '结果预览加载失败'));
+      .catch((err) => {
+        if (seq !== previewSeq) return;
+        toastError(err, '结果预览加载失败');
+      });
   }
 
   /* ============================================================
@@ -3573,6 +3611,8 @@ export function createStudioPage(host) {
     // 有图层时始终走「底图缓存 + 实时绘制图层」，与拖动中的预览路径完全一致，
     // 避免 renderBase 缓存与图层状态不同步导致「只有按住鼠标才显示」。
     const liveLayers =
+      // 调色拖动时 renderPreviewBase 已经包含图层（完整合成），这里不能再叠一遍。
+      !adjustPreview &&
       doc.baseVisible !== false &&
       doc.layers.length > 0 &&
       // 调整层会改写已合成内容，不能走这条捷径（D9.3）。
@@ -5357,6 +5397,8 @@ export function createStudioPage(host) {
 
   refs.canvas.addEventListener('pointerdown', (event) => {
     if (!doc) return;
+    // 右键 / 侧键不落笔：右键菜单交给 contextmenu，中键保留给平移。
+    if (event.button !== 0 && event.button !== 1) return;
     // 合成事件 / 触控笔拿不到活动指针时 setPointerCapture 会抛错，
     // 一旦抛出后面的绘制逻辑全被跳过（手绘工具会「点了没反应」）。
     try {
@@ -6058,7 +6100,14 @@ export function createStudioPage(host) {
   }
 
   refs.canvas.addEventListener('pointerup', endDrag);
-  refs.canvas.addEventListener('pointercancel', endDrag);
+  refs.canvas.addEventListener('pointercancel', () => {
+    // 系统取消手势（来电、手势冲突、触控笔抬起异常）时丢弃本次操作：
+    // 不能走 endDrag 的提交分支，否则会误落笔、误拉裁剪框并多一条撤销步。
+    drag = null;
+    dragRect = null;
+    cursor = null;
+    scheduleDraw();
+  });
   refs.canvas.addEventListener('pointerleave', () => {
     cursor = null;
     scheduleDraw();
@@ -7842,13 +7891,15 @@ export function createStudioPage(host) {
       projectId = saved.project.id;
       projectCreatedAt = saved.project.createdAt || Date.now();
       sourceBlob = base.bitmapBlob;
-      cropRect = session.cropRect ? { ...session.cropRect } : null;
       startLease(projectId);
 
       setDoc(next, { restore: true, fit: false, tool: session.activeTool, baseVisible: session.baseVisible !== false });
+      // setDoc 内部会把 cropRect 置空（换图现场作废），所以待应用的裁剪框要在它之后恢复。
+      cropRect = session.cropRect ? { ...session.cropRect } : null;
       if (cropRect) {
         refs.cropbar.hidden = false;
         refs.cropInfo.textContent = `${Math.round(cropRect.width)} × ${Math.round(cropRect.height)}`;
+        syncCropOverlay();
       }
       await restoreVersions(session);
       if (session.activeTab) {
@@ -9090,7 +9141,10 @@ export function createStudioPage(host) {
     const jump = event.target.closest('[data-snap-jump]');
     if (jump) {
       const item = doc?.snapshots.find((entry) => entry.id === jump.dataset.snapJump);
-      if (item && doc.restoreSnapshot(item.id)) afterSnapshotJump(item.name);
+      if (item) {
+        if (doc.restoreSnapshot(item.id)) afterSnapshotJump(item.name);
+        else toastWarn('这张快照属于换主图之前的画面，尺寸对不上，无法恢复');
+      }
       return;
     }
     const del = event.target.closest('[data-snap-del]');
@@ -10108,6 +10162,8 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       selectedLayerIds.clear();
       selectedGroupId = '';
+      // 撤销可能把「正在编辑的图层蒙版」撤没了；不清空会继续涂到主图蒙版上。
+      editingLayerMaskId = '';
       syncLayerProps();
       syncLayersPanel();
       ai?.refresh?.();
@@ -10126,6 +10182,7 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       selectedLayerIds.clear();
       selectedGroupId = '';
+      editingLayerMaskId = '';
       syncLayerProps();
       syncLayersPanel();
       ai?.refresh?.();
@@ -10880,9 +10937,18 @@ export function createStudioPage(host) {
     releaseSpacePan();
   }
 
+  /** 失焦兜底：松开空格、退出「按住 \ 看底图」的临时状态。 */
+  function onWindowBlur() {
+    releaseSpacePan();
+    if (preview.flash) {
+      preview.flash = false;
+      scheduleDraw();
+    }
+  }
+
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', releaseSpacePan);
+  window.addEventListener('blur', onWindowBlur);
   window.addEventListener('paste', onPaste);
 
   /* ---------------------------------------------------------- 尺寸与交接 */
@@ -11014,7 +11080,7 @@ export function createStudioPage(host) {
       editingLayerMaskId = '';
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', releaseSpacePan);
+      window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('paste', onPaste);
       document.removeEventListener('click', onDocumentClick);

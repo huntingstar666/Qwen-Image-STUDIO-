@@ -133,7 +133,20 @@ export class OverlayLayer {
 
   bounds() {
     if (this.quad) return quadBounds(this.quad);
-    return { x: this.x, y: this.y, width: this.width, height: this.height };
+    const width = this.width;
+    const height = this.height;
+    const rotation = Number(this.rotation) || 0;
+    if (!rotation) return { x: this.x, y: this.y, width, height };
+    // 旋转图层返回外接盒：选中框与 AI 送图区域都按它取，
+    // 否则旋转后的内容会被裁掉一角（draw 以中心旋转，x/y 只是未旋转包围盒左上角）。
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(rad));
+    const sin = Math.abs(Math.sin(rad));
+    const boxWidth = width * cos + height * sin;
+    const boxHeight = width * sin + height * cos;
+    const cx = this.x + width / 2;
+    const cy = this.y + height / 2;
+    return { x: cx - boxWidth / 2, y: cy - boxHeight / 2, width: boxWidth, height: boxHeight };
   }
 
   hitTest(px, py) {

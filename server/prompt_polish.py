@@ -372,9 +372,15 @@ def _call_model(
 ) -> str:
     """调 ``client.chat``；``think=false`` 抑制 qwen3.5 的思考段。
 
+    云端档案的「最大输出」是用户显式设置，不能被采样常量压回去：
+    客户端带 ``max_tokens`` 时，取常量与档案值中的较大者作为本次预算。
+
     兼容没有 ``think`` 参数的客户端实现：TypeError 时退一步重试。
     """
     kwargs = dict(sampling)
+    profile_cap = getattr(client, "max_tokens", None)
+    if profile_cap:
+        kwargs["num_predict"] = max(int(kwargs.get("num_predict") or 0), int(profile_cap))
     if json_mode:
         kwargs["format"] = "json"
     try:

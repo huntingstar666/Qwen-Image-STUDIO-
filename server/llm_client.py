@@ -330,8 +330,9 @@ class OpenAICompatClient:
 
         * **图片不被支持**：带图请求收到 400 时去掉图片重试，并缓存该模型不支持读图；
         * **思考型模型吃光预算**：``finish_reason=length`` 且只有 reasoning_content
-          时，按 2 倍追加输出预算重试（首次预算由 ``num_predict`` 与档案
-          ``max_tokens`` 取小；追加上限 ``HARD_MAX_TOKENS``），避免正文永远为空。
+          时，按 2 倍追加输出预算重试（首次预算取 ``num_predict`` 与档案
+          ``max_tokens`` 的较小值；``prompt_polish`` 会把档案值作为下限，
+          所以在设置里调大的预算不会被采样常量压回去），追加上限 ``HARD_MAX_TOKENS``。
         """
         if not model:
             raise LLMError("未指定模型", code="not_found",

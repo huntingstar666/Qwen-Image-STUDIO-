@@ -303,6 +303,16 @@ def test_polish_sampling_parameters_by_mode():
     assert edit_fake.calls[0]["messages"][0]["content"] == pp.load_system_prompt("edit")
 
 
+def test_polish_uses_profile_max_tokens_when_larger():
+    """云端档案把「最大输出」调大后，不能被采样常量 4096 压回去。"""
+    class CapClient(FakeClient):
+        max_tokens = 8192
+
+    fake = CapClient(content=_json_content("x"))
+    pp.polish("一只猫", client=fake)
+    assert fake.calls[0]["kwargs"]["num_predict"] == 8192
+
+
 def test_polish_json_mode_can_be_disabled():
     fake = FakeClient(content="plain text paragraph")
     pp.polish("一只猫", client=fake, json_mode=False)

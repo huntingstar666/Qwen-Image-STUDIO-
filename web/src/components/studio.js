@@ -412,6 +412,8 @@ export function createStudioPage(host) {
   /* D8.1 选区：alpha 缓冲与画布同 doc.mask（旋转后、未裁剪坐标） */
   let selection = null;
   let selPath = null;
+  /** 选区画笔落在「当前层没有像素」的位置时，诊断 toast 的节流时间戳。 */
+  let selectionMissToastAt = 0;
   let antsTimer = 0;
   let antsOffset = 0;
   let wand = { tolerance: 32, contiguous: true };
@@ -1627,7 +1629,7 @@ export function createStudioPage(host) {
   }
 
   /** 统一选中入口：普通 / Ctrl(Cmd) 加选 / Shift 连选。 */
-  function selectLayerById(id, { additive = false, range = false, keepTool = false } = {}) {
+  function selectLayerById(id, { additive = false, range = false, keepTool = false, announceOffscreen = false } = {}) {
     if (!doc || !id) return;
     selectedGroupId = '';
     baseSelected = false;
@@ -1660,7 +1662,10 @@ export function createStudioPage(host) {
     // 用 AI 主体选择时点选图层也不切工具：切换会顺带清空提示并收起主体选择条，
     // 导致「选图层 → 想框选」时框根本画不出来。
     const keepSegment = !keepTool && tool === 'segment' && !layer?.isAdjustment;
-    if (!layer?.isAdjustment && !keepTool && !keepSegment) setTool('move');
+    // 选区类工具（魔棒 / 选区画笔 / 橡皮）的取色与范围依赖「当前选中图层」：
+    // 在面板里换层时保留工具，否则用户点完图层就得重新按 I / W，像是「选区画笔选不了其他图层」。
+    const keepSelectTool = SELECT_BRUSH_TOOLS.has(tool) || WAND_TOOLS.has(tool);
+    if (!layer?.isAdjustment && !keepTool && !keepSegment && !keepSelectTool) setTool('move');
     // AI 主体选择下点图层 = 明确指定这一层为对象，并恢复「跟随选择」，
     // 否则之前手动选过「合成图」后会一直停在合成图，怎么选图层都扣主图。
     if (keepSegment && layer) {
@@ -1692,6 +1697,14 @@ export function createStudioPage(host) {
     syncLayerProps();
     scheduleDraw();
     syncLayersPanel();
+    // 面板点选到「视野外」的图层时给一个定位入口：否则用户会对着可见的主图涂，
+    // 选区画笔按当前层裁切，结果永远是 0%（§23.2-12）。
+    if (announceOffscreen && layer && !isLayerOnScreen(layer)) {
+      toast(`「${layer.name}」不在当前视野内`, 'warn', {
+        timeout: 8000,
+        action: { label: '定位', onClick: () => focusLayerBounds(layer) },
+      });
+    }
   }
 
   /** 当前操作作用于哪些图层：点在多选内 → 全部选中，否则只作用该层。 */
@@ -3841,20 +3854,23 @@ export function createStudioPage(host) {
   /** 预览层的图层裁剪蒙版（屏幕坐标）：选区笔迹只显示在图层可见像素上。 */
   function buildPreviewClip(layer) {
     if (!doc || !refs.selPreview || !layer) return null;
-    const rendered = doc.renderLayer(layer.id);
+    const rect = selection?.rect || { x: 0, y: 0, width: doc.size.width, height: doc.size.height };
+    const width = selection?.width || rect.width;
+    const height = selection?.height || rect.height;
+    // 选区可能覆盖主图画布之外的图层区域：按选区自己的区域渲染，再贴到屏幕对应位置。
+    const rendered = doc.renderLayer(layer.id, {
+      region: { x: rect.x, y: rect.y, width, height },
+    });
     if (!rendered) return null;
     const overlay = refs.selPreview;
     const canvas = makeCanvas(overlay.width, overlay.height);
     const cctx = canvas.getContext('2d');
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cctx.drawImage(
-      rendered,
-      view.x,
-      view.y,
-      doc.size.width * view.scale,
-      doc.size.height * view.scale,
-    );
+    const crop = doc.transform.crop;
+    const sx = view.x + (rect.x - (crop?.x || 0)) * view.scale;
+    const sy = view.y + (rect.y - (crop?.y || 0)) * view.scale;
+    cctx.drawImage(rendered, sx, sy, width * view.scale, height * view.scale);
     return canvas;
   }
 
@@ -3913,6 +3929,54 @@ export function createStudioPage(host) {
     updateZoomLabel();
     scheduleDraw();
     scheduleSave(1500);
+  }
+
+  /** 图层外框在「旋转后未裁剪」文档坐标里的矩形。 */
+  function layerDocBox(layer) {
+    if (!layer) return null;
+    return typeof layer.bounds === 'function'
+      ? layer.bounds()
+      : { x: layer.x || 0, y: layer.y || 0, width: layer.width || 0, height: layer.height || 0 };
+  }
+
+  /** 图层当前是否与可视区相交（用来提示「图层不在视野内」）。 */
+  function isLayerOnScreen(layer) {
+    if (!doc || !layer) return true;
+    const box = layerDocBox(layer);
+    if (!box) return true;
+    const crop = doc.transform.crop;
+    const x = view.x + (box.x - (crop?.x || 0)) * view.scale;
+    const y = view.y + (box.y - (crop?.y || 0)) * view.scale;
+    const width = box.width * view.scale;
+    const height = box.height * view.scale;
+    const cw = refs.canvas?.clientWidth || stageEl.clientWidth;
+    const ch = refs.canvas?.clientHeight || stageEl.clientHeight;
+    return x < cw && y < ch && x + width > 0 && y + height > 0;
+  }
+
+  /** 把视口移到图层外框：主图之外摆放的图层也能立刻看到并继续用选区画笔。 */
+  function focusLayerBounds(layer) {
+    if (!doc || !layer) return false;
+    const rect = stageEl.getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) return false;
+    const box = layerDocBox(layer);
+    if (!box || box.width < 1 || box.height < 1) return false;
+    const pad = 48;
+    const scale = Math.min(
+      (rect.width - pad) / box.width,
+      (rect.height - pad) / box.height,
+      1.6,
+    );
+    view.scale = Math.max(0.02, scale);
+    const crop = doc.transform.crop;
+    const cx = box.x + box.width / 2 - (crop?.x || 0);
+    const cy = box.y + box.height / 2 - (crop?.y || 0);
+    view.x = rect.width / 2 - cx * view.scale;
+    view.y = rect.height / 2 - cy * view.scale;
+    updateZoomLabel();
+    scheduleDraw();
+    scheduleSave(300);
+    return true;
   }
 
   /** 当前视口里的画面是否还看得见：恢复工程时用来兜底过小/过偏的视口。 */
@@ -4366,6 +4430,40 @@ export function createStudioPage(host) {
 
     // 选区画笔落笔中的预览改由独立的 selPreview 画布增量绘制（见 paintSelectionPreview），
     // 主画布不再每帧整张重绘选区，避免大图上的笔迹滞后。
+
+    // 选区工具的目标图层外框（§23.2-15）：让「当前在选哪一层」在画布上可见，
+    // 避免用户对着主图/另一棵树涂却以为在操作选中层。
+    if ((SELECT_BRUSH_TOOLS.has(tool) || WAND_TOOLS.has(tool)) && doc) {
+      const target = selectionTargetLayer();
+      if (target) {
+        const box =
+          typeof target.bounds === 'function'
+            ? target.bounds()
+            : { x: target.x || 0, y: target.y || 0, width: target.width || 0, height: target.height || 0 };
+        if (box && box.width > 0 && box.height > 0) {
+          const crop = doc.transform.crop;
+          const bx = view.x + (box.x - (crop?.x || 0)) * view.scale;
+          const by = view.y + (box.y - (crop?.y || 0)) * view.scale;
+          const bw = box.width * view.scale;
+          const bh = box.height * view.scale;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(120,170,255,0.9)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+          ctx.setLineDash([]);
+          const label = target.name || '当前图层';
+          ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.textBaseline = 'bottom';
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = 'rgba(16,18,24,0.72)';
+          ctx.fillRect(bx + 2, by - 16, tw + 8, 14);
+          ctx.fillStyle = 'rgba(200,220,255,0.95)';
+          ctx.fillText(label, bx + 6, by - 4);
+          ctx.restore();
+        }
+      }
+    }
 
     // 选区蚂蚁线（D8.1）：黑白虚线交替，antsOffset 每 120ms 前进，形成流动感。
     if (selection) {
@@ -4937,15 +5035,57 @@ export function createStudioPage(host) {
     return layer && !layer.isAdjustment && !layer.isText && !layer.isShape ? layer : null;
   }
 
+  /**
+   * 选区画布覆盖的「旋转后未裁剪」矩形。
+   * 绑定图层时用该层外框：图层可以被拖到主图画布之外，选区画布也必须覆盖到那里，
+   * 否则 renderLayer 会按 doc.size 裁剪，画布外的图层永远选不中（§23.2-12）。
+   * 未绑定图层（主图 / 合成图）时仍用整张蒙版。
+   */
+  function selectionRegionFor(layer) {
+    if (!doc) return null;
+    const mask = doc.maskSize;
+    if (!layer) return { x: 0, y: 0, width: mask.width, height: mask.height };
+    const box =
+      typeof layer.bounds === 'function'
+        ? layer.bounds()
+        : { x: layer.x || 0, y: layer.y || 0, width: layer.width || 1, height: layer.height || 1 };
+    const x = Math.floor(box.x || 0);
+    const y = Math.floor(box.y || 0);
+    const right = Math.ceil((box.x || 0) + Math.max(1, box.width || 0));
+    const bottom = Math.ceil((box.y || 0) + Math.max(1, box.height || 0));
+    return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
+  }
+
+  function sameSelectionRect(a, b) {
+    if (!a || !b) return false;
+    return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  }
+
+  /** 把现有选区平移 / 裁到新的画布矩形；绑定图层时再裁到该层可见像素。 */
+  function remapSelectionToRegion(region, source, layer) {
+    if (!selection?.canvas || !region) return;
+    const old = selection;
+    const canvas = makeCanvas(region.width, region.height);
+    canvas
+      .getContext('2d')
+      .drawImage(old.canvas, (old.rect?.x || 0) - region.x, (old.rect?.y || 0) - region.y);
+    setSelectionAlpha(canvasToAlpha(canvas), region.width, region.height, region, source);
+    if (layer) clipSelectionToLayer(layer);
+    if (!selectionHasPixels(selection.alpha)) clearSelection(true);
+  }
+
   /** 把图层像素转成「选区画布坐标」的裁剪蒙版（选区画笔只在图层可见像素内生效）。 */
   function buildSelectionClip(layer) {
     if (!doc || !selection?.canvas || !layer) return null;
-    const rendered = doc.renderLayer(layer.id);
+    const rect = selection.rect || { x: 0, y: 0, width: selection.width, height: selection.height };
+    // 选区画布可能覆盖到主图画布之外（图层被拖出画面）：按选区自己的区域渲染，
+    // 不能再用 renderLayer(id) 的 doc.size 画布，否则画布外内容会被裁空。
+    const rendered = doc.renderLayer(layer.id, {
+      region: { x: rect.x, y: rect.y, width: selection.width, height: selection.height },
+    });
     if (!rendered) return null;
-    const crop = doc.transform.crop;
-    const rect = selection.rect || { x: 0, y: 0 };
     const canvas = makeCanvas(selection.width, selection.height);
-    canvas.getContext('2d').drawImage(rendered, (crop?.x || 0) - rect.x, (crop?.y || 0) - rect.y);
+    canvas.getContext('2d').drawImage(rendered, 0, 0);
     return canvas;
   }
 
@@ -4961,21 +5101,29 @@ export function createStudioPage(host) {
     ctx.restore();
   }
 
-  function ensureSelectionCanvas(source = null, layer = null) {
+  function ensureSelectionCanvas(source = null, layer = null, { rebind = false } = {}) {
     if (!doc) return null;
     const size = doc.maskSize;
     if (!size.width || !size.height) return null;
+    const region = selectionRegionFor(layer);
+    if (!region) return null;
     // 已有选区（可能来自画布外的图层，尺寸与蒙版不同）就直接沿用，别按蒙版尺寸重置。
     if (selection?.canvas) {
-      // 选区还没有归属时，把这次手动选区绑定到当前图层（抠图 / 蒙版按该层取像素）。
-      if (source?.layerId && !selection.source) {
-        selection.source = { ...source };
-        clipSelectionToLayer(layer);
+      const boundId = selection.source?.layerId || '';
+      const nextId = source?.layerId || '';
+      // 换层 / 图层被移动后，选区画布必须重新覆盖到目标层的外框：
+      // 否则主图画布外的图层会继续用旧区域渲染，笔迹被裁空（§23.2-10 / §23.2-12）。
+      const needsRebind = rebind && (boundId !== nextId || !sameSelectionRect(selection.rect, region));
+      const needsBind = Boolean(source?.layerId) && !selection.source;
+      if (needsRebind || needsBind) {
+        // 先把旧选区平移到新区域，再绑定到当前目标并裁到该层像素内。
+        remapSelectionToRegion(region, nextId ? { layerId: nextId } : null, layer);
       }
-      return selection.canvas;
     }
-    setSelectionAlpha(createAlpha(size.width, size.height), size.width, size.height, null, source);
-    if (layer && selection?.canvas) clipSelectionToLayer(layer);
+    if (!selection?.canvas) {
+      setSelectionAlpha(createAlpha(region.width, region.height), region.width, region.height, region, source);
+      if (layer && selection?.canvas) clipSelectionToLayer(layer);
+    }
     return selection?.canvas || null;
   }
 
@@ -5047,7 +5195,11 @@ export function createStudioPage(host) {
   }
 
   function commitSelectionPaint() {
-    if (!selection?.canvas) return;
+    // 即使选区在落笔途中被清掉，也要撤掉红色预览，避免「红笔迹一直留着但选区是 0%」。
+    if (!selection?.canvas) {
+      clearSelectionPreview();
+      return;
+    }
     clearSelectionPreview();
     selection.alpha = canvasToAlpha(selection.canvas);
     selection.docCanvas = null;
@@ -5084,19 +5236,21 @@ export function createStudioPage(host) {
     return crop ? { ...crop } : { x: 0, y: 0, width: doc.mask.width, height: doc.mask.height };
   }
 
-  /** 魔棒：选中位图层时按该层取色，否则从合成图取色；再换算回「旋转后、未裁剪」的蒙版坐标。 */
+  /** 魔棒：选中位图层时按该层取色，否则从合成图取色；图层可位于主图画布之外。 */
   function wandSelectAt(point, mode) {
     if (!doc) return;
     const targetLayer = selectionTargetLayer();
-    const base = targetLayer ? doc.renderLayer(targetLayer.id) : doc.renderBase();
+    const region = targetLayer ? selectionRegionFor(targetLayer) : null;
+    // 绑定图层时按该层外框渲染，画布外也能取色（与选区画笔的 region 口径一致）。
+    const base = targetLayer ? doc.renderLayer(targetLayer.id, { region }) : doc.renderBase();
     if (!base) {
       toastWarn(`图层「${targetLayer?.name || ''}」在当前画面没有可取的像素`);
       return;
     }
     const width = base.width;
     const height = base.height;
-    const x = Math.floor(point.x);
-    const y = Math.floor(point.y);
+    const x = Math.floor(point.x - (region?.x || 0));
+    const y = Math.floor(point.y - (region?.y || 0));
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     const data = base.getContext('2d').getImageData(0, 0, width, height).data;
     // 绑定图层时点到透明像素：选出来只会是一大片空区域，直接提示换对象。
@@ -5108,6 +5262,24 @@ export function createStudioPage(host) {
       tolerance: wand.tolerance,
       contiguous: wand.contiguous,
     });
+    if (targetLayer) {
+      // 图层绑定：选区画布直接覆盖该层外框，主图画布外也能选。
+      const sameSpace =
+        Boolean(selection) &&
+        (selection.source?.layerId || '') === targetLayer.id &&
+        sameSelectionRect(selection.rect, region) &&
+        selection.width === width &&
+        selection.height === height;
+      const merged = combineAlpha(sameSpace ? selection.alpha : null, display, mode);
+      if (!selectionHasPixels(merged)) {
+        clearSelection();
+        toastWarn('该位置没有可选的区域，可调高容差再试');
+        return;
+      }
+      setSelectionAlpha(merged, width, height, region, { layerId: targetLayer.id });
+      return;
+    }
+
     const mask = maskSize();
     const crop = doc.transform.crop;
     let next = display;
@@ -5127,8 +5299,7 @@ export function createStudioPage(host) {
       }
     }
     // 已有选区若来自画布外图层 / 别的来源，魔棒就重新开始，别把两份 alpha 硬拼。
-    const sourceId = targetLayer?.id || '';
-    const sameSource = (selection?.source?.layerId || '') === sourceId;
+    const sameSource = !selection?.source?.layerId;
     const sameSpace =
       Boolean(selection) &&
       sameSource &&
@@ -5141,13 +5312,7 @@ export function createStudioPage(host) {
       toastWarn('该位置没有可选的区域，可调高容差再试');
       return;
     }
-    setSelectionAlpha(
-      merged,
-      mask.width,
-      mask.height,
-      null,
-      targetLayer ? { layerId: targetLayer.id } : null,
-    );
+    setSelectionAlpha(merged, mask.width, mask.height);
   }
 
   /** 反选 / 羽化 / 扩展 / 收缩 / 清除。 */
@@ -5582,7 +5747,12 @@ export function createStudioPage(host) {
       setSelectionAlpha(alpha, width, height);
     }
     segAppliedId = mask.url;
-    toastSuccess(`已生成选区 ${(coverageAlpha(alpha) * 100).toFixed(1)}% · 可用「选区画笔 I / 橡皮 Q」加减范围`);
+    // 说明这次分割用的是哪一层：后续「新建抠图层」就是按这个对象取像素，
+    // 避免用户以为 AI 框选后建层失败（§23.2-17）。
+    const targetLabel = layerId ? `图层「${owner.findLayer?.(layerId)?.name || '当前图层'}」` : '合成图';
+    toastSuccess(
+      `已生成选区 ${(coverageAlpha(alpha) * 100).toFixed(1)}%（对象：${targetLabel}）· 可用「选区画笔 I / 橡皮 Q」加减范围`,
+    );
   }
 
   /**
@@ -6500,7 +6670,8 @@ export function createStudioPage(host) {
       const mode =
         event.shiftKey && event.altKey ? 'intersect' : event.altKey ? 'sub' : event.shiftKey ? 'add' : 'new';
       drag = null;
-      wandSelectAt(point, mode);
+      // 不夹到主图边界：选中层可能摆在画布外（§23.2-14）。
+      wandSelectAt(freePoint, mode);
       return;
     }
     if (tool === 'segment') {
@@ -6602,13 +6773,49 @@ export function createStudioPage(host) {
     }
     if (SELECT_BRUSH_TOOLS.has(tool)) {
       // 人工精修选区：画笔加选、橡皮减选，按住 Alt 临时互换。
-      const at = maskPoint(point);
+      // 不能夹到主图边界：图层可以被拖到画布之外，夹取后笔迹会落在主图边缘（§23.2-14）。
+      const at = maskPoint(freePoint);
       const erase = tool === 'seleraser' ? !event.altKey : event.altKey;
       // 选中位图层时选区绑定该层，并只在图层可见像素内生效（选中主图则仍是整幅合成图）。
       const target = selectionTargetLayer();
-      if (!ensureSelectionCanvas(target ? { layerId: target.id } : null, target)) return;
+      // rebind：选区已绑定在别的图层时，落笔前先重新挂到当前层，否则会一直用旧层取样。
+      if (!ensureSelectionCanvas(target ? { layerId: target.id } : null, target, { rebind: true })) return;
       const clip = target ? buildSelectionClip(target) : null;
       const previewClip = target ? buildPreviewClip(target) : null;
+      // 当前层在落笔点没有可见像素时不要静默 0%：告诉用户这里实际显示的是哪一层，
+      // 并给一个「选中它」的入口（常见于图层被拖到主图画布之外，§23.2-12）。
+      if (target && clip && !selectionHasPixels(selection?.alpha)) {
+        const local = toSelectionLocal(at);
+        const lx = Math.floor(local.x);
+        const ly = Math.floor(local.y);
+        let alpha = 0;
+        if (lx >= 0 && ly >= 0 && lx < clip.width && ly < clip.height) {
+          alpha = clip.getContext('2d').getImageData(lx, ly, 1, 1).data[3];
+        }
+        if (alpha < 8) {
+          const now = Date.now();
+          if (now - selectionMissToastAt > 3000) {
+            selectionMissToastAt = now;
+            const crop = doc.transform.crop;
+            const under = pickLayerAt(at.x - (crop?.x || 0), at.y - (crop?.y || 0), {
+              tolerance: pickTolerance(),
+            });
+            const message = under
+              ? `当前选中的「${target.name}」在此处没有可见像素；这里显示的是「${under.name}」。`
+              : `当前选中的「${target.name}」在此处没有可见像素；这里显示的是背景（主图）。`;
+            toast(message, 'warn', {
+              timeout: 8000,
+              action: {
+                label: under ? `选中「${under.name}」` : '选中背景',
+                onClick: () => {
+                  if (under) selectLayerById(under.id, { announceOffscreen: true });
+                  else selectBaseObject();
+                },
+              },
+            });
+          }
+        }
+      }
       beginSelectionPreview();
       stampSelection(at, erase, clip);
       paintSelectionPreview(at, at, erase);
@@ -6871,7 +7078,8 @@ export function createStudioPage(host) {
       return;
     }
     if (drag.mode === 'selpaint') {
-      strokeSelectionTo(imagePoint, drag.erase);
+      // 选区画笔允许在画布外继续拖：不能用夹到 doc 边界的 point（§23.2-14）。
+      strokeSelectionTo(maskPoint(rawPoint), drag.erase);
       scheduleDraw();
       return;
     }
@@ -11049,13 +11257,24 @@ export function createStudioPage(host) {
         alphaRect,
       });
     let raw = composeSource(source);
-    const usedLayer = layer;
-    if (!canvasHasPixels(raw.canvas)) {
-      if (layer) {
-        // 选区明确来自该图层：没有像素就如实拒绝，不再偷换来源。
-        toastWarn(`选区来自图层「${layer.name || '当前图层'}」，但选区内没有该层像素`);
-        return null;
+    let usedLayer = layer;
+    // 方案 §19 P2：来源层在选区内没有像素时，提示并自动改从合成图抠。
+    // 不是「静默换源」：toast 会写明原图层和已改用的来源，toast 里也按实际 sourceLayer 显示。
+    if (layer && !canvasHasPixels(raw.canvas)) {
+      const fallback = renderSource(null);
+      const fallbackRaw = fallback.base ? composeSource(fallback) : null;
+      if (fallbackRaw && canvasHasPixels(fallbackRaw.canvas)) {
+        toast(
+          `选区来自图层「${layer.name || '当前图层'}」，但选区内没有该层像素；已改从合成图抠（如需只抠该层，请检查图层显隐 / 蒙版）`,
+          'warn',
+          { timeout: 9000 },
+        );
+        raw = fallbackRaw;
+        source = fallback;
+        usedLayer = null;
       }
+    }
+    if (!canvasHasPixels(raw.canvas)) {
       toastWarn('选区内没有可抠出的像素，检查一下对象是不是选对了图层');
       return null;
     }
@@ -11155,7 +11374,12 @@ export function createStudioPage(host) {
       }
       if (action === 'layer') {
         if (leaseLocked) {
-          toastWarn('该工程已在其他标签编辑，本标签为只读');
+          // AI 框选本身是只读操作，真正被拦的是「新建图层」这一步；给一键接管入口，
+          // 否则用户会以为 AI 框选后无法新建抠图层（§23.2-16）。
+          toast('该工程已在其他标签编辑，本标签为只读；新建抠图层前请先接管编辑', 'warn', {
+            timeout: 10000,
+            action: { label: '接管编辑', onClick: () => refs.lockTake?.click() },
+          });
           return;
         }
         // 抠图层必须用原图尺寸画布，否则坐标会被固定尺寸缩放打乱。
@@ -11176,10 +11400,18 @@ export function createStudioPage(host) {
         });
         if (layer) {
           // 抠图层与主图坐标完全重合；保持主图可见（用户要求），
-          // 需要单独看抠图结果时点主图眼睛即可。
+          // 需要单独看抠图结果时点主图眼睛即可。这里顺手给一个「隐藏主图对比」按钮，
+          // 避免用户以为没建出来（历史 7691075 曾自动隐藏，9584820 按用户要求改回）。
           doc.invalidateBase();
           scheduleDraw();
-          toastSuccess(`已从${fromLabel}建立抠图层 · 与主图重合，可拖动 / 缩放（点主图眼睛可单独查看）`);
+          toast(
+            `已从${fromLabel}建立「${layer.name}」 · 与主图重合，可拖动 / 缩放`,
+            'success',
+            {
+              timeout: 10000,
+              action: { label: '隐藏主图对比', onClick: () => setBaseVisibleTo(false) },
+            },
+          );
         }
       }
     } catch (err) {

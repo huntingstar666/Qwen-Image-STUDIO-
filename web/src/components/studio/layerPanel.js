@@ -502,6 +502,7 @@ export function createLayerColumn(host, ctx) {
         ctx.selectLayer?.(pick.dataset.layerPick, {
           additive: event.metaKey || event.ctrlKey,
           range: event.shiftKey,
+          announceOffscreen: true,
         });
       return;
     }
@@ -557,6 +558,20 @@ export function createLayerColumn(host, ctx) {
       else if (action === 'copy') ctx.cloneLayer?.(id);
       else if (action === 'del') ctx.removeLayer?.(id);
       else if (action === 'material') void ctx.saveSelectedToMaterials?.(id);
+    }
+    // 行的空白处 / 缩略图也应当能切层：整行 cursor:pointer，但之前只有名字按钮响应。
+    // 用户点缩略图以为已经切到该层，选区画笔却仍按旧层取像素（§23.2-11）。
+    if (event.target.closest('button')) return;
+    const row = event.target.closest('.studio-layer[data-layer]');
+    if (!row) return;
+    if (row.dataset.layer === 'base') {
+      if (!ctx.getBaseSelected?.()) ctx.selectBase?.();
+    } else {
+      ctx.selectLayer?.(row.dataset.layer, {
+        additive: event.metaKey || event.ctrlKey,
+        range: event.shiftKey,
+        announceOffscreen: true,
+      });
     }
   });
 

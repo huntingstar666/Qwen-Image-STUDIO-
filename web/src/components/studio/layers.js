@@ -194,7 +194,9 @@ export class OverlayLayer {
     const width = this.width;
     const height = this.height;
     if (width < 1 || height < 1) return false;
-    const scale = Math.max(0.0001, this.scale || 1);
+    // 单方向拉伸后 x / y 的缩放比不同，不能再用统一 scale 换算回源像素（§23.2-1）。
+    const scaleX = Math.max(0.0001, (this.scale || 1) * (this.stretchX || 1));
+    const scaleY = Math.max(0.0001, (this.scale || 1) * (this.stretchY || 1));
     const cx = this.x + width / 2;
     const cy = this.y + height / 2;
     const rad = (-(this.rotation || 0) * Math.PI) / 180;
@@ -204,8 +206,8 @@ export class OverlayLayer {
     const dy = py - cy;
     const lx = dx * cos - dy * sin;
     const ly = dx * sin + dy * cos;
-    let ix = Math.floor((lx + width / 2) / scale);
-    let iy = Math.floor((ly + height / 2) / scale);
+    let ix = Math.floor((lx + width / 2) / scaleX);
+    let iy = Math.floor((ly + height / 2) / scaleY);
     if (this.flipH) ix = nw - 1 - ix;
     if (this.flipV) iy = nh - 1 - iy;
     if (ix < 0 || iy < 0 || ix >= nw || iy >= nh) return false;

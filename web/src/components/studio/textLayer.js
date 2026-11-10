@@ -82,13 +82,16 @@ function measureContext() {
 }
 
 export class TextLayer {
-  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, opacity = 1, visible = true, locked = false, blend = 'source-over', clipped = false, groupId = '', ...text } = {}) {
+  constructor({ id = '', name = '文字', x = 0, y = 0, rotation = 0, flipH = false, flipV = false, opacity = 1, visible = true, locked = false, blend = 'source-over', clipped = false, groupId = '', ...text } = {}) {
     // 带时间戳，避免刷新后序号归零与已恢复图层的 id 冲突。
     this.id = id || `tx-${Date.now().toString(36)}-${(seq += 1)}`;
     this.name = name;
     this.x = Number(x) || 0;
     this.y = Number(y) || 0;
     this.rotation = Number(rotation) || 0;
+    /** 图层自身镜像（按 PS 语义镜像字形，而不是把文字当整块图片翻转）。 */
+    this.flipH = Boolean(flipH);
+    this.flipV = Boolean(flipV);
     this.opacity = clamp(Number(opacity) ?? 1, 0, 1);
     this.visible = visible !== false;
     this.locked = Boolean(locked);
@@ -214,11 +217,21 @@ export class TextLayer {
     ctx.font = this.font;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
+    // 字形镜像：绕文字本地包围盒中心翻转，保证翻转后位置不跑、字形本身是镜像的（PS 语义）。
+    if (this.flipH || this.flipV) {
+      const box = this._localBounds();
+      const cx = box.x + box.width / 2 - this.x;
+      const cy = box.y + box.height / 2 - this.y;
+      ctx.translate(cx, cy);
+      ctx.scale(this.flipH ? -1 : 1, this.flipV ? -1 : 1);
+      ctx.translate(-cx, -cy);
+    }
     if (this.shadowBlur > 0) {
       ctx.shadowColor = this.shadowColor;
       ctx.shadowBlur = this.shadowBlur;
-      ctx.shadowOffsetX = this.shadowX;
-      ctx.shadowOffsetY = this.shadowY;
+      // 阴影偏移不随 CTM 变换，镜像时手动取反。
+      ctx.shadowOffsetX = this.flipH ? -this.shadowX : this.shadowX;
+      ctx.shadowOffsetY = this.flipV ? -this.shadowY : this.shadowY;
     }
     if (this.arc) {
       this._drawArc(ctx, lines, lineHeight);
@@ -272,6 +285,8 @@ export class TextLayer {
       x: this.x,
       y: this.y,
       rotation: this.rotation,
+      flipH: this.flipH,
+      flipV: this.flipV,
       opacity: this.opacity,
       visible: this.visible,
       locked: this.locked,

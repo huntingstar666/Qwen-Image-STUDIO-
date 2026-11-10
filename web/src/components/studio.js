@@ -370,6 +370,8 @@ export function createStudioPage(host) {
   const selectedLayerIds = new Set();
   /* D23.4 L4：选中的图层组（面板组行的主选）；与 selectedLayerId 互斥。 */
   let selectedGroupId = '';
+  /* 主图作为可选中对象：选中它时旋转/翻转作用于整幅画面（底图 + 画布方向）。 */
+  let baseSelected = false;
   /* D23.1：左侧图层栏（可折叠）+ 主图显隐 + 缩略图缓存。 */
   let layersPanel = null;
   let baseVisible = true;
@@ -834,7 +836,7 @@ export function createStudioPage(host) {
               </div>
               <div class="studio-pane-title">重置</div>
               <button class="btn ghost sm studio-block" type="button" data-ref="resetAll">恢复原始图片</button>
-              <div class="studio-note">旋转或翻转会清空裁剪框；蒙版会跟随画面一起变换。</div>
+              <div class="studio-note">旋转 / 翻转跟随当前选中对象：选中图层只改这一层（多选则整组），选中主图才改整幅画面。主图变换会清空裁剪框，蒙版会跟随画面一起变换。</div>
             </div>
 
             <div class="studio-pane" data-pane="text" hidden>
@@ -1572,6 +1574,7 @@ export function createStudioPage(host) {
   function selectLayerById(id, { additive = false, range = false, keepTool = false } = {}) {
     if (!doc || !id) return;
     selectedGroupId = '';
+    baseSelected = false;
     if (range && selectedLayerId) {
       const order = panelLayerIds();
       const a = order.indexOf(selectedLayerId);
@@ -1638,6 +1641,23 @@ export function createStudioPage(host) {
   /** 当前操作作用于哪些图层：点在多选内 → 全部选中，否则只作用该层。 */
   function actionLayerIds(id) {
     return selectedLayerIds.size > 1 && selectedLayerIds.has(id) ? [...selectedLayerIds] : [id];
+  }
+
+  /** 把主图作为对象选中：清空图层/组选择，旋转与翻转随选择目标作用于整幅画面。 */
+  function selectBaseObject() {
+    if (!doc) return;
+    baseSelected = true;
+    selectedLayerId = null;
+    selectedLayerIds.clear();
+    selectedGroupId = '';
+    editingLayerMaskId = '';
+    syncAdjustInputs();
+    syncTextPane();
+    syncStickerPane();
+    syncShapePane();
+    syncLayerProps();
+    scheduleDraw();
+    syncLayersPanel();
   }
 
   /** 删掉已经没有组员的组记录（删除 / 合并 / 解组后调用）。 */
@@ -2947,6 +2967,10 @@ export function createStudioPage(host) {
     getSelectedLayerIds() {
       return [...selectedLayerIds];
     },
+    /** 主图是否作为对象被选中（旋转/翻转跟随选择目标）。 */
+    getBaseSelected() {
+      return baseSelected;
+    },
     getBaseVisible() {
       return baseVisible;
     },
@@ -3006,6 +3030,7 @@ export function createStudioPage(host) {
     selectGroup(id) {
       if (!doc || !doc.findGroup(id)) return;
       selectedGroupId = id;
+      baseSelected = false;
       selectedLayerId = null;
       selectedLayerIds.clear();
       editingLayerMaskId = '';
@@ -3205,9 +3230,14 @@ export function createStudioPage(host) {
       const h = layer.height || 0;
       return x < -1 || y < -1 || x + w > size.width + 1 || y + h > size.height + 1;
     },
+    /** 点主图行：把主图作为对象选中；旋转/翻转随之作用于整幅画面。 */
+    selectBase() {
+      selectBaseObject();
+    },
     /** 点主图行：清空选中，不改工具，也不写撤销栈。 */
     selectNone() {
       if (!doc) return;
+      baseSelected = false;
       selectedLayerId = null;
       selectedLayerIds.clear();
       selectedGroupId = '';
@@ -4035,6 +4065,30 @@ export function createStudioPage(host) {
         ctx.fill();
         ctx.restore();
       }
+    }
+
+    // 多选：主选之外的选中图层补一圈细虚线框，明确「它们会一起被拖动/变换」。
+    if (selectedLayerIds.size > 1) {
+      const crop = doc.transform.crop;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(120,190,255,0.95)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      for (const id of selectedLayerIds) {
+        if (id === selectedLayerId) continue;
+        const layer = doc.findLayer?.(id);
+        if (!layer || layer.isAdjustment || layer.visible === false) continue;
+        const box = typeof layer.bounds === 'function' ? layer.bounds() : null;
+        if (!box) continue;
+        ctx.strokeRect(
+          view.x + (box.x - (crop?.x || 0)) * view.scale,
+          view.y + (box.y - (crop?.y || 0)) * view.scale,
+          box.width * view.scale,
+          box.height * view.scale,
+        );
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
     }
 
     // 仿制取样锚点 + 当前取样位置（D10.2）
@@ -5516,6 +5570,33 @@ export function createStudioPage(host) {
    * 指针交互
    * ============================================================ */
 
+  /**
+   * 画布上点中图层后的统一入口：先按修饰键处理选中，再建立拖动。
+   * 多选时整组一起拖（PS 语义），点中已在多选里的图层不会把选择缩成一个。
+   */
+  function beginLayerDrag(layer, point, { additive = false, range = false, keepTool = false } = {}) {
+    if (!doc || !layer) return;
+    const inSelection = selectedLayerIds.has(layer.id);
+    if (additive || range) selectLayerById(layer.id, { additive, range, keepTool });
+    else if (!(inSelection && selectedLayerIds.size > 1)) selectLayerById(layer.id, { keepTool });
+    // Ctrl 点已选图层 = 取消选中，不应顺手拖走它。
+    if (additive && !selectedLayerIds.has(layer.id)) return;
+    const ids =
+      selectedLayerIds.has(layer.id) && selectedLayerIds.size > 1 ? [...selectedLayerIds] : [layer.id];
+    const group = ids
+      .map((id) => doc.findLayer?.(id))
+      .filter((item) => item && !item.locked && !item.isAdjustment)
+      .map((item) => ({ layer: item, x: item.x, y: item.y }));
+    drag = {
+      mode: 'moveLayer',
+      layer,
+      start: point,
+      originX: layer.x,
+      originY: layer.y,
+      group: group.length > 1 ? group : null,
+    };
+  }
+
   refs.canvas.addEventListener('pointerdown', (event) => {
     if (!doc) return;
     // 右键 / 侧键不落笔：右键菜单交给 contextmenu，中键保留给平移。
@@ -5580,18 +5661,13 @@ export function createStudioPage(host) {
       const iy = freePoint.y + (crop?.y || 0);
       const layer = pickLayerAt(ix, iy, { tolerance: pickTolerance() });
       if (layer) {
-        selectLayerById(layer.id, {
-          additive: event.metaKey || event.ctrlKey,
-          range: event.shiftKey,
-          keepTool: true,
-        });
-        drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
+        beginLayerDrag(layer, freePoint, { additive: event.metaKey || event.ctrlKey, range: event.shiftKey, keepTool: true });
         return;
       }
       // 已选中的图层：落点略偏出可见像素时仍拖动它（与悬停光标的判定一致）。
       const active = selectedLayerId ? doc.findLayer(selectedLayerId) : null;
       if (active && !active.locked && active.visible !== false && !active.isAdjustment && active.hitTest?.(ix, iy)) {
-        drag = { mode: 'moveLayer', layer: active, start: freePoint, originX: active.x, originY: active.y };
+        beginLayerDrag(active, freePoint, { keepTool: true });
         return;
       }
       if (refs.canvas.style.cursor) refs.canvas.style.cursor = '';
@@ -5798,12 +5874,8 @@ export function createStudioPage(host) {
 
       const layer = pickLayerAt(ix, iy, { tolerance: pickTolerance() });
       if (layer) {
-        // 画布点选同样支持 Ctrl 加选 / Shift 连选（D23.2）。
-        selectLayerById(layer.id, {
-          additive: event.metaKey || event.ctrlKey,
-          range: event.shiftKey,
-        });
-        drag = { mode: 'moveLayer', layer, start: freePoint, originX: layer.x, originY: layer.y };
+        // 画布点选同样支持 Ctrl 加选 / Shift 连选（D23.2）；多选后整组一起拖。
+        beginLayerDrag(layer, freePoint, { additive: event.metaKey || event.ctrlKey, range: event.shiftKey });
         return;
       }
       // 移动叠加图：像素全透明（抠图留白）时按外框兜底选中，
@@ -5811,11 +5883,7 @@ export function createStudioPage(host) {
       if (tool === 'move') {
         const loose = pickLayerAtBounds(ix, iy);
         if (loose) {
-          selectLayerById(loose.id, {
-            additive: event.metaKey || event.ctrlKey,
-            range: event.shiftKey,
-          });
-          drag = { mode: 'moveLayer', layer: loose, start: freePoint, originX: loose.x, originY: loose.y };
+          beginLayerDrag(loose, freePoint, { additive: event.metaKey || event.ctrlKey, range: event.shiftKey });
           return;
         }
       }
@@ -5826,9 +5894,21 @@ export function createStudioPage(host) {
         refs.stickerInput.click();
         return;
       }
-      if (selectedLayerId) {
+      // 画面内空白处 = 选中主图（底图）；画面外 = 取消选中。
+      const inside =
+        freePoint.x >= 0 &&
+        freePoint.y >= 0 &&
+        freePoint.x <= doc.size.width &&
+        freePoint.y <= doc.size.height;
+      if (inside) {
+        selectBaseObject();
+        return;
+      }
+      if (selectedLayerId || selectedGroupId || baseSelected) {
         selectedLayerIds.clear();
         selectedLayerId = null;
+        selectedGroupId = '';
+        baseSelected = false;
         editingLayerMaskId = '';
         syncLayerProps();
         syncLayersPanel();
@@ -6056,8 +6136,17 @@ export function createStudioPage(host) {
         if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
         else dx = 0;
       }
-      layer.x = Math.round(drag.originX + dx);
-      layer.y = Math.round(drag.originY + dy);
+      const round = (value) => Math.round(value);
+      if (drag.group?.length) {
+        // 多选：整组按同一增量移动，保持相对位置。
+        for (const item of drag.group) {
+          item.layer.x = round(item.x + dx);
+          item.layer.y = round(item.y + dy);
+        }
+      } else {
+        layer.x = round(drag.originX + dx);
+        layer.y = round(drag.originY + dy);
+      }
       refs.canvas.style.cursor = 'grabbing';
       doc.touchLayers();
       scheduleDraw();
@@ -6077,7 +6166,9 @@ export function createStudioPage(host) {
     // 只是点选图层（没拖动）不落快照，避免每点一次就多一步无意义的撤销。
     const movedLayer =
       drag.mode === 'moveLayer' &&
-      (drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
+      (drag.group?.length
+        ? drag.group.some((item) => item.layer.x !== item.x || item.layer.y !== item.y)
+        : drag.layer.x !== drag.originX || drag.layer.y !== drag.originY);
     drag = null;
     if (mode === 'selpaint') {
       commitSelectionPaint();
@@ -6258,8 +6349,15 @@ export function createStudioPage(host) {
     }
     if (mode === 'moveLayer' && drag.layer) {
       // 图层已经拖到一半：复位到按下时的位置，不产生撤销步。
-      drag.layer.x = drag.originX;
-      drag.layer.y = drag.originY;
+      if (drag.group?.length) {
+        for (const item of drag.group) {
+          item.layer.x = item.x;
+          item.layer.y = item.y;
+        }
+      } else {
+        drag.layer.x = drag.originX;
+        drag.layer.y = drag.originY;
+      }
       doc?.touchLayers();
     }
     // 其余（框选 / 裁剪 / 平移）无副作用，直接丢弃。
@@ -8303,6 +8401,7 @@ export function createStudioPage(host) {
     selectedLayerId = null;
     selectedLayerIds.clear();
     selectedGroupId = '';
+    baseSelected = false;
     pendingStickerPoint = null;
     perspectiveEdit = false;
     tint = null;
@@ -9473,16 +9572,73 @@ export function createStudioPage(host) {
       });
       if (!ok || !doc) return;
     }
+    // 记录变换前画面中心在视口中的位置：变换后保持缩放与视觉中心不变，
+    // 避免「点一下方向按钮，画布突然放大 / 缩小 / 位移」。
+    const old = doc.oriented;
+    const crop = doc.transform.crop;
+    const anchorX = view.x + (old.width / 2 - (crop?.x || 0)) * view.scale;
+    const anchorY = view.y + (old.height / 2 - (crop?.y || 0)) * view.scale;
     action();
+    const size = doc.size;
+    view.x = anchorX - (size.width / 2) * view.scale;
+    view.y = anchorY - (size.height / 2) * view.scale;
     clearSelection();
     updateSizeInfo();
     updateHistoryUi();
     updateMaskStatus();
+    updateZoomLabel();
     tintDirty = true;
-    fitView();
     selectedLayerId = null;
     ai?.refresh?.();
+    scheduleDraw();
     scheduleSave();
+  }
+
+  /** 当前变换目标：有选中图层 → 图层；只选中主图 → 主图；都没选 → 主图（沿用旧行为）。 */
+  function selectionTarget() {
+    if (selectedLayerIds.size || selectedLayerId) return 'layers';
+    if (baseSelected) return 'base';
+    return 'none';
+  }
+
+  /** 顶部旋转 / 翻转按钮的分发：跟随当前选中对象，而不是永远改整幅画面。 */
+  async function transformSelection(kind) {
+    if (!doc) return;
+    if (selectionTarget() === 'layers') {
+      if (preview.image) {
+        toastWarn('当前显示的是 AI 预览：请先「设为新主图」或关闭预览，再变换图层');
+        return;
+      }
+      const ids = selectedLayerIds.size ? [...selectedLayerIds] : [selectedLayerId];
+      const count =
+        kind === 'rotateRight'
+          ? doc.rotateLayers(ids, 1)
+          : kind === 'rotateLeft'
+            ? doc.rotateLayers(ids, -1)
+            : doc.flipLayers(ids, kind === 'flipH' ? 'h' : 'v');
+      if (!count) {
+        toastWarn('选中的图层不可变换（已锁定或是调整图层）');
+        return;
+      }
+      updateHistoryUi();
+      syncLayerProps();
+      syncStickerPane();
+      scheduleDraw();
+      scheduleSave();
+      ai?.refresh?.();
+      return;
+    }
+    const label =
+      kind === 'rotateRight' ? '向右旋转' : kind === 'rotateLeft' ? '向左旋转' : kind === 'flipH' ? '水平翻转' : '垂直翻转';
+    const action =
+      kind === 'rotateRight'
+        ? () => doc?.rotateRight()
+        : kind === 'rotateLeft'
+          ? () => doc?.rotateLeft()
+          : kind === 'flipH'
+            ? () => doc?.flip('h')
+            : () => doc?.flip('v');
+    await commitTransform(label, action);
   }
 
   function downloadDataUrl(dataUrl, filename) {
@@ -10361,6 +10517,7 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       selectedLayerIds.clear();
       selectedGroupId = '';
+      baseSelected = false;
       // 撤销可能把「正在编辑的图层蒙版」撤没了；不清空会继续涂到主图蒙版上。
       editingLayerMaskId = '';
       syncLayerProps();
@@ -10385,6 +10542,7 @@ export function createStudioPage(host) {
       selectedLayerId = null;
       selectedLayerIds.clear();
       selectedGroupId = '';
+      baseSelected = false;
       editingLayerMaskId = '';
       syncLayerProps();
       syncLayersPanel();
@@ -10714,10 +10872,10 @@ export function createStudioPage(host) {
   syncSegUi();
   syncAiTargets();
 
-  refs.rotateLeft.addEventListener('click', () => commitTransform('向左旋转', () => doc?.rotateLeft()));
-  refs.rotateRight.addEventListener('click', () => commitTransform('向右旋转', () => doc?.rotateRight()));
-  refs.flipH.addEventListener('click', () => commitTransform('水平翻转', () => doc?.flip('h')));
-  refs.flipV.addEventListener('click', () => commitTransform('垂直翻转', () => doc?.flip('v')));
+  refs.rotateLeft.addEventListener('click', () => transformSelection('rotateLeft'));
+  refs.rotateRight.addEventListener('click', () => transformSelection('rotateRight'));
+  refs.flipH.addEventListener('click', () => transformSelection('flipH'));
+  refs.flipV.addEventListener('click', () => transformSelection('flipV'));
 
   refs.cropStart.addEventListener('click', () => {
     // 进入裁剪会改底图几何：先退出结果预览。

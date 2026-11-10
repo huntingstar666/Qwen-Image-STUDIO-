@@ -433,28 +433,249 @@ export class StudioDoc {
         layer.height = p2.y - p1.y;
         return;
       }
-      // 文字的锚点在盒左上（含描边留白），镜像时要用盒中心 + 锚点偏移。
+      // 文字的锚点在盒左上（含描边留白），镜像时要用盒中心反算锚点。
       const boxX = geom ? geom.x : layer.x;
       const boxY = geom ? geom.y : layer.y;
-      const offsetX = layer.x - boxX;
-      const offsetY = layer.y - boxY;
-      const cx = boxX + w / 2;
-      const cy = boxY + h / 2;
+      const localCx = boxX + w / 2;
+      const localCy = boxY + h / 2;
       // 反射关系 F·R(θ)=R(-θ)·F：整图翻转 = 旋转角取反 + 图层自身对应轴翻转。
       if (layer.rotation !== undefined) {
         const flipped = -Number(layer.rotation || 0);
         layer.rotation = ((flipped % 360) + 360) % 360;
       }
+      if (geom) {
+        const center = {
+          x: axis === 'h' ? W - localCx : localCx,
+          y: axis === 'v' ? H - localCy : localCy,
+        };
+        const offsetX = localCx - layer.x;
+        const offsetY = localCy - layer.y;
+        const rad = ((Number(layer.rotation) || 0) * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        layer.x = center.x - (offsetX * cos - offsetY * sin);
+        layer.y = center.y - (offsetX * sin + offsetY * cos);
+      } else if (axis === 'h') {
+        layer.x = W - boxX - w;
+      } else {
+        layer.y = H - boxY - h;
+      }
       if (axis === 'h') {
         if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
-        if (geom) layer.shadowX = -Number(layer.shadowX || 0);
-        layer.x = W - cx - w / 2 + offsetX;
-      } else {
-        if (layer.flipV !== undefined) layer.flipV = !layer.flipV;
-        if (geom) layer.shadowY = -Number(layer.shadowY || 0);
-        layer.y = H - cy - h / 2 + offsetY;
+      } else if (layer.flipV !== undefined) {
+        layer.flipV = !layer.flipV;
       }
     });
+  }
+
+  /**
+   * 选中图层的联合包围盒（文档坐标，旋转图层按外接盒算）。
+   * 对象级变换用它做旋转/镜像的中心。
+   */
+  layersBounds(ids) {
+    const list = this._transformableLayers(ids);
+    if (!list.length) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const layer of list) {
+      const box = this._layerBox(layer);
+      if (!box) continue;
+      minX = Math.min(minX, box.x);
+      minY = Math.min(minY, box.y);
+      maxX = Math.max(maxX, box.x + box.width);
+      maxY = Math.max(maxY, box.y + box.height);
+    }
+    if (!Number.isFinite(minX)) return null;
+    return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+  }
+
+  /** 可参与对象级变换的图层：存在、未锁定、非调整层。 */
+  _transformableLayers(ids) {
+    const seen = new Set();
+    const list = [];
+    for (const id of ids || []) {
+      if (!id || seen.has(id)) continue;
+      const layer = this.findLayer?.(id) || (this.layers || []).find((item) => item.id === id);
+      if (!layer || layer.isAdjustment || layer.locked) continue;
+      seen.add(id);
+      list.push(layer);
+    }
+    return list;
+  }
+
+  /** 图层的文档外接盒（quad 层按四点算）。 */
+  _layerBox(layer) {
+    if (!layer) return null;
+    if (Array.isArray(layer.quad) && layer.quad.length) {
+      const xs = layer.quad.map((point) => Number(point.x) || 0);
+      const ys = layer.quad.map((point) => Number(point.y) || 0);
+      const x = Math.min(...xs);
+      const y = Math.min(...ys);
+      return { x, y, width: Math.max(1, Math.max(...xs) - x), height: Math.max(1, Math.max(...ys) - y) };
+    }
+    if (typeof layer.bounds === 'function') {
+      const box = layer.bounds();
+      if (box) return box;
+    }
+    const w = Number(layer.width) || 0;
+    const h = Number(layer.height) || 0;
+    return { x: Number(layer.x) || 0, y: Number(layer.y) || 0, width: Math.abs(w), height: Math.abs(h) };
+  }
+
+  /**
+   * 只旋转选中图层（不改画布 / 主图 / 裁剪）。
+   * 绕选择集外框中心转 90°：单选时即绕自身中心。
+   * @param {string[]} ids
+   * @param {1|-1} direction 1 = 顺时针
+   * @returns {number} 实际变换的图层数
+   */
+  rotateLayers(ids, direction) {
+    const list = this._transformableLayers(ids);
+    if (!list.length) return 0;
+    const box = this.layersBounds(ids);
+    if (!box) return 0;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const map = (x, y) =>
+      direction > 0
+        ? { x: cx - (y - cy), y: cy + (x - cx) }
+        : { x: cx + (y - cy), y: cy - (x - cx) };
+    const add = direction > 0 ? 90 : -90;
+    for (const layer of list) {
+      if (Array.isArray(layer.quad)) {
+        layer.quad = layer.quad.map((point) => map(point.x, point.y));
+        layer._warpCache = null;
+        continue;
+      }
+      if (layer.isShape) {
+        if (layer.isOpenPath) {
+          // 直线 / 箭头：旋转两个端点，方向才对。
+          const p1 = map(layer.x, layer.y);
+          const p2 = map(layer.x + layer.width, layer.y + layer.height);
+          layer.x = p1.x;
+          layer.y = p1.y;
+          layer.width = p2.x - p1.x;
+          layer.height = p2.y - p1.y;
+        } else {
+          const center = map(layer.x + layer.width / 2, layer.y + layer.height / 2);
+          const w = layer.width;
+          layer.width = layer.height;
+          layer.height = w;
+          layer.x = center.x - layer.width / 2;
+          layer.y = center.y - layer.height / 2;
+        }
+        continue;
+      }
+      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
+      const w = geom ? geom.width : Number(layer.width) || 0;
+      const h = geom ? geom.height : Number(layer.height) || 0;
+      if (geom) {
+        // 文字层绕锚点旋转：先把「本地盒中心」按新角度换算回锚点，
+        // 否则已有角度的文字旋转后会以未旋转的盒中心定位，位置会漂。
+        const offsetX = geom.x + w / 2 - layer.x;
+        const offsetY = geom.y + h / 2 - layer.y;
+        const center = map(geom.x + w / 2, geom.y + h / 2);
+        const next = ((Number(layer.rotation) || 0) + add) % 360;
+        const normalized = next < 0 ? next + 360 : next;
+        const rad = (normalized * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        layer.x = center.x - (offsetX * cos - offsetY * sin);
+        layer.y = center.y - (offsetX * sin + offsetY * cos);
+        layer.rotation = normalized;
+        continue;
+      }
+      const center = map(layer.x + w / 2, layer.y + h / 2);
+      layer.x = center.x - w / 2;
+      layer.y = center.y - h / 2;
+      const next = ((Number(layer.rotation) || 0) + add) % 360;
+      layer.rotation = next < 0 ? next + 360 : next;
+    }
+    this.snapshot();
+    return list.length;
+  }
+
+  /**
+   * 只镜像选中图层（不改画布 / 主图 / 裁剪）。
+   * 绕选择集外框中心镜像；单选时即绕自身中心，等价于「图层自己翻转」。
+   * @param {string[]} ids
+   * @param {'h'|'v'} axis
+   * @returns {number} 实际变换的图层数
+   */
+  flipLayers(ids, axis) {
+    const list = this._transformableLayers(ids);
+    if (!list.length) return 0;
+    const box = this.layersBounds(ids);
+    if (!box) return 0;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    for (const layer of list) {
+      if (Array.isArray(layer.quad)) {
+        layer.quad = layer.quad.map((point) => ({
+          x: axis === 'h' ? 2 * cx - point.x : point.x,
+          y: axis === 'v' ? 2 * cy - point.y : point.y,
+        }));
+        layer._warpCache = null;
+        continue;
+      }
+      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
+      if (layer.isShape) {
+        if (layer.isOpenPath) {
+          const p1 = { x: layer.x, y: layer.y };
+          const p2 = { x: layer.x + layer.width, y: layer.y + layer.height };
+          const q1 = { x: axis === 'h' ? 2 * cx - p1.x : p1.x, y: axis === 'v' ? 2 * cy - p1.y : p1.y };
+          const q2 = { x: axis === 'h' ? 2 * cx - p2.x : p2.x, y: axis === 'v' ? 2 * cy - p2.y : p2.y };
+          layer.x = q1.x;
+          layer.y = q1.y;
+          layer.width = q2.x - q1.x;
+          layer.height = q2.y - q1.y;
+        } else {
+          const box2 = this._layerBox(layer);
+          if (axis === 'h') layer.x = 2 * cx - box2.x - box2.width;
+          else layer.y = 2 * cy - box2.y - box2.height;
+        }
+        continue;
+      }
+      const w = geom ? geom.width : Number(layer.width) || 0;
+      const h = geom ? geom.height : Number(layer.height) || 0;
+      const boxX = geom ? geom.x : Number(layer.x) || 0;
+      const boxY = geom ? geom.y : Number(layer.y) || 0;
+      // 反射关系 F·R(θ)=R(-θ)·F：镜像 = 位置镜像 + 旋转角取反 + 自身对应轴翻转。
+      if (layer.rotation !== undefined) {
+        const flipped = -Number(layer.rotation || 0);
+        layer.rotation = ((flipped % 360) + 360) % 360;
+      }
+      if (geom) {
+        // 文字绕锚点旋转：用「镜像后的中心 + 新角度下的本地偏移」反算锚点，
+        // 否则旋转过的文字镜像后位置会漂。
+        const localCx = boxX + w / 2;
+        const localCy = boxY + h / 2;
+        const center = {
+          x: axis === 'h' ? 2 * cx - localCx : localCx,
+          y: axis === 'v' ? 2 * cy - localCy : localCy,
+        };
+        const offsetX = localCx - layer.x;
+        const offsetY = localCy - layer.y;
+        const rad = ((Number(layer.rotation) || 0) * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        layer.x = center.x - (offsetX * cos - offsetY * sin);
+        layer.y = center.y - (offsetX * sin + offsetY * cos);
+      } else if (axis === 'h') {
+        layer.x = 2 * cx - boxX - w;
+      } else {
+        layer.y = 2 * cy - boxY - h;
+      }
+      if (axis === 'h') {
+        if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
+      } else if (layer.flipV !== undefined) {
+        layer.flipV = !layer.flipV;
+      }
+    }
+    this.snapshot();
+    return list.length;
   }
 
   /**

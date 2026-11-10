@@ -204,7 +204,8 @@ export function createLayerColumn(host, ctx) {
     const isBase = layer.kind === 'base';
     const selectedIds = ctx.getSelectedLayerIds?.() || [];
     const primaryId = ctx.getSelectedLayerId?.() || '';
-    const selected = selectedIds.includes(layer.id) || primaryId === layer.id;
+    const selected =
+      (isBase && Boolean(ctx.getBaseSelected?.())) || selectedIds.includes(layer.id) || primaryId === layer.id;
     const primary = primaryId === layer.id;
     const hidden = layer.visible === false;
     const classes = [
@@ -458,7 +459,7 @@ export function createLayerColumn(host, ctx) {
     }
     const pick = event.target.closest('[data-layer-pick]');
     if (pick) {
-      if (pick.dataset.layerPick === 'base') ctx.selectNone?.();
+      if (pick.dataset.layerPick === 'base') ctx.selectBase?.();
       else
         ctx.selectLayer?.(pick.dataset.layerPick, {
           additive: event.metaKey || event.ctrlKey,

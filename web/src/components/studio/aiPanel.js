@@ -1879,6 +1879,9 @@ export function mountAiPanel(host, ctx) {
           state.currentHistoryId = entryId;
           historyPanel?.setCurrent(entryId);
         }
+        // 主图已换，预览状态必须复位；否则按钮仍显示「回到主图」，再点又会盖回旧结果。
+        state.previewOn = false;
+        refs.previewBtn.textContent = '画布预览';
         toastSuccess(`已设为主图 ${info.width} × ${info.height}，图层已保留`);
       }
     } finally {

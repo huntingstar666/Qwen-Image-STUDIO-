@@ -104,6 +104,12 @@ export class StudioDoc {
      */
     this.maskVersion = 0;
     this.repairVersion = 0;
+    /**
+     * 主图身份：每次换底图（含重置 / 合并）自增。
+     * 历史与命名快照用它判断「是否属于同一张主图」——不能用尺寸，
+     * 否则旋转 90° 后尺寸变化会让撤销被误判为「不属于当前主图」。
+     */
+    this.baseId = 0;
     /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
     this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
     this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
@@ -157,12 +163,17 @@ export class StudioDoc {
   /* ---------------------------------------------------------- 状态快照 */
 
   snapshot() {
-    const bytes = this.mask.width * this.mask.height * 4;
+    // 估算内存：蒙版 + 修复层 + 各图层蒙版（克隆时都会复制一份像素）。
+    let bytes = this.mask.width * this.mask.height * 4;
+    if (this.repair) bytes += this.repair.width * this.repair.height * 4;
+    for (const layer of this.layers) {
+      if (layer.mask) bytes += layer.mask.width * layer.mask.height * 4;
+    }
     const state = {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
       adjust: { ...this.adjust },
-      // 记录当时的整图尺寸：换主图后旧快照尺寸对不上，恢复会错位，需拒绝。
-      oriented: { width: this.oriented.width, height: this.oriented.height },
+      // 记录主图身份：换底图后旧状态/旧快照不能再恢复。
+      baseId: this.baseId,
       mask: cloneCanvas(this.mask),
       /** 污点修复层（D10.1）：透明 = 未修，像素 = 已修 */
       repair: this.repair ? cloneCanvas(this.repair) : null,
@@ -209,14 +220,24 @@ export class StudioDoc {
   undo() {
     const state = this._history.undo();
     if (!state) return false;
-    this.restore(state);
+    if (!this.restore(state)) {
+      // 恢复被拒（换了主图）：把指针退回去，别让历史与画面对不上。
+      this._history.redo();
+      return false;
+    }
     return true;
   }
 
   redo() {
     const state = this._history.redo();
     if (!state) return false;
-    this.restore(state);
+    if (!this.restore(state)) {
+      // redo 已把状态从 future 移到 past，失败时移回去。
+      const past = this._history.past;
+      if (past[past.length - 1] === state) past.pop();
+      this._history.future.push(state);
+      return false;
+    }
     return true;
   }
 
@@ -239,13 +260,13 @@ export class StudioDoc {
   }
 
   /**
-   * 快照属于哪张主图：尺寸不一致时不能恢复。
-   * 换主图后旧快照里的图层坐标 / 蒙版尺寸都是上一张图的，硬恢复会整体错位。
+   * 状态是否属于当前这张主图。
+   * 只认 `baseId`：旋转 / 裁剪 / 缩放都不换身份，换底图才换。
+   * 旧状态没有 baseId 时按兼容处理（历史在内存里，刷新后不存在）。
    */
   _canRestore(state) {
-    const target = state?.oriented;
-    if (!target) return true;
-    return target.width === this.oriented.width && target.height === this.oriented.height;
+    if (!state || state.baseId === undefined) return true;
+    return state.baseId === this.baseId;
   }
 
   /** 回跳到命名快照：先把当前状态入栈，所以回跳本身也能撤销。 */
@@ -394,8 +415,11 @@ export class StudioDoc {
         layer._warpCache = null;
         return;
       }
-      const w = layer.width || 0;
-      const h = layer.height || 0;
+      // 文字层没有 width/height 字段：用本地包围盒，否则宽高按 0 算，
+      // 翻转后锚点直接镜像到 W-x，文字会整段飞出画布。
+      const geom = layer.isText && typeof layer._localBounds === 'function' ? layer._localBounds() : null;
+      const w = geom ? geom.width : layer.width || 0;
+      const h = geom ? geom.height : layer.height || 0;
       if (layer.isShape) {
         // 端点镜像：斜线/箭头翻转后方向才对。
         const p1 = { x: axis === 'h' ? W - layer.x : layer.x, y: axis === 'v' ? H - layer.y : layer.y };
@@ -409,8 +433,13 @@ export class StudioDoc {
         layer.height = p2.y - p1.y;
         return;
       }
-      const cx = layer.x + w / 2;
-      const cy = layer.y + h / 2;
+      // 文字的锚点在盒左上（含描边留白），镜像时要用盒中心 + 锚点偏移。
+      const boxX = geom ? geom.x : layer.x;
+      const boxY = geom ? geom.y : layer.y;
+      const offsetX = layer.x - boxX;
+      const offsetY = layer.y - boxY;
+      const cx = boxX + w / 2;
+      const cy = boxY + h / 2;
       // 反射关系 F·R(θ)=R(-θ)·F：整图翻转 = 旋转角取反 + 图层自身对应轴翻转。
       if (layer.rotation !== undefined) {
         const flipped = -Number(layer.rotation || 0);
@@ -418,10 +447,12 @@ export class StudioDoc {
       }
       if (axis === 'h') {
         if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
-        layer.x = W - cx - w / 2;
+        if (geom) layer.shadowX = -Number(layer.shadowX || 0);
+        layer.x = W - cx - w / 2 + offsetX;
       } else {
         if (layer.flipV !== undefined) layer.flipV = !layer.flipV;
-        layer.y = H - cy - h / 2;
+        if (geom) layer.shadowY = -Number(layer.shadowY || 0);
+        layer.y = H - cy - h / 2 + offsetY;
       }
     });
   }
@@ -457,6 +488,7 @@ export class StudioDoc {
     this._tint = null;
     this.maskVersion += 1;
     this.repairVersion += 1;
+    this.baseId += 1;
     this.clearHistory();
     this.invalidateBase();
     this.snapshot();
@@ -495,6 +527,10 @@ export class StudioDoc {
     this.repair = null;
     this.baseVisible = true;
     this._maskHas = null;
+    // 重置 = 换了蒙版/修复画布，且旧历史/旧快照不再适用。
+    this.maskVersion += 1;
+    this.repairVersion += 1;
+    this.baseId += 1;
     this.invalidateBase();
     this.snapshot();
   }
@@ -728,7 +764,8 @@ export class StudioDoc {
    * @param {{name?:string, x?:number, y?:number, scale?:number, opacity?:number, rotation?:number, flipH?:boolean, flipV?:boolean, blend?:string, clipped?:boolean, quad?:Array<{x:number,y:number}>, locked?:boolean}} [options]
    */
   addOverlay(image, options = {}) {
-    const box = this.renderBase();
+    // 居中只需要当前输出尺寸（裁剪后），不必为此整张合成一次。
+    const box = this.size;
     // renderBase 是「裁剪后」的尺寸，而图层坐标存的是未裁剪空间，默认居中要加回裁剪偏移。
     const crop = this.transform.crop;
     const offsetX = crop ? crop.x : 0;
@@ -844,6 +881,10 @@ export class StudioDoc {
     this.baseVisible = true;
     this._maskHas = null;
     this._tint = null;
+    // 合并到主图 = 换了底图：旧命名快照不能再套到新图上。
+    this.maskVersion += 1;
+    this.repairVersion += 1;
+    this.baseId += 1;
     this.invalidateBase();
     // 旧历史的状态指向旧底图，保留会产生错误合成，直接重开一段历史。
     this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
@@ -1376,7 +1417,9 @@ export class StudioDoc {
    */
   exportMainCanvas(type = 'image/png') {
     const base = this.renderUnderlay();
-    if (type !== 'image/jpeg') return base;
+    // 返回副本：调用方可能在画面上画角标/水印，直接返回会把 _underlay 缓存污染，
+    // 之后画布与导出都会带着那块内容。
+    if (type !== 'image/jpeg') return cloneCanvas(base);
     const flat = makeCanvas(base.width, base.height);
     const ctx = flat.getContext('2d');
     ctx.fillStyle = '#ffffff';

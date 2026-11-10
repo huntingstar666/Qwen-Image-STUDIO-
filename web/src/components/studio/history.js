@@ -7,6 +7,8 @@
  */
 
 let snapshotSeq = 0;
+/** 命名快照上限：每张都持有完整状态克隆，太多会吃满内存。 */
+const MAX_SNAPSHOTS = 20;
 
 /**
  * @param {{ limit?: number, budget?: number }} [options]
@@ -75,8 +77,13 @@ export function createHistory({ limit = 30, budget = 256 * 1024 * 1024 } = {}) {
       future.length = 0;
       bytes = 0;
     },
-    /** 把当前状态另存为命名快照（不改变撤销栈）。 */
+    /**
+     * 把当前状态另存为命名快照（不改变撤销栈）。
+     * 快照同样占内存（4K 图一张约 30MB+），计入 bytes 并限制数量，
+     * 否则连续存十几张会把内存吃满。
+     */
     addSnapshot(state, name = '') {
+      if (snapshots.length >= MAX_SNAPSHOTS) return null;
       const sequence = (snapshotSeq += 1);
       const item = {
         id: `snap-${sequence}`,
@@ -85,12 +92,14 @@ export function createHistory({ limit = 30, budget = 256 * 1024 * 1024 } = {}) {
         at: Date.now(),
       };
       snapshots.push(item);
+      bytes += sizeOf(state);
       return item;
     },
     removeSnapshot(id) {
       const index = snapshots.findIndex((item) => item.id === id);
       if (index < 0) return false;
-      snapshots.splice(index, 1);
+      const [removed] = snapshots.splice(index, 1);
+      bytes = Math.max(0, bytes - sizeOf(removed.state));
       return true;
     },
     findSnapshot(id) {

@@ -1330,10 +1330,9 @@ export function createStudioPage(host) {
     const mask = doc.mask;
     const stats = doc.maskStats();
     const sel = selection;
-    const canMerge = Boolean(sel)
-      && sel.width === mask.width
-      && sel.height === mask.height
-      && selectionHasPixels(sel.alpha);
+    // 选区可能带 rect（画布外图层）：统一换算到蒙版坐标系再合并，否则整块选区被忽略。
+    const selDoc = selectionAlphaInDocSpace();
+    const canMerge = Boolean(sel) && Boolean(selDoc) && selectionHasPixels(sel.alpha);
     if (!canMerge) {
       if (!stats.has) {
         return { dataUrl: null, size: doc.maskSize, coverage: 0, has: false };
@@ -1351,7 +1350,7 @@ export function createStudioPage(host) {
     const layer = makeCanvas(mask.width, mask.height);
     const lctx = layer.getContext('2d');
     lctx.drawImage(mask, 0, 0);
-    lctx.drawImage(sel.canvas, 0, 0);
+    lctx.drawImage(selDoc, 0, 0);
     const crop = doc.transform.crop;
     let out = layer;
     if (crop) {
@@ -3257,24 +3256,30 @@ export function createStudioPage(host) {
   syncLayersPanel();
 
   let previewSeq = 0;
+  /** 预览图是否正在加载：加载完成前 preview.image 为空，退出预览也要能拦住。 */
+  let previewPending = false;
 
   function setPreview(url) {
     // 连续切换（连点预览按钮、加载中又切版本）时只认最后一次请求，
     // 否则旧图加载完会把新状态覆盖回去。
     const seq = ++previewSeq;
     if (!url) {
+      previewPending = false;
       preview = { url: '', image: null, flash: false };
       scheduleDraw();
       return;
     }
+    previewPending = true;
     loadImage(url)
       .then((image) => {
         if (seq !== previewSeq) return;
+        previewPending = false;
         preview = { url, image, flash: false };
         scheduleDraw();
       })
       .catch((err) => {
         if (seq !== previewSeq) return;
+        previewPending = false;
         toastError(err, '结果预览加载失败');
       });
   }
@@ -3284,9 +3289,11 @@ export function createStudioPage(host) {
    * 结果仍留在版本槽与 AI 面板，随时可再点「画布预览」。
    */
   function enterBaseEdit() {
-    if (!preview.image) return false;
+    const active = Boolean(preview.image || previewPending);
+    if (!active) return false;
     ai?.exitPreview?.();
-    setPreview(null);
+    // 预览还在加载时 preview.image 为空，必须再清一次以作废进行中的请求。
+    if (preview.image || previewPending) setPreview(null);
     toast('已退出结果预览，继续编辑当前主图');
     return true;
   }
@@ -4144,6 +4151,21 @@ export function createStudioPage(host) {
     return { x: rawPoint.x + (crop?.x || 0), y: rawPoint.y + (crop?.y || 0) };
   }
 
+  /**
+   * 点提示的落点：返回文档坐标，并标出是否在可分割范围内。
+   * 越界点不夹取（夹到边缘会变成伪前景点），由调用方丢弃并提示。
+   */
+  function segmentPointWithin(rawPoint) {
+    const crop = doc?.transform.crop;
+    const box = segmentBounds();
+    const x = rawPoint.x + (crop?.x || 0);
+    const y = rawPoint.y + (crop?.y || 0);
+    return {
+      point: { x, y },
+      inside: x >= box.x && y >= box.y && x <= box.x + box.width && y <= box.y + box.height,
+    };
+  }
+
   /* ============================================================
    * 选区（D8.1）
    * ============================================================ */
@@ -4202,6 +4224,8 @@ export function createStudioPage(host) {
         ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(width), height: Math.round(height) }
         : { x: 0, y: 0, width, height },
       source: source && source.layerId ? { layerId: source.layerId } : null,
+      /** 选区 alpha 的「文档蒙版坐标」缓存，见 selectionAlphaInDocSpace()。 */
+      docCanvas: null,
     };
     selPath = null;
     antsOffset = 0;
@@ -4217,6 +4241,33 @@ export function createStudioPage(host) {
     selPath = null;
     updateSelectionUi();
     if (!silent) scheduleDraw();
+  }
+
+  /**
+   * 选区 alpha 的「文档蒙版坐标」版本。
+   * 选区可能只覆盖画布外某图层区域（rect 不为 0）；蒙版侧消费者（画笔/修复/形状/
+   * 提交蒙版）若直接按 (0,0) 贴，笔触会整笔落在蒙版外被裁掉。
+   */
+  function selectionAlphaInDocSpace() {
+    if (!selection?.canvas || !doc) return null;
+    const mask = doc.mask;
+    const rect = selection.rect || { x: 0, y: 0 };
+    if (!rect.x && !rect.y && selection.width === mask.width && selection.height === mask.height) {
+      return selection.canvas;
+    }
+    if (
+      selection.docCanvas &&
+      selection.docCanvas.width === mask.width &&
+      selection.docCanvas.height === mask.height
+    ) {
+      return selection.docCanvas;
+    }
+    const canvas = makeCanvas(mask.width, mask.height);
+    canvas
+      .getContext('2d')
+      .drawImage(selection.canvas, Math.round(rect.x || 0), Math.round(rect.y || 0));
+    selection.docCanvas = canvas;
+    return canvas;
   }
 
   /* ---------------------------------------------------------- 选区画笔（人工精修） */
@@ -4294,6 +4345,14 @@ export function createStudioPage(host) {
   function commitSelectionPaint() {
     if (!selection?.canvas) return;
     selection.alpha = canvasToAlpha(selection.canvas);
+    selection.docCanvas = null;
+    // 选区被橡皮擦空：直接结束选区，否则后续画笔/修复会拿全透明蒙版做 destination-in，
+    // 表现为「怎么涂都涂不上」。
+    if (!selectionHasPixels(selection.alpha)) {
+      clearSelection(true);
+      selection.docCanvas = null;
+      return;
+    }
     selPath = null;
     antsOffset = 0;
     updateSelectionUi();
@@ -5008,7 +5067,7 @@ export function createStudioPage(host) {
     paintDab(sctx, point.x - x0, point.y - y0, radius, false);
     if (selection) {
       sctx.globalCompositeOperation = 'destination-in';
-      sctx.drawImage(selection.canvas, -x0, -y0);
+      sctx.drawImage(selectionAlphaInDocSpace() || selection.canvas, -x0, -y0);
       sctx.globalCompositeOperation = 'source-over';
     }
     const mctx = layer.mask.getContext('2d');
@@ -5048,7 +5107,7 @@ export function createStudioPage(host) {
     sctx.clearRect(0, 0, size, size);
     paintDab(sctx, point.x - x0, point.y - y0, radius, false);
     sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(selection.canvas, -x0, -y0);
+    sctx.drawImage(selectionAlphaInDocSpace() || selection.canvas, -x0, -y0);
     sctx.globalCompositeOperation = 'source-over';
     const mctx = doc.mask.getContext('2d');
     mctx.save();
@@ -5090,7 +5149,7 @@ export function createStudioPage(host) {
       paint(sctx);
       if (selection) {
         sctx.globalCompositeOperation = 'destination-in';
-        sctx.drawImage(selection.canvas, 0, 0);
+        sctx.drawImage(selectionAlphaInDocSpace() || selection.canvas, 0, 0);
         sctx.globalCompositeOperation = 'source-over';
       }
       const mctx = layer.mask.getContext('2d');
@@ -5118,7 +5177,7 @@ export function createStudioPage(host) {
     sctx.clearRect(0, 0, canvas.width, canvas.height);
     paint(sctx);
     sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(selection.canvas, 0, 0);
+    sctx.drawImage(selectionAlphaInDocSpace() || selection.canvas, 0, 0);
     sctx.globalCompositeOperation = 'source-over';
     doc.mask.getContext('2d').drawImage(canvas, 0, 0);
     doc.markMaskChanged(true);
@@ -5201,7 +5260,7 @@ export function createStudioPage(host) {
     sctx.clearRect(x0, y0, width, height);
     const result = paint(sctx);
     sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(selection.canvas, x0, y0, width, height, x0, y0, width, height);
+    sctx.drawImage(selectionAlphaInDocSpace() || selection.canvas, x0, y0, width, height, x0, y0, width, height);
     sctx.globalCompositeOperation = 'source-over';
     repair.getContext('2d').drawImage(canvas, x0, y0, width, height, x0, y0, width, height);
     if (result !== false) {
@@ -5462,7 +5521,11 @@ export function createStudioPage(host) {
     // 右键 / 侧键不落笔：右键菜单交给 contextmenu，中键保留给平移。
     if (event.button !== 0 && event.button !== 1) return;
     // 画笔 / 修补 / 分割等直接改底图的工具：有结果预览时先退出预览再落笔。
-    if (BASE_EDIT_TOOLS.has(tool) && preview.image) enterBaseEdit();
+    if (BASE_EDIT_TOOLS.has(tool) && (preview.image || previewPending)) {
+      // 本次点击只用于退出预览，不落笔：否则预览消失的瞬间会多画一笔。
+      enterBaseEdit();
+      return;
+    }
     // 合成事件 / 触控笔拿不到活动指针时 setPointerCapture 会抛错，
     // 一旦抛出后面的绘制逻辑全被跳过（手绘工具会「点了没反应」）。
     try {
@@ -5553,9 +5616,18 @@ export function createStudioPage(host) {
       // D13.1：主体 = 点一下交给 SAM 3.1 点提示；框选 = 拖框（Shift/Alt 点可加减选）；
       // 点选 = 累积提示点；文字 = 输入描述，可在画面上拖框限制范围。
       const at = segmentPoint(freePoint);
+      // 点提示不做夹取：夹到区域边缘会凭空多出一个「边缘前景点」，分割反而跑偏。
+      const hint = segmentPointWithin(freePoint);
+      const pushHint = (label) => {
+        if (!hint.inside) {
+          toastWarn('提示点不在可分割范围内，已忽略');
+          return;
+        }
+        segPoints.push({ x: hint.point.x, y: hint.point.y, label });
+      };
       if (segMode === 'box') {
         if (event.shiftKey || event.altKey) {
-          segPoints.push({ x: at.x, y: at.y, label: event.altKey ? 0 : 1 });
+          pushHint(event.altKey ? 0 : 1);
           syncSegUi();
           scheduleDraw();
           if (segBox) void runSegment({ box: segBox });
@@ -5564,7 +5636,7 @@ export function createStudioPage(host) {
         drag = { mode: 'segBox', start: at, rect: null };
         scheduleDraw();
       } else if (segMode === 'points') {
-        segPoints.push({ x: at.x, y: at.y, label: event.altKey ? 0 : 1 });
+        pushHint(event.altKey ? 0 : 1);
         syncSegUi();
         scheduleDraw();
         void runSegment({});
@@ -6165,8 +6237,32 @@ export function createStudioPage(host) {
 
   refs.canvas.addEventListener('pointerup', endDrag);
   refs.canvas.addEventListener('pointercancel', () => {
-    // 系统取消手势（来电、手势冲突、触控笔抬起异常）时丢弃本次操作：
-    // 不能走 endDrag 的提交分支，否则会误落笔、误拉裁剪框并多一条撤销步。
+    if (!drag) return;
+    const mode = drag.mode;
+    // 已经就地改过像素的操作：走一次提交，保证「画面 = 历史」，避免出现
+    // 不可撤销的半截笔触（自动保存还会把半截写进工程）。
+    const painted = new Set([
+      'paint',
+      'spot',
+      'clone',
+      'clone-blocked',
+      'smudge',
+      'skin',
+      'liquify',
+      'mosaic',
+      'selpaint',
+    ]);
+    if (painted.has(mode)) {
+      endDrag();
+      return;
+    }
+    if (mode === 'moveLayer' && drag.layer) {
+      // 图层已经拖到一半：复位到按下时的位置，不产生撤销步。
+      drag.layer.x = drag.originX;
+      drag.layer.y = drag.originY;
+      doc?.touchLayers();
+    }
+    // 其余（框选 / 裁剪 / 平移）无副作用，直接丢弃。
     drag = null;
     dragRect = null;
     cursor = null;
@@ -6769,7 +6865,9 @@ export function createStudioPage(host) {
    * 图层与图层组原样保留。切换版本与 AI 结果采用共用这一条路径。
    */
   function afterBaseSwap({ sizeChanged = false } = {}) {
-    selectionSets = [];
+    // 同尺寸换主图（AI 修图 / 同尺寸版本）画面坐标没变，用户存的选区组仍可用；
+    // 尺寸变了才作废。
+    if (sizeChanged) selectionSets = [];
     cropRect = null;
     refs.cropbar.hidden = true;
     clearSelection(true);
@@ -6957,7 +7055,8 @@ export function createStudioPage(host) {
     // 卡片缩略图仍按合成观感生成，只用于展示，不写进快照槽。
     const bake = (async () => {
       const mainCanvas = current.exportMainCanvas('image/png');
-      const blob = await canvasToBlob(mainCanvas, 'image/png');
+      // 先把缩略图画好（同步），再 await 编码：编码期间用户拖动图层，
+      // 不会让缩略图与这次快照的内容不一致。
       let thumbUrl = '';
       try {
         if (current.layers.length) {
@@ -6981,6 +7080,7 @@ export function createStudioPage(host) {
       } catch {
         thumbUrl = '';
       }
+      const blob = await canvasToBlob(mainCanvas, 'image/png');
       return { blob, thumbUrl };
     })();
     // 提前中止时可能不再 await，先挂一个空 catch 避免未处理的 rejection。
@@ -7576,10 +7676,16 @@ export function createStudioPage(host) {
       // 存「旋转后、未裁剪」的完整蒙版，恢复时才能和 transform/crop 对齐。
       // 像素版本号没变时复用上次编码的 Blob，保存签名才稳定（否则每次都整条重写）。
       const maskKey = `${current.maskVersion}:${current.mask.width}x${current.mask.height}`;
-      if (maskBlobCache.doc !== current || maskBlobCache.key !== maskKey) {
+      // 同时比对画布引用：即便某条路径漏了自增版本号，换过画布也一定重新编码。
+      if (
+        maskBlobCache.doc !== current ||
+        maskBlobCache.key !== maskKey ||
+        maskBlobCache.canvas !== current.mask
+      ) {
         maskBlobCache = {
           doc: current,
           key: maskKey,
+          canvas: current.mask,
           blob: current.hasMask() ? await canvasToBlob(current.mask, 'image/png') : null,
         };
       }
@@ -7591,10 +7697,15 @@ export function createStudioPage(host) {
     try {
       // 污点修复层（D10.1）：PNG 保留透明通道，未修区域不覆盖底图。
       const repairKey = `${current.repairVersion}:${current.repair?.width || 0}x${current.repair?.height || 0}`;
-      if (repairBlobCache.doc !== current || repairBlobCache.key !== repairKey) {
+      if (
+        repairBlobCache.doc !== current ||
+        repairBlobCache.key !== repairKey ||
+        repairBlobCache.canvas !== current.repair
+      ) {
         repairBlobCache = {
           doc: current,
           key: repairKey,
+          canvas: current.repair,
           blob: current.repair ? await canvasToBlob(current.repair, 'image/png') : null,
         };
       }
@@ -9213,7 +9324,10 @@ export function createStudioPage(host) {
   refs.snapshotAdd.addEventListener('click', () => {
     if (!doc) return;
     const item = doc.addSnapshot(doc.nextSnapshotName());
-    if (!item) return;
+    if (!item) {
+      toastWarn('快照数量已达上限（20 张），请先删除不用的快照');
+      return;
+    }
     renderSnapshots();
     toast(`已创建快照「${item.name}」`);
   });
@@ -9224,7 +9338,7 @@ export function createStudioPage(host) {
       const item = doc?.snapshots.find((entry) => entry.id === jump.dataset.snapJump);
       if (item) {
         if (doc.restoreSnapshot(item.id)) afterSnapshotJump(item.name);
-        else toastWarn('这张快照属于换主图之前的画面，尺寸对不上，无法恢复');
+        else toastWarn('这张快照属于上一张主图，无法恢复');
       }
       return;
     }
@@ -10227,7 +10341,8 @@ export function createStudioPage(host) {
     if (!doc || previewBlocked('放大')) return;
     flushAdjustPreview();
     openUpscaleDialog({
-      getImage: () => doc.bake('image/png'),
+      // 放大只处理主图（与 AI 送图一致）：把图层烘焙进去会产生重复像素。
+      getImage: () => doc.bakeMain('image/png'),
       getSize: () => doc.size,
       onAdopt: (url, name) => openUrl(url, name, { kind: 'upscale' }),
       onCompare: (url) => ai?.compareAll?.({ extra: [{ url, label: '放大结果' }] }),
@@ -10235,6 +10350,7 @@ export function createStudioPage(host) {
   });
 
   refs.undoBtn.addEventListener('click', () => {
+    const had = Boolean(doc?.canUndo);
     if (doc?.undo()) {
       for (const id of smartSwappedIds) layerBlobs.delete(id);
       syncAdjustInputs();
@@ -10252,9 +10368,13 @@ export function createStudioPage(host) {
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
+    } else if (had) {
+      // 有历史但恢复被拒：只可能是这条状态属于上一张主图（换底图后）。
+      toastWarn('这一步属于上一张主图，无法撤销');
     }
   });
   refs.redoBtn.addEventListener('click', () => {
+    const had = Boolean(doc?.canRedo);
     if (doc?.redo()) {
       for (const id of smartSwappedIds) layerBlobs.delete(id);
       syncAdjustInputs();
@@ -10271,6 +10391,8 @@ export function createStudioPage(host) {
       ai?.refresh?.();
       scheduleDraw();
       scheduleSave();
+    } else if (had) {
+      toastWarn('这一步属于上一张主图，无法重做');
     }
   });
 

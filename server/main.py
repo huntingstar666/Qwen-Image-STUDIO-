@@ -445,7 +445,8 @@ def _clean_llm_profiles(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[st
     active = str(payload.get("llm_active") or cfg.get("llm_active") or "").strip()
     if not any(profile["id"] == active for profile in profiles):
         active = profiles[0]["id"]
-    return {"llm_profiles": profiles, "llm_active": active}
+    # 写回迁移版本：用户把云端档案的 max_tokens 手动改回 2048 后，重载不会再自动抬高。
+    return {"llm_profiles": profiles, "llm_active": active, "llm_profiles_rev": 1}
 
 
 def _public_llm_profile(profile: dict[str, Any], *, probe: bool) -> dict[str, Any]:
@@ -2186,7 +2187,9 @@ def api_llm_test(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
             result["ok"] = True
             result["connected"] = True
             result["chat_ok"] = True
-            result["hint"] = "模型只返回了推理内容（思考型模型），通道正常；正式润色会拿到正文"
+            result["hint"] = ("模型只返回了推理内容（思考型模型），通道正常；"
+                              "正式润色会自动放大输出预算重试，"
+                              "若仍失败请调大该服务的「最大输出」或换非推理模型")
         else:
             result.update(_llm_error_fields(exc, profile))
     result["latency_ms"] = int((time.time() - started) * 1000)

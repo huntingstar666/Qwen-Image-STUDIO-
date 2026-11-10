@@ -110,6 +110,9 @@ DEFAULTS: dict[str, Any] = {
     # 空数组 = 首次启动时用上面的 ollama_url / ollama_model 迁移出一条本机档案
     "llm_active": "local-ollama",
     "llm_profiles": [],
+    # 档案迁移版本：<1 时把云端档案的历史默认 max_tokens 2048 提到 4096
+    # （思考型模型会先用推理 token 吃满 2048，正文为空导致润色失败）
+    "llm_profiles_rev": 0,
     # 生成默认值
     "steps": 25,
     "cfg": 1.0,
@@ -441,7 +444,9 @@ def clean_llm_profile(raw: Any) -> dict[str, Any]:
         "api_key_env": str(item.get("api_key_env") or "").strip(),
         "model": str(item.get("model") or "").strip(),
         "timeout_s": _clamp_int(item.get("timeout_s"), 300, 5, 600),
-        "max_tokens": _clamp_int(item.get("max_tokens"), 2048, 64, 8192),
+        # 云端默认 4096：思考型模型要预留推理 token，2048 很容易只返回 reasoning。
+        "max_tokens": _clamp_int(item.get("max_tokens"), 4096 if kind == "openai" else 2048,
+                                 64, 8192),
         "json_mode": _as_bool(item.get("json_mode"), True),
         "vision": vision,
         # 参考图默认随请求发送：现在云端档案基本都是视觉模型，
@@ -472,6 +477,13 @@ def normalize_llm_profiles(cfg: dict[str, Any]) -> dict[str, Any]:
             "base_url": cfg.get("ollama_url") or OLLAMA_DEFAULT_URL,
             "model": cfg.get("ollama_model") or "",
         })]
+    # 一次性迁移：早期云端档案沿用了 2048 默认值，思考型模型会把预算全花在推理上，
+    # 正文为空导致润色必然回退。这里只改「仍是旧默认值」的云端档案。
+    if int(cfg.get("llm_profiles_rev") or 0) < 1:
+        for profile in profiles:
+            if profile.get("kind") == "openai" and int(profile.get("max_tokens") or 0) <= 2048:
+                profile["max_tokens"] = 4096
+        cfg["llm_profiles_rev"] = 1
     seen: set[str] = set()
     for profile in profiles:
         base = profile["id"]

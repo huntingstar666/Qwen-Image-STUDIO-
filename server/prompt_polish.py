@@ -66,6 +66,8 @@ IMAGE_MODEL_ALIASES = {
 }
 
 #: 官方 PE 采样参数（契约 4.4）。字段名即 Ollama /api/chat options 名。
+#: num_predict 是工作台的输出预算（非官方字段）：思考型模型会先消耗推理 token，
+#: 2048 经常被推理吃满导致正文为空，这里给到 4096；云端客户端还会在截断时自动翻倍重试。
 T2I_SAMPLING: dict[str, float | int] = {
     "temperature": 1.0,
     "top_p": 0.95,
@@ -73,7 +75,7 @@ T2I_SAMPLING: dict[str, float | int] = {
     "min_p": 0.0,
     "presence_penalty": 1.5,
     "repetition_penalty": 1.0,
-    "num_predict": 2048,
+    "num_predict": 4096,
 }
 EDIT_SAMPLING: dict[str, float | int] = {
     "temperature": 1.0,
@@ -83,7 +85,7 @@ EDIT_SAMPLING: dict[str, float | int] = {
     # 编辑模式官方要求 presence_penalty=0（T2I 是 1.5，别抄错）。
     "presence_penalty": 0.0,
     "repetition_penalty": 1.0,
-    "num_predict": 2048,
+    "num_predict": 4096,
 }
 
 #: 追加在 user message 末尾的输出约定（system 保持官方 PE 原文不动）。
@@ -512,6 +514,10 @@ def polish(
                     "不要臆造画面细节。\n" + messages[1]["content"])
         sampling = T2I_SAMPLING if mode_key == "t2i" else EDIT_SAMPLING
         raw = _call_model(client, resolved_model, messages, sampling, json_mode=json_mode)
+        # 云端客户端可能在「图片被上游拒绝」时自动降级为纯文本，
+        # 以客户端真实发送结果为准，避免回显「已附带参考图」但实际没发。
+        if vision_used and hasattr(client, "last_vision_used"):
+            vision_used = bool(client.last_vision_used)
     except Exception as exc:  # noqa: BLE001 - 契约要求：除 mode 外都不抛异常
         if not fallback:
             if isinstance(exc, OllamaError):

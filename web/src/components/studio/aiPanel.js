@@ -1230,6 +1230,13 @@ export function mountAiPanel(host, ctx) {
         images,
       });
       // 接口返回字段是 rewritten_prompt（与 edit 页共用的 /api/polish 契约）。
+      // fallback=true 表示模型服务调用失败、返回的是原文，不能当成润色结果展示。
+      if (result?.fallback) {
+        toastWarn(result?.error
+          ? `润色未生效：${result.error}`
+          : '润色未生效，模型服务没有返回内容，已保留原文');
+        return;
+      }
       const polished = String(result?.rewritten_prompt || '').trim();
       if (!polished) {
         toastWarn('润色没有返回内容，可直接提交原文');

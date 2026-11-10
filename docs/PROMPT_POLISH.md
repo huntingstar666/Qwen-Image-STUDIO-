@@ -82,6 +82,13 @@ JSON 约定按模型二选一：
 
 能力探测抛任何异常都按「不支持」处理，**不允许因为探测失败让润色 500**。
 
+云端（OpenAI 兼容）档案由 `OpenAICompatClient.supports_vision` 决定是否附图：
+
+- `vision=off` 不发图；`vision=on` 强制发；
+- `vision=auto`（默认）对**任意模型**先按「支持读图」发送：上游以 400 拒绝图片时自动去掉图片
+  重试一次，并把该模型记入进程级「不支持」缓存，后续不再重复失败。这样以后新上线的视觉模型
+  不用改代码就能读图，纯文本模型也不会反复报错；返回的 `vision` 以客户端真实发送结果为准。
+
 配套两个 Ollama 请求参数（`OllamaClient.chat(..., format=..., think=...)`）：
 
 - `format="json"`：Ollama 在 token 级做 JSON 语法约束，避免模型输出 markdown 代码块/前言；
@@ -99,9 +106,15 @@ JSON 约定按模型二选一：
 | min_p | 0.0 | 0.0 |
 | presence_penalty | **1.5** | **0.0** |
 | repetition_penalty | 1.0 | 1.0 |
-| num_predict | 2048 | 2048 |
+| num_predict | 4096 | 4096 |
 
 编辑模式的 `presence_penalty` 是 0（不是 1.5），抄错会导致编辑指令发散，测试里有断言。
+
+`num_predict` 是工作台的输出预算（不属于官方 PE 参数）。思考型模型会先消耗推理 token，
+2048 经常被推理吃满、正文为空；因此默认给到 4096，云端客户端还会在
+`finish_reason=length` 且只有 `reasoning_content` 时按 2 倍追加预算重试
+（上限 `HARD_MAX_TOKENS=8192`）。云端档案的 `max_tokens` 默认也从 2048 提到 4096，
+历史配置在加载时做一次性迁移。
 
 ## 4. 三级解析降级（`parse_polish_output`）
 

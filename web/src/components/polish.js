@@ -114,7 +114,7 @@ function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttac
   if (result?.ratio_follow != null) {
     meta.push(`<span class="badge">${result.ratio_follow ? '会跟随建议比例' : '保持原比例'}</span>`);
   }
-  if (fallback) meta.push('<span class="badge warn">Ollama 不可用 · 已返回原文</span>');
+  if (fallback) meta.push('<span class="badge warn">模型服务未返回内容 · 已保留原文</span>');
 
   const ratioMatch = (ratios || []).find((ratio) => String(ratio.id).replace(/\s+/g, '') === whRatio.replace(/\s+/g, ''));
 
@@ -140,29 +140,31 @@ function showCompareDialog({ result, original, ratios, onAccept, mode, poseAttac
            </label>`
         : ''
     }
-    ${fallback ? '<div class="notice warn">Ollama 未连接或调用失败，本次润色回退为原文。可稍后重试。</div>' : ''}
+    ${fallback ? `<div class="notice warn">本次润色未生效：${escapeHtml(result?.error || '模型服务没有返回可用内容')}。可稍后重试，或在设置 → AI 模型中检查服务与「最大输出」。</div>` : ''}
     ${mode === 'edit' ? '<div class="notice info">图像编辑的润色提示词只改写编辑指令，不会改变参考图本身。</div>' : ''}`;
 
   openModal({
     title: '提示词润色对比',
-    subtitle: '采用前可以先对比原文与润色结果',
+    subtitle: fallback ? '模型服务调用失败，本次保留原文' : '采用前可以先对比原文与润色结果',
     size: 'lg',
     content,
-    actions: [
-      { label: '回退原文', kind: 'ghost' },
-      {
-        label: '采用润色结果',
-        kind: 'primary',
-        onClick: ({ body }) => {
-          if (!rewritten) {
-            toastWarn('润色结果为空，已保留原文');
-            return false;
-          }
-          const applyRatio = Boolean(body.querySelector('[data-ref="applyRatio"]')?.checked);
-          onAccept?.(rewritten, result, { applyRatio: applyRatio && Boolean(ratioMatch), ratio: ratioMatch || null });
-          toastSuccess('已采用润色后的提示词');
-        },
-      },
-    ],
+    actions: fallback
+      ? [{ label: '知道了', kind: 'primary' }]
+      : [
+          { label: '回退原文', kind: 'ghost' },
+          {
+            label: '采用润色结果',
+            kind: 'primary',
+            onClick: ({ body }) => {
+              if (!rewritten) {
+                toastWarn('润色结果为空，已保留原文');
+                return false;
+              }
+              const applyRatio = Boolean(body.querySelector('[data-ref="applyRatio"]')?.checked);
+              onAccept?.(rewritten, result, { applyRatio: applyRatio && Boolean(ratioMatch), ratio: ratioMatch || null });
+              toastSuccess('已采用润色后的提示词');
+            },
+          },
+        ],
   });
 }

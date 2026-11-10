@@ -377,6 +377,9 @@ function fillModelOptions(llm) {
   if (!models.length) {
     select.innerHTML = `<option value="">${escapeHtml(activeModel || '—')}</option>`;
     select.disabled = true;
+    // 拉不到模型列表时清掉本地残留，交给后端按当前服务档案解析模型名，
+    // 避免把上一台服务（例如本机 Ollama）的模型名发给云端。
+    if (store.state.polishModel) patchSettings({ polishModel: '' });
     return;
   }
   select.disabled = false;
@@ -390,7 +393,9 @@ function fillModelOptions(llm) {
         : models[0];
   select.innerHTML = models.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   select.value = preferred;
-  if (!store.state.polishModel) patchSettings({ polishModel: preferred });
+  // 切换模型服务后本地缓存的模型名可能已不在新服务的列表里，
+  // 必须同步纠正，否则润色请求会把旧模型名发给新服务并直接 400。
+  if (current !== preferred) patchSettings({ polishModel: preferred });
 }
 
 function renderHealth(health) {

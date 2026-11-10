@@ -29,12 +29,17 @@ DEFAULT_TIMEOUT = 300.0
 #: 列模型用短超时：设置页/健康检查不能被一个卡死的网关拖住。
 LIST_TIMEOUT = 8.0
 
-#: 模型名启发式（vision=auto 时用）：命中即认为支持读图，避免额外探测费用。
-VISION_HINTS = (
-    "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4",
-    "qwen-vl", "qwen2.5-vl", "qwen3-vl",
-    "claude", "gemini", "glm-4v", "glm-4.5v", "internvl", "llava", "pixtral",
-)
+#: 单次请求的输出预算硬顶。思考型模型会先用推理 token 把预算吃满，
+#: 正文因此为空；截断时会在该上限内自动翻倍重试（见 ``chat``）。
+HARD_MAX_TOKENS = 8192
+#: 因输出被截断而自动加预算的最多轮数（预算按 2 倍递增）。
+MAX_BUDGET_RETRIES = 2
+
+#: 进程级视觉能力缓存：key = ``"{base_url}|{model}"``。
+#: vision=auto 时先按「支持读图」尝试，上游 400 拒绝就记入不支持集合，
+#: 这样任何新上线的视觉模型都不用改代码，纯文本模型也不会反复失败。
+_VISION_SUPPORTED: set[str] = set()
+_VISION_UNSUPPORTED: set[str] = set()
 
 _STATUS_ERRORS: dict[int, tuple[str, str, str]] = {
     400: ("upstream_error", "请求被服务拒绝", "检查模型名、参数与服务商文档"),
@@ -49,10 +54,13 @@ _STATUS_ERRORS: dict[int, tuple[str, str, str]] = {
 class LLMError(RuntimeError):
     """LLM 服务不可用 / 鉴权失败 / 响应异常。"""
 
-    def __init__(self, message: str, *, code: str = "upstream_error", hint: str = "") -> None:
+    def __init__(self, message: str, *, code: str = "upstream_error", hint: str = "",
+                 status: int = 0) -> None:
         super().__init__(message)
         self.code = code
         self.hint = hint
+        #: 上游 HTTP 状态码（调用方据此区分「400 参数/模态不支持」与网络错误）。
+        self.status = int(status or 0)
 
 
 def mask_key(key: Any) -> str:
@@ -109,6 +117,27 @@ def _image_data_url(value: Any) -> str:
     return f"data:image/png;base64,{text}"
 
 
+def _messages_have_images(messages: Any) -> bool:
+    """消息里是否带了 Ollama 风格的 ``images`` 字段。"""
+    for message in messages or []:
+        if isinstance(message, Mapping) and message.get("images"):
+            return True
+    return False
+
+
+def _strip_images(messages: Any) -> list[dict[str, Any]]:
+    """去掉 ``images``，用于上游不支持图片时自动降级为纯文本。"""
+    out: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        item = dict(message)
+        if item.get("images"):
+            item["images"] = []
+        out.append(item)
+    return out
+
+
 def _to_openai_messages(messages: Any) -> list[dict[str, Any]]:
     """把 ``prompt_polish`` 的 Ollama 格式（user 带 ``images``）转成 content parts。"""
     out: list[dict[str, Any]] = []
@@ -137,7 +166,7 @@ class OpenAICompatClient:
         *,
         api_key: str = "",
         timeout: float = DEFAULT_TIMEOUT,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         json_mode: bool = True,
         vision: str = "auto",
         extra_headers: Mapping[str, str] | None = None,
@@ -154,6 +183,8 @@ class OpenAICompatClient:
         self.vision = str(vision or "auto")
         self.extra_headers = {str(k): str(v) for k, v in dict(extra_headers or {}).items()}
         self._session = session
+        #: 最近一次 chat() 是否真的把参考图发给了上游（供调用方回显）。
+        self.last_vision_used = False
 
     # ------------------------------------------------------------------ 基础
     @property
@@ -214,6 +245,7 @@ class OpenAICompatClient:
                 f"{message}：{detail}" if detail else message,
                 code=code,
                 hint=hint,
+                status=status,
             )
         try:
             return response.json()
@@ -259,14 +291,21 @@ class OpenAICompatClient:
             return False
         return True
 
+    def vision_key(self, model: str) -> str:
+        return f"{self.base_url}|{str(model or '')}"
+
     def supports_vision(self, model: str) -> bool:
-        """``vision=auto`` 时按模型名启发式判断，不做额外探测（避免费用）。"""
-        if self.vision == "on":
-            return True
+        """``vision=auto`` 时先按「支持读图」尝试，不做额外探测。
+
+        任意视觉模型（包括以后新上线的型号）都能直接带上参考图；
+        上游若以 400 拒绝图片，``chat()`` 会自动去掉图片重试一次，
+        并把该模型记入进程级「不支持」缓存，后续不再重复失败。
+        """
         if self.vision == "off":
             return False
-        name = str(model or "").lower()
-        return any(hint in name for hint in VISION_HINTS)
+        if self.vision == "on":
+            return True
+        return self.vision_key(model) not in _VISION_UNSUPPORTED
 
     def chat(
         self,
@@ -286,6 +325,13 @@ class OpenAICompatClient:
         ``top_k`` / ``min_p`` / ``repetition_penalty`` / ``think`` 属于 Ollama
         专有参数，这里忽略；``format="json"`` 或档案开启 ``json_mode`` 时请求
         ``response_format=json_object``。
+
+        两类自动降级（都对调用方透明）：
+
+        * **图片不被支持**：带图请求收到 400 时去掉图片重试，并缓存该模型不支持读图；
+        * **思考型模型吃光预算**：``finish_reason=length`` 且只有 reasoning_content
+          时，按 2 倍追加输出预算重试（首次预算由 ``num_predict`` 与档案
+          ``max_tokens`` 取小；追加上限 ``HARD_MAX_TOKENS``），避免正文永远为空。
         """
         if not model:
             raise LLMError("未指定模型", code="not_found",
@@ -294,50 +340,89 @@ class OpenAICompatClient:
             limit = int(num_predict or self.max_tokens)
         except (TypeError, ValueError):
             limit = self.max_tokens
-        payload: dict[str, Any] = {
-            "model": str(model),
-            "messages": _to_openai_messages(messages),
-            "temperature": float(temperature),
-            "top_p": float(top_p),
-            "presence_penalty": float(presence_penalty),
-            "max_tokens": max(16, min(limit, self.max_tokens)),
-        }
+        budget = max(16, min(limit, self.max_tokens))
         wants_json = bool(format == "json") or self.json_mode
-        if wants_json:
-            payload["response_format"] = {"type": "json_object"}
+        has_images = _messages_have_images(messages)
+        drop_images = False
+        drop_format = False
+        budget_retries = 0
+        self.last_vision_used = False
 
-        try:
-            data = self._request("POST", "/chat/completions", json=payload)
-        except LLMError as exc:
-            # 部分兼容服务不认识 response_format：去掉后重试一次
-            if "response_format" in payload and exc.code in ("upstream_error", "not_found"):
-                payload.pop("response_format", None)
+        while True:
+            payload: dict[str, Any] = {
+                "model": str(model),
+                "messages": _to_openai_messages(
+                    _strip_images(messages) if drop_images else messages),
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+                "presence_penalty": float(presence_penalty),
+                "max_tokens": budget,
+            }
+            if wants_json and not drop_format:
+                payload["response_format"] = {"type": "json_object"}
+
+            try:
                 data = self._request("POST", "/chat/completions", json=payload)
-            else:
+            except LLMError as exc:
+                status = int(getattr(exc, "status", 0) or 0)
+                # 带图被拒（多为纯文本模型）：去掉图片再试一次，并记住该模型不支持读图
+                if has_images and not drop_images and status == 400:
+                    drop_images = True
+                    _VISION_UNSUPPORTED.add(self.vision_key(model))
+                    _VISION_SUPPORTED.discard(self.vision_key(model))
+                    continue
+                # 加预算被模型拒绝（部分模型输出上限更小）：停止追加，报可执行的错
+                if status == 400 and budget_retries > 0:
+                    raise LLMError(
+                        "模型不接受更大的输出预算", code="empty_content",
+                        hint="该模型的输出上限较小，请换非推理模型或调小「最大输出」",
+                    ) from exc
+                # 部分兼容服务不认识 response_format：去掉后重试一次
+                if "response_format" in payload and not drop_format and exc.code in (
+                        "upstream_error", "not_found"):
+                    drop_format = True
+                    continue
                 raise
 
-        choices = data.get("choices") if isinstance(data, Mapping) else None
-        message: Any = {}
-        if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
-            message = choices[0].get("message") or {}
-        content = message.get("content") if isinstance(message, Mapping) else ""
-        if isinstance(content, list):
-            content = "".join(
-                str(part.get("text") or "") for part in content if isinstance(part, Mapping))
-        text = str(content or "").strip()
-        if text:
-            return text
-        reasoning = ""
-        if isinstance(message, Mapping):
-            reasoning = str(
-                message.get("reasoning_content") or message.get("reasoning") or "").strip()
-        if reasoning:
-            raise LLMError(
-                "模型只返回了推理内容（reasoning_content）", code="empty_content",
-                hint="换一个非推理模型，或在服务上关闭思考模式",
-            )
-        raise LLMError("模型返回了空内容", code="empty_content",
-                       hint="换一个模型，或调大最大输出")
+            used_images = has_images and not drop_images
+            self.last_vision_used = used_images
+            if used_images:
+                _VISION_SUPPORTED.add(self.vision_key(model))
+                _VISION_UNSUPPORTED.discard(self.vision_key(model))
+
+            choices = data.get("choices") if isinstance(data, Mapping) else None
+            choice: Any = {}
+            if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+                choice = choices[0]
+            message: Any = choice.get("message") or {}
+            content = message.get("content") if isinstance(message, Mapping) else ""
+            if isinstance(content, list):
+                content = "".join(
+                    str(part.get("text") or "") for part in content
+                    if isinstance(part, Mapping))
+            text = str(content or "").strip()
+            if text:
+                return text
+
+            reasoning = ""
+            if isinstance(message, Mapping):
+                reasoning = str(
+                    message.get("reasoning_content") or message.get("reasoning") or "").strip()
+            finish_reason = str(choice.get("finish_reason") or "")
+            # 思考型模型：推理把输出预算吃满导致正文被截断，追加预算重试
+            if (reasoning and finish_reason == "length"
+                    and budget_retries < MAX_BUDGET_RETRIES and budget < HARD_MAX_TOKENS):
+                budget = min(HARD_MAX_TOKENS, budget * 2)
+                budget_retries += 1
+                continue
+            if reasoning:
+                raise LLMError(
+                    "模型只返回了推理内容（reasoning_content）", code="empty_content",
+                    hint="该模型是思考型模型且推理耗尽了输出预算，请调大「最大输出」"
+                         "或换非推理模型",
+                )
+            raise LLMError("模型返回了空内容", code="empty_content",
+                           hint="换一个模型，或调大最大输出")
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"OpenAICompatClient(base_url={self.base_url!r}, model_key={mask_key(self.api_key)!r})"
@@ -352,7 +437,7 @@ def client_from_profile(profile: Mapping[str, Any]) -> Any:
             str(profile.get("base_url") or ""),
             api_key=resolve_api_key(profile),
             timeout=timeout,
-            max_tokens=int(profile.get("max_tokens") or 2048),
+            max_tokens=int(profile.get("max_tokens") or 4096),
             json_mode=bool(profile.get("json_mode", True)),
             vision=str(profile.get("vision") or "auto"),
             extra_headers=profile.get("extra_headers") or {},
@@ -380,4 +465,5 @@ __all__ = [
     "scrub_secrets",
     "DEFAULT_TIMEOUT",
     "LIST_TIMEOUT",
+    "HARD_MAX_TOKENS",
 ]

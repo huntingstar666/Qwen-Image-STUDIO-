@@ -1423,6 +1423,10 @@ export function mountAiPanel(host, ctx) {
           }
           const image = job?.images?.[0];
           if (!image) return;
+          // 后端的降级/风险说明（如「未圈选区域，元素移除已按普通编辑处理」）必须让用户看到，
+          // 否则只会觉得「移除没生效」。
+          const warnings = Array.isArray(job?.quality?.warnings) ? job.quality.warnings : [];
+          if (warnings.length) toastWarn(warnings.join('；'), { timeout: 8000 });
           const url = api.fileUrl(image.url || image.path || '');
           if (!url) {
             toastError(new Error('后端未返回结果地址'), '生成失败');
@@ -1948,6 +1952,17 @@ export function mountAiPanel(host, ctx) {
     },
     focusPrompt() {
       promptEditor.focus();
+    },
+    /**
+     * 宿主在「直接编辑底图」前调用：退出结果预览，但保留结果以便再次点「画布预览」。
+     * 否则预览一直盖在画布上，用户改的是一张看不见的底图，看起来像没生效。
+     */
+    exitPreview() {
+      if (!state.previewOn) return false;
+      state.previewOn = false;
+      refs.previewBtn.textContent = '画布预览';
+      ctx.showResult?.(null);
+      return true;
     },
     /** 图片对比：顶部按钮 / Shift+C 共用。 */
     compareAll,

@@ -98,6 +98,12 @@ export class StudioDoc {
     this.baseVisible = true;
     /** 污点修复图层（D10.1）：与原图同尺寸，透明处不覆盖底图 */
     this.repair = null;
+    /**
+     * 蒙版 / 修复层的像素版本号：每次真正改像素时自增。
+     * 自动保存据此复用同一份 Blob，避免「有蒙版就整条重写」（签名不再每次变化）。
+     */
+    this.maskVersion = 0;
+    this.repairVersion = 0;
     /** 叠加层图层栈（底图不在其中，底图永远锁定）；见 document.js */
     this._doc = createDocument({ width: this.oriented.width, height: this.oriented.height });
     this._history = createHistory({ limit: HISTORY_LIMIT, budget: HISTORY_BUDGET });
@@ -182,6 +188,8 @@ export class StudioDoc {
     this._clean = null;
     this._tint = null;
     this._maskHas = null;
+    this.maskVersion += 1;
+    this.repairVersion += 1;
     return true;
   }
 
@@ -447,6 +455,8 @@ export class StudioDoc {
     });
     this._maskHas = null;
     this._tint = null;
+    this.maskVersion += 1;
+    this.repairVersion += 1;
     this.clearHistory();
     this.invalidateBase();
     this.snapshot();
@@ -499,6 +509,7 @@ export class StudioDoc {
     const ctx = this.mask.getContext('2d');
     ctx.clearRect(0, 0, this.mask.width, this.mask.height);
     this._maskHas = false;
+    this.maskVersion += 1;
     this.snapshot();
   }
 
@@ -508,6 +519,7 @@ export class StudioDoc {
    */
   markMaskChanged(painted = false) {
     this._maskHas = painted ? true : null;
+    this.maskVersion += 1;
   }
 
   hasMask() {
@@ -565,6 +577,7 @@ export class StudioDoc {
     ctx.rotate(Math.PI / 2);
     ctx.drawImage(source, -source.width / 2, -source.height / 2);
     this.mask = next;
+    this.maskVersion += 1;
   }
 
   rotateMaskLeft() {
@@ -575,6 +588,7 @@ export class StudioDoc {
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(source, -source.width / 2, -source.height / 2);
     this.mask = next;
+    this.maskVersion += 1;
   }
 
   flipMask(axis) {
@@ -590,6 +604,7 @@ export class StudioDoc {
     }
     ctx.drawImage(source, 0, 0);
     this.mask = next;
+    this.maskVersion += 1;
   }
 
   /* ---------------------------------------------------------- 污点修复层（D10.1） */
@@ -601,6 +616,7 @@ export class StudioDoc {
       const next = makeCanvas(oriented.width, oriented.height);
       if (this.repair) next.getContext('2d').drawImage(this.repair, 0, 0);
       this.repair = next;
+      this.repairVersion += 1;
     }
     return this.repair;
   }
@@ -611,6 +627,7 @@ export class StudioDoc {
 
   clearRepair() {
     this.repair = null;
+    this.repairVersion += 1;
     this._base = null;
     this._underlay = null;
     this.snapshot();
@@ -671,6 +688,7 @@ export class StudioDoc {
     ctx.rotate(Math.PI / 2);
     ctx.drawImage(source, -source.width / 2, -source.height / 2);
     this.repair = next;
+    this.repairVersion += 1;
   }
 
   rotateRepairLeft() {
@@ -682,6 +700,7 @@ export class StudioDoc {
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(source, -source.width / 2, -source.height / 2);
     this.repair = next;
+    this.repairVersion += 1;
   }
 
   flipRepair(axis) {
@@ -698,6 +717,7 @@ export class StudioDoc {
     }
     ctx.drawImage(source, 0, 0);
     this.repair = next;
+    this.repairVersion += 1;
   }
 
   /* ---------------------------------------------------------- 叠加层 */
@@ -1031,6 +1051,7 @@ export class StudioDoc {
   stampRepairLive(paint) {
     const underlay = this._underlay;
     if (!underlay) return false;
+    this.repairVersion += 1;
     if (underlay === this._clean) {
       const copy = makeCanvas(underlay.width, underlay.height);
       copy.getContext('2d').drawImage(underlay, 0, 0);

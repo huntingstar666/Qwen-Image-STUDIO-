@@ -94,6 +94,26 @@ const MAX_FILE_BYTES = 30 * 1024 * 1024;
 /** D23.3：同一标签内的图层复制缓冲（切工程仍有效，刷新页面后失效）。 */
 const layerClipboard = [];
 
+/** 这些工具直接改底图 / 蒙版：有 AI 结果预览时必须先退出预览再落笔。 */
+const BASE_EDIT_TOOLS = new Set([
+  'brush',
+  'eraser',
+  'rect',
+  'ellipse',
+  'lasso',
+  'wand',
+  'segment',
+  'selbrush',
+  'seleraser',
+  'spot',
+  'clone',
+  'healbrush',
+  'smudge',
+  'skin',
+  'liquify',
+  'mosaic',
+]);
+
 const TOOLS = [
   {
     id: 'view',
@@ -415,6 +435,12 @@ export function createStudioPage(host) {
   let projectCreatedAt = 0;
   let sourceBlob = null;
   const layerBlobs = new Map();
+  /**
+   * 蒙版 / 修复层的编码缓存：像素版本号不变时复用同一份 Blob。
+   * 保存签名用的是对象身份，每次重新编码会让签名永远变化，导致「有蒙版就整条重写」。
+   */
+  let maskBlobCache = { doc: null, key: '', blob: null };
+  let repairBlobCache = { doc: null, key: '', blob: null };
   /** 替换过内容的智能对象：撤销/重做后 blob 可能仍指向上一次的图，保存前需失效重编码。 */
   const smartSwappedIds = new Set();
   let saveTimer = 0;
@@ -2595,7 +2621,31 @@ export function createStudioPage(host) {
             const cctx = canvas.getContext('2d');
             cctx.drawImage(image, 0, 0, iw, ih);
             cctx.globalCompositeOperation = 'destination-in';
-            cctx.drawImage(maskImage, 0, 0, iw, ih);
+            // 蒙版属于「送图画布」：结果图可能被等比缩放或补边到另一个尺寸，
+            // 直接拉满 iw×ih 会让修改区域整体错位。按居中等比映射，同比例时退化为 1:1。
+            const mw = maskImage.naturalWidth || Number(meta.mask.width) || 0;
+            const mh = maskImage.naturalHeight || Number(meta.mask.height) || 0;
+            if (mw > 0 && mh > 0) {
+              const fit = Math.min(iw / mw, ih / mh);
+              const drawW = Math.max(1, Math.round(mw * fit));
+              const drawH = Math.max(1, Math.round(mh * fit));
+              cctx.drawImage(
+                maskImage,
+                0,
+                0,
+                mw,
+                mh,
+                Math.round((iw - drawW) / 2),
+                Math.round((ih - drawH) / 2),
+                drawW,
+                drawH,
+              );
+              if (Math.abs(iw / mw - ih / mh) > 0.01) {
+                toastWarn('结果比例与送图不同，修改区域已按居中对齐；若位置有偏可先拉大图层再对比');
+              }
+            } else {
+              cctx.drawImage(maskImage, 0, 0, iw, ih);
+            }
             blob = await canvasToBlob(canvas, 'image/png');
           } catch (err) {
             console.warn('[studio] 结果裁切蒙版失败，按整图落层', err);
@@ -3227,6 +3277,18 @@ export function createStudioPage(host) {
         if (seq !== previewSeq) return;
         toastError(err, '结果预览加载失败');
       });
+  }
+
+  /**
+   * 有 AI 结果预览时，直接编辑底图的动作先退出预览。
+   * 结果仍留在版本槽与 AI 面板，随时可再点「画布预览」。
+   */
+  function enterBaseEdit() {
+    if (!preview.image) return false;
+    ai?.exitPreview?.();
+    setPreview(null);
+    toast('已退出结果预览，继续编辑当前主图');
+    return true;
   }
 
   /* ============================================================
@@ -5399,6 +5461,8 @@ export function createStudioPage(host) {
     if (!doc) return;
     // 右键 / 侧键不落笔：右键菜单交给 contextmenu，中键保留给平移。
     if (event.button !== 0 && event.button !== 1) return;
+    // 画笔 / 修补 / 分割等直接改底图的工具：有结果预览时先退出预览再落笔。
+    if (BASE_EDIT_TOOLS.has(tool) && preview.image) enterBaseEdit();
     // 合成事件 / 触控笔拿不到活动指针时 setPointerCapture 会抛错，
     // 一旦抛出后面的绘制逻辑全被跳过（手绘工具会「点了没反应」）。
     try {
@@ -7510,14 +7574,31 @@ export function createStudioPage(host) {
     let maskBlob = null;
     try {
       // 存「旋转后、未裁剪」的完整蒙版，恢复时才能和 transform/crop 对齐。
-      maskBlob = current.hasMask() ? await canvasToBlob(current.mask, 'image/png') : null;
+      // 像素版本号没变时复用上次编码的 Blob，保存签名才稳定（否则每次都整条重写）。
+      const maskKey = `${current.maskVersion}:${current.mask.width}x${current.mask.height}`;
+      if (maskBlobCache.doc !== current || maskBlobCache.key !== maskKey) {
+        maskBlobCache = {
+          doc: current,
+          key: maskKey,
+          blob: current.hasMask() ? await canvasToBlob(current.mask, 'image/png') : null,
+        };
+      }
+      maskBlob = maskBlobCache.blob;
     } catch {
       maskBlob = null;
     }
     let repairBlob = null;
     try {
       // 污点修复层（D10.1）：PNG 保留透明通道，未修区域不覆盖底图。
-      repairBlob = current.repair ? await canvasToBlob(current.repair, 'image/png') : null;
+      const repairKey = `${current.repairVersion}:${current.repair?.width || 0}x${current.repair?.height || 0}`;
+      if (repairBlobCache.doc !== current || repairBlobCache.key !== repairKey) {
+        repairBlobCache = {
+          doc: current,
+          key: repairKey,
+          blob: current.repair ? await canvasToBlob(current.repair, 'image/png') : null,
+        };
+      }
+      repairBlob = repairBlobCache.blob;
     } catch {
       repairBlob = null;
     }
@@ -9267,6 +9348,8 @@ export function createStudioPage(host) {
 
   async function commitTransform(label, action) {
     if (!doc) return;
+    // 旋转 / 翻转改的是底图：结果预览还开着时先退出，避免改的是看不见的底图。
+    enterBaseEdit();
     // 旋转 / 翻转不再清空图层，只有裁剪区域会被重置，提示语要跟着改。
     if (doc.transform.crop) {
       const ok = await confirmDialog({
@@ -10198,6 +10281,8 @@ export function createStudioPage(host) {
   for (const input of host.querySelectorAll('[data-adjust]')) {
     input.addEventListener('input', () => {
       if (!doc) return;
+      // 调色改的是底图：结果预览开着时先退出，避免「改了没反应」。
+      enterBaseEdit();
       const key = input.dataset.adjust;
       const target = adjustmentTarget();
       if (target) {
@@ -10331,6 +10416,7 @@ export function createStudioPage(host) {
 
   refs.lutStrength.addEventListener('input', () => {
     if (!doc?.adjust?.lut || adjustmentTarget()) return;
+    enterBaseEdit();
     const value = Number(refs.lutStrength.value);
     doc.adjust.lut.strength = value / 100;
     refs.lutStrengthVal.textContent = String(value);
@@ -10511,10 +10597,15 @@ export function createStudioPage(host) {
   refs.flipH.addEventListener('click', () => commitTransform('水平翻转', () => doc?.flip('h')));
   refs.flipV.addEventListener('click', () => commitTransform('垂直翻转', () => doc?.flip('v')));
 
-  refs.cropStart.addEventListener('click', () => setTool('crop'));
+  refs.cropStart.addEventListener('click', () => {
+    // 进入裁剪会改底图几何：先退出结果预览。
+    enterBaseEdit();
+    setTool('crop');
+  });
 
   refs.cropApply.addEventListener('click', () => {
     if (!doc || !cropRect) return;
+    enterBaseEdit();
     const current = doc.transform.crop;
     const rect = current
       ? {

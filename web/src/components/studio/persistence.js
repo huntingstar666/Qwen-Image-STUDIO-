@@ -686,6 +686,13 @@ export function createProjectLease(projectId, tabId, { onLost } = {}) {
   };
   window.addEventListener('storage', onStorage);
 
+  // 后台标签的定时器会被浏览器节流（约 1 次/分），回到前台先立刻心跳一次，
+  // 避免「带着已过期的租约继续保存」覆盖另一个标签的编辑。
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible') beat();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
   return {
     claim() {
       if (leaseHeldByOther(projectId, tabId)) {
@@ -721,6 +728,7 @@ export function createProjectLease(projectId, tabId, { onLost } = {}) {
       }
       channel = null;
       window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVisibility);
     },
   };
 }

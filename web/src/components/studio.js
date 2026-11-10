@@ -4713,11 +4713,11 @@ export function createStudioPage(host) {
   }
 
   /**
-   * 「对象 = 合成图」时，如果提示主要落在画面之外（摆在画布外的贴纸/产品图），
-   * 自动把对象切到那个图层——框住谁就扣谁，不用先去下拉里找。
+   * 「框住谁扣谁」：提示落在当前对象范围外时，自动切到真正被框住 / 点中的图层。
+   * 当前对象已经覆盖提示时尊重用户选择，不来回切。
    */
   function adoptLayerTarget(hint = {}) {
-    if (!doc || aiTargetLayer()) return;
+    if (!doc) return;
     const crop = doc.transform.crop;
     const oriented = doc.oriented;
     const view = crop
@@ -4730,37 +4730,80 @@ export function createStudioPage(host) {
       const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
       return { w: Math.max(0, w), h: Math.max(0, h) };
     };
-    if (rect) {
-      const inside = overlap(rect, view);
-      const area = Math.max(1, rect.width * rect.height);
-      if ((inside.w * inside.h) / area > 0.6) return;
-    } else if (point) {
-      if (point.x >= view.x && point.x <= view.x + view.width && point.y >= view.y && point.y <= view.y + view.height) return;
-    } else {
-      return;
-    }
-    const layers = visibleLayersBottomUp();
-    let best = null;
-    let bestScore = 0;
-    for (const layer of layers) {
+    const covers = (layer) => {
+      if (!layer) return false;
       const b = layerBox(layer);
       if (rect) {
         const hit = overlap(rect, b);
-        const score = hit.w * hit.h;
-        if (score > bestScore) {
+        return hit.w > 0 && hit.h > 0;
+      }
+      return Boolean(
+        point &&
+          point.x >= b.x &&
+          point.x <= b.x + b.width &&
+          point.y >= b.y &&
+          point.y <= b.y + b.height,
+      );
+    };
+    const current = aiTargetLayer();
+    // 当前目标已经框住提示：保持用户选择。
+    if (covers(current)) return;
+    const onView = rect
+      ? (() => {
+          const inside = overlap(rect, view);
+          return (inside.w * inside.h) / Math.max(1, rect.width * rect.height) > 0.6;
+        })()
+      : Boolean(
+          point &&
+            point.x >= view.x &&
+            point.x <= view.x + view.width &&
+            point.y >= view.y &&
+            point.y <= view.y + view.height,
+        );
+    // 没有任何目标、框又落在画面内：说明就是在扣主图，不需要自动切图层。
+    if (!current && onView) return;
+
+    let best = null;
+    let bestScore = 0;
+    for (const layer of visibleLayersBottomUp()) {
+      if (current && layer.id === current.id) continue;
+      const b = layerBox(layer);
+      if (rect) {
+        const hit = overlap(rect, b);
+        const hitArea = hit.w * hit.h;
+        if (hitArea <= 0) continue;
+        // 按「框住了该层自身的比例」评分：主体被完整框住时优先，
+        // 避免一张铺满画布的大图层把主体层挤掉；同分时后命中的（更靠上）优先。
+        const score = hitArea / Math.max(1, b.width * b.height);
+        if (score >= bestScore) {
           best = layer;
           bestScore = score;
         }
-      } else if (point.x >= b.x && point.x <= b.x + b.width && point.y >= b.y && point.y <= b.y + b.height) {
+      } else if (
+        point &&
+        point.x >= b.x &&
+        point.x <= b.x + b.width &&
+        point.y >= b.y &&
+        point.y <= b.y + b.height
+      ) {
         best = layer; // 从下往上找，后命中的更靠上
       }
     }
-    if (!best) return;
-    aiTargetFollow = false;
-    aiTargetLastId = best.id;
-    aiTargetId = best.id;
-    syncAiTargets();
-    toast(`对象已切到图层「${best.name || '未命名'}」`);
+    if (best) {
+      aiTargetFollow = false;
+      aiTargetLastId = best.id;
+      aiTargetId = best.id;
+      syncAiTargets();
+      toast(`对象已切到图层「${best.name || '未命名'}」`);
+      return;
+    }
+    // 框不在当前图层上、也没框到别的图层：若框落在画面内，退回合成图再试，避免直接报错。
+    if (current && onView) {
+      aiTargetFollow = false;
+      aiTargetId = '';
+      syncAiTargets();
+      toast('框不在当前图层上，已切回合成图');
+    }
   }
 
   /**
@@ -5009,7 +5052,12 @@ export function createStudioPage(host) {
       }
       const local = clampToSend(toViewRect(rect));
       if (local.width < 3 || local.height < 3) {
-        toastWarn('框里没有这个图层的内容，把框拖到图层上再试');
+        const name = source.layer?.name || '';
+        toastWarn(
+          name
+            ? `框里没有「${name}」的内容：把框拖到该图层上，或把对象切回合成图`
+            : '框不在画面上，请把框拖到画面内再试',
+        );
         return;
       }
       payload.box = toSendBox(local, send.scale, null);

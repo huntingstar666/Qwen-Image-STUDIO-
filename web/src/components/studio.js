@@ -354,6 +354,8 @@ export function createStudioPage(host) {
   /* D25.4：图层属性正文 / 历史快照列表的展开状态（默认收起，属性记住本机选择）。 */
   let propsOpen = readPropsOpen();
   let snapOpen = false;
+  /** 快照单击延迟：用来和双击重命名区分，避免双击回跳两次。 */
+  let snapClickTimer = 0;
   let cropRect = null;
   let drag = null;
   let cursor = null;
@@ -852,7 +854,7 @@ export function createStudioPage(host) {
                 </div>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>字号</span><span class="mono" data-ref="textSizeVal">64</span></span>
-                  <input type="range" min="8" max="240" step="1" value="64" data-ref="textSize" />
+                  <input type="range" min="8" max="400" step="1" value="64" data-ref="textSize" />
                 </label>
                 <div class="studio-row">
                   <label class="studio-check studio-text-color"><span>颜色</span><input type="color" data-ref="textColor" value="#ffffff" /></label>
@@ -860,7 +862,7 @@ export function createStudioPage(host) {
                 <div class="studio-pane-title">描边</div>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>宽度</span><span class="mono" data-ref="textStrokeVal">0</span></span>
-                  <input type="range" min="0" max="24" step="1" value="0" data-ref="textStrokeWidth" />
+                  <input type="range" min="0" max="40" step="1" value="0" data-ref="textStrokeWidth" />
                 </label>
                 <div class="studio-row">
                   <label class="studio-check studio-text-color"><span>描边色</span><input type="color" data-ref="textStrokeColor" value="#000000" /></label>
@@ -890,7 +892,7 @@ export function createStudioPage(host) {
                 </div>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>缩放</span><span class="mono" data-ref="stickerScaleVal">100%</span></span>
-                  <input type="range" min="5" max="400" step="1" value="100" data-ref="stickerScale" />
+                  <input type="range" min="5" max="800" step="1" value="100" data-ref="stickerScale" />
                 </label>
                 <label class="studio-slider">
                   <span class="studio-slider-head"><span>旋转</span><span class="mono" data-ref="stickerRotateVal">0°</span></span>
@@ -1287,7 +1289,7 @@ export function createStudioPage(host) {
   /** 新图层加入后的统一收尾：选中、同步面板、存盘、重绘、展开图层栏并滚到新行。 */
   function afterLayerAdded(layer, { focusSticker = false } = {}) {
     if (!layer) return;
-    selectedLayerId = layer.id;
+    setPrimaryLayer(layer.id);
     editingLayerMaskId = '';
     setTool('move');
     // setTool('move') 会把分页拉回 AI，贴纸导入/选中后再切回贴纸分页（D11.3）。
@@ -1398,8 +1400,8 @@ export function createStudioPage(host) {
         return canvas.toDataURL('image/webp', 0.7);
       }
       const key = `${layer.id}:${Math.round((layer.scale || 1) * 100)}:${layer.rotation || 0}:${
-        layer.mask ? (layer.maskVisible ? 1 : 0) : 2
-      }`;
+        layer.flipH ? 1 : 0
+      }${layer.flipV ? 1 : 0}:${layer.mask ? (layer.maskVisible ? 1 : 0) : 2}:${layer._maskStamp || 0}`;
       const hit = layerThumbs.get(key);
       if (hit !== undefined) return hit;
       const source = layer.maskedImage ? layer.maskedImage() : layer.image;
@@ -1425,7 +1427,16 @@ export function createStudioPage(host) {
       const nh = source.naturalHeight || source.height || 1;
       const k = Math.min(32 / nw, 32 / nh);
       const canvas = makeCanvas(32, 32);
-      canvas.getContext('2d').drawImage(source, (32 - nw * k) / 2, (32 - nh * k) / 2, nw * k, nh * k);
+      const ctx2 = canvas.getContext('2d');
+      // 缩略图也按图层翻转绘制，否则翻转后小图看起来「没变」。
+      ctx2.save();
+      if (layer.flipH || layer.flipV) {
+        ctx2.translate(16, 16);
+        ctx2.scale(layer.flipH ? -1 : 1, layer.flipV ? -1 : 1);
+        ctx2.translate(-16, -16);
+      }
+      ctx2.drawImage(source, (32 - nw * k) / 2, (32 - nh * k) / 2, nw * k, nh * k);
+      ctx2.restore();
       const url = canvas.toDataURL('image/webp', 0.7);
       if (layerThumbs.size > 120) layerThumbs.clear();
       layerThumbs.set(key, url);
@@ -1664,6 +1675,24 @@ export function createStudioPage(host) {
     syncLayersPanel();
   }
 
+  /** 只选中一个图层（清空多选 / 组 / 主图选择）。新建对象、进入蒙版编辑等路径统一用它。 */
+  function setPrimaryLayer(id) {
+    selectedLayerIds.clear();
+    if (id) selectedLayerIds.add(id);
+    selectedLayerId = id || null;
+    selectedGroupId = '';
+    baseSelected = false;
+  }
+
+  /** 清空全部对象选择（回跳快照 / 编辑主图 / 重置等「状态换血」路径）。 */
+  function clearObjectSelection() {
+    selectedLayerIds.clear();
+    selectedLayerId = null;
+    selectedGroupId = '';
+    baseSelected = false;
+    editingLayerMaskId = '';
+  }
+
   /** 删除某个图层后同步选择状态，避免集合里留下已经不存在的 id。 */
   function dropLayerFromSelection(id) {
     if (!id) return;
@@ -1672,6 +1701,7 @@ export function createStudioPage(host) {
       selectedLayerId = [...selectedLayerIds].pop() || null;
     }
     if (selectedGroupId && !doc?.findGroup?.(selectedGroupId)) selectedGroupId = '';
+    if (editingLayerMaskId === id) editingLayerMaskId = '';
     baseSelected = false;
   }
 
@@ -2929,7 +2959,7 @@ export function createStudioPage(host) {
         setTool('move');
       } else {
         editingLayerMaskId = id;
-        selectedLayerId = id;
+        setPrimaryLayer(id);
         setTool('brush');
         if (!layer.maskVisible) layer.maskVisible = true;
         toast(`正在涂抹「${layer.name}」的图层蒙版：画笔隐藏，橡皮擦恢复`);
@@ -2937,6 +2967,7 @@ export function createStudioPage(host) {
       doc.touchLayers();
       doc.commitLayers();
       updateHistoryUi();
+      updateMaskStatus();
       scheduleSave();
       scheduleDraw();
       return true;
@@ -2951,6 +2982,7 @@ export function createStudioPage(host) {
       doc.touchLayers();
       doc.commitLayers();
       updateHistoryUi();
+      updateMaskStatus();
       scheduleSave();
       scheduleDraw();
       return true;
@@ -3244,11 +3276,12 @@ export function createStudioPage(host) {
       if (!doc || !layer || layer.kind === 'base' || layer.isAdjustment) return false;
       const crop = doc.transform.crop;
       const size = doc.size;
-      const x = (layer.x ?? 0) - (crop?.x || 0);
-      const y = (layer.y ?? 0) - (crop?.y || 0);
-      const w = layer.width || 0;
-      const h = layer.height || 0;
-      return x < -1 || y < -1 || x + w > size.width + 1 || y + h > size.height + 1;
+      // 用 bounds()：文字层没有 width/height，旋转过的贴纸也要按外接盒算。
+      const box = typeof layer.bounds === 'function' ? layer.bounds() : null;
+      if (!box) return false;
+      const x = box.x - (crop?.x || 0);
+      const y = box.y - (crop?.y || 0);
+      return x < -1 || y < -1 || x + box.width > size.width + 1 || y + box.height > size.height + 1;
     },
     /** 点主图行：把主图作为对象选中；旋转/翻转随之作用于整幅画面。 */
     selectBase() {
@@ -5156,8 +5189,10 @@ export function createStudioPage(host) {
     const b = -sin / scale;
     const c = sin / scale;
     const d = cos / scale;
-    const dx = offsetX - (crop?.x || 0);
-    const dy = offsetY - (crop?.y || 0);
+    // offsetX / offsetY 已经是「旋转后未裁剪」的文档坐标（maskPoint / offsetRect 加过 crop），
+    // 这里不能再减一次 crop，否则裁剪后图层蒙版的落点会整体偏移一个裁剪原点。
+    const dx = offsetX;
+    const dy = offsetY;
     const e = naturalWidth / 2 - (cos * cx + sin * cy) / scale + a * dx + c * dy;
     const f = naturalHeight / 2 - (-sin * cx + cos * cy) / scale + b * dx + d * dy;
     target.setTransform(a, b, c, d, e, f);
@@ -5194,7 +5229,7 @@ export function createStudioPage(host) {
     mctx.restore();
     layer.touchMask();
     doc.touchLayers();
-    if (selectedLayerId !== layer.id) selectedLayerId = layer.id;
+    if (selectedLayerId !== layer.id) setPrimaryLayer(layer.id);
   }
 
   function stampMask(point) {
@@ -5695,7 +5730,7 @@ export function createStudioPage(host) {
         x: Math.round(at.x),
         y: Math.round(at.y),
       });
-      selectedLayerId = layer.id;
+      setPrimaryLayer(layer.id);
       editingLayerMaskId = '';
       // 先切工具（move 会把分页拉回 AI），再把分页锁到「文字」。
       setTool('move');
@@ -6313,7 +6348,7 @@ export function createStudioPage(host) {
             height: Math.round(signed ? end.y - start.y : box.height),
           },
         );
-        selectedLayerId = layer.id;
+        setPrimaryLayer(layer.id);
         editingLayerMaskId = '';
         // setTool('move') 会把分页拉回 AI，再切到形状页（D11.4）。
         setTool('move');
@@ -8557,10 +8592,21 @@ export function createStudioPage(host) {
       return;
     }
     const stats = doc.maskStats();
+    // 主图蒙版状态始终反馈给 AI 面板（送图用的是主图蒙版）。
+    ai?.onMaskChanged?.(stats.coverage);
+    const layerMask = layerMaskTarget();
+    if (layerMask) {
+      // 正在涂图层蒙版：底部百分比 / 清除 / 导出都属于主图蒙版，直接禁用避免误清。
+      refs.statusMask.textContent = `图层蒙版 · ${layerMask.name || '图层'}`;
+      refs.maskClear.disabled = true;
+      refs.maskExport.disabled = true;
+      refs.maskClear.title = '正在编辑图层蒙版：请先退出（点图层的 ✎）再清除主图蒙版';
+      return;
+    }
+    refs.maskClear.title = '';
     refs.statusMask.textContent = `蒙版 ${fmtCoverage(stats.coverage)}`;
     refs.maskClear.disabled = !stats.has;
     refs.maskExport.disabled = !stats.has;
-    ai?.onMaskChanged?.(stats.coverage);
   }
 
   /** 当前滑杆作用的调整层（选中且为调整图层时）；null 表示编辑主图。 */
@@ -8637,12 +8683,13 @@ export function createStudioPage(host) {
     target.local.freehand = true;
     localEdit = null;
     editingLayerMaskId = target.id;
-    selectedLayerId = target.id;
+    setPrimaryLayer(target.id);
     setTool('brush');
     doc.touchLayers();
     doc.commitLayers();
     syncAdjustInputs();
     updateHistoryUi();
+    updateMaskStatus();
     scheduleDraw();
     scheduleSave();
     toast(`正在涂抹「${target.name}」的蒙版：画笔隐藏效果，橡皮擦恢复`);
@@ -8817,7 +8864,7 @@ export function createStudioPage(host) {
     refs.stickerPerspectiveReset.disabled = !layer?.quad;
     if (!layer) return;
     const percent = Math.round(layer.scale * 100);
-    refs.stickerScale.value = String(Math.max(5, Math.min(400, percent)));
+    refs.stickerScale.value = String(Math.max(5, Math.min(800, percent)));
     refs.stickerScaleVal.textContent = `${percent}%`;
     const deg = Math.round(normalizeAngle(layer.rotation));
     refs.stickerRotate.value = String(deg);
@@ -9496,8 +9543,7 @@ export function createStudioPage(host) {
 
   /** 回跳后同步所有面板与画布状态。 */
   function afterSnapshotJump(name) {
-    selectedLayerId = null;
-    editingLayerMaskId = '';
+    clearObjectSelection();
     syncAdjustInputs();
     syncTextPane();
     syncStickerPane();
@@ -9526,15 +9572,21 @@ export function createStudioPage(host) {
   refs.snapshotList.addEventListener('click', (event) => {
     const jump = event.target.closest('[data-snap-jump]');
     if (jump) {
-      const item = doc?.snapshots.find((entry) => entry.id === jump.dataset.snapJump);
-      if (item) {
+      // 单击延迟 220ms：双击是重命名，不能顺带回跳（更不能回跳两次）。
+      if (event.detail > 1) return;
+      const snapId = jump.dataset.snapJump;
+      clearTimeout(snapClickTimer);
+      snapClickTimer = setTimeout(() => {
+        const item = doc?.snapshots.find((entry) => entry.id === snapId);
+        if (!item) return;
         if (doc.restoreSnapshot(item.id)) afterSnapshotJump(item.name);
         else toastWarn('这张快照属于上一张主图，无法恢复');
-      }
+      }, 220);
       return;
     }
     const del = event.target.closest('[data-snap-del]');
     if (del) {
+      clearTimeout(snapClickTimer);
       doc?.removeSnapshot(del.dataset.snapDel);
       renderSnapshots();
       toast('已删除快照');
@@ -9544,6 +9596,7 @@ export function createStudioPage(host) {
   refs.snapshotList.addEventListener('dblclick', (event) => {
     const button = event.target.closest('[data-snap-jump]');
     if (!button || !doc) return;
+    clearTimeout(snapClickTimer);
     const item = doc.snapshots.find((entry) => entry.id === button.dataset.snapJump);
     if (!item) return;
     event.preventDefault();
@@ -10724,7 +10777,7 @@ export function createStudioPage(host) {
     }
     const count = doc.layers.filter((layer) => layer.isAdjustment).length + 1;
     const layer = doc.addAdjustmentLayer({}, { name: `调整图层 ${count}` });
-    selectedLayerId = layer.id;
+    setPrimaryLayer(layer.id);
     editingLayerMaskId = '';
     syncAdjustInputs();
     ai?.refresh?.();
@@ -10735,8 +10788,10 @@ export function createStudioPage(host) {
   });
 
   refs.adjustTargetBack.addEventListener('click', () => {
-    selectedLayerId = null;
+    clearObjectSelection();
     syncAdjustInputs();
+    syncLayerProps();
+    syncLayersPanel();
     scheduleDraw();
   });
 
@@ -10768,6 +10823,8 @@ export function createStudioPage(host) {
     if (!file || !doc) return;
     if (adjustmentTarget()) return;
     if (lutBusy) return;
+    // LUT 改的是底图：结果预览开着时先退出，避免改的是看不见的主图。
+    enterBaseEdit();
     lutBusy = true;
     try {
       const cube = parseCube(await file.text());
@@ -11342,7 +11399,13 @@ export function createStudioPage(host) {
     if (doc && selectedLayerId) {
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
-        removeLayers(selectedLayerIds.size ? [...selectedLayerIds] : [selectedLayerId]);
+        // 主选优先：只有当主选确实在多选集合里（用户是多选状态）才整组删。
+        const ids = selectedLayerId
+          ? selectedLayerIds.size > 1 && selectedLayerIds.has(selectedLayerId)
+            ? [...selectedLayerIds]
+            : [selectedLayerId]
+          : [...selectedLayerIds];
+        removeLayers(ids);
         return;
       }
       if (event.key === 'F2') {

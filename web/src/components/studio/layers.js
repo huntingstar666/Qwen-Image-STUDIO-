@@ -10,6 +10,8 @@
 import { quadBounds, pointInQuad, warpImageToQuad } from './perspective.js';
 
 let seq = 0;
+/** 蒙版内容戳：每次涂抹/换蒙版自增，供面板缩略图缓存判断是否需要重画。 */
+let maskStampSeq = 0;
 
 /** 命中检测用的 1×1 采样画布（复用，避免每次点击都新建）。 */
 let hitCanvas = null;
@@ -72,6 +74,7 @@ export class OverlayLayer {
     // 带时间戳：刷新后模块级序号会归零，纯序号会和从本机工程恢复的旧 id 撞车，
     // 导致两个图层同 id（第二个选不中、保存时互相覆盖丢层）。
     this.id = id || `ov-${Date.now().toString(36)}-${(seq += 1)}`;
+    this._maskStamp = (maskStampSeq += 1);
     this.image = image;
     this.name = name;
     this.x = Number(x) || 0;
@@ -226,6 +229,7 @@ export class OverlayLayer {
   /** 蒙版被涂抹后调用，丢弃合成缓存。 */
   touchMask() {
     this._masked = null;
+    this._maskStamp = (maskStampSeq += 1);
   }
 
   toggleMaskVisible() {

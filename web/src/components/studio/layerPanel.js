@@ -16,6 +16,10 @@ import { escapeHtml } from '../../utils.js';
 
 export function createLayerColumn(host, ctx) {
   let draggingId = '';
+  /** 列表签名：只有数据/选中态真正变化时才重建 DOM，避免单击把双击的目标节点换掉。 */
+  let lastSignature = '';
+  /** 重命名输入框打开期间不重建列表，否则输入框会被 innerHTML 冲掉。 */
+  let renaming = false;
 
   host.innerHTML = `
     <div class="studio-layers-head">
@@ -278,15 +282,38 @@ export function createLayerColumn(host, ctx) {
     const count = list.filter((layer) => layer.kind !== 'base' && layer.kind !== 'group').length;
     refs.count.textContent = String(count);
     refs.spineCount.textContent = String(count);
-    refs.list.innerHTML = list.map(rowHtml).join('');
+    const selectedGroupId = ctx.getSelectedGroupId?.() || '';
+    const selectedId = ctx.getSelectedLayerId?.() || '';
+    const selectedIds = (ctx.getSelectedLayerIds?.() || []).filter(Boolean);
+    if (!selectedIds.length && selectedId) selectedIds.push(selectedId);
+    // 数据签名：名称 / 选中 / 显隐 / 锁定 / 几何 / 蒙版版本 / 缩略图相关状态。
+    const signature =
+      `${selectedIds.join(',')}|${selectedId}|${selectedGroupId}|${ctx.getBaseSelected?.() ? 1 : 0}|` +
+      list
+        .map((layer) => {
+          if (layer.kind === 'group') {
+            return `g:${layer.group.id}:${layer.name}:${layer.visible}:${layer.opacity}:${layer.collapsed}:${layer.count}`;
+          }
+          const mask = layer.mask ? (layer.maskVisible ? 1 : 0) : 2;
+          return `l:${layer.id}:${layer.name}:${layer.visible}:${layer.locked}:${layer.opacity}:${
+            layer.indent ? 1 : 0
+          }:${mask}:${layer._maskStamp || 0}:${Math.round(layer.x || 0)},${Math.round(layer.y || 0)}:${
+            Math.round((layer.scale || 1) * 1000)
+          }:${layer.rotation || 0}:${layer.flipH ? 1 : 0}${layer.flipV ? 1 : 0}:${
+            ctx.isLayerOutside?.(layer) ? 1 : 0
+          }`;
+        })
+        .join('|');
+    if (signature !== lastSignature && !renaming) {
+      refs.list.innerHTML = list.map(rowHtml).join('');
+      lastSignature = signature;
+    }
     // D25.2：空态改成可点的「＋ 添加图层」，不再是一句点了没反应的提示。
     const canAdd = Boolean(ctx.canAddLayer?.());
     refs.empty.textContent = list.length ? '＋ 从文件或素材仓库添加图层' : '打开图片后可管理图层';
     refs.empty.disabled = !list.length;
     refs.empty.hidden = count > 0;
     if (refs.addBtn) refs.addBtn.disabled = !canAdd;
-    const selectedGroupId = ctx.getSelectedGroupId?.() || '';
-    const selectedId = ctx.getSelectedLayerId?.() || '';
     const selected = list.find((layer) => layer.id === selectedId && layer.kind !== 'base') || null;
     const selectedGroup = selectedGroupId
       ? list.find((layer) => layer.kind === 'group' && layer.group.id === selectedGroupId) || null
@@ -296,8 +323,6 @@ export function createLayerColumn(host, ctx) {
     const hasLayers = list.some((layer) => layer.kind !== 'base' && layer.kind !== 'group');
     const inAnyGroup = Boolean(selectedGroup) || Boolean(selected && ctx.isLayerGrouped?.(selected.id));
     // 上移/下移到达边界时禁用按钮，避免点了没反应像「坏了」（多选按整组判断）。
-    const selectedIds = (ctx.getSelectedLayerIds?.() || []).filter(Boolean);
-    if (!selectedIds.length && selectedId) selectedIds.push(selectedId);
     const selectedRows = [];
     list.forEach((layer, index) => {
       if (layer.kind !== 'base' && layer.kind !== 'group' && selectedIds.includes(layer.id)) selectedRows.push(index);
@@ -562,12 +587,16 @@ export function createLayerColumn(host, ctx) {
       groupName.replaceWith(input);
       input.focus();
       input.select();
+      renaming = true;
       let done = false;
       const finish = (commit) => {
         if (done) return;
         done = true;
+        renaming = false;
         const next = input.value.trim();
         if (commit && next && next !== row.name) ctx.renameGroup?.(groupId, next);
+        // 行内节点已被输入框替换：强制重建，否则签名未变会跳过 render，名称按钮永远回不来。
+        lastSignature = '';
         render();
       };
       input.addEventListener('keydown', (e) => {
@@ -599,12 +628,16 @@ export function createLayerColumn(host, ctx) {
     input.focus();
     input.select();
 
+    renaming = true;
     let done = false;
     const finish = (commit) => {
       if (done) return;
       done = true;
+      renaming = false;
       const next = input.value.trim();
       if (commit && next && next !== layer.name) ctx.renameLayer?.(layer.id, next);
+      // 同上：输入框替换了名称按钮，必须强制重建列表。
+      lastSignature = '';
       render();
     };
     input.addEventListener('keydown', (e) => {

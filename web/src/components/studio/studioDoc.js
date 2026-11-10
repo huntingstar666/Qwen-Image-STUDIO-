@@ -171,7 +171,8 @@ export class StudioDoc {
     }
     const state = {
       transform: { ...this.transform, crop: this.transform.crop ? { ...this.transform.crop } : null },
-      adjust: { ...this.adjust },
+      // lut 是对象：必须浅拷贝一层，否则历史状态共享同一个 lut，撤销改不回强度。
+      adjust: { ...this.adjust, lut: this.adjust.lut ? { ...this.adjust.lut } : null },
       // 记录主图身份：换底图后旧状态/旧快照不能再恢复。
       baseId: this.baseId,
       mask: cloneCanvas(this.mask),
@@ -189,7 +190,10 @@ export class StudioDoc {
   restore(state) {
     if (!this._canRestore(state)) return false;
     this.transform = { ...state.transform, crop: state.transform.crop ? { ...state.transform.crop } : null };
-    this.adjust = { ...state.adjust };
+    this.adjust = {
+      ...state.adjust,
+      lut: state.adjust.lut ? { ...state.adjust.lut } : null,
+    };
     this.mask = cloneCanvas(state.mask);
     this.repair = state.repair ? cloneCanvas(state.repair) : null;
     this.layers = (state.layers || []).map((layer) => layer.clone());

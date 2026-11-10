@@ -18,9 +18,10 @@ const ICONS = {
 /**
  * @param {string} message 中文消息
  * @param {'info'|'success'|'warn'|'error'} [type]
- * @param {{timeout?: number}} [options]
+ * @param {{timeout?: number, action?: {label: string, onClick: () => void} | null}} [options]
+ *   action：可选的右侧操作按钮（例如「隐藏图层」），点击后执行并关闭该提示。
  */
-export function toast(message, type = 'info', { timeout = 4500 } = {}) {
+export function toast(message, type = 'info', { timeout = 4500, action = null } = {}) {
   const host = root();
   if (!host) {
     console.warn('[toast]', message);
@@ -33,15 +34,27 @@ export function toast(message, type = 'info', { timeout = 4500 } = {}) {
 
   while (host.children.length > MAX_TOASTS) host.firstElementChild?.remove();
 
+  let timer = 0;
   const remove = () => {
+    clearTimeout(timer);
     el.classList.add('leaving');
     setTimeout(() => el.remove(), 240);
   };
-  const timer = setTimeout(remove, timeout);
-  el.addEventListener('click', () => {
-    clearTimeout(timer);
-    remove();
-  });
+  if (action?.label && typeof action.onClick === 'function') {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action';
+    btn.textContent = action.label;
+    btn.addEventListener('click', (event) => {
+      // 阻止冒泡，避免同时触发整条 toast 的「点击关闭」。
+      event.stopPropagation();
+      remove();
+      action.onClick();
+    });
+    el.append(btn);
+  }
+  timer = setTimeout(remove, timeout);
+  el.addEventListener('click', remove);
   return el;
 }
 

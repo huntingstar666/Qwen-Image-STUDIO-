@@ -6569,8 +6569,12 @@ export function createStudioPage(host) {
         toastWarn(`已切换到「${version.label}」 · 尺寸变化较大，图层保持原坐标，可能需要手动微调`);
       } else if (keptLayers && mayRepeat) {
         toast(
-          `已切换到「${version.label}」 · 保留 ${keptLayers} 个图层` +
-            '（该快照已含图层像素，如出现重复可在图层面板隐藏）',
+          `已切换到「${version.label}」 · 保留 ${keptLayers} 个图层（该快照已含图层像素）`,
+          'warn',
+          {
+            timeout: 9000,
+            action: { label: '隐藏图层', onClick: hideAllLayersQuick },
+          },
         );
       } else {
         toast(`已切换到「${version.label}」 · 保留 ${keptLayers} 个图层`);
@@ -6580,6 +6584,27 @@ export function createStudioPage(host) {
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * 切回「已烘焙图层像素」的旧快照时，一键隐藏当前图层，避免画面出现两份。
+   * 隐藏只改 visible，随时可在图层面板逐个打开。
+   */
+  function hideAllLayersQuick() {
+    if (!doc || !doc.layers.length) return;
+    let count = 0;
+    doc.layers.forEach((layer) => {
+      if (layer.isAdjustment || layer.visible === false) return;
+      layer.visible = false;
+      count += 1;
+    });
+    if (!count) return;
+    doc.touchLayers();
+    doc.commitLayers();
+    syncLayersPanel();
+    scheduleDraw();
+    scheduleSave();
+    toast(`已隐藏 ${count} 个图层，可在图层面板逐个打开`);
   }
 
   /**

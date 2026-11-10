@@ -1629,6 +1629,25 @@ details.fold > .fold-body {
   line-height: 1.4;
 }
 
+/* toast 内的可选操作按钮（例如「隐藏图层」） */
+.toast-action {
+  flex: none;
+  margin-left: auto;
+  align-self: center;
+  padding: 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.035);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: rgba(0, 0, 0, 0.075);
+}
+
 /* ---------- 空状态 / 加载 ---------- */
 .empty {
   display: flex;

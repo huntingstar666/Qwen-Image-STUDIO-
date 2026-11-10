@@ -202,10 +202,10 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | **D1** 主图渲染语义（`renderMain()`）+ **D5** 切主图不再重建文档 | D5 **已完成**（`StudioDoc.replaceMainImage()` + `switchVersion()` 原地换底图 + 图层几何补偿），D1 待做 |
-| 2 | **D3 + D4** AI 默认仅送底图、结果回流只换底图 | 待做 |
+| 1 | **D1** 主图渲染语义 + **D5** 切主图不再重建文档 | D1/D5 **已完成**（主图语义以 `exportMainCanvas()` / `bakeMain()` 落地，`renderBase()` 保留为合成图） |
+| 2 | **D3 + D4** AI 默认仅送底图、结果回流只换底图 | **已完成**（送图默认不含图层 + 「送图包含图层」开关；「设为新主图」原地换底图、图层保留） |
 | 3 | **D6 + D7** 快门只记录主图、旧快照兼容提示 | 待做 |
-| 4 | **D8 + D9 + D10** 尺寸策略（含旋转/翻转补偿）、持久化拆分、收敛临时补丁 | 待做 |
+| 4 | **D8 + D9 + D10** 尺寸策略、持久化拆分、收敛临时补丁 | D8 **已完成**（旋转 / 翻转按中心映射换算图层几何），D9/D10 待做 |
 
 > 阶段 1 已完成的部分：`switchVersion()` 不再 `new StudioDoc`，改为 `doc.replaceMainImage(image)`；图层 / 组保留，并按“旧裁剪尺寸 → 新图”的对应关系做平移或等比缩放补偿；主图级状态（变换 / 调色 / 蒙版 / 修复 / 撤销栈 / 选区）重置。
 
@@ -227,6 +227,11 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 | 4 | 调色滑杆拖动预览（`adjustPreview`）时保持图层可见 | `studio.js liveLayers` 条件 |
 | 5 | 附带：AI 主体选择支持画布外图层（按图层外框发送、选区带 `rect/source`、抠图同区域取像素） | `studio.js`、`studioDoc.renderLayer()` |
 | 6 | 附带：SAM3.1 框 + 点 + 文字可组合 | `server/segmenters/*`、`server/main.py` |
+| 7 | **D1**：新增 `exportMainCanvas()` / `bakeMain()` / `bakeMainBlob()`，主图 = 底图 + 变换 + 调色 + 修复 | `studioDoc.js` |
+| 8 | **D3**：AI 送图默认只送主图；新增「送图包含图层」开关（默认关，随工程恢复） | `studio.js getSource()`、`aiPanel.js` |
+| 9 | **D4**：「设为新主图」原地换底图、图层保留；尺寸差异走 `planBaseSwap()` 补偿，结果含图层时提示重复 | `studio.js adoptResult()` |
+| 10 | **D8**：旋转 / 翻转不再清空图层，按中心映射换算位置与自身角度（形状交换宽高） | `studioDoc.js _rotateLayersBy90()` / `_flipLayerGeometry()` |
+| 11 | 抽出 `planBaseSwap()` / `afterBaseSwap()`，切版本与结果采用共用同一条换底图路径 | `studio.js` |
 
 ### 7.2 用户验证
 
@@ -234,11 +239,7 @@ recordVersion('manual', blob, { meta: { containsLayers: false, layers: layerCoun
 
 ### 7.3 未完成（按 §6 继续）
 
-- D1 `renderMain()` 语义收敛
-- D3 AI 默认只送底图（消除结果预览时的图层重影）
-- D4 「载入为新底图」只换底图、保留图层
 - D6/D7 快门只记录主图、旧快照兼容提示
-- D8 旋转 / 翻转不再清空图层
 - D9/D10 持久化拆分、收敛临时补丁
 
 ### 7.4 分支约定

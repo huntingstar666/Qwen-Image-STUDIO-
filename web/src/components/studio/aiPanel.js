@@ -114,6 +114,9 @@ export function mountAiPanel(host, ctx) {
 
       <section class="ai-section ai-submit-section">
         <button class="btn primary ai-submit" type="button" data-ref="submit">修改</button>
+        <label class="ai-check" title="勾选后结果会带上图层像素，回流时可能与画布图层重复">
+          <input type="checkbox" data-ref="sendLayers" /><span>送图包含图层</span>
+        </label>
         <div class="ai-hint" data-ref="submitHint">Ctrl+Enter 提交 · 空白提交会被拦截</div>
       </section>
 
@@ -227,9 +230,9 @@ export function mountAiPanel(host, ctx) {
           <button class="btn ghost sm" type="button" data-ref="previewBtn">画布预览</button>
           <button class="btn ghost sm" type="button" data-ref="compareBtn">与底图对比</button>
           <button class="btn ghost sm" type="button" data-ref="asLayerBtn" title="保留主图，把结果落成可单独显隐/移动的图层">作为新图层</button>
-          <button class="btn primary sm" type="button" data-ref="adoptBtn">载入为新底图</button>
+          <button class="btn primary sm" type="button" data-ref="adoptBtn">设为新主图</button>
         </div>
-        <div class="ai-hint" data-ref="adoptHint" hidden>「载入为新底图」会替换主图并清空蒙版、历史与当前所有图层；「作为新图层」保留主图与图层，结果叠成可单独编辑的图层。</div>
+        <div class="ai-hint" data-ref="adoptHint" hidden>「设为新主图」只替换底图，当前图层全部保留；「作为新图层」保留主图，把结果叠成可单独编辑的图层。</div>
         <div class="ai-quality" data-ref="quality" hidden></div>
       </section>
 
@@ -255,6 +258,7 @@ export function mountAiPanel(host, ctx) {
     polishBox: ref('polishBox'),
     submit: ref('submit'),
     submitHint: ref('submitHint'),
+    sendLayers: ref('sendLayers'),
     refs: ref('refs'),
     refCount: ref('refCount'),
     addRefWrap: ref('addRefWrap'),
@@ -323,6 +327,8 @@ export function mountAiPanel(host, ctx) {
     overrides: { ...(editSettings.overrides || {}) },
     consistencyOn: editSettings.consistency !== false,
     consistencyStrength: Number(editSettings.consistencyStrength ?? 0.48),
+    /** 送图是否带图层（默认关）：带上后结果图里已有图层像素，回流时容易重复。 */
+    sendLayers: editSettings.sendLayers === true,
     currentHistoryId: '',
     resultEntryId: '',
     /** 本次提交用的蒙版（输出尺寸）：结果「作为新图层」时并到该层。 */
@@ -380,7 +386,7 @@ export function mountAiPanel(host, ctx) {
     if (ctx.hasDocChanges?.()) {
       const ok = await confirmDialog({
         title: `载入历史 #${entry.index}`,
-        message: '将用该结果替换当前主图，裁剪、旋转、调色、蒙版与当前图层都会重置。',
+        message: '将用该结果替换当前主图，裁剪、旋转、调色与蒙版重置；当前图层保留。',
         confirmText: '载入',
       });
       if (!ok) return;
@@ -1280,7 +1286,7 @@ export function mountAiPanel(host, ctx) {
       promptEditor.focus();
       return;
     }
-    const source = ctx.getSource?.();
+    const source = ctx.getSource?.({ includeLayers: state.sendLayers });
     if (!source) {
       toastWarn('请先打开一张主图');
       return;
@@ -1379,6 +1385,8 @@ export function mountAiPanel(host, ctx) {
 
     state.busy = true;
     state.previewOn = false;
+    // 记录本次送图是否含图层：回流成新主图后据此提示可能重复。
+    state.resultContainsLayers = Boolean(source.containsLayers);
     // 记下本次提交的蒙版，出图后「作为新图层」时并进图层，只在修改区域显示结果。
     state.submittedMask = source.hasMask && source.mask
       ? {
@@ -1762,6 +1770,12 @@ export function mountAiPanel(host, ctx) {
     persistEdit();
   });
 
+  refs.sendLayers.checked = state.sendLayers;
+  refs.sendLayers.addEventListener('change', () => {
+    state.sendLayers = refs.sendLayers.checked;
+    persistEdit();
+  });
+
   refs.loraAdd.addEventListener('click', () => {
     const name = refs.loraPick.value;
     if (!name) return;
@@ -1846,13 +1860,14 @@ export function mountAiPanel(host, ctx) {
         task: state.resultInfo?.task || refs.task.value,
         width: state.resultInfo?.width,
         height: state.resultInfo?.height,
+        containsLayers: state.resultContainsLayers === true,
       });
       if (info) {
         if (entryId) {
           state.currentHistoryId = entryId;
           historyPanel?.setCurrent(entryId);
         }
-        toastSuccess(`已载入新底图 ${info.width} × ${info.height}，可继续精修`);
+        toastSuccess(`已设为主图 ${info.width} × ${info.height}，图层已保留`);
       }
     } finally {
       refs.adoptBtn.disabled = false;
@@ -1956,6 +1971,8 @@ export function mountAiPanel(host, ctx) {
       refs.consistency.checked = state.consistencyOn;
       refs.strength.disabled = !state.consistencyOn;
       setStrength(persist.consistencyStrength ?? state.consistencyStrength);
+      state.sendLayers = persist.sendLayers === true;
+      refs.sendLayers.checked = state.sendLayers;
       state.customLoras = Array.isArray(persist.customLoras)
         ? persist.customLoras.slice(0, MAX_LORAS).map((item) => ({ ...item }))
         : [];
@@ -1974,7 +1991,7 @@ export function mountAiPanel(host, ctx) {
       refs.previewBtn.textContent = '画布预览';
       refs.resultActions.hidden = !state.resultUrl;
       if (state.resultUrl && state.resultInfo?.width) {
-        refs.adoptHint.textContent = `载入后 ${state.resultInfo.width}×${state.resultInfo.height} 成为新底图：蒙版与历史清空，可继续精修或再次扩图。`;
+        refs.adoptHint.textContent = `设为新主图后 ${state.resultInfo.width}×${state.resultInfo.height} 成为底图：蒙版与历史重置，当前图层保留。`;
         refs.adoptHint.hidden = false;
       } else {
         refs.adoptHint.hidden = true;
@@ -2021,6 +2038,7 @@ export function mountAiPanel(host, ctx) {
         appliedPreset: state.appliedPreset,
         consistencyOn: state.consistencyOn,
         consistencyStrength: state.consistencyStrength,
+        sendLayers: state.sendLayers,
         resultUrl: state.resultUrl,
         resultInfo: state.resultInfo ? { ...state.resultInfo } : null,
       };

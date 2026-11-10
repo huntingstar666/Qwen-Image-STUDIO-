@@ -2422,45 +2422,43 @@ export function createStudioPage(host) {
       return Boolean(doc?.hasMask?.())
         || Boolean(selection && selectionHasPixels(selection.alpha));
     },
-    getSource() {
+    getSource({ includeLayers = false } = {}) {
       if (!doc) return null;
       const size = doc.size;
       flushAdjustPreview();
       const submission = submissionMask();
+      // 默认只送主图（不含图层）：结果回流成新主图时，画布上的图层不会再叠一遍。
+      const withLayers = Boolean(includeLayers && doc.layers.length);
       return {
-        main: { data: doc.bake('image/png'), name: doc.name, width: size.width, height: size.height },
+        main: {
+          data: withLayers ? doc.bake('image/png') : doc.bakeMain('image/png'),
+          name: doc.name,
+          width: size.width,
+          height: size.height,
+        },
+        containsLayers: withLayers,
         mask: submission.dataUrl,
         maskSize: submission.size,
         coverage: submission.coverage,
         hasMask: submission.has,
       };
     },
-    /** 当前主图（含调色/变换/叠加层，不含 AI 结果预览），用于图片对比。 */
+    /** 当前主图（底图 + 调色/变换，不含叠加层与结果预览），用于图片对比。 */
     getMainImage() {
       if (!doc) return null;
       flushAdjustPreview();
       const size = doc.size;
-      return { url: doc.bake('image/png'), label: '当前主图', width: size.width, height: size.height };
+      return { url: doc.bakeMain('image/png'), label: '当前主图', width: size.width, height: size.height };
     },
     showResult(url) {
       setPreview(url);
     },
-    /** 结果回流：把结果图载入为新底图（蒙版与历史随新文档清空），可继续精修 / 再次扩图。 */
+    /**
+     * 结果回流：把结果图设为主图。
+     * 只替换底图，当前图层与图层组保留（与切换版本共用同一条路径）。
+     */
     async adoptResult(url, meta = {}) {
       if (!url) return null;
-      // 换底图会新建文档，当前图层不会带过去；有图层时必须先明确告知。
-      // （历史结果载入前已经确认过，避免连续两个弹窗。）
-      if (meta.task !== 'history' && doc?.layers.length) {
-        const confirmed = await confirmDialog({
-          title: '载入为新底图',
-          message:
-            `当前还有 ${doc.layers.length} 个图层，载入新底图会把它们全部清空，且不能撤销。` +
-            '想保留图层请改用「作为新图层」。是否继续？',
-          confirmText: '清空图层并载入',
-          danger: true,
-        });
-        if (!confirmed) return null;
-      }
       const token = ++openSeq;
       try {
         const image = await loadImage(url);
@@ -2468,18 +2466,52 @@ export function createStudioPage(host) {
         if (imageTooLarge(image, 'AI 结果')) return null;
         const stem = (doc?.name || 'result').replace(/\.[^.]+$/, '') || 'result';
         const suffix = meta.task === 'outpaint' ? '-扩图' : '-精修';
-        const next = new StudioDoc(image, `${stem}${suffix}.png`);
-        sourceBlob = await fetchBlob(url);
+        const blob = await fetchBlob(url);
         if (token !== openSeq) return null;
-        if (!sourceBlob) {
-          try {
-            // 结果链跨域时 fetchBlob 会失败，这里必须 await，否则 sourceBlob 是 Promise。
-            sourceBlob = await next.bakeBlob('image/png');
-          } catch {
-            sourceBlob = null;
+
+        let result = null;
+        if (doc) {
+          // 原地换底图：不再 new StudioDoc，图层不会被重建掉。
+          const nw = image.naturalWidth || image.width;
+          const nh = image.naturalHeight || image.height;
+          const plan = planBaseSwap(doc, nw, nh);
+          const keptLayers = doc.layers.length;
+          compensateLayersForBase(doc.layers, plan);
+          doc.name = `${stem}${suffix}.png`;
+          refs.fileName.textContent = doc.name;
+          doc.replaceMainImage(image);
+          sourceBlob = blob;
+          if (!sourceBlob) {
+            try {
+              sourceBlob = await doc.bakeMainBlob('image/png');
+            } catch {
+              sourceBlob = null;
+            }
           }
+          afterBaseSwap(plan);
+          result = { width: doc.size.width, height: doc.size.height, name: doc.name };
+          if (meta.containsLayers && keptLayers) {
+            toastWarn(
+              `结果已包含图层像素，画布上的 ${keptLayers} 个图层可能与之重复，可在图层面板隐藏`,
+            );
+          }
+          if (plan.unsure) {
+            toastWarn('结果尺寸与当前画面差异较大，图层保持原坐标，可能需要手动微调');
+          }
+        } else {
+          const next = new StudioDoc(image, `${stem}${suffix}.png`);
+          sourceBlob = blob;
+          if (!sourceBlob) {
+            try {
+              // 结果链跨域时 fetchBlob 会失败，这里必须 await，否则 sourceBlob 是 Promise。
+              sourceBlob = await next.bakeBlob('image/png');
+            } catch {
+              sourceBlob = null;
+            }
+          }
+          setDoc(next);
+          result = { width: next.size.width, height: next.size.height, name: next.name };
         }
-        setDoc(next);
         // AI 结果出图时已自动入槽；这里只把指针指过去，避免重复建卡。
         const existing = versions.find((item) => item.meta?.resultUrl === url);
         if (existing) {
@@ -2496,7 +2528,7 @@ export function createStudioPage(host) {
             },
           });
         }
-        return { width: next.size.width, height: next.size.height, name: next.name };
+        return result;
       } catch (err) {
         if (token === openSeq) toastError(err, '载入结果失败');
         return null;
@@ -6519,62 +6551,17 @@ export function createStudioPage(host) {
       const image = await loadImage(url);
       if (token !== openSeq || doc !== owner) return;
       // 换主图 = 只换底图：图层继续留在原文档里，先按尺寸 / 原点差异换算坐标。
-      const oldSize = doc.size;
-      const oldOriented = doc.oriented;
-      const crop = doc.transform.crop;
       const nw = image.naturalWidth || image.width;
       const nh = image.naturalHeight || image.height;
-      let scale = 1;
-      let dx = 0;
-      let dy = 0;
-      let unsure = false;
-      if (nw === oldSize.width && nh === oldSize.height) {
-        // 版本是从当前画面烘焙的（快门 / 合并 / AI 结果）：新图原点 = 旧裁剪框左上角
-        dx = -(crop?.x || 0);
-        dy = -(crop?.y || 0);
-      } else if (nw === oldOriented.width && nh === oldOriented.height) {
-        // 原始整图：和图层坐标是同一空间，不需要换算
-      } else if (
-        oldSize.width > 0 &&
-        oldSize.height > 0 &&
-        Math.abs(nw / oldSize.width - nh / oldSize.height) < 0.02
-      ) {
-        // 等比缩放（放大 / 缩小）
-        scale = nw / oldSize.width;
-        dx = -(crop?.x || 0) * scale;
-        dy = -(crop?.y || 0) * scale;
-      } else {
-        unsure = true;
-      }
-      compensateLayersForBase(doc.layers, { scale, dx, dy });
+      const plan = planBaseSwap(doc, nw, nh);
+      compensateLayersForBase(doc.layers, plan);
       const keptLayers = doc.layers.length;
-      const sizeChanged = nw !== oldSize.width || nh !== oldSize.height;
       doc.replaceMainImage(image);
       sourceBlob = blob;
-      // 主图级状态已重置：清掉依赖旧坐标的编辑现场（图层本身保留）。
-      selectionSets = [];
-      cropRect = null;
-      refs.cropbar.hidden = true;
-      clearSelection(true);
-      resetSegmentHints();
-      editingLayerMaskId = '';
-      baseVisible = true;
-      refs.stage.classList.remove('is-base-hidden');
-      syncAdjustInputs();
-      updateSizeInfo();
-      updateHistoryUi();
-      updateMaskStatus();
-      renderSnapshots();
-      if (sizeChanged) requestAnimationFrame(() => fitView());
-      // 150ms 淡入：只动 opacity，不做位移，避免切换时晕。
-      refs.canvas.classList.remove('is-version-fade');
-      void refs.canvas.offsetWidth;
-      refs.canvas.classList.add('is-version-fade');
+      afterBaseSwap(plan);
       currentVersionId = version.id;
       renderDock();
-      scheduleSave();
-      ai?.refresh?.();
-      if (unsure) {
+      if (plan.unsure) {
         toastWarn(`已切换到「${version.label}」 · 尺寸变化较大，图层保持原坐标，可能需要手动微调`);
       } else if (keptLayers && version.kind !== 'original') {
         toast(
@@ -6589,6 +6576,68 @@ export function createStudioPage(host) {
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * 换主图时图层坐标怎么换算：返回新原点偏移 (dx, dy) 与尺度 scale。
+   *
+   * - 新图尺寸 = 当前画面（裁剪后）：版本是从画面烘焙出来的，原点 = 旧裁剪框左上角；
+   * - 新图 = 旋转后整图：与图层坐标同一空间，不动；
+   * - 等比缩放（放大 / 缩小）：位置与尺寸同倍数缩放；
+   * - 其他比例差异：返回 unsure，图层保持原坐标并提示手动微调。
+   */
+  function planBaseSwap(target, nw, nh) {
+    const oldSize = target.size;
+    const oldOriented = target.oriented;
+    const crop = target.transform.crop;
+    if (nw === oldSize.width && nh === oldSize.height) {
+      return { scale: 1, dx: -(crop?.x || 0), dy: -(crop?.y || 0), unsure: false, sizeChanged: false };
+    }
+    if (nw === oldOriented.width && nh === oldOriented.height) {
+      return { scale: 1, dx: 0, dy: 0, unsure: false, sizeChanged: true };
+    }
+    if (
+      oldSize.width > 0 &&
+      oldSize.height > 0 &&
+      Math.abs(nw / oldSize.width - nh / oldSize.height) < 0.02
+    ) {
+      const scale = nw / oldSize.width;
+      return {
+        scale,
+        dx: -(crop?.x || 0) * scale,
+        dy: -(crop?.y || 0) * scale,
+        unsure: false,
+        sizeChanged: true,
+      };
+    }
+    return { scale: 1, dx: 0, dy: 0, unsure: true, sizeChanged: true };
+  }
+
+  /**
+   * 换底图后的统一收尾：主图级现场（选区 / 裁剪框 / 蒙版画笔 / 隐藏底图）作废，
+   * 图层与图层组原样保留。切换版本与 AI 结果采用共用这一条路径。
+   */
+  function afterBaseSwap({ sizeChanged = false } = {}) {
+    selectionSets = [];
+    cropRect = null;
+    refs.cropbar.hidden = true;
+    clearSelection(true);
+    resetSegmentHints();
+    editingLayerMaskId = '';
+    baseVisible = true;
+    refs.stage.classList.remove('is-base-hidden');
+    syncAdjustInputs();
+    updateSizeInfo();
+    updateHistoryUi();
+    updateMaskStatus();
+    renderSnapshots();
+    if (sizeChanged) requestAnimationFrame(() => fitView());
+    // 150ms 淡入：只动 opacity，不做位移，避免切换时晕。
+    refs.canvas.classList.remove('is-version-fade');
+    void refs.canvas.offsetWidth;
+    refs.canvas.classList.add('is-version-fade');
+    scheduleSave();
+    ai?.refresh?.();
   }
 
   /**
@@ -9086,15 +9135,12 @@ export function createStudioPage(host) {
 
   async function commitTransform(label, action) {
     if (!doc) return;
-    const lost = [];
-    if (doc.layers.length) lost.push(`${doc.layers.length} 个叠加层`);
-    if (doc.transform.crop) lost.push('裁剪区域');
-    if (lost.length) {
+    // 旋转 / 翻转不再清空图层，只有裁剪区域会被重置，提示语要跟着改。
+    if (doc.transform.crop) {
       const ok = await confirmDialog({
         title: label,
-        message: `${label}会清空 ${lost.join('、')}（可用 Ctrl+Z 撤销），确定继续？`,
+        message: `${label}会清空当前裁剪区域（可用 Ctrl+Z 撤销），图层会跟着一起变换。确定继续？`,
         confirmText: '继续',
-        danger: true,
       });
       if (!ok || !doc) return;
     }

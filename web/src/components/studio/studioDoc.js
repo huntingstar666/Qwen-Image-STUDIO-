@@ -256,10 +256,11 @@ export class StudioDoc {
   /* ---------------------------------------------------------- 变换 */
 
   rotateRight() {
+    const old = this.oriented;
     this.transform.rotate = (this.transform.rotate + 90) % 360;
     this.transform.crop = null;
-    this.layers = [];
-    this.groups = [];
+    // 图层跟着一起转：不再清空图层（与「主图 = 仅底图」模型一致）。
+    this._rotateLayersBy90(old, 1);
     this.rotateMaskRight();
     this.rotateRepairRight();
     this._maskHas = null;
@@ -270,10 +271,10 @@ export class StudioDoc {
   }
 
   rotateLeft() {
+    const old = this.oriented;
     this.transform.rotate = (this.transform.rotate + 270) % 360;
     this.transform.crop = null;
-    this.layers = [];
-    this.groups = [];
+    this._rotateLayersBy90(old, -1);
     this.rotateMaskLeft();
     this.rotateRepairLeft();
     this._maskHas = null;
@@ -292,11 +293,94 @@ export class StudioDoc {
       this.flipRepair('v');
     }
     this.transform.crop = null;
-    this.layers = [];
-    this.groups = [];
+    // 图层一起镜像（位置 + 自身翻转），不再清空。
+    this._flipLayerGeometry(axis);
     this._maskHas = null;
     this.invalidateBase();
     this.snapshot();
+  }
+
+  /**
+   * 一次 90° 旋转后换算图层几何。
+   * 图层坐标属于「旋转后未裁剪」空间，按中心点映射并累加自身旋转角；
+   * 形状层没有旋转角，改为交换宽高。
+   * @param {{width:number,height:number}} old 旋转前的 oriented 尺寸
+   * @param {1|-1} direction 1 = 顺时针（右转），-1 = 逆时针（左转）
+   */
+  _rotateLayersBy90(old, direction) {
+    const W = old.width;
+    const H = old.height;
+    const oriented = this.oriented;
+    const mapPoint =
+      direction > 0 ? (x, y) => ({ x: H - y, y: x }) : (x, y) => ({ x: y, y: W - x });
+    (this.layers || []).forEach((layer) => {
+      if (!layer) return;
+      if (layer.isAdjustment) {
+        // 调整层覆盖整幅画面：范围跟随新尺寸，旧蒙版属于旧坐标，作废。
+        layer.width = Math.max(1, oriented.width);
+        layer.height = Math.max(1, oriented.height);
+        layer.mask = null;
+        return;
+      }
+      if (Array.isArray(layer.quad)) {
+        layer.quad = layer.quad.map((point) => mapPoint(point.x, point.y));
+        layer._warpCache = null;
+        return;
+      }
+      const w = layer.width || 0;
+      const h = layer.height || 0;
+      const center = mapPoint(layer.x + w / 2, layer.y + h / 2);
+      if (layer.isShape) {
+        layer.width = h;
+        layer.height = w;
+        layer.x = center.x - h / 2;
+        layer.y = center.y - w / 2;
+        return;
+      }
+      layer.rotation = ((Number(layer.rotation) || 0) + (direction > 0 ? 90 : -90)) % 360;
+      // 90° 旋转会把水平翻转轴换到垂直方向，否则两者叠加顺序不同会镜像错。
+      if (layer.flipH !== undefined || layer.flipV !== undefined) {
+        const flipH = layer.flipH;
+        layer.flipH = layer.flipV;
+        layer.flipV = flipH;
+      }
+      layer.x = center.x - w / 2;
+      layer.y = center.y - h / 2;
+    });
+  }
+
+  /** 翻转后换算图层几何：位置镜像 + 图层自身翻转；尺寸不变。 */
+  _flipLayerGeometry(axis) {
+    const oriented = this.oriented;
+    const W = oriented.width;
+    const H = oriented.height;
+    (this.layers || []).forEach((layer) => {
+      if (!layer) return;
+      if (layer.isAdjustment) {
+        // 翻转不改尺寸，但蒙版是旧坐标，作废避免反向显示。
+        layer.mask = null;
+        return;
+      }
+      if (Array.isArray(layer.quad)) {
+        layer.quad = layer.quad.map((point) => ({
+          x: axis === 'h' ? W - point.x : point.x,
+          y: axis === 'v' ? H - point.y : point.y,
+        }));
+        layer._warpCache = null;
+        return;
+      }
+      const w = layer.width || 0;
+      const h = layer.height || 0;
+      const cx = layer.x + w / 2;
+      const cy = layer.y + h / 2;
+      if (axis === 'h') {
+        if (layer.flipH !== undefined) layer.flipH = !layer.flipH;
+        layer.x = W - cx - w / 2;
+      } else {
+        if (layer.flipV !== undefined) layer.flipV = !layer.flipV;
+        layer.y = H - cy - h / 2;
+      }
+    });
   }
 
   /**
@@ -1217,11 +1301,38 @@ export class StudioDoc {
   }
 
   /**
+   * 「主图」画布：底图 + 变换 + 调色 + 修复（不含叠加层）。
+   *
+   * 与 `exportCanvas()` 的区别是**不含图层**：AI 送图与快门快照默认用它，
+   * 否则结果图里已经烘焙了图层像素，回流成新主图后图层再叠一次就是重影。
+   */
+  exportMainCanvas(type = 'image/png') {
+    const base = this.renderUnderlay();
+    if (type !== 'image/jpeg') return base;
+    const flat = makeCanvas(base.width, base.height);
+    const ctx = flat.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, flat.width, flat.height);
+    ctx.drawImage(base, 0, 0);
+    return flat;
+  }
+
+  /**
    * @param {'image/png'|'image/jpeg'} type
    * @param {number} [quality]
    */
   bake(type = 'image/png', quality = 0.92) {
     return this.exportCanvas(type).toDataURL(type, quality);
+  }
+
+  /** 仅主图（不含图层）的 dataURL，供 AI 送图使用。 */
+  bakeMain(type = 'image/png', quality = 0.92) {
+    return this.exportMainCanvas(type).toDataURL(type, quality);
+  }
+
+  /** 仅主图的异步编码（换主图时作为工程源文件兜底）。 */
+  bakeMainBlob(type = 'image/png', quality = 0.92) {
+    return canvasToBlob(this.exportMainCanvas(type), type, quality);
   }
 
   /** 异步编码，避免 4K 导出时同步 toDataURL 冻结主线程。 */

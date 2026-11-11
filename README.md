@@ -15,9 +15,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 
 ### 界面预览
 
-浅色 / 暗色双主题，App Shell 侧边栏导航，共 7 个模块：**文生图 / 图像编辑 / 图片精修 / 作品画廊 / 素材仓库 / 图像处理 / 历史记录**。
+浅色 / 暗色双主题，App Shell 侧边栏导航，按「创作 / 资产 / 工具」分 **8 个页面**：
+**文生图 / 图像编辑 / 图片精修 / 视频工作台 / 作品画廊 / 素材仓库 / 图像处理 / 历史记录**；
+另有独立的**定格工坊**（`still_loop`，`http://127.0.0.1:8720`）。
 
-**文生图**（Turbo 面板直接展示官方 8 个 sigma，可编辑）：
+**文生图**（模型可在 Qwen-Image 2.1 / MOSS-Image 间切换，高级设置里直接展示官方 8 个 sigma 与多 LoRA）：
 
 ![文生图页](docs/screenshots/t2i.png)
 
@@ -26,11 +28,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 
 ![风格工具条与标签](docs/screenshots/style_toolbar_chip.png)
 
-| 风格 / 滤镜弹窗（285 条，真缩略图 + 收藏） | MJ 码图馆（493 条，黄黑主题） |
+| 风格 / 滤镜弹窗（217 风格 + 17 滤镜，真缩略图 + 收藏） | MJ 码图馆（493 条，黄黑主题） |
 |---|---|
 | ![风格弹窗](docs/screenshots/style_modal.png) | ![MJ 码图馆](docs/screenshots/mj_modal.png) |
 
-**图像处理**（裁剪/宫格、旋转翻转、缩放对齐 32、调色、格式导出、扩图规划）：
+**图像编辑**（左侧小图库 + 参考图，右侧 Canvas 遮罩编辑器，底部指令与风格工具条）：
+
+![图像编辑页](docs/screenshots/edit.png)
+
+**图片精修**（图层 / 裁剪 / 画笔 / 调色 / 蒙版 + 右侧 AI 改图，可导出或送入图像编辑）：
+
+![图片精修](docs/screenshots/studio.png)
+
+**视频工作台**（音频 + 时间轴字幕 → 自动分段 → 分镜提示词 → 批量生图 → 导出 MP4）：
+
+![视频工作台](docs/screenshots/video.png)
+
+**图像处理**（左侧工具轨：调整 / 尺寸 / 水印 / 动图 / 放大 / 导出 / 扩图 / 收藏）：
 
 ![图像处理台](docs/screenshots/tools.png)
 
@@ -38,9 +52,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 
 ![扩图规划](docs/screenshots/outpaint.png)
 
-**图像编辑**（左侧参数 + 右侧 Canvas 遮罩编辑器）：
+**资产与记录**
 
-![图像编辑页](docs/screenshots/edit.png)
+| 作品画廊（232 条精选与提示词） | 素材仓库（收藏与上传） |
+|---|---|
+| ![作品画廊](docs/screenshots/gallery.png) | ![素材仓库](docs/screenshots/materials.png) |
+
+历史记录：生成 / 编辑 / 放大 / 动图 / 精修工程统一列表，可按类型筛选、收藏、送入编辑或精修：
+
+![历史记录](docs/screenshots/history.png)
 
 **出图示例**
 
@@ -157,12 +177,16 @@ prompt enhancer 发布），让本地 Ollama 模型把一句话扩写成官方�
 
 ### 图像处理台（image-tools-kit）
 
-出图**前后**的常规处理都在这页完成，路径：`图像处理` 页签。
+出图**前后**的常规处理都在这页完成，路径：`图像处理` 页签。左侧工具轨分 8 组：
+**调整 / 尺寸 / 水印 / 动图 / 放大 / 导出 / 扩图 / 收藏**。
 
 - **裁剪**：8 个手柄拖拽 + 比例约束（15 种）+ 自由/原图比例；**宫格切分**一次导出多张（带间隔设置）
 - **旋转 / 翻转**：90° 步进、任意角度（自动扩画布保四角）、水平/垂直翻转
-- **缩放**：contain / cover / stretch，以及一键 **对齐 32**（送进编辑管线前的必备步骤）
+- **缩放 / 尺寸**：contain / cover / stretch，一键 **对齐 32**（送进编辑管线前的必备步骤），也可直接定新画布尺寸
 - **调色**：亮度 / 对比 / 饱和 / 锐化 / 色温 —— 滑杆实时用 CSS filter 预览，落盘由服务端按真实参数处理
+- **水印**：文字 / 图片两种，九宫格定位 + 自定义拖动（方向键 1px、Shift 10px），可调透明度与缩放
+- **动图**：图片序列或视频 → GIF（两遍调色板、拆帧、等分时长）
+- **高清放大**：SeedVR2 / FlashVSR / VOSR2 三套引擎，2× / 4× / 目标长边，走后台任务队列
 - **格式导出**：PNG（无损、保留透明）/ JPEG（质量可调 + 预估体积）
 - **扩图（outpaint）**：左/右/上/下/左右/上下/四周 7 个方向 + 幅度滑杆 → 服务端算新画布与偏移，
   自动把「新增区域」做成遮罩 → 一键「去局部重绘」，跳到编辑页时画布、遮罩、提示词都已就位
@@ -171,17 +195,24 @@ prompt enhancer 发布），让本地 Ollama 模型把一句话扩写成官方�
 分工是刻意的：**预览在前端 canvas（快），落盘走服务端 Pillow（无损、可控、能进历史）**。
 详见 [docs/IMAGE_TOOLS.md](docs/IMAGE_TOOLS.md)。
 
-### 作品画廊 / 素材仓库 / 图片精修
+### 作品画廊 / 素材仓库 / 图片精修 / 视频工作台
 
-- **作品画廊**（`#gallery`）：24 条精选作品与社区写法提示词（含种子、尺寸、采样参数），
-  分类 + 搜索，渐变编号封面；详情可复制提示词、发送到文生图、收藏到素材仓库。
+- **作品画廊**（`#gallery`）：232 条精选作品与社区写法提示词（含种子、尺寸、采样参数），
+  分类 + 搜索 + 随机灵感；详情可复制提示词、发送到文生图、收藏到素材仓库。
 - **素材仓库**（`#materials`）：只收录主动收藏的满意作品与本地上传，区别于全量历史；
   文生图 / 图生图 / 精修 / 本地素材分类展示，支持搜索、编辑信息、下载、删除、
   「在图片精修中打开」与「发送到文生图」。数据存 `storage/materials.json` + 图片目录。
-- **图片精修**（`#studio`）：PS 式三栏工作台 —— 抓手 / 裁剪 / 画笔 / 橡皮 / 矩形 / 椭圆，
-  曝光、亮度、对比度、饱和度、色温、色调，旋转翻转，蒙版叠加与覆盖率，30 步撤销重做；
-  可导出 PNG / JPEG、复制、收藏，或把「当前图 + 蒙版」送入图像编辑做局部重绘。
+- **图片精修**（`#studio`）：PS 式三栏工作台 —— 图层、抓手 / 裁剪 / 画笔 / 橡皮 / 矩形 / 椭圆 / 文字 / 贴纸，
+  曝光、亮度、对比度、饱和度、色温、色调，旋转翻转镜像，蒙版叠加与覆盖率，撤销重做；
+  右侧「AI 改图」支持指令 + 参考图 + 逐次生成，可导出 PNG / JPEG、复制、收藏，或把「当前图 + 蒙版」送入图像编辑做局部重绘。
   快捷键：`V/C/B/E/R/O`、`[` `]`、`0` 适配、`1` 100%、`Ctrl+Z` / `Ctrl+Shift+Z`。
+- **视频工作台**（`#video`，独立服务 `video_studio`，默认 `http://127.0.0.1:8730`）：
+  音频 + 带时间轴字幕 → 自动分段（向静音中点吸附、对齐帧）→ LLM 生成分镜提示词 → 批量调主项目生图
+  （断点续跑、每段保留多个版本）→ 时间线合成 + 字幕/BGM 混音 → 导出 MP4。
+  详见 [docs/VIDEO_STUDIO.md](docs/VIDEO_STUDIO.md)。
+- **定格工坊**（`still_loop`，独立服务 `http://127.0.0.1:8720`）：照片轨道 / 宫格切分 / 连续编辑分镜 /
+  自动化流水线四类项目，逐帧生成后做定格质感烘焙与自检，导出顺滑版与定格版。
+  详见 [docs/FLOW_STILL_LOOP.md](docs/FLOW_STILL_LOOP.md)。
 
 ### 操作条与快捷键
 
@@ -217,7 +248,8 @@ prompt enhancer 发布），让本地 Ollama 模型把一句话扩写成官方�
 
 ### 加速 LoRA 可以自己选
 
-Turbo 面板里有三样东西：**调度方案 / 加速 LoRA / LoRA 强度**。
+「文生图高级设置」抽屉里的 Turbo 区块有三样东西：**加速方案 / 加速 LoRA（跟随方案自动切换） /
+LoRA 强度（下方 LoRA 段可加多个，各自独立调强度）**。
 
 ![Turbo 面板](docs/screenshots/turbo_lora.png)
 
@@ -305,7 +337,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | 零色差验收 | 局部编辑遮罩外 `max_abs_diff = 0`（方案 A 与方案 B 均通过） |
 | 零偏移验收 | `size_mode=follow` 输出尺寸 == 输入尺寸，画布为 32 倍数 |
 | 图像处理接口 | crop / grid(6 块) / pad32+adjust / jpeg / outpaint-plan 全部实测通过 |
-| 浏览器实测 | 7 个模块 + 风格弹窗 + 遮罩编辑器 + 图片精修 + 素材仓库 + 作品画廊全链路 |
+| 浏览器实测 | 8 个页面 + 风格弹窗 + 遮罩编辑器 + 图片精修 + 视频工作台 + 素材仓库 + 作品画廊全链路 |
 
 ### config.json 字段
 
@@ -345,21 +377,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 │   ├─ backends\native.py  进程内推理引擎（两模型共用）
 │   ├─ align.py            Precise-Align 几何/颜色算法移植（纯 numpy）
 │   ├─ imaging.py          BlueBox 图像 I/O + 画布规划 + 合成移植
-│   ├─ ollama.py           Ollama 客户端
+│   ├─ ollama.py           LLM 客户端（OpenAI 兼容 / Ollama）
 │   ├─ prompt_polish.py    官方 PE 提示词润色
 │   ├─ styles.py           image-style-kit 目录 + 提示词合成
 │   ├─ jobs.py             单 worker 任务队列 + 进度 + 历史
+│   ├─ segmenters\         主体分割（SAM 3.1 / BiRefNet）
+│   ├─ upscalers\          高清放大（SeedVR2 / FlashVSR / VOSR2，全部本地推理）
 │   └─ storage.py          文件存取
 ├─ web\                    原生 ES module 前端（无构建步骤）
 │   ├─ index.html
 │   ├─ src\
 │   │   ├─ app.js / api.js / store.js / utils.js
-│   │   └─ components\      t2i / edit / maskEditor / stylePicker / jobView / history / polish / modal / toast / controls
+│   │   └─ components\      t2i / edit / maskEditor / stylePicker / jobView / history / polish / studio / imageTools / videoStudio / gallery / materials / settings …
 │   ├─ assets\css\          app.css / mask.css / tools.css
 │   ├─ vendor\image-style-kit\   纯逻辑 ES module（buildNodePrompt 等）
 │   ├─ vendor\image-tools-kit\   裁切几何 / canvas 渲染 / 扩图提示词（纯逻辑）
+│   ├─ vendor\pose3d\      3D 姿态编辑器内核（VNCCS / MakeHuman / three.js）
 │   ├─ creative-presets\   ← 风格预览图（可选，来自原项目 public/）
 │   └─ mj-styles\          ← MJ 码图预览图（可选）
+├─ video_studio\           视频工作台（独立服务，音频 → 分镜 → 成片）
+├─ still_loop\             定格工坊（独立服务，逐帧生成与导出）
+├─ animation_kit\          动画稳定化（导出 GIF 时可选去抖动 / 去闪烁）
+├─ panorama_360\           360° 全景查看器（three.js）
+├─ pano_lab\               全景实验脚本（输出目录不入库）
 ├─ data\                   PE 官方系统提示词
 ├─ docs\                   架构、算法、API、各模块文档 + 界面截图
 ├─ scripts\                port_engine / run / verify / smoke / sync_style_assets
@@ -409,7 +449,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 | [docs/PROMPT_POLISH.md](docs/PROMPT_POLISH.md) | 提示词润色的官方规则与 Ollama 实测 |
 | [docs/STYLE_KIT.md](docs/STYLE_KIT.md) | 风格库接入说明 |
 | [docs/IMAGE_TOOLS.md](docs/IMAGE_TOOLS.md) | 图像处理台：裁切/宫格/调色/扩图与 image-tools-kit 接入 |
-| [docs/WEB_UI.md](docs/WEB_UI.md) | 前端页面与组件结构（App Shell + 7 个模块 + 风格选择器弹窗） |
+| [docs/WEB_UI.md](docs/WEB_UI.md) | 前端页面与组件结构（App Shell + 8 个页面 + 风格选择器弹窗） |
+| [docs/VIDEO_STUDIO.md](docs/VIDEO_STUDIO.md) | 视频工作台：音频 → 分段 → 分镜 → 生图 → 合成导出 |
+| [docs/FLOW_STILL_LOOP.md](docs/FLOW_STILL_LOOP.md) | 定格工坊：四类项目流程、逐帧精修与导出 |
 | [docs/screenshots/](docs/screenshots/) | 界面截图与出图示例 |
 
 ---

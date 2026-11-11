@@ -53,3 +53,9 @@ sheet_test.png
 .trae/
 .trae-html-share-packages/
 tests/_py6.txt
+
+# 开发过程文档（计划 / 评审 / 交接 / 测试 / 复盘 / 各模块手册）：只留在本机，不推送
+docs/*.md
+!docs/ARCHITECTURE.md
+!docs/BUILD_CONTRACT.md
+docs/benchmarks/

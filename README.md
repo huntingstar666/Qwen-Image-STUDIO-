@@ -164,7 +164,7 @@ still_loop\    定格工坊（独立服务）
 animation_kit\ 动画稳定化（GIF 去抖动 / 去闪烁）
 panorama_360\  360° 全景查看器
 data\          官方 PE 系统提示词
-docs\          架构、算法、API 与各模块文档
+docs\          架构与接口契约
 scripts\       引擎移植 / 启动 / 校验 / 冒烟脚本
 tests\         单元测试
 ```
@@ -175,14 +175,8 @@ tests\         单元测试
 
 | 文档 | 内容 |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构与请求生命周期 |
-| [docs/BUILD_CONTRACT.md](docs/BUILD_CONTRACT.md) | 模块与 API 契约 |
-| [docs/ALIGN_COLOR.md](docs/ALIGN_COLOR.md) | 零偏移与零色差原理 |
-| [docs/INFERENCE.md](docs/INFERENCE.md) | 推理实现与显存策略 |
-| [docs/IMAGE_TOOLS.md](docs/IMAGE_TOOLS.md) | 图像处理台 |
-| [docs/VIDEO_STUDIO.md](docs/VIDEO_STUDIO.md) | 视频工作台 |
-| [docs/FLOW_STILL_LOOP.md](docs/FLOW_STILL_LOOP.md) | 定格工坊流程 |
-| [docs/WEB_UI.md](docs/WEB_UI.md) | 前端页面与组件 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构、模块职责与请求生命周期 |
+| [docs/BUILD_CONTRACT.md](docs/BUILD_CONTRACT.md) | 模块契约、API 契约与验收标准 |
 | [docs/screenshots/](docs/screenshots/) | 界面截图与出图示例 |
 
 ---

@@ -145,14 +145,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
 `engine/`（ComfyUI 的模型库代码）已随仓库提供，**不用装 ComfyUI**；
 只有想跟进新版 ComfyUI 时才需要 `scripts\port_engine.ps1 -Source "<ComfyUI 根目录>"`。
 
-**5. 可选：独立服务与自检**
+**5. 可选：独立服务**
 
 ```powershell
-python -m video_studio.serve           # 视频工作台 8730（需主服务已启动）
-python -m still_loop                   # 定格工坊 8720
-python scripts\verify_engine_port.py   # 引擎独立性 + 出图（需权重，会真出图）
-python scripts\smoke_api.py            # API 冒烟
-python -m pytest tests -q              # 单元测试（纯 CPU）
+python -m video_studio.serve   # 视频工作台 8730（需主服务已启动）
+python -m still_loop           # 定格工坊 8720
 ```
 
 **可选资源（体积大，未入库）**
@@ -178,20 +175,15 @@ still_loop\    定格工坊（独立服务）
 animation_kit\ 动画稳定化（GIF 去抖动 / 去闪烁）
 panorama_360\  360° 全景查看器
 data\          官方 PE 系统提示词
-docs\          架构与接口契约
-scripts\       引擎移植 / 启动 / 校验 / 冒烟脚本
-tests\         单元测试
+docs\          界面截图（开发文档不随仓库分发）
+scripts\       引擎移植 / 启动 / 资源同步脚本
 ```
 
 ---
 
-## 文档
+## 截图
 
-| 文档 | 内容 |
-|---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构、模块职责与请求生命周期 |
-| [docs/BUILD_CONTRACT.md](docs/BUILD_CONTRACT.md) | 模块契约、API 契约与验收标准 |
-| [docs/screenshots/](docs/screenshots/) | 界面截图与出图示例 |
+界面截图与出图示例见 [docs/screenshots/](docs/screenshots/)。
 
 ---
 

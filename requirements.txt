@@ -30,7 +30,7 @@ onnxruntime>=1.16
 
 # 说明：
 # - 不需要 diffusers：Qwen-Image 2.1 的模型实现来自 engine/（移植自 ComfyUI）。
-# - 不需要安装 pytest：项目根目录有 pytest.py 兼容运行器。
+# - 不需要安装 pytest：测试脚本不随仓库分发，本机自测请自行 pip install pytest。
 # - 启动必须带 -s：python -s -m uvicorn server.main:app。
 #   原因：系统 user site-packages 里可能装了另一份 cu128 的 torch，会盖掉 python 自带的
 #   cu130；cu128 下 comfy_kitchen 禁用 int8 原生算子，采样从 4.3s 掉到 12.4s。

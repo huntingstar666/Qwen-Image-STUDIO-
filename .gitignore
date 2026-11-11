@@ -54,8 +54,17 @@ sheet_test.png
 .trae-html-share-packages/
 tests/_py6.txt
 
-# 开发过程文档（计划 / 评审 / 交接 / 测试 / 复盘 / 各模块手册）：只留在本机，不推送
+# 开发文档（计划 / 评审 / 设计 / 契约等）：只留在本机，不推送
 docs/*.md
-!docs/ARCHITECTURE.md
-!docs/BUILD_CONTRACT.md
 docs/benchmarks/
+
+# 测试与自检脚本：只留在本机，不推送
+tests/
+web/tests/
+pytest.py
+scripts/bench_*.py
+scripts/smoke_*.py
+scripts/verify_*.py
+scripts/repro_multi_ref.py
+scripts/debug_turbo_lora.py
+scripts/proto_native_ok.py

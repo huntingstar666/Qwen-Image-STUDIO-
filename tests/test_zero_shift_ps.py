@@ -337,6 +337,9 @@ def test_generate_edit_panorama360_redraws_and_repairs_seam():
     # 官方模板是效果的一部分：必须注入 360 / 等距柱状描述
     main_prompt = fake.seen["prompts"][0]
     assert "360" in main_prompt and "ERP" in main_prompt
+    # 结果里要能看到「最终真正送进编码器的提示词」，而不只是一个布尔标记
+    assert "场景补充" in quality["prompt_final"]
+    assert "场景补充" in main_prompt
     assert fake.seen["resolution"] == 0
 
     # 第一遍：空 latent 整张重绘；第二遍：滚动后半幅 + 硬遮罩中缝重绘

@@ -1559,9 +1559,12 @@ export function mountAiPanel(host, ctx) {
   function renderQuality(job) {
     const items = qualityItems(job);
     refs.quality.innerHTML = items
-      .map(({ text, kind = '', title = '' }) => {
+      .map(({ text, kind = '', title = '', detail = '' }) => {
         const cls = `ai-tag${kind === 'ok' || kind === 'warn' ? ` ${kind}` : ''}`;
         const attr = title ? ` title="${escapeHtml(title)}"` : '';
+        if (detail) {
+          return `<details class="${cls} prompt-final"${attr}><summary>${escapeHtml(text)}</summary><pre style="white-space:pre-wrap;margin:8px 0 0;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(detail)}</pre></details>`;
+        }
         return `<span class="${cls}"${attr}>${escapeHtml(text)}</span>`;
       })
       .join('');

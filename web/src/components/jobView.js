@@ -87,6 +87,14 @@ export function qualityItems(job) {
   if (quality.prompt_augmented) {
     items.push({ text: '已补任务指令', kind: 'info', title: `后端补写了 ${quality.prompt_augmented} 的训练指令` });
   }
+  if (quality.prompt_final) {
+    items.push({
+      text: '实际提示词',
+      kind: 'info',
+      title: '后端最终送进文本编码器的提示词（含自动拼接的任务模板），点击展开查看',
+      detail: String(quality.prompt_final),
+    });
+  }
   if (quality.watermark_prompt) {
     items.push({ text: '已补全去水印范围', kind: 'info', title: '提示词提到水印，已补全为文字 + 徽章 + 编号' });
   }
@@ -484,9 +492,12 @@ export class JobRunner {
 
   buildBadges(job) {
     return qualityItems(job)
-      .map(({ text, kind = '', title = '' }) => {
+      .map(({ text, kind = '', title = '', detail = '' }) => {
         const cls = `badge${kind ? ` ${kind}` : ''}`;
         const attr = title ? ` title="${escapeHtml(title)}"` : '';
+        if (detail) {
+          return `<details class="${cls} prompt-final"${attr}><summary>${escapeHtml(text)}</summary><pre style="white-space:pre-wrap;margin:8px 0 0;max-width:min(680px,72vw);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(detail)}</pre></details>`;
+        }
         return `<span class="${cls}"${attr}>${escapeHtml(text)}</span>`;
       })
       .join('');

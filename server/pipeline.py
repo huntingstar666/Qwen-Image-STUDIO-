@@ -1808,6 +1808,9 @@ class Pipeline:
             "turbo_lora": job.meta.get("turbo_lora"),
             "turbo_unet": job.meta.get("turbo_unet"),
             "prompt_augmented": job.meta.get("prompt_augmented"),
+            # 真正送进文本编码器的提示词（含后端自动拼接的任务模板），
+            # 前端结果面板需要能展开查看，避免「看起来没生效」的误判。
+            "prompt_final": prompt_text,
             "watermark_prompt": bool(job.meta.get("watermark_prompt")),
             "model": profile["id"],
             # 分阶段耗时（累计时间戳，含解码输入/读权重）：用来定位到底慢在哪一段

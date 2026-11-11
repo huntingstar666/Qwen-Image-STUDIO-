@@ -48,6 +48,7 @@ import { mountGuards } from './studio/guards.js';
 import { mountAdvanced } from './studio/advanced.js';
 import { mountOutpaintPanel } from './studio/outpaintPanel.js';
 import { mountPanoramaPanel } from './studio/panoramaPanel.js';
+import { panoramaPlan, panorama360Plan } from './studio/payload.js';
 
 const MAX_IMAGES = 10;
 
@@ -1454,10 +1455,44 @@ export function createEditPage(host) {
 
   let panoramaPanel = null;
 
+  /** 全景任务的规划输出画布：尺寸胶囊显示它，而不是源图尺寸。 */
+  function panoramaTargetSize() {
+    const mode = activeTaskMode();
+    const first = images[0];
+    if (!first || (mode !== 'panorama' && mode !== 'panorama360')) return null;
+    const preset = currentPreset();
+    const overrides = edit.overrides || {};
+    if (mode === 'panorama360') {
+      const plan = panorama360Plan(
+        { width: first.width, height: first.height },
+        {
+          longSide: Number(effectiveValue(
+            preset, overrides, 'panorama360.long_side', 3072)) || 3072,
+        },
+      );
+      return { label: '360° 全景', width: plan.width, height: plan.height };
+    }
+    const plan = panoramaPlan(
+      { width: first.width, height: first.height },
+      {
+        aspect: String(effectiveValue(preset, overrides, 'panorama.aspect', '2:1')),
+        longSide: Number(effectiveValue(
+          preset, overrides, 'panorama.long_side', 3072)) || 3072,
+      },
+    );
+    return { label: '全景', width: plan.width, height: plan.height };
+  }
+
   function updateSizeInfo() {
+    panoramaPanel?.refresh();
+    const pano = panoramaTargetSize();
+    if (pano) {
+      refs.sizeInfo.textContent = `${fmtNum(pano.width)} × ${fmtNum(pano.height)}`;
+      refs.canvasHint.textContent = `${pano.label}任务按规划画布输出，尺寸模式不生效`;
+      return;
+    }
     const mode = refs.sizeMode.value;
     const first = images[0] || null;
-    panoramaPanel?.refresh();
     if (mode === 'follow') {
       refs.sizeInfo.textContent = first ? `${fmtNum(snapUp(first.width))} × ${fmtNum(snapUp(first.height))}` : '上传后确定';
       refs.canvasHint.textContent = first && (first.width % 32 || first.height % 32)
@@ -1495,6 +1530,8 @@ export function createEditPage(host) {
   /* ------------------------------------------------------------ 尺寸胶囊卡片 */
 
   function sizePillText() {
+    const pano = panoramaTargetSize();
+    if (pano) return `${pano.label} · ${fmtNum(pano.width)}×${fmtNum(pano.height)}`;
     const mode = refs.sizeMode.value;
     const first = images[0] || null;
     if (mode === 'follow') {
@@ -1515,6 +1552,11 @@ export function createEditPage(host) {
     refs.sizePopDims.textContent = refs.sizeInfo.textContent;
     refs.sizeModes.querySelectorAll('[data-mode]').forEach((button) => {
       button.classList.toggle('active', button.dataset.mode === mode);
+    });
+    // 全景任务由面板规划画布，尺寸模式只起展示作用：禁用避免误以为会生效
+    const pano = panoramaTargetSize();
+    refs.sizeModes.querySelectorAll('[data-mode]').forEach((button) => {
+      button.disabled = Boolean(pano);
     });
 
     if (mode === 'custom') {
@@ -1788,6 +1830,10 @@ export function createEditPage(host) {
       const image = images[0];
       return image ? { width: image.width, height: image.height } : null;
     },
+    onChange: () => {
+      updateSizeInfo();
+      syncSizeCard();
+    },
   });
   panoramaPanel.init().catch(() => {});
 
@@ -1802,7 +1848,7 @@ export function createEditPage(host) {
     remove: '元素移除：提交时强制 fills=true + 绿色提示图，并自动补「移除图像中的绿色区域」；遮罩外逐字节保留。',
     outpaint: '扩图：用「⤢ 扩图」的四边百分比外补，提交时强制 fills=false + 灰色提示。',
     panorama: '全景：按目标比例做最小外扩，整画布采样；源图保持原尺寸或等比缩小，向外补画布。',
-    panorama360: '360° 全景：固定 2:1 画布，源图缩到设定占比后居中，四周补全并做环绕融合。',
+    panorama360: '360° 全景：参考图只做条件，整张重绘为 2:1 等距柱状全景，再自动修复左右接缝。',
     inpaint: '局部重绘：只重绘蒙版内，其余逐像素保留。',
   };
 
@@ -1814,6 +1860,9 @@ export function createEditPage(host) {
     const isPanorama = ['panorama', 'panorama360'].includes(activeTaskMode());
     refs.panoramaHost.hidden = !isPanorama;
     if (isPanorama) panoramaPanel?.refresh();
+    // 全景任务输出的是规划画布，尺寸胶囊要同步成目标尺寸（而不是源图尺寸）
+    updateSizeInfo();
+    syncSizeCard();
   }
 
   refs.taskMode.addEventListener('change', () => {
@@ -2605,10 +2654,10 @@ export function createEditPage(host) {
         localExtra.fills = false;
         localExtra.hint = 'gray_fill';
       } else if (taskMode === 'panorama360') {
-        // 360° 全景同样整画布采样 + 灰边提示。
-        localExtra.scheme = 'a';
+        // 360° 全景是「参考图条件 + 空 latent」整张重绘：不铺灰边、不做遮罩合成。
+        localExtra.scheme = 'native';
         localExtra.fills = false;
-        localExtra.hint = 'gray_fill';
+        localExtra.hint = 'none';
       }
       // 一致性开关是用户当前选择，必须显式回传（开/关都发）：
       // 只在关闭时发 false 的话，用户重新打开会沿用预设里保存的 false，UI 勾选等于无效。
@@ -2700,16 +2749,8 @@ export function createEditPage(host) {
     }
     if (taskMode === 'panorama360') {
       payload.panorama360 = {
-        coverage: Number(effectiveValue(
-          presetMeta, edit.overrides || {}, 'panorama360.coverage', 0.4)) || 0.4,
         long_side: Number(effectiveValue(
           presetMeta, edit.overrides || {}, 'panorama360.long_side', 3072)) || 3072,
-        wrap: Boolean(effectiveValue(
-          presetMeta, edit.overrides || {}, 'panorama360.wrap', true)),
-        seam_blend: Number(effectiveValue(
-          presetMeta, edit.overrides || {}, 'panorama360.seam_blend', 24)) || 24,
-        level: Boolean(effectiveValue(
-          presetMeta, edit.overrides || {}, 'panorama360.level', true)),
       };
     }
     return payload;

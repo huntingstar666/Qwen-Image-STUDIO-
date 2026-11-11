@@ -152,11 +152,7 @@ const GROUPS = [
     id: 'panorama360',
     title: '360° 全景',
     fields: [
-      { path: 'panorama360.coverage', label: '源图占比', type: 'number', min: 0.3, max: 0.6, step: 0.01 },
       { path: 'panorama360.long_side', label: '长边', type: 'number', min: 1024, max: 4096, step: 32 },
-      { path: 'panorama360.wrap', label: '360° 环绕融合', type: 'switch' },
-      { path: 'panorama360.seam_blend', label: '环绕融合 px', type: 'number', min: 0, max: 128, step: 4 },
-      { path: 'panorama360.level', label: '交界亮度对齐', type: 'switch' },
     ],
   },
   {
@@ -367,11 +363,6 @@ function validateParams(params, maxSide, { custom = false } = {}) {
   if (pano360Long && maxSide && pano360Long > maxSide) {
     errors.push(`360° 全景长边不能超过全局 max_side（${maxSide}）`);
   }
-  const pano360Coverage = Number(getPath(params, 'panorama360.coverage', 0.4));
-  if (Number.isFinite(pano360Coverage)
-      && (pano360Coverage < 0.3 || pano360Coverage > 0.6)) {
-    errors.push('360° 全景源图占比必须在 0.3~0.6');
-  }
 
   const pads = ['top', 'bottom', 'left', 'right'].map((key) =>
     Number(getPath(params, `outpaint.${key}`, 0)) || 0,
@@ -384,9 +375,13 @@ function validateParams(params, maxSide, { custom = false } = {}) {
   if (custom && task === 'outpaint' && !pads.some((value) => value > 0)) {
     errors.push('扩图至少需要一条外扩边大于 0');
   }
-  if (task === 'panorama' || task === 'panorama360') {
+  if (task === 'panorama') {
     if (scheme !== 'a') errors.push('全景必须使用方案 A（整画布采样）');
     if (hint !== 'gray_fill') errors.push('全景要求提示图 = 灰边');
+  }
+  if (task === 'panorama360') {
+    if (scheme !== 'native') errors.push('360° 全景必须使用「原生 · 不合成」（整张重绘）');
+    if (!['none', 'gray_fill'].includes(hint)) errors.push('360° 全景不使用提示图（选「不使用提示图」）');
   }
   if (scheme === 'native' && ['remove', 'outpaint'].includes(task)) {
     warnings.push('原生模式不做遮罩合成，任务边缘可能无法逐字节保留');
@@ -414,9 +409,12 @@ function autoFix(params) {
     if (!pads.some((value) => value > 0)) {
       for (const key of ['top', 'bottom', 'left', 'right']) setPath(params, `outpaint.${key}`, 10);
     }
-  } else if (task === 'panorama' || task === 'panorama360') {
+  } else if (task === 'panorama') {
     setPath(params, 'local.scheme', 'a');
     setPath(params, 'local.hint', 'gray_fill');
+  } else if (task === 'panorama360') {
+    setPath(params, 'local.scheme', 'native');
+    setPath(params, 'local.hint', 'none');
   } else {
     setPath(params, 'local.hint', 'none');
   }
@@ -445,6 +443,10 @@ function templateParams(state, templateId) {
   if (task === 'panorama') {
     setPath(params, 'local.scheme', 'a');
     setPath(params, 'local.hint', 'gray_fill');
+  }
+  if (task === 'panorama360') {
+    setPath(params, 'local.scheme', 'native');
+    setPath(params, 'local.hint', 'none');
   }
   if (!Array.isArray(params.loras)) params.loras = [];
   return params;

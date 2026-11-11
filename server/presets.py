@@ -27,7 +27,8 @@ from typing import Any
 #: 6：新增 local.crop_floor（最小裁剪窗，默认 1024，与孤海一致）。
 #: 7：局部编辑默认填充闭合选区（local.fills=true），与孤海一致。
 #: 8：新增 ``panorama360`` 预设（2:1 画布、源图占 40%、四周外扩、环绕融合）。
-PRESET_VERSION = 8
+#: 9：360° 全景改为「参考图条件整张 2:1 重绘 + 中缝二次重绘」，去掉 coverage / 环绕融合。
+PRESET_VERSION = 9
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -198,13 +199,13 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
     },
     "panorama360": {
         "label": "360° 全景",
-        "summary": "参考图 → 360° 全景 · 2:1 · 源图占 40% · 四周外扩 · 环绕融合",
+        "summary": "参考图 → 2:1 等距柱状全景 · 整张重绘 · 中缝二次修复",
         "default": False,
         "task": {"mode": "panorama360"},
         "local": {
             "enabled": True,
-            # 360° 同样必须整画布采样：裁块会切断环视连续性。
-            "scheme": "a",
+            # 360° 是「参考图条件 + 空 latent」整张重绘，没有遮罩合成。
+            "scheme": "native",
             "fills": False,
             "crop_min_side": 0,
             "crop_max_side": 4096,
@@ -214,20 +215,16 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "dither": True,
             "feather": 32,
             "mask_expand": 0,
-            "color_match": True,
+            "color_match": False,
             "color_strength": 0.6,
-            "color_restore": True,
+            "color_restore": False,
             "color_restore_strength": 1.0,
             "consistency": True,
-            "hint": "gray_fill",
-            "band_mode": "lowfreq",
+            "hint": "none",
+            "band_mode": "alpha",
         },
         "panorama360": {
-            "coverage": 0.4,
             "long_side": 3072,
-            "wrap": True,
-            "seam_blend": 24,
-            "level": True,
         },
         **_COMMON,
     },
@@ -786,11 +783,17 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
     # 内置预设的扩图外边由任务页临时输入，不在预设默认里锁死；自定义搭配要求完整。
     if custom and task == "outpaint" and not any(value > 0 for value in pads):
         errors.append("扩图至少需要一条外扩边大于 0")
-    if strict_task and task in ("panorama", "panorama360"):
+    if strict_task and task == "panorama":
         if scheme != "a":
             errors.append("全景必须使用 local.scheme=a（整画布采样）")
         if hint != "gray_fill":
             errors.append("全景要求 local.hint=gray_fill（灰边提示）")
+    # 360° 是「参考图条件 + 空 latent」整张重绘，不铺灰边也不做遮罩合成。
+    if strict_task and task == "panorama360":
+        if scheme != "native":
+            errors.append("360° 全景必须使用 local.scheme=native（整张重绘，无遮罩合成）")
+        if hint not in ("none", "gray_fill"):
+            errors.append("360° 全景不使用提示图（local.hint=none）")
 
     if scheme == "native" and task in ("remove", "outpaint"):
         warnings.append("原生模式不做遮罩合成，任务边缘可能无法逐字节保留")

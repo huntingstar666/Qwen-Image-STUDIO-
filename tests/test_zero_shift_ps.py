@@ -128,6 +128,7 @@ class _FakeEngine:
     def encode_text(self, prompt, negative, *, images=None, resolution=0,
                     encode_negative=True):
         self.seen["prompt"] = prompt
+        self.seen.setdefault("prompts", []).append(prompt)
         self.seen["images"] = list(images or [])
         self.seen["resolution"] = int(resolution)
         self.seen["encode_negative"] = bool(encode_negative)
@@ -145,9 +146,18 @@ class _FakeEngine:
         self.seen["canvas"] = image.size
         return image
 
+    def empty_latent(self, width, height, batch=1):
+        self.seen["empty_latent"] = (int(width), int(height))
+        return Image.new("RGB", (int(width), int(height)))
+
     def sample(self, **kwargs):
         if self.error is not None:
             raise self.error
+        self.seen.setdefault("samples", []).append({
+            "latent_size": kwargs["latent"].size,
+            "noise_mask": kwargs.get("noise_mask") is not None,
+            "denoise": kwargs.get("denoise"),
+        })
         return self.transform(kwargs["latent"])
 
     def decode(self, samples):
@@ -300,57 +310,76 @@ def test_generate_edit_panorama_wrap_reports_seam():
     assert report["after_max_abs"] <= report["before_max_abs"]
 
 
-def test_generate_edit_panorama360_expands_four_sides_and_keeps_source():
+def test_generate_edit_panorama360_redraws_and_repairs_seam():
+    """360° 全景：参考图条件整张重绘（空 latent）+ 中缝二次重绘。"""
     src = _noise_image(1000, 700, seed=31)
     fake = _FakeEngine()
     job, sink = _run_edit({
         "preset": "panorama360",
         "images": [{"data": _src_url(src)}],
-        "panorama360": {"coverage": 0.4, "long_side": 2048,
-                        "wrap": False, "level": True, "seam_blend": 24},
+        "panorama360": {"long_side": 1024},
     }, fake)
 
     quality = job.quality
     assert quality["task_mode"] == "panorama360"
     assert quality["preset"] == "panorama360"
     info = quality["panorama360"]
-    assert info["canvas"] == {"w": 2048, "h": 1024}
-    assert (info["work"]["w"], info["work"]["h"]) == (800, 544)
-    assert all(info["pads"][key] > 0 for key in ("left", "right", "top", "bottom"))
-    assert quality["output"] == {"w": 2048, "h": 1024}
-    assert quality["outside_max_abs"] == 0
+    assert info["mode"] == "redraw"
+    assert info["canvas"] == {"w": 1024, "h": 512}
+    assert info["sample"] == {"w": 1024, "h": 512}
+    assert info["reference"]["w"] % 32 == 0 and info["reference"]["h"] % 32 == 0
+    assert quality["output"] == {"w": 1024, "h": 512}
+    # 整张重绘没有「遮罩外」可承诺，必须如实返回 None
+    assert quality["outside_max_abs"] is None
+    assert quality["scheme"] == "native"
+    assert quality["mask_used"] is False
     assert quality["prompt_augmented"] == "panorama360"
+    # 官方模板是效果的一部分：必须注入 360 / 等距柱状描述
+    main_prompt = fake.seen["prompts"][0]
+    assert "360" in main_prompt and "ERP" in main_prompt
     assert fake.seen["resolution"] == 0
-    assert fake.seen["latent_size"] == fake.seen["canvas"] == (2048, 1024)
+
+    # 第一遍：空 latent 整张重绘；第二遍：滚动后半幅 + 硬遮罩中缝重绘
+    assert fake.seen["empty_latent"] == (1024, 512)
+    passes = fake.seen["samples"]
+    assert len(passes) == 2
+    assert passes[0]["latent_size"] == (1024, 512)
+    assert passes[0]["noise_mask"] is False
+    assert passes[0]["denoise"] == 1.0
+    assert passes[1]["latent_size"] == (1024, 512)
+    assert passes[1]["noise_mask"] is True
+
+    repair = info["seam_repair"]
+    assert repair["mode"] == "roll_inpaint"
+    assert repair["band_px"] == round(1024 * imaging.PANORAMA360_SEAM_BAND)
+    assert repair["outside_max_abs"] == 0
 
     final = imaging.decode_image(sink["png"])
-    assert final.size == (2048, 1024)
-    plan = imaging.panorama360_plan(1000, 700, coverage=0.4, long_side=2048)
-    pasted = final.crop((plan.left, plan.top,
-                         plan.left + plan.work_w, plan.top + plan.work_h))
-    # 源图先等比缩到工作尺寸再贴放；合成后该区域应逐字节保留
-    expected = src.convert("RGBA").resize(
-        (plan.work_w, plan.work_h), Image.BICUBIC).convert("RGB")
-    assert int(np.abs(
-        np.asarray(expected, dtype=np.int16)
-        - np.asarray(pasted.convert("RGB"), dtype=np.int16)).max()) == 0
+    assert final.size == (1024, 512)
+    # fake 引擎做反色：第一遍整张白，中缝带被第二遍写成黑；
+    # 滚回来以后黑带落在左右边缘（正是原始接缝所在位置）。
+    arr = np.asarray(final.convert("RGB"))
+    assert int(arr[:, 0].max()) <= 8
+    assert int(arr[:, -1].max()) <= 8
+    assert int(arr[:, final.width // 2].min()) >= 247
 
 
-def test_generate_edit_panorama360_wrap_reports_seam():
-    src = _noise_image(1000, 700, seed=32)
+def test_generate_edit_panorama360_reports_sampling_resolution():
+    src = _noise_image(1100, 1586, seed=32)
     fake = _FakeEngine()
     job, _sink = _run_edit({
         "preset": "panorama360",
         "images": [{"data": _src_url(src)}],
-        "panorama360": {"coverage": 0.4, "long_side": 1024,
-                        "wrap": True, "level": False, "seam_blend": 8},
+        "panorama360": {"long_side": 2048},
     }, fake)
 
     info = job.quality["panorama360"]
-    assert info["wrap"] is True and info["level"] is False
-    report = info["wrap_report"]
-    assert report is not None and report["blend_px"] == 8
-    assert report["after_max_abs"] <= report["before_max_abs"]
+    assert info["canvas"] == {"w": 2048, "h": 1024}
+    assert info["sample"] == {"w": 2048, "h": 1024}
+    assert job.quality["sample_res"]["from"] == [2048, 1024]
+    assert job.quality["sample_res"]["to"] == [2048, 1024]
+    assert job.quality["sample_res"]["applied"] is False
+    assert job.quality["output"] == {"w": 2048, "h": 1024}
 
 
 def test_generate_edit_preprocess_restores_source_size():

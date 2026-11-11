@@ -1,7 +1,9 @@
 # 360° 全景（panorama360）方案
 
-> 状态：**P1 已落地（2026-11-11）；P2 后端与前端入口已落地并完成真机验收（2026-11-11），`panorama360` 先标实验**。
-> 已确认口径：P1 先上线；查看器三处一起（结果区 / 历史记录 / 素材仓库）；`coverage` 默认 40%；文生图 360 同时提供 2048×1024 与 3072×1536。
+> 状态：**2026-11-11 v2 已重做**——`panorama360` 改为对齐官方 Qwen2.1 全景工作流的
+> 「参考图条件整张 2:1 重绘 + 横向滚动中缝重绘」，不再铺灰边、不再保留源图像素。
+> 旧的 coverage / 四周灰边 / `wrap_seam_blend` 方案已下线（保留 API 字段仅向后兼容）。
+> 详见 §16；§1~§15 为历史记录，仅用于对照。
 > 关联文档：[PLAN_PANORAMA.md](PLAN_PANORAMA.md)（宽幅全景已上线）、[WEB_UI.md](WEB_UI.md)、[PLAN_PS_FRONTEND.md](PLAN_PS_FRONTEND.md)。
 > 独立验证产物：`pano_lab/`（生成实验）、`panorama_360/`（球面查看器参考实现）。
 
@@ -305,3 +307,98 @@ def panorama360_plan(src_w, src_h, *, coverage=0.4, long_side=3072,
 - **未做**：分块接力（大图/低显存）、真机多 seed 统计、21:9 等非 2:1 的 360 变体。
 - 前端入口实测：`#edit` 渲染出「360° 全景」预设卡与任务选项；`#studio` 面板按任务切换 coverage 控件；工作画布摘要与后端预估一致。
 - 未提交 commit（等待确认）。
+
+---
+
+## 16. v2 重做记录：对齐官方 Qwen2.1 全景工作流（2026-11-11）
+
+### 16.1 为什么重做
+
+旧实现（§5~§6）把源图缩小后贴进 2:1 画布，四周补灰，再让模型「去掉灰色」。
+实测两个问题：
+
+1. **模型在补灰，不是在环视**：灰框把生成范围限制在源图四周，且源图占 40% 时
+   模型只会把同一张图向四周拉伸，容易出现重复主体与「被加宽的竖图」。
+2. **保源图像素与 360° 目标冲突**：真 360° 需要重排整个空间，逐字节保留源图反而
+   让透视/地平线对不上。
+
+官方工作流（`Qwenimage2.1全景图.json`）的做法完全不同，v2 直接复刻：
+
+| 环节 | 官方做法 | 本项目实现 |
+|---|---|---|
+| 画布 | EmptyLatent 3200×1600（2:1） | `imaging.panorama360_plan()` 输出 2:1 画布（长边 2048/3072，6MP 上限） |
+| 参考图 | `LoadImage → ImageScaleToTotalPixels(1.5MP)` → `TextEncodeQwenImage21.image_1` | `imaging.panorama360_reference()` 缩到 ~1.5MP、32 对齐，只作为条件 |
+| 提示词 | 超长结构化中文模板：同一空间的 `<image1..8>`、ERP、左右无缝、禁止重复 | `pipeline._panorama360_prompt()` 按参考图数量生成 `<imageN>` 描述 + 场景补充 |
+| 第一遍采样 | 6 步 / cfg 1 / euler / simple / denoise 1（整张重绘） | 空 latent（`engine.empty_latent`）+ 项目采样档（Turbo 9 步），denoise 强制 1.0 |
+| 接缝修复 | 横向 roll 半幅 → 白带遮罩 → GrowMaskWithBlur(56, 20) → InpaintModelConditioning → 6 步短指令 | `roll_half()` → `seam_band_mask()`（7.8% 宽 + 两侧 5.5% + 2% 羽化）→ 第二遍采样（`noise_mask`）→ `composite` 只写遮罩内 → 再 `roll_half` 滚回 |
+
+### 16.2 契约（v2）
+
+```jsonc
+{
+  "preset": "panorama360",
+  "task": { "mode": "panorama360" },
+  "panorama360": {
+    "long_side": 3072      // 1024~4096，且不超过全局 max_side
+  }
+}
+```
+
+- `coverage` / `wrap` / `level` / `seam_blend` 字段**仍然接受但不再生效**（旧客户端不 400）。
+- 预设 `local.scheme = "native"`、`local.hint = "none"`：没有遮罩合成，也没有灰边提示。
+- 输出固定 2:1；采样默认按画布尺寸（上限 3072），可用 `local.sample_max_side` 调低。
+- `quality.panorama360`：
+
+```jsonc
+{
+  "mode": "redraw",
+  "long_side": 3072,
+  "canvas": { "w": 3072, "h": 1536 },
+  "sample": { "w": 3072, "h": 1536 },
+  "reference": { "w": 1024, "h": 1472 },   // 参考图实际尺寸
+  "seam_repair": {
+    "mode": "roll_inpaint",
+    "band_px": 240, "expand_px": 169, "blur_px": 61,
+    "steps": 9, "seed": 1208, "outside_max_abs": 0
+  }
+}
+```
+
+`quality.outside_max_abs` 在 360° 下恒为 `null`（整张重绘，不存在「遮罩外保留源图」
+的承诺）；接缝重绘自身仍然保证 `seam_repair.outside_max_abs = 0`。
+
+### 16.3 测试
+
+- `tests/test_panorama360.py`：2:1 / 32 对齐 / 6MP、参考图缩放到 1.5MP、`roll_half`
+  半幅互换（滚两次复原）、`seam_band_mask` 居中 + 羽化 + 随宽度等比。
+- `tests/test_zero_shift_ps.py`：mock e2e 断言两次采样（第一遍空 latent 无遮罩、
+  第二遍硬遮罩）、`quality.panorama360.seam_repair`、输出 2:1、接缝带落在左右边缘。
+- `tests/test_edit_presets.py`：预设为 native / none / 只保留 `long_side`。
+- `web/tests/studio/panorama360.test.mjs`：画布预估不再依赖源图尺寸。
+
+### 16.4 真机验收
+
+硬件 RTX 5090 / turbo9；源图用用户实测失败的竖图
+`storage/uploads/up-20261111-161423-9d7e2d_艺术懂吗.png`（1100×1586），seed 1207。
+
+| 尺寸 | 画布 / 采样 | 参考图 | 中缝带（band/expand/blur） | 接缝重绘遮罩外差 | 耗时 | 产物 |
+|---|---|---|---|---|---|---|
+| 2K | 2048×1024 | 1024×1472 | 160 / 113 / 41 px | `outside_max_abs=0` | 79.6s（含冷加载 31.5s；首遍采样 13.3s） | `pano_lab/out/redraw-2048-s1207.png` |
+| 3K | 3072×1536 | 1024×1472 | 240 / 169 / 61 px | `outside_max_abs=0` | 77.1s（热启动；首遍采样 19.5s） | `pano_lab/out/redraw-3072-s1207.png` |
+
+### 16.5 验收结果
+
+- **构图**：两张都生成了完整的室内 2:1 等距柱状全景——天花板、地板、四面墙连续，
+  人物只出现一次，家具（床 / 斗柜 / 电视 / 椅子 / 门）没有重复摆放；竖图不再是
+  「被加宽的人像」。2K 与 3K 构图一致，3K 细节明显更好。
+- **接缝**：把输出横向 roll 半幅后检查正中接缝（`pano_lab/out/redraw-3072-seam-zoom.png`），
+  床沿、斗柜、门框与地板纹理跨缝连续，没有竖向亮线/错位；左右首尾列平均色差
+  2K = 2.91/255、3K = 3.33/255。
+- **页面冒烟**（真实 8700，硬刷新）：
+  - `#edit`：加载无「页面初始化失败」；任务选 360° 后提示「参考图只做条件，整张重绘…
+    再自动修复左右接缝」，`源图占比` 滑杆在 DOM 与可见文本中均为 0，控制台无报错。
+  - `#studio`：工作台正常渲染；AI 面板提示与摘要均含「整张重绘 / 中缝二次修复」，
+    `源图占比`「环绕融合」无可见控件，控制台无报错。
+- **测试**：`tests/test_panorama360.py`、`test_edit_presets.py`、`test_edit_validation.py`、
+  `test_zero_shift_ps.py` 共 121 例全绿；`node --test web/tests/studio/panorama360.test.mjs`
+  4 例全绿。

@@ -96,16 +96,13 @@ def test_panorama_preset_uses_full_canvas_sampling():
     }
 
 
-def test_panorama360_preset_expands_four_sides():
-    """360° 档：2:1 画布、源图占 40%、默认开启环绕融合与交界对齐。"""
+def test_panorama360_preset_uses_redraw_pipeline():
+    """360° 档：整张 2:1 重绘（原生、无提示图），参数只保留长边。"""
     preset, _ = presets.merge({"preset": "panorama360"})
     assert preset["task"]["mode"] == "panorama360"
-    assert preset["local"]["scheme"] == "a"
-    assert preset["local"]["hint"] == "gray_fill"
-    assert preset["panorama360"] == {
-        "coverage": 0.4, "long_side": 3072,
-        "wrap": True, "seam_blend": 24, "level": True,
-    }
+    assert preset["local"]["scheme"] == "native"
+    assert preset["local"]["hint"] == "none"
+    assert preset["panorama360"] == {"long_side": 3072}
 
 
 def test_public_presets_and_meta_endpoint():
@@ -241,7 +238,7 @@ def test_preset_conflicts_are_rejected():
 
         pano360 = presets.get_preset("panorama360")
         pano360["local"]["scheme"] = "b"
-        with pytest.raises(ValueError, match="整画布采样"):
+        with pytest.raises(ValueError, match="整张重绘"):
             presets.save_preset_config({"preset_defaults": {"panorama360": pano360}})
     finally:
         restore()

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageCms, ImageOps
+from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageOps
 
 from . import align
 
@@ -75,8 +75,13 @@ __all__ = [
     "PanoramaPlan",
     "panorama_plan",
     "panorama_canvas",
-    "PANORAMA360_DEFAULT_COVERAGE",
     "panorama360_plan",
+    "panorama360_reference",
+    "roll_half",
+    "seam_band_mask",
+    "PANORAMA360_SEAM_BAND",
+    "PANORAMA360_SEAM_EXPAND",
+    "PANORAMA360_SEAM_BLUR",
     "wrap_seam_blend",
     "compose_canvas",
     "map_mask_to_canvas",
@@ -1279,29 +1284,24 @@ def panorama_canvas(im: Image.Image, plan: PanoramaPlan) -> Image.Image:
     return canvas
 
 
-#: 360° 全景默认源图占比：源图宽占画布宽的 40%，其余四周交给模型补全。
-PANORAMA360_DEFAULT_COVERAGE = 0.4
-
-
 def panorama360_plan(
     src_w: int,
     src_h: int,
     *,
-    coverage: float = PANORAMA360_DEFAULT_COVERAGE,
     long_side: int = 3072,
     multiple: int = 32,
     max_side: int = 4096,
     max_pixels: int = PANORAMA_MAX_PIXELS,
     fill: tuple[int, int, int] = _OUTPAINT_FILL,
 ) -> PanoramaPlan:
-    """360° 全景几何：固定 2:1 画布，源图缩到 ``coverage`` 后居中，四周补灰。
+    """360° 全景输出几何：固定 2:1 画布（等距柱状投影的宽高比）。
 
-    与 :func:`panorama_plan` 的「最小外扩」不同，这里**四个方向都会留出补全区**，
-    模型才有空间把场景向四周延展成球面内容。
+    实现路线对齐官方 Qwen-Image 2.1 全景工作流：**整张 2:1 重绘**，参考图只作为
+    条件（不贴进画布、不保留源图像素），生成后再做一道中缝重绘。因此这里只负责
+    「输出画布多大」，源图坐标（``work_*`` / ``left/top``）仅用于质量报告。
 
-    - ``coverage``：源图宽度占画布宽度的比例，0.3~0.6；默认 0.4。
-    - 源图只缩不放；竖图/超高图按画布高度的 85% 兜底，避免顶到上下边。
     - ``long_side`` / ``max_pixels`` 都是上限，超出时只缩小画布。
+    - ``work_*`` 是源图等比放进画布后的参考尺寸（只缩不放，仅作报告）。
     """
     sw, sh = int(src_w), int(src_h)
     if sw <= 0 or sh <= 0:
@@ -1312,12 +1312,6 @@ def panorama360_plan(
         raise ValueError("360° 全景长边必须是正整数")
     if max_side and long_side > int(max_side):
         raise ValueError(f"360° 全景长边 {long_side} 超过上限 {int(max_side)}")
-    try:
-        cov = float(coverage)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"360° 全景 coverage 必须是数字：{exc}") from exc
-    if not 0.3 <= cov <= 0.6:
-        raise ValueError(f"360° 全景 coverage 必须在 0.3~0.6，收到 {cov}")
 
     # 1) 2:1 画布；长边取 multiple*2 的倍数，保证高也是 multiple 的倍数。
     step = multiple * 2
@@ -1334,21 +1328,10 @@ def panorama360_plan(
         raise ValueError(
             f"360° 全景画布 {canvas_w}×{canvas_h} 超过总像素上限 {int(max_pixels)}；请降低长边")
 
-    def _snap_down(value: float) -> int:
-        return max(multiple, int(value) // multiple * multiple)
-
-    # 2) 源图工作尺寸：宽占 coverage，高按原比例；只缩不放。
-    work_w = _snap_down(min(sw, canvas_w * cov))
-    work_h = _snap_down(min(sh, work_w * sh / sw))
-    # 3) 竖图兜底：高度不超过画布 85%，再反推宽度。
-    max_h = _snap_down(canvas_h * 0.85)
-    if work_h > max_h:
-        work_h = max_h
-        work_w = _snap_down(min(sw, work_h * sw / sh))
-    work_w = min(canvas_w, work_w)
-    work_h = min(canvas_h, work_h)
-
-    # 4) 居中贴放；四周补边由遮罩统一处理。
+    # 2) 参考尺寸：源图等比放进画布（只缩不放），仅用于报告 / 前端提示。
+    scale = min(1.0, canvas_w / sw, canvas_h / sh)
+    work_w = max(multiple, min(canvas_w, int(round(sw * scale / multiple)) * multiple))
+    work_h = max(multiple, min(canvas_h, int(round(sh * scale / multiple)) * multiple))
     left = (canvas_w - work_w) // 2
     top = (canvas_h - work_h) // 2
     return PanoramaPlan(
@@ -1357,8 +1340,94 @@ def panorama360_plan(
         top=top, bottom=canvas_h - work_h - top,
         canvas_w=canvas_w, canvas_h=canvas_h,
         aspect="2:1", wrap=False,
-        scale=round(work_w / sw, 6), fill=tuple(int(v) for v in fill),
+        scale=round(scale, 6), fill=tuple(int(v) for v in fill),
     )
+
+
+def panorama360_reference(
+    image: Image.Image,
+    *,
+    megapixels: float = 1.5,
+    multiple: int = 32,
+    max_side: int = 4096,
+) -> Image.Image:
+    """把源图变成 360° 全景的条件参考图（复刻官方 ``ImageScaleToTotalPixels``）。
+
+    官方工作流把参考图缩到约 1.5MP 再送 ``TextEncodeQwenImage21``：太大只会让 CLIP
+    视觉编码变慢，太小又丢空间细节。这里按总面积缩放并做 32 对齐。
+    """
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return image.convert("RGB")
+    target = max(1.0, float(megapixels) * 1_000_000)
+    scale = math.sqrt(target / float(width * height))
+    step = max(1, int(multiple))
+    new_w = max(step, int(round(width * scale / step)) * step)
+    new_h = max(step, int(round(height * scale / step)) * step)
+    if max_side:
+        limit = int(max_side)
+        long = max(new_w, new_h)
+        if long > limit:
+            shrink = limit / float(long)
+            new_w = max(step, int(round(new_w * shrink / step)) * step)
+            new_h = max(step, int(round(new_h * shrink / step)) * step)
+    out = image.convert("RGB")
+    if (new_w, new_h) == (width, height):
+        return out
+    return out.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+
+#: 中缝重绘带（相对画布宽度）：核心白带 7.8%、两侧各扩 5.5%、高斯模糊 2%。
+#: 与官方工作流 SolidMask(80/1024) + GrowMaskWithBlur(expand=56, blur=20) 同口径。
+PANORAMA360_SEAM_BAND = 0.078
+PANORAMA360_SEAM_EXPAND = 0.055
+PANORAMA360_SEAM_BLUR = 0.02
+
+
+def roll_half(image: Image.Image) -> Image.Image:
+    """横向滚动半幅：原本左右相接的两条边被移到画面正中。
+
+    用于「先滚半圈、只重绘中缝、再滚回来」的接缝修复——这样模型只需处理一条
+    竖直的接缝带，不必理解环形坐标。
+    """
+    width, height = image.size
+    if width < 2:
+        return image.copy()
+    shift = width // 2
+    out = Image.new(image.mode, image.size)
+    out.paste(image.crop((shift, 0, width, height)), (0, 0))
+    out.paste(image.crop((0, 0, shift, height)), (shift, 0))
+    return out
+
+
+def seam_band_mask(
+    width: int,
+    height: int,
+    *,
+    band: float = PANORAMA360_SEAM_BAND,
+    expand: float = PANORAMA360_SEAM_EXPAND,
+    blur: float = PANORAMA360_SEAM_BLUR,
+) -> np.ndarray:
+    """中缝重绘遮罩：居中竖带（float32，0~1，边缘高斯羽化）。
+
+    参数都是相对画布宽度的比例：``band`` 是核心带，``expand`` 是两侧再各扩，
+    ``blur`` 是羽化半径。返回 ``(height, width)`` 的 float32 数组。
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    band_px = max(1, int(round(width * float(band))))
+    expand_px = max(0, int(round(width * float(expand))))
+    blur_px = max(0.0, float(width) * float(blur))
+
+    mask = Image.new("L", (width, height), 0)
+    x0 = (width - band_px) // 2
+    x1 = x0 + band_px
+    lo = max(0, x0 - expand_px)
+    hi = min(width, x1 + expand_px)
+    ImageDraw.Draw(mask).rectangle((lo, 0, hi - 1, height - 1), fill=255)
+    if blur_px > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_px))
+    return np.asarray(mask, dtype=np.float32) / 255.0
 
 
 def _smooth_1d(values: np.ndarray, radius: int) -> np.ndarray:

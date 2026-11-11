@@ -73,12 +73,43 @@ _PANORAMA_INSTRUCTION = (
     "把灰色扩展区域补全为连续的全景画面，保持地平线、透视、光线和主体一致，"
     "左右两侧自然衔接，不要出现重复的人物、建筑或纹理。"
 )
-#: 360° 全景：不只横向延展，四周都要补出场景；强调球面环视与左右闭合。
-_PANORAMA360_INSTRUCTION = (
-    "把灰色区域补全为 360° 等距柱状全景：场景向四周连续延展，"
-    "补齐天花板 / 天空与地面，保持地平线、透视、光线和主体一致，"
-    "左右边缘首尾能够自然衔接，不要出现重复的人物、建筑或纹理。"
+#: 360° 全景：官方 Qwen2.1 工作流的结构化模板（整张 2:1 重绘 + 中缝重绘）。
+_PANORAMA360_TEMPLATE = (
+    "生成一张 360° 等距柱状全景图（equirectangular projection，ERP，宽高比严格 2:1），"
+    "水平覆盖 360°、垂直覆盖 180°，画面左右两端必须无缝相接。\n"
+    "{images}\n"
+    "硬性要求：\n"
+    "1. 每件物体、人物、家具、门窗与纹理在全景中只出现一次，禁止复制或重复摆放。\n"
+    "2. 左右边缘是同一方向的延续：同一物体跨过边界时，形状、颜色与光照必须连续。\n"
+    "3. 保持参考图中的空间结构、主色调、材质与光照方向一致；地面在下、天花板/天空在上，地平线保持水平。\n"
+    "4. 透视遵循等距柱状投影：越靠近上下边缘横向拉伸越大，顶部与底部收敛，不要鱼眼或直线畸变。\n"
+    "5. 写实摄影质感，细节清晰，光线自然统一；不要参考图边框、拼贴痕迹、文字或水印。\n"
+    "场景补充：{scene}"
 )
+#: 中缝重绘：官方工作流的短指令（滚动半幅后只修中间那条接缝）。
+_PANORAMA360_SEAM_INSTRUCTION = (
+    "Remove the visible vertical seam in the middle of the image. "
+    "Repaint the masked band so it continues naturally from both sides. "
+    "Keep the rest of the image exactly the same."
+)
+
+
+def _panorama360_prompt(scene: str, image_count: int) -> str:
+    """按参考图数量生成 `<imageN>` 描述，再拼上用户场景描述。"""
+    count = max(1, int(image_count))
+    if count <= 1:
+        images = (
+            "<image1> 是该空间的实拍参考（单视角，视场约 120°~160°），"
+            "请据此推断完整的四周环境，不要照搬参考图的构图与边框。"
+        )
+    else:
+        refs = "、".join(f"<image{i}>" for i in range(1, count + 1))
+        images = (
+            f"{refs} 是同一空间的不同视角照片（每张视场约 120°~160°），"
+            "它们是同一个 360° 场景的环绕视图，不是互相独立的场景。"
+        )
+    text = str(scene or "").strip() or "（无额外描述，按参考图还原）"
+    return _PANORAMA360_TEMPLATE.format(images=images, scene=text)
 
 #: 任务档位：扩图 / 全景的训练约定（裁块下限、接缝百分比、灰提示）。
 #: 前端切任务时会同时改这些键；第三方只传 task.mode 时必须由后端补齐，
@@ -975,11 +1006,10 @@ class Pipeline:
         pano_wrap = False
         pano_seam_blend = 24
         pano360_plan: imaging.PanoramaPlan | None = None
-        pano360_coverage = imaging.PANORAMA360_DEFAULT_COVERAGE
         pano360_long_side = 3072
-        pano360_wrap = True
-        pano360_seam_blend = 24
-        pano360_level = True
+        pano360_redraw = False
+        pano360_reference: Image.Image | None = None
+        seam_repair_report: dict[str, Any] | None = None
         wrap_report: dict[str, Any] | None = None
         if task_mode == "outpaint":
             op = params.get("outpaint") or {}
@@ -1035,30 +1065,27 @@ class Pipeline:
             op_info = pano_plan.to_outpaint_info()
 
         elif task_mode == "panorama360":
-            # 360° 全景：固定 2:1 画布，源图缩到 coverage 后居中，四周补灰。
+            # 360° 全景：对齐官方 Qwen2.1 工作流的「整张 2:1 重绘 + 中缝重绘」。
+            # 参考图只作为条件（image1..N），画布不贴源图、不补灰边，也不保留源图像素。
             p360 = params.get("panorama360") or {}
             try:
-                pano360_coverage = float(
-                    p360.get("coverage", imaging.PANORAMA360_DEFAULT_COVERAGE))
                 pano360_long_side = int(p360.get("long_side") or 3072)
-                pano360_seam_blend = int(p360.get("seam_blend") or 24)
             except (TypeError, ValueError) as exc:
-                raise PipelineError(f"360° 全景参数必须是数字：{exc}") from exc
-            # 默认开：缺省时按环绕融合处理；显式 false 才关。
-            pano360_wrap = p360.get("wrap") is not False
-            pano360_level = p360.get("level") is not False
+                raise PipelineError(f"360° 全景参数必须是整数：{exc}") from exc
             try:
                 pano360_plan = imaging.panorama360_plan(
                     src.width, src.height,
-                    coverage=pano360_coverage,
                     long_side=pano360_long_side,
                     multiple=int(profile.get("snap") or 32),
                     max_side=int(cfg.get("max_side") or 4096),
                 )
             except ValueError as exc:
                 raise PipelineError(f"360° 全景参数不可用：{exc}") from exc
-            op_canvas = imaging.panorama_canvas(src, pano360_plan)
-            op_info = pano360_plan.to_outpaint_info()
+            pano360_redraw = True
+            # 占位画布：真正采样用空 latent；这里只让后续几何/尺寸校验有尺寸可依。
+            op_canvas = Image.new(
+                "RGB", (pano360_plan.canvas_w, pano360_plan.canvas_h), (0, 0, 0))
+            op_info = None
 
         # 任务档位归一：预设是编辑档而任务被切到扩图/全景时，不能让编辑档位
         # （768 / 4% / 5%）盖住任务训练约定；请求显式给过的键仍然优先。
@@ -1126,6 +1153,10 @@ class Pipeline:
         if op_info is not None:
             op_mask = imaging.outpaint_mask(op_info)
             mask_canvas = op_mask if mask_canvas is None else np.maximum(mask_canvas, op_mask)
+        if pano360_redraw:
+            # 整张重绘：用户遮罩/灰边遮罩都不参与（没有「遮罩外」要保留）。
+            mask_canvas = None
+            mask_src = None
 
         # 产品提示：让用户知道这次到底改了多少（不阻断，只解释）
         coverage: float | None = None
@@ -1180,9 +1211,12 @@ class Pipeline:
             # 与前端 resolveScheme 同口径：小遮罩走整画布（接缝最稳），
             # 中等遮罩才裁局部（省显存）；无遮罩/超大遮罩一律回整画布。
             scheme = "b" if coverage is not None and 0.02 < coverage < 0.45 else "a"
-        if task_mode in ("panorama", "panorama360"):
+        if task_mode == "panorama":
             # 全景必须整画布采样：裁块会切断横向连续性，接缝无法还原。
             scheme = "a"
+        elif pano360_redraw:
+            # 360° 重绘没有遮罩合成：整张画布就是模型输出。
+            scheme = "native"
         sampling = _sampling_plan(params, cfg, profile)
         # 记录真正生效的采样参数：前端通常传 seed=null，历史/回放要靠这里才能复现。
         job.params.update({
@@ -1260,7 +1294,8 @@ class Pipeline:
             job.meta["turbo_unet"] = os.path.basename(turbo_unet)
 
         engine = self._engine_for(profile)
-        total = sampling["steps"] + 6
+        # 360° 全景有第二遍中缝重绘：进度槽按两轮采样预留。
+        total = sampling["steps"] * (2 if pano360_redraw else 1) + 6
         _signal_progress(job, 1, total, "准备模型")
         self._prepare_engine(engine, model_paths, loras, job)
         timings["prepare"] = round(time.time() - t_start, 2)
@@ -1294,6 +1329,11 @@ class Pipeline:
             )
             job.align["crop"] = dataclasses.asdict(crop_info)
             ref_images = [crop_img] + decoded[1:]
+        elif pano360_redraw:
+            # 参考图只做条件：缩到约 1.5MP（官方 ImageScaleToTotalPixels 口径），
+            # 不把源图贴进 2:1 画布，避免模型把「灰色/拉伸区域」当成要补的内容。
+            pano360_reference = imaging.panorama360_reference(src)
+            ref_images = [pano360_reference] + decoded[1:]
         else:
             ref_images = [canvas] + decoded[1:]
 
@@ -1302,7 +1342,10 @@ class Pipeline:
         # 兼容前端写法（"green"）与旧数据（"overlay"）：统一归一到规范名。
         hint_mode = str(local.get("hint") or "").strip().lower()
         hint_mode = _HINT_ALIASES.get(hint_mode, hint_mode)
-        if task_mode in ("outpaint", "panorama", "panorama360"):
+        if pano360_redraw:
+            # 整张重绘没有灰边/绿区提示。
+            hint_mode = "none"
+        elif task_mode in ("outpaint", "panorama"):
             hint_mode = "gray_fill"
         else:
             if hint_mode in ("", "auto"):
@@ -1322,12 +1365,17 @@ class Pipeline:
                     hint_mask = mask_canvas
                 ref_images[0] = imaging.mask_hint_overlay(ref_images[0], hint_mask)
 
-        # 采样画布 / latent 的基准始终是「编辑目标」（或方案 B 的裁切块）
+        # 采样画布 / latent 的基准始终是「编辑目标」（或方案 B 的裁切块）；
+        # 360° 重绘的采样画布是 2:1 目标画布，与参考图尺寸解耦。
         work_image = ref_images[0]
 
         # 第 2 张起的参考图不需要比输出画布更清晰：按画布长边设上限。
         # 否则 4K/8K 参考图会按原分辨率做 VAE 编码，耗时和显存都随原图尺寸暴涨。
-        ref_images = _cap_reference_images(ref_images, max(max(work_image.size), 1024))
+        if pano360_redraw and pano360_plan is not None:
+            ref_images = _cap_reference_images(
+                ref_images, max(pano360_plan.canvas_w, 1024))
+        else:
+            ref_images = _cap_reference_images(ref_images, max(max(work_image.size), 1024))
 
         # 扩图 / 全景：先按孤海工作流的「图像缩放（范围）」把整张画布（原图 + 灰边）
         # 缩到长边 1024~2048 再采样，出图后还原回画布尺寸。
@@ -1337,7 +1385,26 @@ class Pipeline:
             "to": [work_image.width, work_image.height],
             "applied": False,
         }
-        if task_mode in ("outpaint", "panorama", "panorama360"):
+        if pano360_redraw and pano360_plan is not None:
+            # 官方工作流直接按 3200×1600 采样；这里默认按输出长边（上限 3072）采样，
+            # 显存不够时可用 local.sample_max_side 调低，出图后再等比放回画布。
+            try:
+                sample_limit = int(local.get("sample_max_side") or 3072)
+            except (TypeError, ValueError):
+                sample_limit = 3072
+            sample_w, sample_h = imaging.sample_size_for(
+                pano360_plan.canvas_w, pano360_plan.canvas_h,
+                max_side=sample_limit,
+                min_side=int(local.get("sample_min_side") or 1024),
+                multiple=int(profile.get("snap") or 32),
+            )
+            work_image = Image.new("RGB", (sample_w, sample_h))
+            sample_res.update({
+                "from": [pano360_plan.canvas_w, pano360_plan.canvas_h],
+                "to": [sample_w, sample_h],
+                "applied": (sample_w, sample_h) != (pano360_plan.canvas_w, pano360_plan.canvas_h),
+            })
+        elif task_mode in ("outpaint", "panorama"):
             try:
                 sample_limit = int(local.get("sample_max_side") or 2048)
             except (TypeError, ValueError):
@@ -1353,6 +1420,12 @@ class Pipeline:
                 ref_images[0] = work_image
                 sample_res.update(to=[sample_w, sample_h], applied=True)
         job.align["sample_res"] = sample_res
+        if pano360_redraw:
+            job.align["panorama360"] = {
+                "mode": "redraw",
+                "canvas": {"w": plan.width, "h": plan.height},
+                "sample": {"w": sample_res["to"][0], "h": sample_res["to"][1]},
+            }
 
         # cfg≈1（Turbo）时采样器不读 uncond；负向留空就不必再跑一遍 CLIP
         encode_negative = not (
@@ -1368,9 +1441,9 @@ class Pipeline:
         raw_prompt = str(meta_in.get("rawPrompt") or "").strip() or prompt_text
         probe = raw_prompt.lower()
         # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
-        if task_mode == "panorama360" and not any(
-                key in probe for key in ("360", "equirect", "等距", "全景", "panorama")):
-            prompt_text = _PANORAMA360_INSTRUCTION + prompt_text
+        if pano360_redraw:
+            # 结构化模板始终注入（官方工作流的长提示词是效果的一部分）。
+            prompt_text = _panorama360_prompt(prompt_text, len(ref_images))
             job.meta["prompt_augmented"] = "panorama360"
         elif task_mode == "panorama" and not any(
                 key in probe for key in ("全景", "panorama", "panoramic", "宽幅")):
@@ -1418,19 +1491,25 @@ class Pipeline:
         )
         timings["encode"] = round(time.time() - t_start, 2)
 
-        # 零偏移守卫：采样画布必须与参考图画布同尺寸
+        # 零偏移守卫：采样画布必须与参考图画布同尺寸。
+        # 360° 重绘是「参考图条件 + 空 latent」，两者本就不同尺寸，不适用这条守卫。
         cond_canvas = cond.get("canvas")
-        if cond_canvas and tuple(cond_canvas) != work_image.size:
+        if not pano360_redraw and cond_canvas and tuple(cond_canvas) != work_image.size:
             raise PipelineError(
                 f"零偏移守卫：参考图画布 {tuple(cond_canvas)} 与采样画布 {work_image.size} 不一致。"
                 f"请把 resolution 设为 0，或让画布尺寸等于参考图尺寸。")
 
         job.check_cancel()
         _signal_progress(job, 3, total, "VAE 编码")
-        # 没有姿态参考时，encode_text 的 image1 就是编辑目标：它已经做过一次 VAE 编码，
-        # 直接 clone 出来当初始 latent，省掉同样一张图的第二次 VAE 前向。
-        reused = None if pose else cond.get("latent")
-        latent = reused.clone() if reused is not None else engine.encode_latent(work_image)
+        if pano360_redraw:
+            # 官方工作流用 EmptyLatent(3200×1600)：这里按 2:1 目标画布造空 latent，
+            # 参考图只通过 CLIP 条件参与，不参与初始噪声。
+            latent = engine.empty_latent(work_image.width, work_image.height)
+        else:
+            # 没有姿态参考时，encode_text 的 image1 就是编辑目标：它已经做过一次 VAE 编码，
+            # 直接 clone 出来当初始 latent，省掉同样一张图的第二次 VAE 前向。
+            reused = None if pose else cond.get("latent")
+            latent = reused.clone() if reused is not None else engine.encode_latent(work_image)
         timings["latent"] = round(time.time() - t_start, 2)
         # 送采样器的遮罩用硬边（>0.5）：与孤海工作流的硬遮罩一致，
         # 软边只在合成/贴回阶段用，否则边缘会出现半透明过渡带（阶段 4 · M4）。
@@ -1458,7 +1537,7 @@ class Pipeline:
                 sampler=sampling["sampler"],
                 scheduler=sampling["scheduler"],
                 seed=sampling["seed"],
-                denoise=sampling["denoise"],
+                denoise=1.0 if pano360_redraw else sampling["denoise"],
                 noise_mask=noise_mask,
                 slg=sampling["slg"],
                 callback=_make_callback(job, total, offset=4, steps=sampling["steps"]),
@@ -1473,7 +1552,8 @@ class Pipeline:
         timings["sample"] = round(time.time() - t_start, 2)
         job.check_cancel()
 
-        _signal_progress(job, total - 1, total, "解码与合成")
+        if not pano360_redraw:
+            _signal_progress(job, total - 1, total, "解码与合成")
         edited_list = self._decode(engine, samples)
         timings["decode"] = round(time.time() - t_start, 2)
         edited = edited_list[0]
@@ -1500,7 +1580,17 @@ class Pipeline:
             band_mode = "lowfreq"
         color_report: dict[str, Any] = {}
 
-        if scheme == "native":
+        if pano360_redraw:
+            # 整张重绘 + 中缝重绘：没有遮罩合成，也就没有「遮罩外保持原样」的承诺。
+            final, seam_repair_report = self._panorama360_seam_repair(
+                engine, edited, sampling, job,
+                total=total, offset=4 + sampling["steps"],
+                encode_negative=encode_negative,
+            )
+            composed = final
+            color_report = {"mode": "off", "skipped": True, "reason": "panorama360_redraw"}
+            _signal_progress(job, total - 1, total, "接缝修复完成")
+        elif scheme == "native":
             # 原生模式：不裁块、不贴回、不用遮罩；整张画布就是模型输出。
             # 只保留 BlueBox 式整图颜色一致性（可关），几何/预处理仍走零偏移闭环。
             # color_match 也参与判断：前端「颜色匹配」开关在原生模式下必须同样有效。
@@ -1557,25 +1647,32 @@ class Pipeline:
             band_px = int(band.get("expand_px", 0)) + int(band.get("feather_px", 0))
         effective_expand = band_px if scheme == "b" else mask_expand
 
-        # 原生模式不承诺"遮罩外逐字节保留"，这里如实返回 None，避免误读。
-        outside = (None if scheme == "native"
-                   else _outside_max_abs(canvas, composed, mask_canvas,
-                                         expand=effective_expand))
+        if pano360_redraw:
+            # 整张重绘：没有「原图区」可比，对外的零色差承诺不适用。
+            outside = None
+            diff_stats: dict[str, Any] = {}
+        else:
+            # 原生模式不承诺"遮罩外逐字节保留"，这里如实返回 None，避免误读。
+            outside = (None if scheme == "native"
+                       else _outside_max_abs(canvas, composed, mask_canvas,
+                                             expand=effective_expand))
 
-        # 诊断（只读）：模型实际改动比例 / 遮罩外泄漏；失败不影响出图。
-        try:
-            diag_mask = (align.dilate_mask(mask_canvas, effective_expand)
-                         if band_px and mask_canvas is not None else mask_canvas)
-            diff_stats = align.changed_stats(
-                canvas, composed, diag_mask, inside_mask=mask_canvas)
-        except Exception as exc:  # noqa: BLE001 - 诊断是附加信息，不能拖垮任务
-            print(f"[pipeline] 改动诊断跳过：{type(exc).__name__}: {exc}", flush=True)
-            diff_stats = {}
+            # 诊断（只读）：模型实际改动比例 / 遮罩外泄漏；失败不影响出图。
+            try:
+                diag_mask = (align.dilate_mask(mask_canvas, effective_expand)
+                             if band_px and mask_canvas is not None else mask_canvas)
+                diff_stats = align.changed_stats(
+                    canvas, composed, diag_mask, inside_mask=mask_canvas)
+            except Exception as exc:  # noqa: BLE001 - 诊断是附加信息，不能拖垮任务
+                print(f"[pipeline] 改动诊断跳过：{type(exc).__name__}: {exc}", flush=True)
+                diff_stats = {}
 
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
         # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸；
-        # 扩图同理——输出的就是外扩后的大图。
-        if task_mode in ("outpaint", "panorama", "panorama360"):
+        # 扩图同理——输出的就是外扩后的大图；360° 已在重绘阶段定为画布尺寸。
+        if pano360_redraw:
+            expected_size = (plan.width, plan.height)
+        elif task_mode in ("outpaint", "panorama"):
             final = composed
             expected_size = (plan.width, plan.height)
         elif size_mode in ("custom", "ratio"):
@@ -1598,15 +1695,6 @@ class Pipeline:
                     "top": pano_plan.top, "bottom": pano_plan.bottom,
                 },
             )
-        elif task_mode == "panorama360" and pano360_plan is not None and pano360_level:
-            # 360°：源图四周都是补全区，四边交界都要对齐（源图像素不动）。
-            final, seam_report = imaging.seam_level(
-                final,
-                {
-                    "left": pano360_plan.left, "right": pano360_plan.right,
-                    "top": pano360_plan.top, "bottom": pano360_plan.bottom,
-                },
-            )
         elif task_mode == "outpaint" and op_info is not None:
             # 扩图同样需要交界渐变：模型在灰边一侧画出的亮带/阶跃，
             # 合成后会沿着源图边界显出一个「方框」。只改扩展区，源图像素不动。
@@ -1617,13 +1705,11 @@ class Pipeline:
                     "top": op_info.top, "bottom": op_info.bottom,
                 },
             )
-        # 360° 环绕接缝：仅全景可开，属于实验能力（官方未承诺等距柱状投影）。
+        # 普通全景的环绕接缝：仅全景可开，属于实验能力（官方未承诺等距柱状投影）。
+        # 360° 不再做边缘混合——它走中缝重绘，混合只会把首尾接缝抹糊。
         if task_mode == "panorama" and pano_wrap and pano_seam_blend > 0:
             final, wrap_report = imaging.wrap_seam_blend(
                 final, blend_px=pano_seam_blend)
-        elif task_mode == "panorama360" and pano360_wrap and pano360_seam_blend > 0:
-            final, wrap_report = imaging.wrap_seam_blend(
-                final, blend_px=pano360_seam_blend)
         size_match = final.size == expected_size
 
         # 零偏移硬验收：任何几何走样都在这里拦下，不落盘。
@@ -1692,20 +1778,16 @@ class Pipeline:
                 "wrap_report": wrap_report,
             } if pano_plan is not None else None),
             "panorama360": ({
-                "coverage": pano360_coverage,
+                # redraw = 参考图条件 + 空 latent 整张重绘，再做一次中缝重绘
+                "mode": "redraw",
                 "long_side": pano360_long_side,
-                "wrap": pano360_wrap,
-                "seam_blend": pano360_seam_blend,
-                "level": pano360_level,
                 "canvas": {"w": pano360_plan.canvas_w, "h": pano360_plan.canvas_h},
-                "work": {"w": pano360_plan.work_w, "h": pano360_plan.work_h},
-                "pads": {
-                    "left": pano360_plan.left, "right": pano360_plan.right,
-                    "top": pano360_plan.top, "bottom": pano360_plan.bottom,
-                },
-                "scale": pano360_plan.scale,
-                "seam_report": seam_report,
-                "wrap_report": wrap_report,
+                "sample": {"w": sample_res["to"][0], "h": sample_res["to"][1]},
+                "reference": ({
+                    "w": pano360_reference.width, "h": pano360_reference.height,
+                } if pano360_reference is not None else None),
+                "seam_repair": seam_repair_report,
+                "prompt_augmented": job.meta.get("prompt_augmented") == "panorama360",
             } if pano360_plan is not None else None),
             "preprocess": {
                 "applied": bool(use_pp),
@@ -1736,6 +1818,79 @@ class Pipeline:
         engine.free(unload=False)
 
     # -- 内部 ---------------------------------------------------------------
+    def _panorama360_seam_repair(self, engine, image: Image.Image, sampling: dict,
+                                 job, *, total: int, offset: int,
+                                 encode_negative: bool) -> tuple[Image.Image, dict]:
+        """360° 中缝重绘：横向滚动半幅 → 只重绘中缝竖带 → 滚回原排列。
+
+        对齐官方 Qwen2.1 工作流：生成图横向 roll 半幅后，原本左右相接的接缝落在
+        画面正中；用遮罩只重绘这条竖带（约 7.8% 宽，向两侧扩张并羽化），
+        合成时遮罩外逐字节保留，最后再 roll 回来。
+        """
+        rolled = imaging.roll_half(image)
+        mask = imaging.seam_band_mask(rolled.width, rolled.height)
+        hard_mask = (mask > 0.5).astype(np.float32)
+
+        cond = engine.encode_text(
+            _PANORAMA360_SEAM_INSTRUCTION, "",
+            images=[rolled],
+            resolution=0,
+            encode_negative=encode_negative,
+        )
+        latent = engine.encode_latent(rolled)
+        repair_seed = (int(sampling["seed"]) + 1) % (2 ** 31 - 1)
+        try:
+            samples = engine.sample(
+                positive=cond["positive"],
+                negative=cond["negative"],
+                latent=latent,
+                sigmas=sampling["sigmas"],
+                steps=sampling["steps"],
+                cfg=sampling["cfg"],
+                sampler=sampling["sampler"],
+                scheduler=sampling["scheduler"],
+                seed=repair_seed,
+                denoise=1.0,
+                noise_mask=hard_mask,
+                slg=sampling["slg"],
+                callback=_make_callback(
+                    job, total, label="接缝修复", offset=offset,
+                    steps=sampling["steps"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - 只翻译 OOM，其它异常原样抛出
+            if "out of memory" not in str(exc).lower():
+                raise
+            raise PipelineError(
+                "显存不足：360° 全景接缝修复失败，请降低长边或关闭其它占用显卡的程序后重试"
+            ) from exc
+
+        repaired = self._decode(engine, samples)[0]
+        if repaired.size != rolled.size:
+            repaired = repaired.resize(rolled.size, Image.LANCZOS)
+        blur_px = max(2, int(round(rolled.width * imaging.PANORAMA360_SEAM_BLUR)))
+        # 遮罩已是羽化后的 float：这里只做 alpha 混合，不校色、不抖动，
+        # 保证遮罩外与 rolled 逐字节一致。
+        out = imaging.composite(
+            rolled, repaired, mask,
+            feather=blur_px,
+            curve="smoothstep",
+            color_match=False,
+            anchor_match=False,
+            band_mode="alpha",
+            dither=False,
+        )
+        report = {
+            "mode": "roll_inpaint",
+            "band_px": int(round(rolled.width * imaging.PANORAMA360_SEAM_BAND)),
+            "expand_px": int(round(rolled.width * imaging.PANORAMA360_SEAM_EXPAND)),
+            "blur_px": blur_px,
+            "steps": int(sampling["steps"]),
+            "seed": repair_seed,
+            "outside_max_abs": _outside_max_abs(rolled, out, mask),
+        }
+        job.meta["panorama360_seam"] = report
+        return imaging.roll_half(out), report
+
     def _prepare_engine(self, engine, models: dict[str, str],
                         loras: list[dict[str, Any]], job) -> None:
         """装载模型 + 挂 LoRA + （仅冷启动时）预热 kernel。

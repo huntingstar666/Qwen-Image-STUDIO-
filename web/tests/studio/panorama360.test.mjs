@@ -44,16 +44,16 @@ test('360° 提示词：缺关键词时追加，已有不重复', () => {
   assert.equal(withSpherePrompt('equirectangular room', true), 'equirectangular room');
 });
 
-test('360° 画布预估：与后端同口径（2:1 / coverage / 只缩不放）', () => {
+test('360° 画布预估：与后端同口径（2:1 / 32 对齐 / 6MP）', () => {
   const plan = panorama360Plan({ width: 3000, height: 2000 }, { longSide: 3072 });
   assert.deepEqual([plan.width, plan.height], [3072, 1536]);
-  assert.deepEqual([plan.workWidth, plan.workHeight], [1216, 800]);
   assert.equal(plan.width % 32, 0);
   assert.equal(plan.height % 32, 0);
   assert.equal(plan.overPixels, false);
 
-  const small = panorama360Plan({ width: 512, height: 512 }, { longSide: 3072 });
-  assert.deepEqual([small.workWidth, small.workHeight], [512, 512]);
+  // 参考图尺寸不参与画布计算：竖图同样输出 2:1
+  const portrait = panorama360Plan({ width: 1100, height: 1586 }, { longSide: 3072 });
+  assert.deepEqual([portrait.width, portrait.height], [3072, 1536]);
 
   const capped = panorama360Plan({ width: 3000, height: 2000 }, { longSide: 4096 });
   assert.deepEqual([capped.width, capped.height], [3456, 1728]);

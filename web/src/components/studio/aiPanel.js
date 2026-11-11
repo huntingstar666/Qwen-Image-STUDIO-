@@ -172,10 +172,6 @@ export function mountAiPanel(host, ctx) {
             <div class="ai-pano" data-ref="panoBox" hidden>
               <div class="ai-label">全景画布 <span class="ai-label-note" data-ref="panoNote">参考图向两侧延展</span></div>
               <div class="ai-row ai-pano-aspects" data-ref="panoAspects"></div>
-              <label class="ai-field" data-ref="panoCoverageRow" hidden>
-                <span>源图占比 <span class="mono" data-ref="panoCoverageVal">40%</span></span>
-                <input type="range" min="30" max="60" step="1" value="40" data-ref="panoCoverage" />
-              </label>
               <label class="ai-field">
                 <span>长边上限</span>
                 <select class="select" data-ref="panoLongSide">
@@ -184,7 +180,7 @@ export function mountAiPanel(host, ctx) {
                   <option value="4096">4096</option>
                 </select>
               </label>
-              <label class="ai-check"><input type="checkbox" data-ref="panoWrap" /><span>360° 环绕接缝</span>
+              <label class="ai-check" data-ref="panoWrapRow"><input type="checkbox" data-ref="panoWrap" /><span>360° 环绕接缝</span>
                 <span class="ai-label-note">实验</span>
               </label>
               <div class="ai-work mono" data-ref="panoInfo"></div>
@@ -285,10 +281,8 @@ export function mountAiPanel(host, ctx) {
     panoBox: ref('panoBox'),
     panoNote: ref('panoNote'),
     panoAspects: ref('panoAspects'),
-    panoCoverageRow: ref('panoCoverageRow'),
-    panoCoverage: ref('panoCoverage'),
-    panoCoverageVal: ref('panoCoverageVal'),
     panoLongSide: ref('panoLongSide'),
+    panoWrapRow: ref('panoWrapRow'),
     panoWrap: ref('panoWrap'),
     panoInfo: ref('panoInfo'),
     openOutpaint: ref('openOutpaint'),
@@ -713,7 +707,7 @@ export function mountAiPanel(host, ctx) {
     refs.guardNote.textContent = outpaint
       ? '扩图会改变输出尺寸，零像素偏移校验自动关闭；原图区域仍逐字节保留。'
       : mode === 'panorama360'
-        ? '360° 全景会缩源图并向四周补全，零像素偏移校验自动关闭；源图区域仍逐字节保留。'
+        ? '360° 全景会按参考图整张重绘为 2:1 等距柱状全景，再做中缝二次修复；零像素偏移校验自动关闭。'
         : panorama
           ? '全景会按目标比例扩画布，零像素偏移校验自动关闭；原图区域等比缩放到画布中央。'
           : '';
@@ -761,21 +755,20 @@ export function mountAiPanel(host, ctx) {
     if (!on) return;
     const is360 = mode === 'panorama360';
     refs.panoAspects.hidden = is360;
-    refs.panoCoverageRow.hidden = !is360;
-    refs.panoNote.textContent = is360 ? '源图缩小，四周补全' : '参考图向两侧延展';
+    // 源图占比已废弃；360° 也不再有环绕融合开关（改由中缝重绘自动处理）。
+    refs.panoWrapRow.hidden = is360;
+    refs.panoNote.textContent = is360
+      ? '参考图条件整张重绘 · 中缝二次修复'
+      : '参考图向两侧延展';
     const longSide = Number(panoValue('long_side', 3072)) || 3072;
     refs.panoLongSide.value = String(longSide);
 
     if (is360) {
-      const coverage = Number(panoValue('coverage', 0.4)) || 0.4;
-      refs.panoCoverage.value = String(Math.round(coverage * 100));
-      refs.panoCoverageVal.textContent = `${Math.round(coverage * 100)}%`;
-      refs.panoWrap.checked = Boolean(panoValue('wrap', true));
-      const plan = panorama360Plan(mainSize(), { coverage, longSide });
+      const plan = panorama360Plan(mainSize(), { longSide });
       const notes = [
         `${plan.width} × ${plan.height}`,
         `${plan.megapixels} MP`,
-        `源图 ${plan.workWidth} × ${plan.workHeight}`,
+        '整张重绘 + 中缝修复',
       ];
       if (plan.overPixels) notes.push('超出 6MP 上限，请降低长边');
       refs.panoInfo.textContent = notes.join(' · ');
@@ -798,12 +791,6 @@ export function mountAiPanel(host, ctx) {
     const button = event.target.closest('[data-pano-aspect]');
     if (!button) return;
     setPano('aspect', button.dataset.panoAspect);
-  });
-
-  refs.panoCoverage.addEventListener('input', () => {
-    const pct = Math.min(60, Math.max(30, Number(refs.panoCoverage.value) || 40));
-    refs.panoCoverageVal.textContent = `${pct}%`;
-    setPano('coverage', Math.round(pct) / 100);
   });
 
   refs.panoLongSide.addEventListener('change', () => {
@@ -1081,7 +1068,6 @@ export function mountAiPanel(host, ctx) {
         })
       : is360
         ? panorama360Plan(size, {
-            coverage: Number(panoValue('coverage', 0.4)) || 0.4,
             longSide: Number(panoValue('long_side', 3072)) || 3072,
           })
         : panoramaPlan(size, {

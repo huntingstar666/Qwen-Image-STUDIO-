@@ -256,10 +256,14 @@ export function buildEditPayload({
       mode: 'downscale_only',
     };
     payload.zero_shift = { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 };
-    if (task === 'panorama' || task === 'panorama360') {
+    if (task === 'panorama') {
       payload.local.scheme = 'a';
       payload.local.fills = false;
       payload.local.hint = 'gray_fill';
+    } else if (task === 'panorama360') {
+      payload.local.scheme = 'native';
+      payload.local.fills = false;
+      payload.local.hint = 'none';
     }
     return payload;
   }
@@ -283,10 +287,15 @@ export function buildEditPayload({
   } else if (task === 'outpaint') {
     localExtra.fills = false;
     localExtra.hint = 'gray_fill';
-  } else if (task === 'panorama' || task === 'panorama360') {
+  } else if (task === 'panorama') {
     localExtra.scheme = 'a';
     localExtra.fills = false;
     localExtra.hint = 'gray_fill';
+  } else if (task === 'panorama360') {
+    // 整张重绘：参考图只做条件，没有灰边/遮罩合成。
+    localExtra.scheme = 'native';
+    localExtra.fills = false;
+    localExtra.hint = 'none';
   }
   // 色彩校准 / 零偏移已由 overrides（local.color_match / zero_shift.enabled）下发，
   // 不再单独读 protection，避免与预设两套状态打架。
@@ -315,18 +324,14 @@ export const PANORAMA_ASPECTS = ['2:1', '3:1', '4:1', '21:9'];
 export const PANORAMA_MAX_PIXELS = 6_000_000;
 
 /**
- * 360° 全景预估：固定 2:1 画布，源图缩到 coverage 后居中，四周留补边区。
- * 与后端 `imaging.panorama360_plan` 同一套规则（只缩不放、32 对齐、6MP 上限）。
+ * 360° 全景预估：输出固定 2:1 画布，参考图只做整张重绘的条件。
+ * 与后端 `imaging.panorama360_plan` 同一套规则（32 对齐、6MP 上限）。
  */
 export function panorama360Plan(size, {
-  coverage = 0.4,
   longSide = 3072,
   multiple = SNAP,
   maxPixels = PANORAMA_MAX_PIXELS,
 } = {}) {
-  const srcW = Math.max(1, Math.round(Number(size?.width) || 1));
-  const srcH = Math.max(1, Math.round(Number(size?.height) || 1));
-  const cov = Math.min(0.6, Math.max(0.3, Number(coverage) || 0.4));
   const step = Math.max(2, multiple * 2);
   let width = Math.max(step, Math.floor((Number(longSide) || 3072) / step) * step);
   if (maxPixels > 0) {
@@ -334,22 +339,10 @@ export function panorama360Plan(size, {
     width = Math.max(step, Math.min(width, budget));
   }
   const height = Math.max(multiple, Math.floor(width / 2));
-
-  const snapDown = (value) => Math.max(multiple, Math.floor(value / multiple) * multiple);
-  let workWidth = snapDown(Math.min(srcW, width * cov));
-  let workHeight = snapDown(Math.min(srcH, (workWidth * srcH) / srcW));
-  const cap = snapDown(height * 0.85);
-  if (workHeight > cap) {
-    workHeight = cap;
-    workWidth = snapDown(Math.min(srcW, (workHeight * srcW) / srcH));
-  }
   const pixels = width * height;
   return {
     width,
     height,
-    workWidth,
-    workHeight,
-    coverage: cov,
     megapixels: Math.round((pixels / 1e6) * 100) / 100,
     overPixels: maxPixels > 0 && pixels > maxPixels,
   };

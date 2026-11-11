@@ -256,6 +256,11 @@ export function buildEditPayload({
       mode: 'downscale_only',
     };
     payload.zero_shift = { enabled: settings.zeroShift !== false, snap: SNAP, resolution: 0 };
+    if (task === 'panorama' || task === 'panorama360') {
+      payload.local.scheme = 'a';
+      payload.local.fills = false;
+      payload.local.hint = 'gray_fill';
+    }
     return payload;
   }
 
@@ -276,6 +281,10 @@ export function buildEditPayload({
     localExtra.fills = true;
     localExtra.hint = 'green_overlay';
   } else if (task === 'outpaint') {
+    localExtra.fills = false;
+    localExtra.hint = 'gray_fill';
+  } else if (task === 'panorama' || task === 'panorama360') {
+    localExtra.scheme = 'a';
     localExtra.fills = false;
     localExtra.hint = 'gray_fill';
   }
@@ -305,6 +314,46 @@ export const PANORAMA_ASPECTS = ['2:1', '3:1', '4:1', '21:9'];
 /** 与后端一致的总像素上限：覆盖 3072×1536，拦住 4096×2048。 */
 export const PANORAMA_MAX_PIXELS = 6_000_000;
 
+/**
+ * 360° 全景预估：固定 2:1 画布，源图缩到 coverage 后居中，四周留补边区。
+ * 与后端 `imaging.panorama360_plan` 同一套规则（只缩不放、32 对齐、6MP 上限）。
+ */
+export function panorama360Plan(size, {
+  coverage = 0.4,
+  longSide = 3072,
+  multiple = SNAP,
+  maxPixels = PANORAMA_MAX_PIXELS,
+} = {}) {
+  const srcW = Math.max(1, Math.round(Number(size?.width) || 1));
+  const srcH = Math.max(1, Math.round(Number(size?.height) || 1));
+  const cov = Math.min(0.6, Math.max(0.3, Number(coverage) || 0.4));
+  const step = Math.max(2, multiple * 2);
+  let width = Math.max(step, Math.floor((Number(longSide) || 3072) / step) * step);
+  if (maxPixels > 0) {
+    const budget = Math.floor(Math.sqrt(2 * maxPixels) / step) * step;
+    width = Math.max(step, Math.min(width, budget));
+  }
+  const height = Math.max(multiple, Math.floor(width / 2));
+
+  const snapDown = (value) => Math.max(multiple, Math.floor(value / multiple) * multiple);
+  let workWidth = snapDown(Math.min(srcW, width * cov));
+  let workHeight = snapDown(Math.min(srcH, (workWidth * srcH) / srcW));
+  const cap = snapDown(height * 0.85);
+  if (workHeight > cap) {
+    workHeight = cap;
+    workWidth = snapDown(Math.min(srcW, (workHeight * srcW) / srcH));
+  }
+  const pixels = width * height;
+  return {
+    width,
+    height,
+    workWidth,
+    workHeight,
+    coverage: cov,
+    megapixels: Math.round((pixels / 1e6) * 100) / 100,
+    overPixels: maxPixels > 0 && pixels > maxPixels,
+  };
+}
 /**
  * 按目标比例算全景画布尺寸（只缩不放），用于面板上的实时预估。
  * 与后端 `imaging.panorama_plan` 保持同一套「最小外扩 → 长边/像素上限」规则。

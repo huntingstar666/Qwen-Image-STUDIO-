@@ -300,6 +300,59 @@ def test_generate_edit_panorama_wrap_reports_seam():
     assert report["after_max_abs"] <= report["before_max_abs"]
 
 
+def test_generate_edit_panorama360_expands_four_sides_and_keeps_source():
+    src = _noise_image(1000, 700, seed=31)
+    fake = _FakeEngine()
+    job, sink = _run_edit({
+        "preset": "panorama360",
+        "images": [{"data": _src_url(src)}],
+        "panorama360": {"coverage": 0.4, "long_side": 2048,
+                        "wrap": False, "level": True, "seam_blend": 24},
+    }, fake)
+
+    quality = job.quality
+    assert quality["task_mode"] == "panorama360"
+    assert quality["preset"] == "panorama360"
+    info = quality["panorama360"]
+    assert info["canvas"] == {"w": 2048, "h": 1024}
+    assert (info["work"]["w"], info["work"]["h"]) == (800, 544)
+    assert all(info["pads"][key] > 0 for key in ("left", "right", "top", "bottom"))
+    assert quality["output"] == {"w": 2048, "h": 1024}
+    assert quality["outside_max_abs"] == 0
+    assert quality["prompt_augmented"] == "panorama360"
+    assert fake.seen["resolution"] == 0
+    assert fake.seen["latent_size"] == fake.seen["canvas"] == (2048, 1024)
+
+    final = imaging.decode_image(sink["png"])
+    assert final.size == (2048, 1024)
+    plan = imaging.panorama360_plan(1000, 700, coverage=0.4, long_side=2048)
+    pasted = final.crop((plan.left, plan.top,
+                         plan.left + plan.work_w, plan.top + plan.work_h))
+    # 源图先等比缩到工作尺寸再贴放；合成后该区域应逐字节保留
+    expected = src.convert("RGBA").resize(
+        (plan.work_w, plan.work_h), Image.BICUBIC).convert("RGB")
+    assert int(np.abs(
+        np.asarray(expected, dtype=np.int16)
+        - np.asarray(pasted.convert("RGB"), dtype=np.int16)).max()) == 0
+
+
+def test_generate_edit_panorama360_wrap_reports_seam():
+    src = _noise_image(1000, 700, seed=32)
+    fake = _FakeEngine()
+    job, _sink = _run_edit({
+        "preset": "panorama360",
+        "images": [{"data": _src_url(src)}],
+        "panorama360": {"coverage": 0.4, "long_side": 1024,
+                        "wrap": True, "level": False, "seam_blend": 8},
+    }, fake)
+
+    info = job.quality["panorama360"]
+    assert info["wrap"] is True and info["level"] is False
+    report = info["wrap_report"]
+    assert report is not None and report["blend_px"] == 8
+    assert report["after_max_abs"] <= report["before_max_abs"]
+
+
 def test_generate_edit_preprocess_restores_source_size():
     src = _noise_image(3000, 2000)
     box = (1400, 900, 1600, 1100)

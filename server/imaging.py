@@ -75,6 +75,8 @@ __all__ = [
     "PanoramaPlan",
     "panorama_plan",
     "panorama_canvas",
+    "PANORAMA360_DEFAULT_COVERAGE",
+    "panorama360_plan",
     "wrap_seam_blend",
     "compose_canvas",
     "map_mask_to_canvas",
@@ -1275,6 +1277,88 @@ def panorama_canvas(im: Image.Image, plan: PanoramaPlan) -> Image.Image:
                        (*plan.fill, 255))
     canvas.paste(src, (plan.left, plan.top))
     return canvas
+
+
+#: 360° 全景默认源图占比：源图宽占画布宽的 40%，其余四周交给模型补全。
+PANORAMA360_DEFAULT_COVERAGE = 0.4
+
+
+def panorama360_plan(
+    src_w: int,
+    src_h: int,
+    *,
+    coverage: float = PANORAMA360_DEFAULT_COVERAGE,
+    long_side: int = 3072,
+    multiple: int = 32,
+    max_side: int = 4096,
+    max_pixels: int = PANORAMA_MAX_PIXELS,
+    fill: tuple[int, int, int] = _OUTPAINT_FILL,
+) -> PanoramaPlan:
+    """360° 全景几何：固定 2:1 画布，源图缩到 ``coverage`` 后居中，四周补灰。
+
+    与 :func:`panorama_plan` 的「最小外扩」不同，这里**四个方向都会留出补全区**，
+    模型才有空间把场景向四周延展成球面内容。
+
+    - ``coverage``：源图宽度占画布宽度的比例，0.3~0.6；默认 0.4。
+    - 源图只缩不放；竖图/超高图按画布高度的 85% 兜底，避免顶到上下边。
+    - ``long_side`` / ``max_pixels`` 都是上限，超出时只缩小画布。
+    """
+    sw, sh = int(src_w), int(src_h)
+    if sw <= 0 or sh <= 0:
+        raise ValueError("360° 全景原图尺寸无效")
+    multiple = max(1, int(multiple))
+    long_side = int(long_side or 0)
+    if long_side <= 0:
+        raise ValueError("360° 全景长边必须是正整数")
+    if max_side and long_side > int(max_side):
+        raise ValueError(f"360° 全景长边 {long_side} 超过上限 {int(max_side)}")
+    try:
+        cov = float(coverage)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"360° 全景 coverage 必须是数字：{exc}") from exc
+    if not 0.3 <= cov <= 0.6:
+        raise ValueError(f"360° 全景 coverage 必须在 0.3~0.6，收到 {cov}")
+
+    # 1) 2:1 画布；长边取 multiple*2 的倍数，保证高也是 multiple 的倍数。
+    step = multiple * 2
+    canvas_w = max(step, long_side // step * step)
+    if max_pixels and canvas_w * (canvas_w // 2) > max_pixels:
+        budget_w = int(math.sqrt(2 * max_pixels)) // step * step
+        canvas_w = max(step, min(canvas_w, budget_w))
+    canvas_h = max(multiple, canvas_w // 2)
+
+    if max_side and canvas_w > int(max_side):
+        raise ValueError(
+            f"360° 全景画布 {canvas_w}×{canvas_h} 超过单边上限 {int(max_side)}；请降低长边")
+    if max_pixels and canvas_w * canvas_h > max_pixels:
+        raise ValueError(
+            f"360° 全景画布 {canvas_w}×{canvas_h} 超过总像素上限 {int(max_pixels)}；请降低长边")
+
+    def _snap_down(value: float) -> int:
+        return max(multiple, int(value) // multiple * multiple)
+
+    # 2) 源图工作尺寸：宽占 coverage，高按原比例；只缩不放。
+    work_w = _snap_down(min(sw, canvas_w * cov))
+    work_h = _snap_down(min(sh, work_w * sh / sw))
+    # 3) 竖图兜底：高度不超过画布 85%，再反推宽度。
+    max_h = _snap_down(canvas_h * 0.85)
+    if work_h > max_h:
+        work_h = max_h
+        work_w = _snap_down(min(sw, work_h * sw / sh))
+    work_w = min(canvas_w, work_w)
+    work_h = min(canvas_h, work_h)
+
+    # 4) 居中贴放；四周补边由遮罩统一处理。
+    left = (canvas_w - work_w) // 2
+    top = (canvas_h - work_h) // 2
+    return PanoramaPlan(
+        src_w=sw, src_h=sh, work_w=work_w, work_h=work_h,
+        left=left, right=canvas_w - work_w - left,
+        top=top, bottom=canvas_h - work_h - top,
+        canvas_w=canvas_w, canvas_h=canvas_h,
+        aspect="2:1", wrap=False,
+        scale=round(work_w / sw, 6), fill=tuple(int(v) for v in fill),
+    )
 
 
 def _smooth_1d(values: np.ndarray, radius: int) -> np.ndarray:

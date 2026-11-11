@@ -96,10 +96,22 @@ def test_panorama_preset_uses_full_canvas_sampling():
     }
 
 
+def test_panorama360_preset_expands_four_sides():
+    """360° 档：2:1 画布、源图占 40%、默认开启环绕融合与交界对齐。"""
+    preset, _ = presets.merge({"preset": "panorama360"})
+    assert preset["task"]["mode"] == "panorama360"
+    assert preset["local"]["scheme"] == "a"
+    assert preset["local"]["hint"] == "gray_fill"
+    assert preset["panorama360"] == {
+        "coverage": 0.4, "long_side": 3072,
+        "wrap": True, "seam_blend": 24, "level": True,
+    }
+
+
 def test_public_presets_and_meta_endpoint():
     items = presets.public_presets()
     assert [item["id"] for item in items] == [
-        "mask_edit", "remove", "outpaint", "panorama", "canvas", "native",
+        "mask_edit", "remove", "outpaint", "panorama", "panorama360", "canvas", "native",
         "chain_mask", "chain_native"]
     assert [item["id"] for item in items if item["default"]] == ["mask_edit"]
     assert all(item["summary"] and item["params"] for item in items)
@@ -226,6 +238,11 @@ def test_preset_conflicts_are_rejected():
         panorama["local"]["scheme"] = "b"
         with pytest.raises(ValueError, match="整画布采样"):
             presets.save_preset_config({"preset_defaults": {"panorama": panorama}})
+
+        pano360 = presets.get_preset("panorama360")
+        pano360["local"]["scheme"] = "b"
+        with pytest.raises(ValueError, match="整画布采样"):
+            presets.save_preset_config({"preset_defaults": {"panorama360": pano360}})
     finally:
         restore()
 

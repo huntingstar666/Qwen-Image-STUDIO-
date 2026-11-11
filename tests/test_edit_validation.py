@@ -228,6 +228,44 @@ def test_rejects_panorama_wrap_and_seam_blend():
         main._validate_edit_params({"panorama": {"seam_blend": 256}})
 
 
+def test_accepts_panorama360_payload():
+    main._validate_edit_params({
+        "task": {"mode": "panorama360"},
+        "panorama360": {"coverage": 0.4, "long_side": 3072,
+                        "wrap": True, "level": True, "seam_blend": 24},
+    })
+
+
+def test_rejects_non_object_panorama360():
+    with pytest.raises(main.ApiError, match="panorama360"):
+        main._validate_edit_params({"panorama360": [0.4]})
+
+
+def test_rejects_panorama360_coverage_out_of_range():
+    with pytest.raises(main.ApiError, match="panorama360.coverage"):
+        main._validate_edit_params({"panorama360": {"coverage": 0.2}})
+    with pytest.raises(main.ApiError, match="panorama360.coverage"):
+        main._validate_edit_params({"panorama360": {"coverage": 0.8}})
+    with pytest.raises(main.ApiError, match="panorama360.coverage"):
+        main._validate_edit_params({"panorama360": {"coverage": "宽"}})
+
+
+def test_rejects_panorama360_long_side_out_of_range():
+    with pytest.raises(main.ApiError, match="panorama360.long_side"):
+        main._validate_edit_params({"panorama360": {"long_side": 512}})
+    with pytest.raises(main.ApiError, match="panorama360.long_side"):
+        main._validate_edit_params({"panorama360": {"long_side": 5000}})
+
+
+def test_rejects_panorama360_flags_and_seam_blend():
+    with pytest.raises(main.ApiError, match="panorama360.wrap"):
+        main._validate_edit_params({"panorama360": {"wrap": "yes"}})
+    with pytest.raises(main.ApiError, match="panorama360.level"):
+        main._validate_edit_params({"panorama360": {"level": 1}})
+    with pytest.raises(main.ApiError, match="panorama360.seam_blend"):
+        main._validate_edit_params({"panorama360": {"seam_blend": 256}})
+
+
 def test_rejects_unknown_local_scheme():
     with pytest.raises(main.ApiError, match="local.scheme"):
         main._validate_edit_params({"local": {"scheme": "c"}})
@@ -264,6 +302,7 @@ def test_request_does_not_enforce_preset_task_combos():
     """移除/全景的任务组合由 pipeline 补齐，请求层不应因缺省字段被拒。"""
     main._validate_edit_params({"task": {"mode": "remove"}})
     main._validate_edit_params({"task": {"mode": "panorama"}})
+    main._validate_edit_params({"task": {"mode": "panorama360"}})
 
 
 def test_rejects_mask_wrong_type():
@@ -275,6 +314,7 @@ def test_param_limits_single_source():
     """数值区间只有 presets.NUMERIC_LIMITS 一份，请求校验与预设校验读同一张表（P1-8）。"""
     for path in ("sampling.denoise", "local.blend_pixels", "preprocess.max_side",
                  "local.crop_min_side", "outpaint.max_side", "panorama.long_side",
+                 "panorama360.coverage", "panorama360.long_side", "panorama360.seam_blend",
                  "turbo.lora_strength"):
         lim = presets.limits(path)
         assert lim["min"] is not None and lim["max"] is not None, path

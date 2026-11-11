@@ -26,7 +26,8 @@ from typing import Any
 #: 5：预设默认值支持全局覆写；新增采样 / 一致性 / LoRA 默认参数与自定义搭配。
 #: 6：新增 local.crop_floor（最小裁剪窗，默认 1024，与孤海一致）。
 #: 7：局部编辑默认填充闭合选区（local.fills=true），与孤海一致。
-PRESET_VERSION = 7
+#: 8：新增 ``panorama360`` 预设（2:1 画布、源图占 40%、四周外扩、环绕融合）。
+PRESET_VERSION = 8
 
 #: 采样档位：仓库里的 Turbo 9 步底模档（qwen_image_2.1_turbo_int8_convrot + 9 段 sigma）。
 #: 文档里称 "turbo9_gh"，实现复用已有的 ``turbo9_ckpt``（同一份权重与 sigma）。
@@ -192,6 +193,41 @@ EDIT_PRESETS: dict[str, dict[str, Any]] = {
             "long_side": 3072,
             "wrap": False,
             "seam_blend": 24,
+        },
+        **_COMMON,
+    },
+    "panorama360": {
+        "label": "360° 全景",
+        "summary": "参考图 → 360° 全景 · 2:1 · 源图占 40% · 四周外扩 · 环绕融合",
+        "default": False,
+        "task": {"mode": "panorama360"},
+        "local": {
+            "enabled": True,
+            # 360° 同样必须整画布采样：裁块会切断环视连续性。
+            "scheme": "a",
+            "fills": False,
+            "crop_min_side": 0,
+            "crop_max_side": 4096,
+            "expand_pct": 0.0,
+            "feather_pct": 0.0,
+            "blend_pixels": 24,
+            "dither": True,
+            "feather": 32,
+            "mask_expand": 0,
+            "color_match": True,
+            "color_strength": 0.6,
+            "color_restore": True,
+            "color_restore_strength": 1.0,
+            "consistency": True,
+            "hint": "gray_fill",
+            "band_mode": "lowfreq",
+        },
+        "panorama360": {
+            "coverage": 0.4,
+            "long_side": 3072,
+            "wrap": True,
+            "seam_blend": 24,
+            "level": True,
         },
         **_COMMON,
     },
@@ -473,6 +509,7 @@ TASK_ALIASES: dict[str, str] = {
     "remove": "remove",
     "outpaint": "outpaint",
     "panorama": "panorama",
+    "panorama360": "panorama360",
 }
 
 #: 局部编辑方案枚举（``raw`` 是 ``native`` 的历史别名）。
@@ -512,6 +549,9 @@ NUMERIC_LIMITS: dict[str, dict[str, Any]] = {
     "outpaint.max_side": {"min": 1024, "max": 8192, "step": 32},
     "panorama.long_side": {"min": 1024, "max": 4096, "step": 32},
     "panorama.seam_blend": {"min": 0, "max": 128, "step": 4},
+    "panorama360.coverage": {"min": 0.3, "max": 0.6, "step": 0.01},
+    "panorama360.long_side": {"min": 1024, "max": 4096, "step": 32},
+    "panorama360.seam_blend": {"min": 0, "max": 128, "step": 4},
     "chain.anchor_every": {"min": 1, "max": 50, "step": 1},
     "chain.drift_warn_delta_e": {"min": 0, "max": 100, "step": 1},
 }
@@ -614,6 +654,8 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
         ("turbo.enabled", "Turbo 开关"),
         ("preprocess.enabled", "预处理开关"),
         ("panorama.wrap", "全景环绕"),
+        ("panorama360.wrap", "360° 环绕融合"),
+        ("panorama360.level", "360° 交界对齐"),
         ("consistency.enabled", "一致性 LoRA 开关"),
     ):
         flag(path, label)
@@ -691,6 +733,13 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
         errors.append(f"panorama.long_side 不能超过全局 max_side（{max_side}）")
     integer("panorama.seam_blend", *bounds("panorama.seam_blend"), "全景接缝融合")
 
+    num("panorama360.coverage", *bounds("panorama360.coverage"), "360° 源图占比")
+    pano360_long = integer(
+        "panorama360.long_side", *bounds("panorama360.long_side"), "360° 长边")
+    if pano360_long is not None and pano360_long > max_side:
+        errors.append(f"panorama360.long_side 不能超过全局 max_side（{max_side}）")
+    integer("panorama360.seam_blend", *bounds("panorama360.seam_blend"), "360° 接缝融合")
+
     chain_mode = _get(params, "chain.mode")
     if chain_mode is not None and str(chain_mode) not in ("mask", "native"):
         errors.append("chain.mode 只支持 mask / native")
@@ -737,7 +786,7 @@ def validate_params(params: dict[str, Any], cfg: dict[str, Any] | None = None,
     # 内置预设的扩图外边由任务页临时输入，不在预设默认里锁死；自定义搭配要求完整。
     if custom and task == "outpaint" and not any(value > 0 for value in pads):
         errors.append("扩图至少需要一条外扩边大于 0")
-    if strict_task and task == "panorama":
+    if strict_task and task in ("panorama", "panorama360"):
         if scheme != "a":
             errors.append("全景必须使用 local.scheme=a（整画布采样）")
         if hint != "gray_fill":

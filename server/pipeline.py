@@ -73,6 +73,12 @@ _PANORAMA_INSTRUCTION = (
     "把灰色扩展区域补全为连续的全景画面，保持地平线、透视、光线和主体一致，"
     "左右两侧自然衔接，不要出现重复的人物、建筑或纹理。"
 )
+#: 360° 全景：不只横向延展，四周都要补出场景；强调球面环视与左右闭合。
+_PANORAMA360_INSTRUCTION = (
+    "把灰色区域补全为 360° 等距柱状全景：场景向四周连续延展，"
+    "补齐天花板 / 天空与地面，保持地平线、透视、光线和主体一致，"
+    "左右边缘首尾能够自然衔接，不要出现重复的人物、建筑或纹理。"
+)
 
 #: 任务档位：扩图 / 全景的训练约定（裁块下限、接缝百分比、灰提示）。
 #: 前端切任务时会同时改这些键；第三方只传 task.mode 时必须由后端补齐，
@@ -86,6 +92,13 @@ _TASK_LOCAL_DEFAULTS: dict[str, dict[str, Any]] = {
         "fills": False,
     },
     "panorama": {
+        "crop_min_side": 0,
+        "expand_pct": 0.0,
+        "feather_pct": 0.0,
+        "hint": "gray_fill",
+        "fills": False,
+    },
+    "panorama360": {
         "crop_min_side": 0,
         "expand_pct": 0.0,
         "feather_pct": 0.0,
@@ -961,6 +974,12 @@ class Pipeline:
         pano_long_side = 3072
         pano_wrap = False
         pano_seam_blend = 24
+        pano360_plan: imaging.PanoramaPlan | None = None
+        pano360_coverage = imaging.PANORAMA360_DEFAULT_COVERAGE
+        pano360_long_side = 3072
+        pano360_wrap = True
+        pano360_seam_blend = 24
+        pano360_level = True
         wrap_report: dict[str, Any] | None = None
         if task_mode == "outpaint":
             op = params.get("outpaint") or {}
@@ -1015,12 +1034,38 @@ class Pipeline:
             op_canvas = imaging.panorama_canvas(src, pano_plan)
             op_info = pano_plan.to_outpaint_info()
 
+        elif task_mode == "panorama360":
+            # 360° 全景：固定 2:1 画布，源图缩到 coverage 后居中，四周补灰。
+            p360 = params.get("panorama360") or {}
+            try:
+                pano360_coverage = float(
+                    p360.get("coverage", imaging.PANORAMA360_DEFAULT_COVERAGE))
+                pano360_long_side = int(p360.get("long_side") or 3072)
+                pano360_seam_blend = int(p360.get("seam_blend") or 24)
+            except (TypeError, ValueError) as exc:
+                raise PipelineError(f"360° 全景参数必须是数字：{exc}") from exc
+            # 默认开：缺省时按环绕融合处理；显式 false 才关。
+            pano360_wrap = p360.get("wrap") is not False
+            pano360_level = p360.get("level") is not False
+            try:
+                pano360_plan = imaging.panorama360_plan(
+                    src.width, src.height,
+                    coverage=pano360_coverage,
+                    long_side=pano360_long_side,
+                    multiple=int(profile.get("snap") or 32),
+                    max_side=int(cfg.get("max_side") or 4096),
+                )
+            except ValueError as exc:
+                raise PipelineError(f"360° 全景参数不可用：{exc}") from exc
+            op_canvas = imaging.panorama_canvas(src, pano360_plan)
+            op_info = pano360_plan.to_outpaint_info()
+
         # 任务档位归一：预设是编辑档而任务被切到扩图/全景时，不能让编辑档位
         # （768 / 4% / 5%）盖住任务训练约定；请求显式给过的键仍然优先。
         local = _task_local_overrides(local, job.params.get("local"), task_mode)
         params = {**params, "local": local}
 
-        if task_mode in ("outpaint", "panorama"):
+        if task_mode in ("outpaint", "panorama", "panorama360"):
             # 扩图/全景输出的是"更大的画布"，零偏移语义不适用（尺寸本就要变）。
             zs_spec = {"enabled": False, "snap": int(profile.get("snap") or 32), "resolution": 0}
         else:
@@ -1037,7 +1082,7 @@ class Pipeline:
         pp = imaging.preprocess_plan(
             src.width, src.height,
             enabled=_truthy(pp_params.get("enabled")) and size_mode == "follow"
-            and task_mode not in ("outpaint", "panorama"),
+            and task_mode not in ("outpaint", "panorama", "panorama360"),
             max_side=int(pp_params.get("max_side") or 2048),
             min_side=int(pp_params.get("min_side") or 768),
             multiple=int(pp_params.get("multiple") or profile.get("snap") or 32),
@@ -1086,10 +1131,10 @@ class Pipeline:
         coverage: float | None = None
         if mask_canvas is not None:
             coverage = float((mask_canvas > 0.01).mean())
-            if task_mode not in ("outpaint", "panorama") and coverage > 0.9:
+            if task_mode not in ("outpaint", "panorama", "panorama360") and coverage > 0.9:
                 warnings.append(f"选区覆盖 {coverage:.0%}，接近整图重绘，遮罩外像素也会被模型重画")
             job.meta["mask_coverage"] = round(coverage, 4)
-        elif task_mode not in ("outpaint", "panorama"):
+        elif task_mode not in ("outpaint", "panorama", "panorama360"):
             warnings.append("未圈选区域，本次将按整图重绘")
 
         # 记录输入图，供历史回看
@@ -1119,7 +1164,8 @@ class Pipeline:
             "zero_shift": dict(zs_spec),
         }
         if op_info is not None:
-            align_key = "panorama" if task_mode == "panorama" else "outpaint"
+            align_key = (task_mode if task_mode in ("panorama", "panorama360")
+                         else "outpaint")
             job.align[align_key] = dataclasses.asdict(op_info)
 
         scheme = (str(local.get("scheme") or "a").strip().lower()
@@ -1134,7 +1180,7 @@ class Pipeline:
             # 与前端 resolveScheme 同口径：小遮罩走整画布（接缝最稳），
             # 中等遮罩才裁局部（省显存）；无遮罩/超大遮罩一律回整画布。
             scheme = "b" if coverage is not None and 0.02 < coverage < 0.45 else "a"
-        if task_mode == "panorama":
+        if task_mode in ("panorama", "panorama360"):
             # 全景必须整画布采样：裁块会切断横向连续性，接缝无法还原。
             scheme = "a"
         sampling = _sampling_plan(params, cfg, profile)
@@ -1256,7 +1302,7 @@ class Pipeline:
         # 兼容前端写法（"green"）与旧数据（"overlay"）：统一归一到规范名。
         hint_mode = str(local.get("hint") or "").strip().lower()
         hint_mode = _HINT_ALIASES.get(hint_mode, hint_mode)
-        if task_mode in ("outpaint", "panorama"):
+        if task_mode in ("outpaint", "panorama", "panorama360"):
             hint_mode = "gray_fill"
         else:
             if hint_mode in ("", "auto"):
@@ -1291,7 +1337,7 @@ class Pipeline:
             "to": [work_image.width, work_image.height],
             "applied": False,
         }
-        if task_mode in ("outpaint", "panorama"):
+        if task_mode in ("outpaint", "panorama", "panorama360"):
             try:
                 sample_limit = int(local.get("sample_max_side") or 2048)
             except (TypeError, ValueError):
@@ -1322,7 +1368,11 @@ class Pipeline:
         raw_prompt = str(meta_in.get("rawPrompt") or "").strip() or prompt_text
         probe = raw_prompt.lower()
         # 任务指令补全：这两条是 LoRA 的训练约定，缺了会出现"灰边没去掉 / 绿区没移除"。
-        if task_mode == "panorama" and not any(
+        if task_mode == "panorama360" and not any(
+                key in probe for key in ("360", "equirect", "等距", "全景", "panorama")):
+            prompt_text = _PANORAMA360_INSTRUCTION + prompt_text
+            job.meta["prompt_augmented"] = "panorama360"
+        elif task_mode == "panorama" and not any(
                 key in probe for key in ("全景", "panorama", "panoramic", "宽幅")):
             prompt_text = _PANORAMA_INSTRUCTION + prompt_text
             job.meta["prompt_augmented"] = "panorama"
@@ -1525,7 +1575,7 @@ class Pipeline:
         # 回到源尺寸：纯几何裁回，不重采样（零偏移闭环）。
         # 但 size_mode=custom/ratio 时用户要的就是**新尺寸**，不能裁回源尺寸；
         # 扩图同理——输出的就是外扩后的大图。
-        if task_mode in ("outpaint", "panorama"):
+        if task_mode in ("outpaint", "panorama", "panorama360"):
             final = composed
             expected_size = (plan.width, plan.height)
         elif size_mode in ("custom", "ratio"):
@@ -1548,6 +1598,15 @@ class Pipeline:
                     "top": pano_plan.top, "bottom": pano_plan.bottom,
                 },
             )
+        elif task_mode == "panorama360" and pano360_plan is not None and pano360_level:
+            # 360°：源图四周都是补全区，四边交界都要对齐（源图像素不动）。
+            final, seam_report = imaging.seam_level(
+                final,
+                {
+                    "left": pano360_plan.left, "right": pano360_plan.right,
+                    "top": pano360_plan.top, "bottom": pano360_plan.bottom,
+                },
+            )
         elif task_mode == "outpaint" and op_info is not None:
             # 扩图同样需要交界渐变：模型在灰边一侧画出的亮带/阶跃，
             # 合成后会沿着源图边界显出一个「方框」。只改扩展区，源图像素不动。
@@ -1562,6 +1621,9 @@ class Pipeline:
         if task_mode == "panorama" and pano_wrap and pano_seam_blend > 0:
             final, wrap_report = imaging.wrap_seam_blend(
                 final, blend_px=pano_seam_blend)
+        elif task_mode == "panorama360" and pano360_wrap and pano360_seam_blend > 0:
+            final, wrap_report = imaging.wrap_seam_blend(
+                final, blend_px=pano360_seam_blend)
         size_match = final.size == expected_size
 
         # 零偏移硬验收：任何几何走样都在这里拦下，不落盘。
@@ -1610,7 +1672,8 @@ class Pipeline:
             "seed": sampling["seed"],
             "warnings": warnings,
             "outpaint": (dataclasses.asdict(op_info)
-                         if op_info is not None and task_mode != "panorama" else None),
+                         if op_info is not None
+                         and task_mode not in ("panorama", "panorama360") else None),
             # 扩图/全景的交界渐变报告：before_* 是原阶跃，after_* 是摊平后的残差
             "seam": seam_report,
             "panorama": ({
@@ -1628,6 +1691,22 @@ class Pipeline:
                 "seam_report": seam_report,
                 "wrap_report": wrap_report,
             } if pano_plan is not None else None),
+            "panorama360": ({
+                "coverage": pano360_coverage,
+                "long_side": pano360_long_side,
+                "wrap": pano360_wrap,
+                "seam_blend": pano360_seam_blend,
+                "level": pano360_level,
+                "canvas": {"w": pano360_plan.canvas_w, "h": pano360_plan.canvas_h},
+                "work": {"w": pano360_plan.work_w, "h": pano360_plan.work_h},
+                "pads": {
+                    "left": pano360_plan.left, "right": pano360_plan.right,
+                    "top": pano360_plan.top, "bottom": pano360_plan.bottom,
+                },
+                "scale": pano360_plan.scale,
+                "seam_report": seam_report,
+                "wrap_report": wrap_report,
+            } if pano360_plan is not None else None),
             "preprocess": {
                 "applied": bool(use_pp),
                 "scale": round(float(pp.scale), 6),

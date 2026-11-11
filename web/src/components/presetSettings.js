@@ -16,6 +16,7 @@ const TASK_OPTIONS = [
   { value: 'remove', label: '元素移除' },
   { value: 'outpaint', label: '扩图' },
   { value: 'panorama', label: '全景' },
+  { value: 'panorama360', label: '360° 全景' },
 ];
 const SCHEME_OPTIONS = [
   { value: 'auto', label: '自动' },
@@ -148,6 +149,17 @@ const GROUPS = [
     ],
   },
   {
+    id: 'panorama360',
+    title: '360° 全景',
+    fields: [
+      { path: 'panorama360.coverage', label: '源图占比', type: 'number', min: 0.3, max: 0.6, step: 0.01 },
+      { path: 'panorama360.long_side', label: '长边', type: 'number', min: 1024, max: 4096, step: 32 },
+      { path: 'panorama360.wrap', label: '360° 环绕融合', type: 'switch' },
+      { path: 'panorama360.seam_blend', label: '环绕融合 px', type: 'number', min: 0, max: 128, step: 4 },
+      { path: 'panorama360.level', label: '交界亮度对齐', type: 'switch' },
+    ],
+  },
+  {
     id: 'chain',
     title: '连续编辑',
     fields: [
@@ -171,6 +183,7 @@ const TEMPLATES = [
   { id: 'remove', label: '元素移除模板' },
   { id: 'outpaint', label: '扩图模板' },
   { id: 'panorama', label: '全景模板' },
+  { id: 'panorama360', label: '360° 全景模板' },
 ];
 
 function getPath(obj, path, fallback = undefined) {
@@ -350,6 +363,15 @@ function validateParams(params, maxSide, { custom = false } = {}) {
   if (panoLong && maxSide && panoLong > maxSide) {
     errors.push(`全景长边不能超过全局 max_side（${maxSide}）`);
   }
+  const pano360Long = Number(getPath(params, 'panorama360.long_side', 0)) || 0;
+  if (pano360Long && maxSide && pano360Long > maxSide) {
+    errors.push(`360° 全景长边不能超过全局 max_side（${maxSide}）`);
+  }
+  const pano360Coverage = Number(getPath(params, 'panorama360.coverage', 0.4));
+  if (Number.isFinite(pano360Coverage)
+      && (pano360Coverage < 0.3 || pano360Coverage > 0.6)) {
+    errors.push('360° 全景源图占比必须在 0.3~0.6');
+  }
 
   const pads = ['top', 'bottom', 'left', 'right'].map((key) =>
     Number(getPath(params, `outpaint.${key}`, 0)) || 0,
@@ -362,7 +384,7 @@ function validateParams(params, maxSide, { custom = false } = {}) {
   if (custom && task === 'outpaint' && !pads.some((value) => value > 0)) {
     errors.push('扩图至少需要一条外扩边大于 0');
   }
-  if (task === 'panorama') {
+  if (task === 'panorama' || task === 'panorama360') {
     if (scheme !== 'a') errors.push('全景必须使用方案 A（整画布采样）');
     if (hint !== 'gray_fill') errors.push('全景要求提示图 = 灰边');
   }
@@ -392,7 +414,7 @@ function autoFix(params) {
     if (!pads.some((value) => value > 0)) {
       for (const key of ['top', 'bottom', 'left', 'right']) setPath(params, `outpaint.${key}`, 10);
     }
-  } else if (task === 'panorama') {
+  } else if (task === 'panorama' || task === 'panorama360') {
     setPath(params, 'local.scheme', 'a');
     setPath(params, 'local.hint', 'gray_fill');
   } else {

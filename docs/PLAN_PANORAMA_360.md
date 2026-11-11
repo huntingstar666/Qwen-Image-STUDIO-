@@ -1,6 +1,6 @@
 # 360° 全景（panorama360）方案
 
-> 状态：**P1 已落地（2026-11-11）；P2 排期，未动后端**。
+> 状态：**P1 已落地（2026-11-11）；P2 后端与前端入口已落地并完成真机验收（2026-11-11），`panorama360` 先标实验**。
 > 已确认口径：P1 先上线；查看器三处一起（结果区 / 历史记录 / 素材仓库）；`coverage` 默认 40%；文生图 360 同时提供 2048×1024 与 3072×1536。
 > 关联文档：[PLAN_PANORAMA.md](PLAN_PANORAMA.md)（宽幅全景已上线）、[WEB_UI.md](WEB_UI.md)、[PLAN_PS_FRONTEND.md](PLAN_PS_FRONTEND.md)。
 > 独立验证产物：`pano_lab/`（生成实验）、`panorama_360/`（球面查看器参考实现）。
@@ -250,3 +250,58 @@ def panorama360_plan(src_w, src_h, *, coverage=0.4, long_side=3072,
 - 宽高比 ≥1.9 只是「值得用全景查看」的启发式，不代表图片内容一定是 360°；非等距柱状内容在 360° 模式会有放大/边缘拉伸，查看器底部提示与「宽幅」模式可兜底。
 - P1 不做接缝融合：文生图直出的左右接缝色差约 11/255（实验 A/B），需要融合时走 P2 的后端 `wrap` 能力。
 - 未提交 commit；等确认后按文件精确暂存。
+
+---
+
+## 15. P2 落地记录（2026-11-11）
+
+### 15.1 交付清单
+
+| 文件 | 改动 |
+|---|---|
+| `server/imaging.py` | 新增 `PANORAMA360_DEFAULT_COVERAGE` / `panorama360_plan()`：固定 2:1 画布，源图缩到 coverage（默认 0.4）后居中，四周补灰；只缩不放、32 对齐、6MP 上限 |
+| `server/presets.py` | `PRESET_VERSION 7→8`；新增 `panorama360` 预设（scheme=a / gray_fill / coverage 0.4 / wrap+level 默认开）；新增参数区间与校验；`TASK_ALIASES` 增加模式 |
+| `server/main.py` | `task.mode` 白名单、`panorama360` 参数校验、允许空提示词（由后端补任务指令）、`/api/options.task_modes` |
+| `server/pipeline.py` | 新增 `panorama360` 分支：四周灰边画布 → 整画布采样 → 四边 `seam_level` → 左右 `wrap_seam_blend` → `quality.panorama360`；提示词补全 |
+| `web/src/components/studio/panoramaPanel.js` | 支持 360 模式：隐藏比例 chips，显示「源图占比」滑杆（30%~60%）与 360 环绕融合开关，尺寸预估与后端同口径 |
+| `web/src/components/studio/aiPanel.js` | 任务下拉增加「360° 全景」；全景面板按任务切换 coverage / 比例；工作画布摘要同步 |
+| `web/src/components/studio/payload.js` | 新增 `panorama360Plan()`；预设/旧参数分支都把 360 强制为 scheme=a + gray_fill |
+| `web/src/components/edit.js` | 任务下拉增加「360° 全景」；面板 getMode；`payload.panorama360` 提交；交接/还原覆盖 `panorama360.*` |
+| `web/src/components/presetSettings.js` | 任务枚举、预设编辑项（coverage / 长边 / 环绕融合 / 交界对齐）、区间与冲突校验 |
+| `web/src/components/jobView.js` | 任务标签增加「360° 全景」 |
+| 测试 | 新增 `tests/test_panorama360.py`（12 例）；补 `test_edit_validation`（6 例）、`test_edit_presets`（2 例）、`test_zero_shift_ps`（2 例 mock e2e）；`web/tests/studio/panorama360.test.mjs` 增加画布预估 1 例 |
+
+### 15.2 契约（实际实现）
+
+```jsonc
+{
+  "preset": "panorama360",
+  "task": { "mode": "panorama360" },
+  "panorama360": {
+    "coverage": 0.4,       // 0.3~0.6
+    "long_side": 3072,     // 1024~4096，且不超过全局 max_side
+    "wrap": true,          // 默认开
+    "seam_blend": 24,      // 0~128
+    "level": true          // 默认开，四边交界亮度对齐
+  }
+}
+```
+
+`quality.panorama360` 回显 `coverage / long_side / wrap / seam_blend / level / canvas / work / pads / scale / seam_report / wrap_report`；`quality.outpaint` 与 `quality.panorama` 在该任务下均为 `null`。
+
+### 15.3 真机验收（RTX 5090 / turbo9 / 源图 3000×2000 人像 / seed 1207）
+
+| 尺寸 | 画布 | 源图工作尺寸 | 四边补边 | 四边交界残差（前→后） | 左右环绕 | 耗时 | 源图区域 |
+|---|---|---|---|---|---|---|---|
+| 2K | 2048×1024 | 800×512 | 624/624/256/256 | 左 28.4→2.7 · 右 35.7→3.2 · 上 37.2→2.7 · 下 24.9→**5.3** | 132→**0** | 64.5s（含模型预热） | `outside_max_abs=0` |
+| 3K | 3072×1536 | 1216×800 | 928/928/368/368 | 左 35.6→2.4 · 右 39.7→2.4 · 上 32.5→2.7 · 下 25.7→**5.5** | 72→**0** | 20.3s | `outside_max_abs=0` |
+
+构图目检（2K / 3K）：房间四周连续，天花板与地板补齐，左右门框不再断开，未出现重复人物；源图（人物 + 旗帜 + 沙发）居中且逐字节保留。产物：`pano_lab/out/E-360-2k-s1207-0.png`、`F-360-3k-s1207-0.png`。
+
+### 15.4 结论与已知问题
+
+- **可用**：照片 → 360° 的假设成立，2K / 3K 都能得到真正可环视的等距柱状内容；`panorama360` 仍标「实验」，默认不改变现有入口。
+- **待优化**：底部交界残差 5.3~5.5，略高于方案门槛 5（左右上都在 2.4~3.2）；可把 `seam_level` 的 bottom 侧 band/flatten 单独调大，或对底部再跑一次低频压制。
+- **未做**：分块接力（大图/低显存）、真机多 seed 统计、21:9 等非 2:1 的 360 变体。
+- 前端入口实测：`#edit` 渲染出「360° 全景」预设卡与任务选项；`#studio` 面板按任务切换 coverage 控件；工作画布摘要与后端预估一致。
+- 未提交 commit（等待确认）。

@@ -617,7 +617,7 @@ def api_options() -> dict[str, Any]:
             "local_edit_schemes": ["a", "b", "auto", "native"],
             "size_modes": ["follow", "custom", "ratio", "fixed_point"],
             "fits": ["pad", "crop"],
-            "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint", "panorama"],
+            "task_modes": ["edit", "inpaint", "replace", "remove", "outpaint", "panorama", "panorama360"],
             "segment_modes": list(segment_registry.MODES),
             "hint_modes": ["none", "green_overlay", "gray_fill"],
             "outpaint_percent": {"min": 0, "max": 200},
@@ -823,7 +823,7 @@ def api_edit(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     task_mode = str(task.get("mode") or "").strip().lower() if isinstance(task, dict) else ""
     # remove / outpaint 由后端补训练指令，提示词可以留空（第三方只传 task.mode 也能用）；
     # 普通编辑没有指令就变成「随机整图重绘」，仍然要求填写。
-    if task_mode in ("remove", "outpaint"):
+    if task_mode in ("remove", "outpaint", "panorama360"):
         prompt = str(payload.get("prompt") or "").strip()
     else:
         prompt = str(_require(payload, "prompt", label="编辑指令") or "").strip()
@@ -858,7 +858,7 @@ def _preset_view(payload: dict[str, Any]) -> dict[str, Any]:
     """
     view: dict[str, Any] = {}
     for key in ("task", "local", "preprocess", "zero_shift", "turbo",
-                "outpaint", "panorama", "chain", "consistency"):
+                "outpaint", "panorama", "panorama360", "chain", "consistency"):
         value = payload.get(key)
         if isinstance(value, dict):
             view[key] = value
@@ -1017,6 +1017,41 @@ def _validate_edit_params(payload: dict[str, Any]) -> None:
             lim = presets.limits("panorama.seam_blend")
             if not lim["min"] <= seam_blend <= lim["max"]:
                 raise ApiError(f"panorama.seam_blend 必须在 {lim['min']}~{lim['max']}")
+
+    panorama360 = payload.get("panorama360")
+    if panorama360 is not None:
+        if not isinstance(panorama360, dict):
+            raise ApiError("panorama360 必须是对象")
+        if panorama360.get("coverage") is not None:
+            try:
+                coverage = float(panorama360["coverage"])
+            except (TypeError, ValueError):
+                raise ApiError("panorama360.coverage 必须是数字")
+            lim = presets.limits("panorama360.coverage")
+            if not lim["min"] <= coverage <= lim["max"]:
+                raise ApiError(f"panorama360.coverage 必须在 {lim['min']}~{lim['max']}")
+        if panorama360.get("long_side") is not None:
+            try:
+                long_side = int(panorama360["long_side"])
+            except (TypeError, ValueError):
+                raise ApiError("panorama360.long_side 必须是整数")
+            lim = presets.limits("panorama360.long_side")
+            if not lim["min"] <= long_side <= lim["max"]:
+                raise ApiError(f"panorama360.long_side 必须在 {lim['min']}~{lim['max']}")
+            limit = int(config.load_config().get("max_side") or 4096)
+            if long_side > limit:
+                raise ApiError(f"panorama360.long_side 不能超过全局 max_side（{limit}）")
+        for key in ("wrap", "level"):
+            if panorama360.get(key) is not None and not isinstance(panorama360[key], bool):
+                raise ApiError(f"panorama360.{key} 必须是布尔值")
+        if panorama360.get("seam_blend") is not None:
+            try:
+                seam_blend = int(panorama360["seam_blend"])
+            except (TypeError, ValueError):
+                raise ApiError("panorama360.seam_blend 必须是整数")
+            lim = presets.limits("panorama360.seam_blend")
+            if not lim["min"] <= seam_blend <= lim["max"]:
+                raise ApiError(f"panorama360.seam_blend 必须在 {lim['min']}~{lim['max']}")
 
     local = payload.get("local")
     if local is not None:

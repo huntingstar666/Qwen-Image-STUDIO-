@@ -10,6 +10,7 @@ import {
   isSphereSizeId,
   withSpherePrompt,
 } from '../../src/components/panoramaMath.js';
+import { panorama360Plan } from '../../src/components/studio/payload.js';
 
 test('全景入口判定：2:1 及以上算全景，3:2 与竖图不算', () => {
   assert.equal(isPanoramaAspect(2048, 1024), true);
@@ -41,4 +42,20 @@ test('360° 提示词：缺关键词时追加，已有不重复', () => {
   assert.equal(withSpherePrompt(once, true), once);
   assert.equal(withSpherePrompt('360° 全景，室内', true), '360° 全景，室内');
   assert.equal(withSpherePrompt('equirectangular room', true), 'equirectangular room');
+});
+
+test('360° 画布预估：与后端同口径（2:1 / coverage / 只缩不放）', () => {
+  const plan = panorama360Plan({ width: 3000, height: 2000 }, { longSide: 3072 });
+  assert.deepEqual([plan.width, plan.height], [3072, 1536]);
+  assert.deepEqual([plan.workWidth, plan.workHeight], [1216, 800]);
+  assert.equal(plan.width % 32, 0);
+  assert.equal(plan.height % 32, 0);
+  assert.equal(plan.overPixels, false);
+
+  const small = panorama360Plan({ width: 512, height: 512 }, { longSide: 3072 });
+  assert.deepEqual([small.workWidth, small.workHeight], [512, 512]);
+
+  const capped = panorama360Plan({ width: 3000, height: 2000 }, { longSide: 4096 });
+  assert.deepEqual([capped.width, capped.height], [3456, 1728]);
+  assert.equal(capped.overPixels, false);
 });

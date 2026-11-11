@@ -68,7 +68,7 @@ export function qualityItems(job) {
   if (scheme) {
     items.push({ text: `方案 ${SCHEME_LABEL[scheme] || scheme}`, title: '实际执行的局部编辑方案' });
   }
-  const TASK_LABEL = { edit: '编辑', remove: '移除', outpaint: '扩图', panorama: '全景' };
+  const TASK_LABEL = { edit: '编辑', remove: '移除', outpaint: '扩图', panorama: '全景', panorama360: '360° 全景' };
   if (quality.task_mode) {
     const requested = String(quality.task_requested || '');
     const degraded = requested && requested !== quality.task_mode;

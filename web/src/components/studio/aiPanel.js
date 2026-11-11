@@ -25,6 +25,7 @@ import {
   workSize,
   PANORAMA_ASPECTS,
   panoramaPlan,
+  panorama360Plan,
 } from './payload.js';
 import {
   applyProtection,
@@ -66,6 +67,7 @@ const TASK_LABELS = {
   replace: '元素替换',
   outpaint: '扩图',
   panorama: '全景',
+  panorama360: '360° 全景',
 };
 
 function readFile(file) {
@@ -168,8 +170,12 @@ export function mountAiPanel(host, ctx) {
             <div class="ai-work mono" data-ref="workInfo"></div>
             <div class="ai-warn" data-ref="workWarn" hidden></div>
             <div class="ai-pano" data-ref="panoBox" hidden>
-              <div class="ai-label">全景画布 <span class="ai-label-note">参考图向两侧延展</span></div>
+              <div class="ai-label">全景画布 <span class="ai-label-note" data-ref="panoNote">参考图向两侧延展</span></div>
               <div class="ai-row ai-pano-aspects" data-ref="panoAspects"></div>
+              <label class="ai-field" data-ref="panoCoverageRow" hidden>
+                <span>源图占比 <span class="mono" data-ref="panoCoverageVal">40%</span></span>
+                <input type="range" min="30" max="60" step="1" value="40" data-ref="panoCoverage" />
+              </label>
               <label class="ai-field">
                 <span>长边上限</span>
                 <select class="select" data-ref="panoLongSide">
@@ -277,7 +283,11 @@ export function mountAiPanel(host, ctx) {
     workInfo: ref('workInfo'),
     workWarn: ref('workWarn'),
     panoBox: ref('panoBox'),
+    panoNote: ref('panoNote'),
     panoAspects: ref('panoAspects'),
+    panoCoverageRow: ref('panoCoverageRow'),
+    panoCoverage: ref('panoCoverage'),
+    panoCoverageVal: ref('panoCoverageVal'),
     panoLongSide: ref('panoLongSide'),
     panoWrap: ref('panoWrap'),
     panoInfo: ref('panoInfo'),
@@ -686,8 +696,8 @@ export function mountAiPanel(host, ctx) {
     state.overrides = resetDefinedOverrides(preset, state.overrides);
     applyPresetDefaults(preset);
     const mode = presetTaskMode(preset);
-    if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama') refs.task.value = mode;
-    else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
+    if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama' || mode === 'panorama360') refs.task.value = mode;
+    else if (['remove', 'outpaint', 'panorama', 'panorama360'].includes(refs.task.value)) refs.task.value = 'auto';
     syncTaskHint();
     renderPresets();
     advanced.refresh();
@@ -698,24 +708,30 @@ export function mountAiPanel(host, ctx) {
   function syncGuardNote() {
     const mode = refs.task.value;
     const outpaint = mode === 'outpaint';
-    const panorama = mode === 'panorama';
+    const panorama = mode === 'panorama' || mode === 'panorama360';
     refs.guardNote.hidden = !(outpaint || panorama);
     refs.guardNote.textContent = outpaint
       ? '扩图会改变输出尺寸，零像素偏移校验自动关闭；原图区域仍逐字节保留。'
-      : panorama
-        ? '全景会按目标比例扩画布，零像素偏移校验自动关闭；原图区域等比缩放到画布中央。'
-        : '';
+      : mode === 'panorama360'
+        ? '360° 全景会缩源图并向四周补全，零像素偏移校验自动关闭；源图区域仍逐字节保留。'
+        : panorama
+          ? '全景会按目标比例扩画布，零像素偏移校验自动关闭；原图区域等比缩放到画布中央。'
+          : '';
     syncPano();
   }
 
   /* ------------------------------------------------------------ 全景（D14.1） */
 
+  function panoMode() {
+    return refs.task.value === 'panorama360' ? 'panorama360' : 'panorama';
+  }
+
   function panoValue(key, fallback) {
-    return effectiveValue(currentPreset(), state.overrides, key, fallback);
+    return effectiveValue(currentPreset(), state.overrides, `${panoMode()}.${key}`, fallback);
   }
 
   function setPano(key, value) {
-    state.overrides = withOverride(currentPreset(), state.overrides, key, value);
+    state.overrides = withOverride(currentPreset(), state.overrides, `${panoMode()}.${key}`, value);
     persistEdit();
     renderPresets();
     renderMeta();
@@ -737,16 +753,39 @@ export function mountAiPanel(host, ctx) {
     ).join('');
   }
 
-  /** 全景面板：只在任务切到「全景」时出现，数值写进预设覆盖项。 */
+  /** 全景面板：普通全景与 360° 全景共用，只在对应任务出现。 */
   function syncPano() {
-    const on = refs.task.value === 'panorama';
+    const mode = refs.task.value;
+    const on = mode === 'panorama' || mode === 'panorama360';
     refs.panoBox.hidden = !on;
     if (!on) return;
-    const aspect = String(panoValue('panorama.aspect', '2:1'));
-    const longSide = Number(panoValue('panorama.long_side', 3072)) || 3072;
-    renderPanoAspects(aspect);
+    const is360 = mode === 'panorama360';
+    refs.panoAspects.hidden = is360;
+    refs.panoCoverageRow.hidden = !is360;
+    refs.panoNote.textContent = is360 ? '源图缩小，四周补全' : '参考图向两侧延展';
+    const longSide = Number(panoValue('long_side', 3072)) || 3072;
     refs.panoLongSide.value = String(longSide);
-    refs.panoWrap.checked = Boolean(panoValue('panorama.wrap', false));
+
+    if (is360) {
+      const coverage = Number(panoValue('coverage', 0.4)) || 0.4;
+      refs.panoCoverage.value = String(Math.round(coverage * 100));
+      refs.panoCoverageVal.textContent = `${Math.round(coverage * 100)}%`;
+      refs.panoWrap.checked = Boolean(panoValue('wrap', true));
+      const plan = panorama360Plan(mainSize(), { coverage, longSide });
+      const notes = [
+        `${plan.width} × ${plan.height}`,
+        `${plan.megapixels} MP`,
+        `源图 ${plan.workWidth} × ${plan.workHeight}`,
+      ];
+      if (plan.overPixels) notes.push('超出 6MP 上限，请降低长边');
+      refs.panoInfo.textContent = notes.join(' · ');
+      refs.panoInfo.classList.toggle('is-warn', plan.overPixels);
+      return;
+    }
+
+    const aspect = String(panoValue('aspect', '2:1'));
+    renderPanoAspects(aspect);
+    refs.panoWrap.checked = Boolean(panoValue('wrap', false));
     const plan = panoramaPlan(mainSize(), { aspect, longSide });
     const notes = [`${plan.width} × ${plan.height}`, `${plan.megapixels} MP`];
     if (plan.scale < 1) notes.push(`源图缩到 ${Math.round(plan.scale * 100)}%`);
@@ -758,15 +797,21 @@ export function mountAiPanel(host, ctx) {
   refs.panoAspects.addEventListener('click', (event) => {
     const button = event.target.closest('[data-pano-aspect]');
     if (!button) return;
-    setPano('panorama.aspect', button.dataset.panoAspect);
+    setPano('aspect', button.dataset.panoAspect);
+  });
+
+  refs.panoCoverage.addEventListener('input', () => {
+    const pct = Math.min(60, Math.max(30, Number(refs.panoCoverage.value) || 40));
+    refs.panoCoverageVal.textContent = `${pct}%`;
+    setPano('coverage', Math.round(pct) / 100);
   });
 
   refs.panoLongSide.addEventListener('change', () => {
-    setPano('panorama.long_side', Number(refs.panoLongSide.value) || 3072);
+    setPano('long_side', Number(refs.panoLongSide.value) || 3072);
   });
 
   refs.panoWrap.addEventListener('change', () => {
-    setPano('panorama.wrap', Boolean(refs.panoWrap.checked));
+    setPano('wrap', Boolean(refs.panoWrap.checked));
   });
 
   async function loadPresetMeta() {
@@ -838,8 +883,8 @@ export function mountAiPanel(host, ctx) {
         applyPresetTurbo();
       }
       const mode = presetTaskMode(nextPresetMeta);
-      if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama') refs.task.value = mode;
-      else if (['remove', 'outpaint', 'panorama'].includes(refs.task.value)) refs.task.value = 'auto';
+      if (mode === 'remove' || mode === 'outpaint' || mode === 'panorama' || mode === 'panorama360') refs.task.value = mode;
+      else if (['remove', 'outpaint', 'panorama', 'panorama360'].includes(refs.task.value)) refs.task.value = 'auto';
       renderPresets();
       advanced.refresh();
       guards.sync(protectionOf(currentPreset(), state.overrides));
@@ -1027,18 +1072,24 @@ export function mountAiPanel(host, ctx) {
     refs.customSize.hidden = mode !== 'custom';
     refs.ratioRow.hidden = mode !== 'ratio';
     // 全景输出的是「按比例扩出的新画布」，工作画布直接按全景预估展示。
-    const panorama = refs.task.value === 'panorama';
-    const work = panorama
-      ? panoramaPlan(size, {
-          aspect: String(panoValue('panorama.aspect', '2:1')),
-          longSide: Number(panoValue('panorama.long_side', 3072)) || 3072,
-        })
-      : workSize(size, {
+    const panoTask = refs.task.value === 'panorama' || refs.task.value === 'panorama360';
+    const is360 = refs.task.value === 'panorama360';
+    const work = !panoTask
+      ? workSize(size, {
           preprocess: presetValue('preprocess.enabled', true) !== false,
           maxSide: Number(presetValue('preprocess.max_side', 2048)) || 2048,
-        });
-    refs.workInfo.textContent = panorama
-      ? `全景画布 ${work.width} × ${work.height} · 输出同尺寸`
+        })
+      : is360
+        ? panorama360Plan(size, {
+            coverage: Number(panoValue('coverage', 0.4)) || 0.4,
+            longSide: Number(panoValue('long_side', 3072)) || 3072,
+          })
+        : panoramaPlan(size, {
+            aspect: String(panoValue('aspect', '2:1')),
+            longSide: Number(panoValue('long_side', 3072)) || 3072,
+          });
+    refs.workInfo.textContent = panoTask
+      ? `${is360 ? '360° 全景' : '全景'}画布 ${work.width} × ${work.height} · 输出同尺寸`
       : `工作画布 ${work.width} × ${work.height} · 输出 ${outputSummary()}`;
     const tokens = Math.round((work.width / 32) * (work.height / 32));
     const heavy = tokens > 4096;
@@ -1047,7 +1098,7 @@ export function mountAiPanel(host, ctx) {
       ? `采样 token 约 ${tokens}，显存占用偏高：建议开启预处理或圈小一点。`
       : '';
     syncMoreSummary();
-    if (panorama) syncPano();
+    if (panoTask) syncPano();
   }
 
   if (!refs.width.value) refs.width.value = '1024';
@@ -1304,7 +1355,7 @@ export function mountAiPanel(host, ctx) {
       toastWarn('请先打开一张主图');
       return;
     }
-    if (!source.hasMask && refs.task.value !== 'outpaint' && refs.task.value !== 'panorama') {
+    if (!source.hasMask && !['outpaint', 'panorama', 'panorama360'].includes(refs.task.value)) {
       const ok = await confirmDialog({
         title: '没有检测到蒙版',
         message: '将按整图重绘，速度更慢且可能改变画面其他部分。推荐先用套索/椭圆圈出要改的区域。',
@@ -1320,7 +1371,7 @@ export function mountAiPanel(host, ctx) {
     if (
       String(refs.task.value || 'auto') === 'auto'
       && detected !== currentTask
-      && ['remove', 'outpaint', 'panorama'].includes(detected)
+      && ['remove', 'outpaint', 'panorama', 'panorama360'].includes(detected)
       && findPreset(state.presets, detected)
     ) {
       const presetLabel = currentPreset()?.label || currentTask;
@@ -1762,7 +1813,8 @@ export function mountAiPanel(host, ctx) {
     // 与图生图页一致：显式选移除 / 扩图 / 全景时同步切到对应预设，
     // 否则扩图会误用编辑档的裁块与接缝参数。
     const mode = refs.task.value;
-    if (['remove', 'outpaint', 'panorama'].includes(mode) && findPreset(state.presets, mode)) {
+    if (['remove', 'outpaint', 'panorama', 'panorama360'].includes(mode)
+        && findPreset(state.presets, mode)) {
       selectPreset(mode);
     }
     syncTaskHint();
@@ -1956,7 +2008,7 @@ export function mountAiPanel(host, ctx) {
       const detected = detectTask(promptEditor.getText(), coverage > 0);
       const effective = effectiveTask();
       const mismatch =
-        detected !== effective && ['remove', 'outpaint', 'panorama'].includes(detected);
+        detected !== effective && ['remove', 'outpaint', 'panorama', 'panorama360'].includes(detected);
       refs.submitHint.textContent = `已圈选 ${fmtCoverage(coverage)} · 本次任务：${
         TASK_LABELS[effective] || effective
       }${mismatch ? `（指令像「${TASK_LABELS[detected]}」，需切到同名预设）` : ''}`;

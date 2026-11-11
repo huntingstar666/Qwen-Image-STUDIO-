@@ -1,8 +1,8 @@
 /**
- * 全景任务面板：比例 / 长边上限 / 360° 环绕接缝。
+ * 全景任务面板：普通全景（比例 / 长边 / 环绕接缝）与 360° 全景（源图占比）。
  *
- * 数值一律写进 `edit.overrides`（`panorama.*`），由 `edit.js` 统一合并提交；
- * 这里不做生成、不改画布，只负责把参数显式化并预估输出尺寸。
+ * 数值一律写进 `edit.overrides`（`panorama.*` 或 `panorama360.*`），
+ * 由 `edit.js` 统一合并提交；这里不做生成、不改画布，只负责把参数显式化并预估输出尺寸。
  */
 
 import { patchSettings, store } from '../../store.js';
@@ -22,6 +22,8 @@ const ASPECTS = [
 
 const LONG_SIDES = [2048, 3072, 4096];
 const MAX_PIXELS = 6_000_000;
+const COVERAGE_MIN = 30;
+const COVERAGE_MAX = 60;
 
 function snapUp(value) {
   return Math.max(32, Math.ceil(value / 32) * 32);
@@ -57,15 +59,42 @@ function estimate(size, aspect, longSide) {
   return { width, height, pixels: width * height, scale };
 }
 
-export function mountPanoramaPanel(host, { getSize } = {}) {
+/** 与后端 `imaging.panorama360_plan` 同一套 2:1 画布 / coverage / 只缩不放规则。 */
+function estimate360(size, coverage, longSide) {
+  if (!size || !size.width || !size.height) return null;
+  let canvasW = Math.max(64, Math.floor(longSide / 64) * 64);
+  const budget = Math.floor(Math.sqrt(2 * MAX_PIXELS) / 64) * 64;
+  canvasW = Math.max(64, Math.min(canvasW, budget));
+  const canvasH = canvasW / 2;
+
+  const snapDown = (value) => Math.max(32, Math.floor(value / 32) * 32);
+  const workW = snapDown(Math.min(size.width, canvasW * coverage));
+  let workH = snapDown(Math.min(size.height, (workW * size.height) / size.width));
+  const cap = snapDown(canvasH * 0.85);
+  if (workH > cap) workH = cap;
+  return {
+    width: canvasW,
+    height: canvasH,
+    workW,
+    workH,
+    pixels: canvasW * canvasH,
+    coverage,
+  };
+}
+
+export function mountPanoramaPanel(host, { getSize, getMode } = {}) {
   let presets = [];
   host.innerHTML = `
     <div class="op-panel pano-panel">
       <div class="op-head">
-        <span class="op-title">全景</span>
+        <span class="op-title" data-pano="title">全景</span>
         <span class="op-target mono" data-pano="target">—</span>
       </div>
       <div class="op-ratios" data-pano="aspects"></div>
+      <label class="ai-field" data-pano="coverageRow" hidden>
+        <span>源图占比 <span class="mono" data-pano="coverageVal">40%</span></span>
+        <input type="range" min="${COVERAGE_MIN}" max="${COVERAGE_MAX}" step="1" value="40" data-pano="coverage" />
+      </label>
       <label class="ai-field">
         <span>长边上限</span>
         <select class="select" data-pano="longSide">
@@ -74,64 +103,108 @@ export function mountPanoramaPanel(host, { getSize } = {}) {
       </label>
       <label class="studio-check">
         <input type="checkbox" data-pano="wrap" />
-        <span>360° 环绕接缝（实验）</span>
+        <span data-pano="wrapLabel">360° 环绕接缝（实验）</span>
       </label>
       <div class="ai-hint" data-pano="note"></div>
       <div class="op-warn" data-pano="warn" hidden></div>
     </div>`;
 
   const refs = {
+    title: host.querySelector('[data-pano="title"]'),
     aspects: host.querySelector('[data-pano="aspects"]'),
+    coverageRow: host.querySelector('[data-pano="coverageRow"]'),
+    coverage: host.querySelector('[data-pano="coverage"]'),
+    coverageVal: host.querySelector('[data-pano="coverageVal"]'),
     longSide: host.querySelector('[data-pano="longSide"]'),
     wrap: host.querySelector('[data-pano="wrap"]'),
+    wrapLabel: host.querySelector('[data-pano="wrapLabel"]'),
     target: host.querySelector('[data-pano="target"]'),
     note: host.querySelector('[data-pano="note"]'),
     warn: host.querySelector('[data-pano="warn"]'),
   };
 
+  function mode() {
+    return getMode?.() === 'panorama360' ? 'panorama360' : 'panorama';
+  }
+
   function currentPreset() {
-    const id = String(store.state.edit?.preset || 'panorama');
-    return findPreset(presets, id) || findPreset(presets, 'panorama');
+    const id = String(store.state.edit?.preset || mode());
+    return findPreset(presets, id)
+      || findPreset(presets, mode() === 'panorama360' ? 'panorama360' : 'panorama');
   }
 
   function overrides() {
     return store.state.edit?.overrides || {};
   }
 
+  function prefix() {
+    return mode();
+  }
+
   function value(key, fallback) {
-    return effectiveValue(currentPreset(), overrides(), `panorama.${key}`, fallback);
+    return effectiveValue(currentPreset(), overrides(), `${prefix()}.${key}`, fallback);
   }
 
   function setValue(key, next) {
     patchSettings({
       edit: {
         overrides: withOverride(
-          currentPreset(), overrides(), `panorama.${key}`, next),
+          currentPreset(), overrides(), `${prefix()}.${key}`, next),
       },
     });
     paint();
   }
 
   function paint() {
-    const aspectId = String(value('aspect', '2:1'));
-    const aspect = ASPECTS.find((item) => item.id === aspectId) || ASPECTS[0];
-    const longSide = Number(value('long_side', 3072)) || 3072;
-    refs.aspects.innerHTML = ASPECTS.map((item) => `
-      <button type="button" class="ai-chip${item.id === aspect.id ? ' is-active' : ''}"
-              data-aspect="${item.id}">${item.label}</button>`).join('');
-    refs.aspects.querySelectorAll('[data-aspect]').forEach((button) => {
-      button.addEventListener('click', () => setValue('aspect', button.dataset.aspect));
-    });
-    refs.longSide.value = String(longSide);
-    refs.wrap.checked = Boolean(value('wrap', false));
+    const is360 = mode() === 'panorama360';
+    refs.title.textContent = is360 ? '360° 全景' : '全景';
+    refs.aspects.hidden = is360;
+    refs.coverageRow.hidden = !is360;
+    refs.wrapLabel.textContent = is360 ? '360° 环绕融合（实验）' : '360° 环绕接缝（实验）';
 
-    const planned = estimate(getSize?.(), aspect, longSide);
-    if (!planned) {
+    const longSide = Number(value('long_side', 3072)) || 3072;
+    refs.longSide.value = String(longSide);
+    refs.wrap.checked = Boolean(value('wrap', is360));
+    refs.coverageVal.textContent = `${Math.round(Number(value('coverage', 0.4)) * 100)}%`;
+    refs.coverage.value = String(
+      Math.round(Number(value('coverage', 0.4)) * 100) || 40);
+
+    if (!is360) {
+      const aspectId = String(value('aspect', '2:1'));
+      const aspect = ASPECTS.find((item) => item.id === aspectId) || ASPECTS[0];
+      refs.aspects.innerHTML = ASPECTS.map((item) => `
+        <button type="button" class="ai-chip${item.id === aspect.id ? ' is-active' : ''}"
+                data-aspect="${item.id}">${item.label}</button>`).join('');
+      refs.aspects.querySelectorAll('[data-aspect]').forEach((button) => {
+        button.addEventListener('click', () => setValue('aspect', button.dataset.aspect));
+      });
+    }
+
+    const size = getSize?.();
+    if (!size) {
       refs.target.textContent = '等待图片';
       refs.note.textContent = '上传一张参考图后显示目标画布。';
       refs.warn.hidden = true;
       return;
     }
+
+    if (is360) {
+      const coverage = Number(value('coverage', 0.4)) || 0.4;
+      const planned = estimate360(size, coverage, longSide);
+      refs.target.textContent = `${planned.width} × ${planned.height}`;
+      refs.note.textContent =
+        `源图缩到 ${planned.workW} × ${planned.workH}，四周补全；输出固定 2:1。`;
+      const over = planned.pixels > MAX_PIXELS;
+      refs.warn.hidden = !over;
+      refs.warn.textContent = over
+        ? `画布约 ${(planned.pixels / 1e6).toFixed(1)} MP，超过后端上限 6.0 MP，请降低长边。`
+        : '';
+      return;
+    }
+
+    const aspectId = String(value('aspect', '2:1'));
+    const aspect = ASPECTS.find((item) => item.id === aspectId) || ASPECTS[0];
+    const planned = estimate(size, aspect, longSide);
     refs.target.textContent = `${planned.width} × ${planned.height}`;
     refs.note.textContent = planned.scale < 1
       ? `源图会等比缩到画布内（缩放 ${(planned.scale * 100).toFixed(0)}%）`
@@ -148,6 +221,12 @@ export function mountPanoramaPanel(host, { getSize } = {}) {
   });
   refs.wrap.addEventListener('change', () => {
     setValue('wrap', refs.wrap.checked);
+  });
+  refs.coverage.addEventListener('input', () => {
+    const pct = Math.min(
+      COVERAGE_MAX, Math.max(COVERAGE_MIN, Number(refs.coverage.value) || 40));
+    refs.coverageVal.textContent = `${pct}%`;
+    setValue('coverage', Math.round(pct) / 100);
   });
 
   let unsubscribe = null;

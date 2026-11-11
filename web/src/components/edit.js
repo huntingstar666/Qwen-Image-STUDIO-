@@ -336,6 +336,7 @@ export function createEditPage(host) {
                       <option value="remove">元素移除</option>
                       <option value="outpaint">扩图</option>
                       <option value="panorama">全景</option>
+                      <option value="panorama360">360° 全景</option>
                     </select>
                   </label>
                   <div class="ai-hint" data-ref="taskNote"></div>
@@ -1782,6 +1783,7 @@ export function createEditPage(host) {
   }
 
   panoramaPanel = mountPanoramaPanel(refs.panoramaHost, {
+    getMode: () => activeTaskMode(),
     getSize: () => {
       const image = images[0];
       return image ? { width: image.width, height: image.height } : null;
@@ -1800,6 +1802,7 @@ export function createEditPage(host) {
     remove: '元素移除：提交时强制 fills=true + 绿色提示图，并自动补「移除图像中的绿色区域」；遮罩外逐字节保留。',
     outpaint: '扩图：用「⤢ 扩图」的四边百分比外补，提交时强制 fills=false + 灰色提示。',
     panorama: '全景：按目标比例做最小外扩，整画布采样；源图保持原尺寸或等比缩小，向外补画布。',
+    panorama360: '360° 全景：固定 2:1 画布，源图缩到设定占比后居中，四周补全并做环绕融合。',
     inpaint: '局部重绘：只重绘蒙版内，其余逐像素保留。',
   };
 
@@ -1808,7 +1811,7 @@ export function createEditPage(host) {
     const note = TASK_NOTES[activeTaskMode()] || '';
     refs.taskNote.textContent = note;
     refs.taskNote.hidden = !note;
-    const isPanorama = activeTaskMode() === 'panorama';
+    const isPanorama = ['panorama', 'panorama360'].includes(activeTaskMode());
     refs.panoramaHost.hidden = !isPanorama;
     if (isPanorama) panoramaPanel?.refresh();
   }
@@ -1816,7 +1819,7 @@ export function createEditPage(host) {
   refs.taskMode.addEventListener('change', () => {
     edit.taskMode = refs.taskMode.value;
     // 移除 / 扩图 / 全景有专属提示图约定，显式选任务时同步到对应预设
-    if (['remove', 'outpaint', 'panorama'].includes(edit.taskMode)) {
+    if (['remove', 'outpaint', 'panorama', 'panorama360'].includes(edit.taskMode)) {
       const hit = findPreset(presetList, edit.taskMode);
       if (hit) {
         // 等价于选中该预设：套用全局默认，任务下拉回到「跟随预设」。
@@ -2601,6 +2604,11 @@ export function createEditPage(host) {
         localExtra.scheme = 'a';
         localExtra.fills = false;
         localExtra.hint = 'gray_fill';
+      } else if (taskMode === 'panorama360') {
+        // 360° 全景同样整画布采样 + 灰边提示。
+        localExtra.scheme = 'a';
+        localExtra.fills = false;
+        localExtra.hint = 'gray_fill';
       }
       // 一致性开关是用户当前选择，必须显式回传（开/关都发）：
       // 只在关闭时发 false 的话，用户重新打开会沿用预设里保存的 false，UI 勾选等于无效。
@@ -2672,6 +2680,10 @@ export function createEditPage(host) {
         payload.local.fills = false;
         payload.local.hint = 'gray_fill';
         payload.local.scheme = 'a';
+      } else if (taskMode === 'panorama360') {
+        payload.local.fills = false;
+        payload.local.hint = 'gray_fill';
+        payload.local.scheme = 'a';
       }
     }
     if (taskMode === 'panorama') {
@@ -2684,6 +2696,20 @@ export function createEditPage(host) {
           presetMeta, edit.overrides || {}, 'panorama.wrap', false)),
         seam_blend: Number(effectiveValue(
           presetMeta, edit.overrides || {}, 'panorama.seam_blend', 24)) || 24,
+      };
+    }
+    if (taskMode === 'panorama360') {
+      payload.panorama360 = {
+        coverage: Number(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama360.coverage', 0.4)) || 0.4,
+        long_side: Number(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama360.long_side', 3072)) || 3072,
+        wrap: Boolean(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama360.wrap', true)),
+        seam_blend: Number(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama360.seam_blend', 24)) || 24,
+        level: Boolean(effectiveValue(
+          presetMeta, edit.overrides || {}, 'panorama360.level', true)),
       };
     }
     return payload;
@@ -3267,7 +3293,7 @@ export function createEditPage(host) {
     }
 
     // 预设之外的嵌套参数 → 扁平覆盖项；任务强制的 local 键不回填。
-    const groups = ['local', 'zero_shift', 'preprocess', 'outpaint', 'panorama'];
+    const groups = ['local', 'zero_shift', 'preprocess', 'outpaint', 'panorama', 'panorama360'];
     const taskKeys = new Set(['local.enabled', 'local.fills', 'local.hint', 'local.consistency']);
     const next = { ...(edit.overrides || {}) };
     const flatten = (prefix, value) => {
@@ -3488,7 +3514,7 @@ export function createEditPage(host) {
       }
       if (payload.taskMode) {
         const mode = String(payload.taskMode);
-        if (['edit', 'inpaint', 'remove', 'outpaint', 'panorama'].includes(mode)) {
+        if (['edit', 'inpaint', 'remove', 'outpaint', 'panorama', 'panorama360'].includes(mode)) {
           edit.taskMode = mode;
           if (findPreset(presetList, mode)) edit.preset = mode;
           patchSettings({ edit: { taskMode: mode, preset: edit.preset } });
@@ -3499,6 +3525,14 @@ export function createEditPage(host) {
         for (const [key, value] of Object.entries(payload.panorama)) {
           if (value === undefined || value === null) continue;
           edit.overrides = withOverride(preset, edit.overrides || {}, `panorama.${key}`, value);
+        }
+        patchSettings({ edit: { overrides: edit.overrides } });
+      }
+      if (payload.panorama360 && typeof payload.panorama360 === 'object') {
+        const preset = findPreset(presetList, 'panorama360') || currentPreset();
+        for (const [key, value] of Object.entries(payload.panorama360)) {
+          if (value === undefined || value === null) continue;
+          edit.overrides = withOverride(preset, edit.overrides || {}, `panorama360.${key}`, value);
         }
         patchSettings({ edit: { overrides: edit.overrides } });
       }

@@ -446,6 +446,8 @@ export function createImageToolsPage(host) {
   /* D18.3：显示画布尺寸签名，只有变化时才重设 canvas.width/height。 */
   let displayStamp = { width: 0, height: 0, dpr: 0 };
   let overlayRaf = 0;
+  /* 扩图「拖画面」时按帧合并重建，避免 pointermove 过密时反复画大图。 */
+  let outpaintMoveRaf = 0;
   const selectedResultIds = new Set();
   const toastRoot = document.getElementById('toast-root');
   toastRoot?.classList.add('tools-toast');
@@ -470,6 +472,7 @@ export function createImageToolsPage(host) {
       base: null,
       pads: { left: 0, right: 0, top: 0, bottom: 0 },
       pendingPads: null,
+      canvasRatio: '',
     },
     upscale: { models: null, engine: '', scale: 2, jobId: '', polling: false, touchedScale: false },
     results: [],
@@ -793,6 +796,23 @@ export function createImageToolsPage(host) {
               <details class="fold tool-fold" data-group="outpaint">
                 <summary>扩图</summary>
                 <div class="fold-body">
+                  <div class="field">
+                    <span class="field-label">新画布 <span class="tag-hint">直接定尺寸，拖动画面调位置</span></span>
+                    <div class="outpaint-canvas-row">
+                      <input class="input outpaint-size" type="number" min="1" step="1" inputmode="numeric" data-ref="outpaintCanvasW" aria-label="新画布宽度" />
+                      <span class="outpaint-canvas-x">×</span>
+                      <input class="input outpaint-size" type="number" min="1" step="1" inputmode="numeric" data-ref="outpaintCanvasH" aria-label="新画布高度" />
+                      <span class="outpaint-canvas-x">px</span>
+                      <button class="btn ghost sm" type="button" data-ref="outpaintCanvasApply">应用</button>
+                    </div>
+                    <div class="chips" data-ref="outpaintCanvasRatios">
+                      <button class="chip active" type="button" data-ratio="">自由</button>
+                      ${['1:1', '4:3', '3:2', '16:9', '9:16', '3:4'].map(
+                        (ratio) =>
+                          `<button class="chip" type="button" data-ratio="${ratio}">${ratio}</button>`,
+                      ).join('')}
+                    </div>
+                  </div>
                   <div class="field">
                     <span class="field-label">全景比例 <span class="tag-hint">自动算方向与幅度</span></span>
                     <div class="chips" data-ref="outpaintPano">
@@ -1228,6 +1248,10 @@ export function createImageToolsPage(host) {
     processApply: ref('processApply'),
     outpaintDirs: ref('outpaintDirs'),
     outpaintPano: ref('outpaintPano'),
+    outpaintCanvasW: ref('outpaintCanvasW'),
+    outpaintCanvasH: ref('outpaintCanvasH'),
+    outpaintCanvasApply: ref('outpaintCanvasApply'),
+    outpaintCanvasRatios: ref('outpaintCanvasRatios'),
     outpaintAmount: ref('outpaintAmount'),
     outpaintAmountVal: ref('outpaintAmountVal'),
     outpaintPlan: ref('outpaintPlan'),
@@ -1674,7 +1698,12 @@ export function createImageToolsPage(host) {
     state.outpaint.base = null;
     state.outpaint.pendingPads = null;
     state.outpaint.panoramaAspect = '';
+    state.outpaint.canvasRatio = '';
     hideOutpaintGhost();
+    if (refs.outpaintCanvasW) {
+      refs.outpaintCanvasW.value = String(width);
+      refs.outpaintCanvasH.value = String(height);
+    }
     state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
     state.crop.suppressed = false;
@@ -3006,10 +3035,9 @@ export function createImageToolsPage(host) {
     const point = pointerPoint(event);
     if (state.outpaint.active) {
       if (state.tool !== 'outpaint' || state.outpaint.panoramaAspect) return;
-      const handle = hitOutpaintHandle(point);
-      if (!handle) return;
       const result = state.outpaint.result;
       const display = currentDisplaySize();
+      const handle = hitOutpaintHandle(point);
       event.preventDefault();
       try {
         refs.overlayCanvas.setPointerCapture?.(event.pointerId);
@@ -3022,6 +3050,19 @@ export function createImageToolsPage(host) {
         x: display.width / Math.max(1, result.width),
         y: display.height / Math.max(1, result.height),
       };
+      if (!handle) {
+        // 没按在手柄上：拖动画面本身，在固定画布里挪位置
+        drag = {
+          type: 'outpaint-move',
+          startClient: { x: event.clientX, y: event.clientY },
+          offsetStart: { x: result.sourceRect.x, y: result.sourceRect.y },
+          canvas: { w: result.width, h: result.height },
+          source: { w: result.sourceRect.width, h: result.sourceRect.height },
+          scale,
+          offsetNext: null,
+        };
+        return;
+      }
       drag = {
         type: 'outpaint',
         handle,
@@ -3178,7 +3219,44 @@ export function createImageToolsPage(host) {
         updateOutpaintSummary();
         return;
       }
+      if (drag?.type === 'outpaint-move') {
+        const result = state.outpaint.result;
+        if (!result) return;
+        const dx = (event.clientX - drag.startClient.x) / Math.max(0.0001, drag.scale.x);
+        const dy = (event.clientY - drag.startClient.y) / Math.max(0.0001, drag.scale.y);
+        drag.offsetNext = {
+          x: Math.max(0, Math.min(drag.canvas.w - drag.source.w, Math.round(drag.offsetStart.x + dx))),
+          y: Math.max(0, Math.min(drag.canvas.h - drag.source.h, Math.round(drag.offsetStart.y + dy))),
+        };
+        if (!outpaintMoveRaf) {
+          outpaintMoveRaf = requestAnimationFrame(() => {
+            outpaintMoveRaf = 0;
+            if (drag?.type !== 'outpaint-move' || !drag.offsetNext) return;
+            buildOutpaintCanvas({
+              width: drag.canvas.w,
+              height: drag.canvas.h,
+              offsetX: drag.offsetNext.x,
+              offsetY: drag.offsetNext.y,
+            });
+            updateOutpaintSummary();
+            render();
+          });
+        }
+        return;
+      }
       const handle = hitOutpaintHandle(point);
+      const result = state.outpaint.result;
+      const display = currentDisplaySize();
+      const rect = result.sourceRect;
+      const sourceLeft = (rect.x / result.width) * display.width;
+      const sourceTop = (rect.y / result.height) * display.height;
+      const sourceRight = sourceLeft + (rect.width / result.width) * display.width;
+      const sourceBottom = sourceTop + (rect.height / result.height) * display.height;
+      const inside =
+        point.x >= sourceLeft &&
+        point.x <= sourceRight &&
+        point.y >= sourceTop &&
+        point.y <= sourceBottom;
       refs.overlayCanvas.style.cursor = handle
         ? {
             n: 'ns-resize',
@@ -3190,7 +3268,9 @@ export function createImageToolsPage(host) {
             nw: 'nwse-resize',
             se: 'nwse-resize',
           }[handle]
-        : 'default';
+        : inside
+          ? 'move'
+          : 'default';
       return;
     }
     if (drag?.type === 'watermark') {
@@ -3348,6 +3428,23 @@ export function createImageToolsPage(host) {
       state.outpaint.pendingPads = null;
       hideOutpaintGhost();
       if (pads) buildOutpaintResult(pads);
+      updateOutpaintSummary();
+      render();
+    }
+    if (drag?.type === 'outpaint-move') {
+      if (outpaintMoveRaf) {
+        cancelAnimationFrame(outpaintMoveRaf);
+        outpaintMoveRaf = 0;
+      }
+      const next = drag.offsetNext;
+      if (next) {
+        buildOutpaintCanvas({
+          width: drag.canvas.w,
+          height: drag.canvas.h,
+          offsetX: next.x,
+          offsetY: next.y,
+        });
+      }
       updateOutpaintSummary();
       render();
     }
@@ -5132,6 +5229,9 @@ export function createImageToolsPage(host) {
     }
     refs.outpaintAmount.disabled = active;
     for (const chip of refs.outpaintDirs.querySelectorAll('[data-dir]')) chip.disabled = active;
+    for (const input of [refs.outpaintCanvasW, refs.outpaintCanvasH]) input.disabled = active;
+    refs.outpaintCanvasApply.disabled = active;
+    for (const chip of refs.outpaintCanvasRatios.querySelectorAll('[data-ratio]')) chip.disabled = active;
     refs.outpaintGo.textContent = active ? '带到编辑 · 全景' : '去局部重绘';
     refs.outpaintPlan.textContent = active ? '规划全景' : '应用预设范围';
   }
@@ -5167,6 +5267,75 @@ export function createImageToolsPage(host) {
     state.outpaint.amount = Number(refs.outpaintAmount.value) / 100;
     refs.outpaintAmountVal.textContent = `${Math.round(state.outpaint.amount * 100)}%`;
     if (state.outpaint.active) applyOutpaintPreset();
+  });
+
+  /* ---------------- 自定义画布：直接定尺寸 / 比例，拖动画面调位置 ---------------- */
+  refs.outpaintCanvasApply.addEventListener('click', async () => {
+    if (!state.source) {
+      toastWarn('请先上传图片');
+      return;
+    }
+    if (state.outpaint.panoramaAspect) {
+      toastWarn('全景模式请用「规划全景」');
+      return;
+    }
+    const base = await ensureOutpaintBase();
+    if (!base) return;
+    const width = Math.round(Number(refs.outpaintCanvasW.value));
+    const height = Math.round(Number(refs.outpaintCanvasH.value));
+    if (!(width > 0) || !(height > 0)) {
+      toastWarn('请输入有效的新画布宽高');
+      return;
+    }
+    if (width < base.width || height < base.height) {
+      toastWarn(`新画布不能小于原图 ${fmtNum(base.width)} × ${fmtNum(base.height)}，已按原图尺寸兜底`);
+    }
+    if (!(await ensureOutpaintFrameReady())) return;
+    applyOutpaintCanvasSize(width, height);
+    updateOutpaintSummary();
+    await render();
+  });
+
+  for (const input of [refs.outpaintCanvasW, refs.outpaintCanvasH]) {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        refs.outpaintCanvasApply.click();
+      }
+    });
+  }
+
+  refs.outpaintCanvasRatios.querySelectorAll('[data-ratio]').forEach((chip) => {
+    chip.addEventListener('click', async () => {
+      if (!state.source) {
+        toastWarn('请先上传图片');
+        return;
+      }
+      if (state.outpaint.panoramaAspect) {
+        toastWarn('全景模式请用「规划全景」');
+        return;
+      }
+      const ratio = chip.dataset.ratio || '';
+      if (!ratio) {
+        // 自由：只取消比例高亮，画布保持不变
+        state.outpaint.canvasRatio = '';
+        for (const item of refs.outpaintCanvasRatios.querySelectorAll('[data-ratio]')) {
+          item.classList.toggle('active', (item.dataset.ratio || '') === '');
+        }
+        return;
+      }
+      const base = await ensureOutpaintBase();
+      if (!base) return;
+      const [rw, rh] = ratio.split(':').map(Number);
+      const fit = Math.max(base.width / rw, base.height / rh);
+      const width = Math.max(base.width, Math.ceil(rw * fit));
+      const height = Math.max(base.height, Math.ceil(rh * fit));
+      if (!(await ensureOutpaintFrameReady())) return;
+      applyOutpaintCanvasSize(width, height);
+      updateOutpaintSummary();
+      await render();
+      toast(`新画布 ${width} × ${height}（${ratio}）`, 'info', { timeout: 1600 });
+    });
   });
 
   /* ---------------- 扩图操作框 ---------------- */
@@ -5266,48 +5435,110 @@ export function createImageToolsPage(host) {
     refs.stageGhost?.classList.add('hidden');
   }
 
-  function buildOutpaintResult(pads) {
+  /** 按「画布尺寸 + 原图偏移」生成扩图画布与遮罩（自定义画布 / 拖画面 / 拖手柄共用）。 */
+  function buildOutpaintCanvas({ width, height, offsetX = 0, offsetY = 0 }) {
     const base = state.outpaint.base;
     if (!base) return null;
-    const next = clampOutpaintPads(pads, base.width, base.height);
-    const width = base.width + next.left + next.right;
-    const height = base.height + next.top + next.bottom;
-    if (width > OUTPAINT_MAX_SIDE || height > OUTPAINT_MAX_SIDE) return null;
+    const W = Math.max(base.width, Math.min(OUTPAINT_MAX_SIDE, Math.round(Number(width) || base.width)));
+    const H = Math.max(base.height, Math.min(OUTPAINT_MAX_SIDE, Math.round(Number(height) || base.height)));
+    const x = Math.max(0, Math.min(W - base.width, Math.round(Number(offsetX) || 0)));
+    const y = Math.max(0, Math.min(H - base.height, Math.round(Number(offsetY) || 0)));
+    const pads = {
+      left: x,
+      right: W - base.width - x,
+      top: y,
+      bottom: H - base.height - y,
+    };
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(base, next.left, next.top);
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(base, x, y);
     const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = width;
-    maskCanvas.height = height;
+    maskCanvas.width = W;
+    maskCanvas.height = H;
     const mctx = maskCanvas.getContext('2d');
     mctx.fillStyle = '#ffffff';
-    mctx.fillRect(0, 0, width, height);
+    mctx.fillRect(0, 0, W, H);
     mctx.fillStyle = '#000000';
-    mctx.fillRect(next.left, next.top, base.width, base.height);
-    state.outpaint.pads = next;
-    refs.outpaintGo.disabled = next.left + next.right + next.top + next.bottom === 0;
+    mctx.fillRect(x, y, base.width, base.height);
+    state.outpaint.pads = pads;
+    refs.outpaintGo.disabled = pads.left + pads.right + pads.top + pads.bottom === 0;
     state.outpaint.result = {
       plan: {
-        direction: inferOutpaintDirection(next),
-        pad: next,
+        direction: inferOutpaintDirection(pads),
+        pad: pads,
         source: { w: base.width, h: base.height },
-        canvas: { w: width, h: height },
-        offset: { x: next.left, y: next.top },
+        canvas: { w: W, h: H },
+        offset: { x, y },
       },
       prompt: '',
       canvas,
       maskCanvas,
       dataUrl: '',
       maskDataUrl: '',
-      width,
-      height,
-      sourceRect: { x: next.left, y: next.top, width: base.width, height: base.height },
+      width: W,
+      height: H,
+      sourceRect: { x, y, width: base.width, height: base.height },
     };
+    syncOutpaintCanvasInputs(W, H);
     return state.outpaint.result;
+  }
+
+  function buildOutpaintResult(pads) {
+    const base = state.outpaint.base;
+    if (!base) return null;
+    const next = clampOutpaintPads(pads, base.width, base.height);
+    return buildOutpaintCanvas({
+      width: base.width + next.left + next.right,
+      height: base.height + next.top + next.bottom,
+      offsetX: next.left,
+      offsetY: next.top,
+    });
+  }
+
+  /** 输入框 & 比例 chip 跟随当前画布同步。 */
+  function syncOutpaintCanvasInputs(width, height) {
+    if (!refs.outpaintCanvasW) return;
+    refs.outpaintCanvasW.value = String(Math.round(width));
+    refs.outpaintCanvasH.value = String(Math.round(height));
+    const ratio = width && height ? width / height : 0;
+    let match = '';
+    for (const chip of refs.outpaintCanvasRatios.querySelectorAll('[data-ratio]')) {
+      const value = chip.dataset.ratio || '';
+      if (!value) continue;
+      const [rw, rh] = value.split(':').map(Number);
+      if (rw && rh && Math.abs(ratio - rw / rh) / (rw / rh) < 0.004) {
+        match = value;
+        break;
+      }
+    }
+    state.outpaint.canvasRatio = match;
+    for (const chip of refs.outpaintCanvasRatios.querySelectorAll('[data-ratio]')) {
+      chip.classList.toggle('active', (chip.dataset.ratio || '') === match);
+    }
+  }
+
+  /** 把原图放到指定画布的中央（比例 chip / 尺寸输入用）。 */
+  function applyOutpaintCanvasSize(width, height) {
+    const base = state.outpaint.base;
+    if (!base) return null;
+    const W = Math.max(base.width, Math.min(OUTPAINT_MAX_SIDE, Math.round(Number(width) || base.width)));
+    const H = Math.max(base.height, Math.min(OUTPAINT_MAX_SIDE, Math.round(Number(height) || base.height)));
+    return buildOutpaintCanvas({
+      width: W,
+      height: H,
+      offsetX: Math.round((W - base.width) / 2),
+      offsetY: Math.round((H - base.height) / 2),
+    });
+  }
+
+  async function ensureOutpaintFrameReady() {
+    if (state.outpaint.active && state.outpaint.result) return true;
+    await startOutpaintFrame();
+    return Boolean(state.outpaint.active && state.outpaint.result);
   }
 
   async function ensureOutpaintBase() {
@@ -5399,7 +5630,13 @@ export function createImageToolsPage(host) {
         result.sourceRect.width,
       )} × ${fmtNum(result.sourceRect.height)}（${
         sides.length ? `外扩 ${sides.join(' / ')}` : '尚未外扩'
-      }）${pending ? ' · 松开鼠标应用' : '；向外拖动边框即可扩图。'}`;
+      }）${
+        pending
+          ? ' · 松开鼠标应用'
+          : sides.length
+            ? '；拖动画面可调整位置，拖边框可继续外扩。'
+            : '；拖边框外扩，或在上方直接设置新画布尺寸与比例。'
+      }`;
       return;
     }
     if (aspect) {

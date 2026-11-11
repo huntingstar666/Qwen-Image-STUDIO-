@@ -473,6 +473,31 @@ html[data-theme="dark"] .tool-stage .tool-canvas:not(.tool-overlay) {
   background: transparent;
 }
 
+/* 扩图：自定义画布尺寸 */
+.outpaint-canvas-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.outpaint-canvas-row .outpaint-size {
+  width: 74px;
+  flex: 0 0 74px;
+  padding: 6px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.outpaint-canvas-row .btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.outpaint-canvas-x {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
 /* 扩图拖动中：待确认的新画布（虚线框 + 外部压暗） */
 .tool-stage-ghost {
   position: absolute;

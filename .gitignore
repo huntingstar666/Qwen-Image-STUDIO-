@@ -42,3 +42,14 @@ web/vendor/pose3d/poses/
 
 # 视频工作台运行期数据（项目、音频、成片）
 video_studio/_data/
+
+# 本地图片数据与调试产物（只留本地，不推送）
+still_loop/_data/
+pano_lab/out/
+pano_lab/tmp/
+panorama_360/samples/
+sheet_test.png
+.tmp*/
+.trae/
+.trae-html-share-packages/
+tests/_py6.txt

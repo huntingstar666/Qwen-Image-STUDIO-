@@ -3,6 +3,7 @@
 > 状态：待实施 · 2026-11-09
 > 范围：仅改动 `video_studio/`，主项目 `server/`、`web/` 保持零改动（只通过 HTTP 只读调用）。
 > 图例：`[ ]` 待做 · `[~]` 进行中 · `[x]` 完成
+> 分段编辑器（合并 / 拆分 / 一句多画面）方案见 [PLAN_SHOT_SPLIT_MERGE.md](PLAN_SHOT_SPLIT_MERGE.md)。
 
 ---
 

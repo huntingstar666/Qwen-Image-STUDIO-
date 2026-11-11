@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>360° 全景查看器</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --fg: #f2f4f7;
+        --muted: #a7b0bd;
+        --line: rgba(255, 255, 255, 0.14);
+        --glass: rgba(18, 21, 26, 0.62);
+        --accent: #2f6b62;
+        --accent-2: #7fd1c3;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; background: #07090c; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        color: var(--fg);
+        overflow: hidden;
+      }
+      .stage { position: fixed; inset: 0; }
+      #view { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+      #view.is-dragging { cursor: grabbing; }
+
+      .bar {
+        position: absolute; top: 0; left: 0; right: 0;
+        display: flex; align-items: center; justify-content: space-between; gap: 16px;
+        padding: 14px 18px;
+        background: linear-gradient(180deg, rgba(5, 7, 10, 0.72), rgba(5, 7, 10, 0));
+        pointer-events: none;
+      }
+      .brand { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+      .brand .sub {
+        display: block; margin-top: 2px; font-size: 11px; font-weight: 400;
+        color: var(--muted); letter-spacing: 0.6px;
+      }
+      .actions { display: flex; gap: 8px; pointer-events: auto; flex-wrap: wrap; justify-content: flex-end; }
+      .btn {
+        appearance: none; border: 1px solid var(--line); border-radius: 999px;
+        background: var(--glass); color: var(--fg);
+        padding: 7px 14px; font-size: 13px; line-height: 1;
+        cursor: pointer; backdrop-filter: blur(10px);
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+      }
+      .btn:hover { background: rgba(38, 44, 52, 0.8); }
+      .btn:active { transform: scale(0.98); }
+      .btn[aria-pressed="true"] {
+        border-color: var(--accent-2); color: #d8fff8;
+        background: rgba(47, 107, 98, 0.55);
+      }
+      .btn.primary {
+        background: var(--accent); border-color: var(--accent);
+        padding: 10px 20px; font-size: 14px;
+      }
+      .btn.primary:hover { background: #377f74; }
+
+      .drop {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        background: radial-gradient(circle at 50% 40%, rgba(40, 60, 70, 0.35), rgba(4, 6, 9, 0.92));
+        transition: opacity 0.2s ease;
+      }
+      .drop.is-hidden { opacity: 0; pointer-events: none; }
+      .drop-card {
+        width: min(460px, calc(100vw - 40px));
+        padding: 30px 28px; text-align: center;
+        border: 1px dashed rgba(255, 255, 255, 0.22); border-radius: 20px;
+        background: rgba(14, 17, 22, 0.7); backdrop-filter: blur(14px);
+      }
+      .drop-card h1 { margin: 0 0 8px; font-size: 19px; font-weight: 600; }
+      .drop-card p { margin: 0 0 18px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+      .drop-card .tip { margin: 16px 0 0; font-size: 12px; color: #8d97a4; }
+
+      .hud {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        padding: 14px 18px 16px;
+        background: linear-gradient(0deg, rgba(5, 7, 10, 0.72), rgba(5, 7, 10, 0));
+        font-size: 12px; color: var(--muted);
+      }
+      .hud .meta { color: var(--fg); font-variant-numeric: tabular-nums; }
+      .hud .meta.is-warn { color: #ffd48a; }
+      .hud .hint { margin-left: auto; }
+      .fov { display: inline-flex; align-items: center; gap: 8px; }
+      .fov input { width: 120px; accent-color: var(--accent-2); }
+
+      .toast {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+        max-width: min(520px, calc(100vw - 48px));
+        padding: 12px 18px; border-radius: 12px;
+        background: rgba(28, 20, 20, 0.92); border: 1px solid rgba(255, 140, 120, 0.4);
+        color: #ffd9d2; font-size: 13px; line-height: 1.5; text-align: center;
+      }
+
+      @media (max-width: 640px) {
+        .brand .sub, .hud .hint { display: none; }
+        .actions .btn { padding: 6px 11px; font-size: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <canvas id="view"></canvas>
+
+      <header class="bar">
+        <div class="brand">360° 全景查看器<span class="sub">等距柱状 · 球面环视</span></div>
+        <div class="actions">
+          <button class="btn" id="open" type="button">打开图片</button>
+          <input id="file" type="file" accept="image/*" hidden />
+          <button class="btn" id="demo" type="button">360° 示例</button>
+          <button class="btn" id="modeFlat" type="button" aria-pressed="true">宽幅</button>
+          <button class="btn" id="modeSphere" type="button" aria-pressed="false">球面</button>
+          <button class="btn" id="rotate" type="button" aria-pressed="false">自动旋转</button>
+          <button class="btn" id="reset" type="button">重置视角</button>
+          <button class="btn" id="full" type="button">全屏</button>
+        </div>
+      </header>
+
+      <div class="drop" id="drop">
+        <div class="drop-card">
+          <h1>拖入一张全景图</h1>
+          <p>普通宽幅全景用「宽幅」模式看整张；只有真正的 360° 等距柱状图，才适合切到「球面」环视。</p>
+          <button class="btn primary" id="pick" type="button">选择文件</button>
+          <p class="tip">先点右上角「360° 示例」，可以看到真 360° 图在球面模式下的环视效果；你的生成图若只有一面，说明它本身不是 360° 内容。</p>
+        </div>
+      </div>
+
+      <footer class="hud">
+        <span class="meta" id="meta">等待图片</span>
+        <span class="hint" id="hint">拖动平移 · 滚轮缩放 · R 重置 · 空格自动旋转 · F 全屏</span>
+        <label class="fov"><span>视野</span><input id="fov" type="range" min="30" max="120" value="90" /></label>
+      </footer>
+
+      <div class="toast" id="toast" hidden></div>
+    </div>
+
+    <script type="module" src="./viewer.js"></script>
+  </body>
+</html>

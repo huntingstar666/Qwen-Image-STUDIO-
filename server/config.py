@@ -30,7 +30,9 @@ CONFIG_PATH = os.path.join(ROOT, "config.json")
 
 # --------------------------------------------------------------------------- 常量
 
-DEFAULT_COMFY_ROOT = r"<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI"
+#: 兼容旧配置的兜底 ComfyUI 根目录。默认留空，由 config.json 的 `comfy_root`
+#: 或环境变量 `Q2I_COMFY_ROOT` 指定；只在重新移植引擎 / 推断权重目录时用到。
+DEFAULT_COMFY_ROOT = os.environ.get("Q2I_COMFY_ROOT", "")
 
 #: 官方 Qwen-Image-2.1-Turbo 保存的 8 步采样调度（来自权重仓 model_index.json 的
 #: `sample_sigmas`）。采样时再追加 0.0 → 9 个 sigma = 8 步。

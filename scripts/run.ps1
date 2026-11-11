@@ -6,7 +6,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 -Warmup    # 启动后预加载模型
 #
 # 环境要求：Python 3.10+，且已装 fastapi / uvicorn / pillow / numpy / torch / requests。
-# 本机推荐直接用 ComfyUI 自带的 python（下面会自动探测）。
+# 解释器优先级：-Python 参数 > 环境变量 Q2I_PYTHON > PATH 里的 python。
 
 [CmdletBinding()]
 param(
@@ -26,7 +26,6 @@ function Say($msg, $color = "Cyan") { Write-Host $msg -ForegroundColor $color }
 if (-not $Python) {
     $candidates = @(
         $env:Q2I_PYTHON,
-        "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe",
         (Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
     ) | Where-Object { $_ -and (Test-Path $_) }
     foreach ($candidate in $candidates) {

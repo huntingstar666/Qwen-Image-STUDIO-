@@ -55,15 +55,15 @@ LATENT_DOWNSCALE = 16
 #: 没有参考图且 resolution=0 时的兜底画布边长（与节点 `resolution or 1024` 一致）
 DEFAULT_RESOLUTION = 1024
 
-#: 项目根目录（`<PROJECT_ROOT>`）
+#: 项目根目录（本文件所在仓库的根）
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 #: 引擎代码目录（ComfyUI 模型库的 vendored 副本，只 import 不改）。
 #: **这是 EngineConfig 唯一需要的代码路径**，运行期绝不把原 ComfyUI 源码目录加进 sys.path。
 DEFAULT_ENGINE_DIR = os.path.join(PROJECT_ROOT, "engine")
-#: 权重目录：复用本机 ComfyUI 的 models/（只读，不复制）。可用配置覆盖。
-DEFAULT_MODEL_ROOT = r"<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI\models"
+#: 权重目录：默认留空，由 config.json 的 `model_root` 或环境变量 `Q2I_MODEL_ROOT` 指定。
+DEFAULT_MODEL_ROOT = os.environ.get("Q2I_MODEL_ROOT", "")
 #: 原 ComfyUI 安装根目录——**只用来推断权重位置 / 重新移植引擎**，运行期不 import 它的代码。
-DEFAULT_COMFY_ROOT = r"<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI"
+DEFAULT_COMFY_ROOT = os.environ.get("Q2I_COMFY_ROOT", "")
 _DEFAULT_MODELS = DEFAULT_MODEL_ROOT
 DEFAULT_UNET = os.path.join(_DEFAULT_MODELS, "diffusion_models", "QwenImage2.1",
                             "qwen_image_2.1_int8_convrot.safetensors")
@@ -307,7 +307,7 @@ def callback_adapter(callback: Callable[[int, int, Any], Any] | None,
 class EngineConfig:
     """引擎配置。
 
-    ``engine_dir`` 是**项目内 vendored 的引擎代码目录**（默认 ``<PROJECT_ROOT>\\engine``，
+    ``engine_dir`` 是**项目内 vendored 的引擎代码目录**（默认 ``<项目根>/engine``，
     内含 ``comfy/`` 与 ``node_helpers.py``）。运行期只 import 这里的代码，
     绝不把原 ComfyUI 安装目录加进 ``sys.path``。
 

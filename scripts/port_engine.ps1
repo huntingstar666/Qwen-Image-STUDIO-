@@ -16,7 +16,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Source = "<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI",
+    [string]$Source = "",
     [string]$Target,
     [string]$Python,
     [switch]$Check
@@ -26,9 +26,9 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $Target) { $Target = Join-Path $RepoRoot "engine" }
+# 解释器：-Python 参数 > 环境变量 Q2I_PYTHON > PATH 里的 python
 if (-not $Python) {
-    $candidate = "<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe"
-    if (Test-Path $candidate) { $Python = $candidate } else { $Python = "python" }
+    $Python = @($env:Q2I_PYTHON, "python") | Where-Object { $_ } | Select-Object -First 1
 }
 
 function Say($msg, $color = "Cyan") { Write-Host "[port-engine] $msg" -ForegroundColor $color }
@@ -48,6 +48,11 @@ if ($Check) {
 }
 
 # ---------------------------------------------------------------- 源校验
+if (-not $Source) {
+    Say "请用 -Source 指定 ComfyUI 根目录（含 comfy/ 的那一层），例如：" "Red"
+    Say "  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\port_engine.ps1 -Source `"D:\ComfyUI`"" "Red"
+    exit 2
+}
 if (-not (Test-Path (Join-Path $SourceComfy "sd.py"))) {
     Say "找不到 $SourceComfy\sd.py；-Source 需指向 ComfyUI 根目录（含 comfy/ 的那一层）" "Red"
     exit 1

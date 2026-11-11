@@ -11,7 +11,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Source = "<LOCAL_PROJECTS>\mytools\aifisher\AIFISHER\public",
+    [string]$Source = "",
     [switch]$Check
 )
 
@@ -41,6 +41,10 @@ if ($Check) {
     exit 0
 }
 
+if (-not $Source) {
+    Say "请用 -Source 指向 image-style-kit 原项目的 public 目录" "Red"
+    exit 1
+}
 if (-not (Test-Path $Source)) {
     Say "源目录不存在：$Source" "Red"
     Say "请用 -Source 指向 image-style-kit 原项目的 public 目录" "Red"

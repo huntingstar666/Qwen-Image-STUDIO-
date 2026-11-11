@@ -36,7 +36,7 @@ def count_py(target: str) -> tuple[int, int, list[str]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", required=True, help="engine 目录")
-    ap.add_argument("--source", required=True, help="来源 ComfyUI 根目录")
+    ap.add_argument("--source", default="", help="来源 ComfyUI 根目录（只用于校验，不写入元数据）")
     ap.add_argument("--version", default="unknown")
     ap.add_argument("--commit", default="")
     args = ap.parse_args(argv)
@@ -50,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     now = _dt.datetime.now().astimezone()
 
     meta = {
-        "source_root": args.source,
+        # 不记录本机绝对路径，避免随仓库外泄
+        "source_root": "本地安装（路径未记录）",
         "source_version": args.version,
         "source_commit": args.commit or "",
         "copied_at": now.strftime("%Y-%m-%d %H:%M:%S%z"),
@@ -74,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
 | 项 | 值 |
 |---|---|
-| 来源 | `{args.source}` |
+| 来源 | ComfyUI 官方仓库（本地安装，路径未记录） |
 | ComfyUI 版本 | `{args.version}` |
 | commit | `{args.commit or "unknown"}` |
 | 复制时间 | {meta["copied_at"]} |

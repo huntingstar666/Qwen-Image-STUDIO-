@@ -1,12 +1,9 @@
 # Qwen-Image 2.1 工作台 —— 运行期依赖
 #
-# 本机没有 PyPI 网络（安装会失败），所以这里只作为「清单/校验」用途。
-# 本机实测可用的现成环境：<COMFY_ROOT>\ComfyUI-aki-v3.2\python\python.exe
-#   fastapi 0.129.0 / uvicorn 0.40.0 / pydantic 2.12.5 / starlette 1.2.1
-#   Pillow 11.3.0 / numpy 2.3.5 / torch 2.13.0+cu130 / transformers 4.57.6
-#   scipy 1.17.0 / safetensors 0.8.0 / einops 0.8.1 / requests 2.34.2
+# 安装：pip install -r requirements.txt
+# torch 需要 CUDA 13.x（cu130）版本：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu130
 #
-# 换机器时按需 pip install（需要能联网的环境）：
 fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.5

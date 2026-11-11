@@ -4,7 +4,7 @@
 
 **代码与权重是分开的**：
 
-- 代码：项目内 vendored 的 `<PROJECT_ROOT>\\engine`（ComfyUI 0.43.0 的模型库副本，
+- 代码：项目内 vendored 的 `engine/`（ComfyUI 0.43.0 的模型库副本，
   只 import 不改，见 `engine/SOURCE.json`、`engine/NOTICE.md`）；
 - 权重：仍复用本机 ComfyUI 的 `models/`（只读），按绝对路径加载。
 
@@ -15,7 +15,7 @@
     from server.backends import EngineConfig, NativeEngine
 
     engine = NativeEngine(EngineConfig(
-        engine_dir=r"<PROJECT_ROOT>\\engine",
+        engine_dir=r"engine",
         unet=r"D:\\...\\models\\diffusion_models\\QwenImage2.1\\qwen_image_2.1_int8_convrot.safetensors",
         clip=r"D:\\...\\models\\text_encoders\\Qweniamge2.1\\qwen3vl_8b_int8_convrot.safetensors",
         vae=r"D:\\...\\models\\vae\\Qweniamge2.1\\qwen_image_2.1_vae_bf16.safetensors",

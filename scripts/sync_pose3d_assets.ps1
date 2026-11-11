@@ -12,7 +12,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Source = "<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI\custom_nodes\ComfyUI-Gaoshang-Pose",
+    [string]$Source = "",
     [switch]$Check
 )
 
@@ -43,6 +43,10 @@ if ($Check) {
     exit 0
 }
 
+if (-not $Source) {
+    Say "请用 -Source 指向 ComfyUI-Gaoshang-Pose 插件目录" "Red"
+    exit 1
+}
 if (-not (Test-Path $Source)) {
     Say "源目录不存在：$Source" "Red"
     Say "请用 -Source 指向 ComfyUI-Gaoshang-Pose 插件目录" "Red"

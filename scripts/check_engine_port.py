@@ -26,8 +26,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[check-engine] FAIL: 缺少 {engine}\\comfy\\sd.py")
         return 1
 
-    forbidden = r"<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI"
-    sys.path = [p for p in sys.path if os.path.abspath(p or ".") != os.path.abspath(forbidden)]
+    def _has_comfy(path: str) -> bool:
+        return os.path.isfile(os.path.join(path or ".", "comfy", "sd.py"))
+
+    # 去掉 sys.path 中任何「外部 ComfyUI 源码目录」，保证 import 只命中项目内 engine/
+    engine_prefix = engine + os.sep
+    sys.path = [
+        p for p in sys.path
+        if not (_has_comfy(p) and not os.path.abspath(p or ".").startswith(engine_prefix))
+    ]
     sys.path.insert(0, engine)
 
     import comfy.cli_args  # noqa: F401
@@ -53,8 +60,12 @@ def main(argv: list[str] | None = None) -> int:
         if not ok:
             bad.append(name)
 
-    if forbidden in sys.path:
-        bad.append(f"{forbidden} 仍在 sys.path")
+    leftover = [
+        p for p in sys.path
+        if p != engine and _has_comfy(p)
+    ]
+    if leftover:
+        bad.append(f"sys.path 中仍有外部 ComfyUI 目录：{leftover}")
 
     if bad:
         print(f"[check-engine] FAIL: {bad}")

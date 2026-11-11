@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 来源 | `<COMFY_ROOT>\ComfyUI-aki-v3.2\ComfyUI` |
+| 来源 | ComfyUI 官方仓库（本地安装，路径未记录） |
 | ComfyUI 版本 | `0.43.0` |
 | commit | `ab08f7b2caa6d4007ecde3762116c6193613f43b` |
 | 复制时间 | 2026-11-04 01:40:46+0800 |

@@ -4592,3 +4592,138 @@ html[data-theme="dark"] .hr-panel {
 .wb-page [hidden] {
   display: none !important;
 }
+
+/* ============================================================
+ * 360° 全景查看器（结果区 / 历史记录 / 素材仓库共用）
+ * ============================================================ */
+.modal.pano360-modal {
+  max-width: 1180px;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.modal.pano360-modal .modal-body {
+  padding: 0;
+  background: #05070a;
+}
+
+.pv {
+  position: relative;
+  height: min(72vh, 720px);
+  background: radial-gradient(circle at 50% 36%, #10161c, #05070a 72%);
+  overflow: hidden;
+}
+
+.pv-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pv-canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.pv-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.pv-group {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(14, 18, 23, 0.58);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  pointer-events: auto;
+}
+
+.pv-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 13px;
+  background: transparent;
+  color: rgba(238, 243, 248, 0.82);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.pv-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pv-btn[aria-pressed="true"] {
+  background: rgba(250, 250, 250, 0.92);
+  color: #15191d;
+}
+
+.pv-foot {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(232, 239, 245, 0.68);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.pv-meta {
+  color: rgba(245, 249, 252, 0.92);
+  font-variant-numeric: tabular-nums;
+}
+
+.pv-hint {
+  margin-left: auto;
+}
+
+.pv-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: rgba(232, 239, 245, 0.8);
+  font-size: 13px;
+  background: radial-gradient(circle at 50% 45%, rgba(26, 34, 42, 0.72), rgba(5, 7, 10, 0.96));
+}
+
+.pv-state[hidden] {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .pv {
+    height: 62vh;
+  }
+
+  .pv-hint {
+    display: none;
+  }
+
+  .pv-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+}

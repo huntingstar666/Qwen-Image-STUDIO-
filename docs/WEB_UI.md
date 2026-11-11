@@ -60,7 +60,9 @@ App Shell（所有页面共享）：
 - 大提示词 / 负向提示词、字数统计、清空；
 - **模型切换**：底部参数栏「模型」pill 在 Qwen-Image 2.1 / MOSS-Image (sft) 间切换；切换只改参数、生成时才换权重（单模型常驻，运行中禁切）；小圆点表示显存驻留状态（绿=已驻留，黄=驻留的是另一个模型）；卡片显示每模型默认步数 / CFG / 采样器与缺失权重；
 - 比例选择：`/api/options.ratios`，按钮显示实际 `w × h` 与「N 的倍数」提示（Qwen 32 对齐 / MOSS 16 对齐）；
-- **全景比例分组**：网格末尾单独一组「全景」——`2:1 / 3:1 / 4:1 / 8:1 / 21:9`；选中后尺寸弹层出现「自动追加全景提示词」复选框（默认勾选），提交时在提示词里补 `seamless ultra-wide panoramic photograph, consistent horizon, no duplicated subjects`（已有 `panoram` 关键词时不重复追加）。文生全景没有参考图，一致性弱于图像编辑页；
+- **宽幅比例分组**：网格末尾单独一组「宽幅」——`2:1 / 3:1 / 4:1 / 8:1 / 21:9`；选中后尺寸弹层出现「自动追加宽幅提示词」复选框（默认勾选），提交时在提示词里补 `seamless ultra-wide panoramic photograph, consistent horizon, no duplicated subjects`（已有 `panoram` 关键词时不重复追加）。宽幅是平面图，没有参考图时一致性弱于图像编辑页；
+- **360° 全景分组**：宽幅组之后单列「360° 全景」——`2K（2048×1024）/ 3K（3072×1536）`，固定 2:1、不跟随分辨率档位；选中后复选框文案变为「自动追加 360° 全景提示词」，补 `360-degree equirectangular panorama … seamless left and right edges …`（已有 `equirect` / `等距柱状` / `360°` 时跳过）；
+- **全景查看**：宽高比 ≥ 1.9 的结果（文生图 / 图像编辑 / 历史记录 / 素材仓库）都会出现「全景」入口，打开 `panoramaViewer.js` 的双模式查看器（球面环视 / 宽幅平移，滚轮缩放、自动旋转、R 重置、空格自动旋转）；three.js 动态加载，不影响首屏；
 - 自定义宽高（自动向上对齐到当前模型的倍数，实时提示对齐结果）；
 - 步数 / CFG / 种子（随机 / 填入上次种子）/ 批量 / 采样器 / 调度器；标签后的 `tag-hint` 标出模型默认值，改动后变为「已改 · 默认 X」；
 - 采样步数预设 chips（Qwen 取 `/api/options.steps_presets`；MOSS 为 50 步 / Turbo 8 步）；

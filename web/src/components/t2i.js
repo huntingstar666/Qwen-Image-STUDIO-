@@ -24,6 +24,7 @@ import { openPoseStudio } from './poseStudio.js';
 import { openBboxStudio } from './bboxStudio.js';
 import { LoraPicker, ModelsSummary, TurboControl } from './controls.js';
 import { escapeHtml, fmtNum, snapUp } from '../utils.js';
+import { SPHERE_SIZES, findSphereSize, isSphereSizeId, withSpherePrompt } from './panoramaMath.js';
 
 const FALLBACK_RATIOS = [
   { id: '1:1', label: '1:1 方形', w: 2048, h: 2048 },
@@ -53,7 +54,7 @@ const SIZE_TIERS = [
   { value: 4096, label: '4K' },
 ];
 
-/** 全景比例：渲染时单独分组，并在提交时追加全景提示词。 */
+/** 宽幅比例：渲染时单独分组，并在提交时追加宽幅提示词。 */
 const PANORAMA_RATIOS = ['2:1', '3:1', '4:1', '8:1', '21:9'];
 
 /** 卡片比例网格（5 列，顺序与设计稿一致；全景比例统一排在末尾）。 */
@@ -264,7 +265,7 @@ export function createT2IPage(host) {
                   <div class="size-pano-row" data-ref="panoPromptRow" hidden>
                     <label class="studio-check">
                       <input type="checkbox" data-ref="panoPrompt" checked />
-                      <span>自动追加全景提示词</span>
+                      <span data-ref="panoPromptLabel">自动追加宽幅提示词</span>
                     </label>
                   </div>
                   <div class="size-pop-foot">
@@ -351,6 +352,7 @@ export function createT2IPage(host) {
     sizeRatios: ref('sizeRatios'),
     panoPromptRow: ref('panoPromptRow'),
     panoPrompt: ref('panoPrompt'),
+    panoPromptLabel: ref('panoPromptLabel'),
     popWidth: ref('popWidth'),
     popHeight: ref('popHeight'),
     sizeApply: ref('sizeApply'),
@@ -1003,6 +1005,8 @@ export function createT2IPage(host) {
   /** 按「长边 = 档位」算尺寸；官方预设仅在长边等于档位时直接采用。 */
   function sizeForRatio(id, tier = sizeTier) {
     const multiple = modelSnap();
+    const sphere = findSphereSize(id);
+    if (sphere) return { w: sphere.width, h: sphere.height };
     const official = ratioList().find((ratio) => ratio.id === id);
     if (official && Math.max(official.w, official.h) === tier) {
       return { w: official.w, h: official.h };
@@ -1028,6 +1032,8 @@ export function createT2IPage(host) {
 
   /** 当前尺寸对应的比例 id，找不到就是自定义。 */
   function detectRatioId(width, height) {
+    const sphere = SPHERE_SIZES.find((size) => size.width === width && size.height === height);
+    if (sphere) return sphere.id;
     const official = ratioList().find((ratio) => ratio.w === width && ratio.h === height);
     if (official && SIZE_RATIOS.includes(official.id)) return official.id;
     return SIZE_RATIOS.find((id) => {
@@ -1084,6 +1090,11 @@ export function createT2IPage(host) {
     refs.sizeTiers.querySelectorAll('[data-tier]').forEach((button) => {
       button.addEventListener('click', () => {
         const ratioId = detectRatioId(t2i.width, t2i.height);
+        // 360° 档是固定 2:1 尺寸，不跟随分辨率档位变化，避免档位高亮与实际尺寸不一致
+        if (isSphereSizeId(ratioId)) {
+          syncSizeCard();
+          return;
+        }
         sizeTier = Number(button.dataset.tier) || 2048;
         if (ratioId) {
           const size = sizeForRatio(ratioId, sizeTier);
@@ -1105,15 +1116,29 @@ export function createT2IPage(host) {
           <span class="ratio-label">${id}</span>
         </button>`;
     };
+    const renderSphere = (size) => `
+        <button class="size-ratio-item" type="button" data-sphere="${size.id}" title="360° 等距柱状 · ${size.width}×${size.height}">
+          <span class="ratio-glyph" style="width:18px;height:9px"></span>
+          <span class="ratio-label">${size.label}</span>
+        </button>`;
     refs.sizeRatios.innerHTML = [
       ...SIZE_RATIOS.filter((id) => !PANORAMA_RATIOS.includes(id)).map(renderRatio),
-      '<div class="size-ratio-group">全景</div>',
+      '<div class="size-ratio-group">宽幅</div>',
       ...PANORAMA_RATIOS.map(renderRatio),
+      '<div class="size-ratio-group">360° 全景</div>',
+      ...SPHERE_SIZES.map(renderSphere),
     ].join('');
     refs.sizeRatios.querySelectorAll('[data-ratio]').forEach((button) => {
       button.addEventListener('click', () => {
         const size = sizeForRatio(button.dataset.ratio, sizeTier);
         applySize(size.w, size.h, button.dataset.ratio);
+      });
+    });
+    refs.sizeRatios.querySelectorAll('[data-sphere]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const size = findSphereSize(button.dataset.sphere);
+        if (!size) return;
+        applySize(size.width, size.height, size.id);
       });
     });
   }
@@ -1122,15 +1147,26 @@ export function createT2IPage(host) {
     const width = t2i.width;
     const height = t2i.height;
     const ratioId = detectRatioId(width, height);
+    const sphereActive = isSphereSizeId(ratioId);
     refs.sizePillValue.textContent = `${ratioId || '自定义'} · ${fmtNum(width)}×${fmtNum(height)}`;
     refs.sizePopDims.textContent = `${fmtNum(width)} × ${fmtNum(height)}`;
     refs.sizeTiers.querySelectorAll('[data-tier]').forEach((button) => {
-      button.classList.toggle('active', Number(button.dataset.tier) === sizeTier);
+      // 360° 固定尺寸没有档位概念，避免与 2K/2.7K 高亮冲突
+      button.classList.toggle(
+        'active',
+        !sphereActive && Number(button.dataset.tier) === sizeTier,
+      );
     });
     refs.sizeRatios.querySelectorAll('[data-ratio]').forEach((button) => {
       button.classList.toggle('active', button.dataset.ratio === ratioId);
     });
-    refs.panoPromptRow.hidden = !PANORAMA_RATIOS.includes(ratioId);
+    refs.sizeRatios.querySelectorAll('[data-sphere]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.sphere === ratioId);
+    });
+    refs.panoPromptRow.hidden = !(PANORAMA_RATIOS.includes(ratioId) || sphereActive);
+    refs.panoPromptLabel.textContent = sphereActive
+      ? '自动追加 360° 全景提示词'
+      : '自动追加宽幅提示词';
     if (document.activeElement !== refs.popWidth) refs.popWidth.value = String(width);
     if (document.activeElement !== refs.popHeight) refs.popHeight.value = String(height);
   }
@@ -1691,11 +1727,15 @@ export function createT2IPage(host) {
     const slgStateValue = slgState();
 
     const composedPrompt = stylePicker.composePrompt(refs.prompt.value.trim());
-    const panoActive = PANORAMA_RATIOS.includes(detectRatioId(width, height));
-    const promptFinal = panoActive && refs.panoPrompt.checked
-      && !/panoram/i.test(composedPrompt)
-      ? `${composedPrompt}${composedPrompt ? ', ' : ''}${PANORAMA_PROMPT}`
-      : composedPrompt;
+    const ratioId = detectRatioId(width, height);
+    const sphereActive = isSphereSizeId(ratioId);
+    const panoActive = PANORAMA_RATIOS.includes(ratioId);
+    let promptFinal = composedPrompt;
+    if (sphereActive) {
+      promptFinal = withSpherePrompt(composedPrompt, refs.panoPrompt.checked);
+    } else if (panoActive && refs.panoPrompt.checked && !/panoram/i.test(composedPrompt)) {
+      promptFinal = `${composedPrompt}${composedPrompt ? ', ' : ''}${PANORAMA_PROMPT}`;
+    }
 
     return {
       // 正文保持原文，预设/视角在这里合成为最终提示词

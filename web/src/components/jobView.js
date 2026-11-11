@@ -13,6 +13,8 @@ import { api, pollJob } from '../api.js';
 import { toast, toastError } from './toast.js';
 import { favoriteImage } from './favorites.js';
 import { openLightbox } from './lightbox.js';
+import { openPanoramaViewer } from './panoramaViewer.js';
+import { isPanoramaAspect } from './panoramaMath.js';
 import { copyText, downloadUrl, escapeHtml, fmtElapsed, fmtNum } from '../utils.js';
 
 const STATUS_TEXT = {
@@ -540,6 +542,7 @@ export class JobRunner {
               <span class="mono">#${index + 1}${images.length > 1 ? ` · ${fmtNum(image.width)}×${fmtNum(image.height)}` : ''}</span>
               <span class="spacer"></span>
               ${batch.favoriteMeta ? `<button class="batch-mini" type="button" data-favorite-index="${index}">收藏</button>` : ''}
+              ${isPanoramaAspect(image.width, image.height) ? `<button class="batch-mini" type="button" data-pano-index="${index}">全景</button>` : ''}
               <button class="batch-mini" type="button" data-download="${escapeHtml(image.url)}" data-filename="${escapeHtml(image.filename)}">下载</button>
             </figcaption>
           </figure>`;
@@ -585,6 +588,21 @@ export class JobRunner {
     /* 下载 */
     card.querySelectorAll('[data-download]').forEach((button) => {
       button.addEventListener('click', () => downloadUrl(button.dataset.download, button.dataset.filename));
+    });
+
+    /* 全景查看 */
+    card.querySelectorAll('[data-pano-index]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const image = images[Number(button.dataset.panoIndex)];
+        if (!image) return;
+        openPanoramaViewer({
+          url: image.url,
+          width: image.width,
+          height: image.height,
+          title: `批次 ${String(no).padStart(2, '0')} · 全景查看`,
+          filename: image.filename,
+        });
+      });
     });
 
     /* 收藏 */
@@ -675,6 +693,7 @@ export class JobRunner {
               <span class="mono">${fmtNum(image.width)}×${fmtNum(image.height)}</span>
               <span class="spacer"></span>
               ${this.favoriteMeta ? `<button class="btn ghost sm" type="button" data-favorite-index="${index}">收藏</button>` : ''}
+              ${isPanoramaAspect(image.width, image.height) ? `<button class="btn ghost sm" type="button" data-pano-index="${index}">全景</button>` : ''}
               <button class="btn ghost sm" type="button" data-download="${escapeHtml(url)}" data-filename="${escapeHtml(filename)}">下载</button>
             </div>
           </div>`;
@@ -712,6 +731,19 @@ export class JobRunner {
         });
         btn.disabled = false;
         btn.textContent = original;
+      });
+    }
+    for (const btn of host.querySelectorAll('[data-pano-index]')) {
+      btn.addEventListener('click', () => {
+        const image = images[Number(btn.dataset.panoIndex)];
+        if (!image) return;
+        openPanoramaViewer({
+          url: api.fileUrl(image.url || image.path || ''),
+          width: image.width,
+          height: image.height,
+          title: '全景查看',
+          filename: image.filename,
+        });
       });
     }
     host.querySelector('[data-ref="copyPrompt"]')?.addEventListener('click', async () => {

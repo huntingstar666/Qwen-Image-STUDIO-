@@ -14,6 +14,8 @@ import { api } from '../api.js';
 import { toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal, closeModal } from './modal.js';
 import { openLightbox } from './lightbox.js';
+import { openPanoramaViewer } from './panoramaViewer.js';
+import { isPanoramaAspect } from './panoramaMath.js';
 import { downloadUrl, escapeHtml, fmtNum, fmtTime, summarizeParams } from '../utils.js';
 import { CATEGORY_PRESETS, KIND_LABELS } from './favorites.js';
 import { goToEditPage, goToStudioPage, goToT2IPage, setStudioHandoff, setT2IHandoff } from '../handoff.js';
@@ -581,6 +583,21 @@ export function createMaterialsPage(host) {
       });
     };
 
+    const panoAction = image.url && isPanoramaAspect(image.width, image.height)
+      ? [{
+          label: '全景查看',
+          kind: 'ghost',
+          close: false,
+          onClick: () => openPanoramaViewer({
+            url: api.fileUrl(image.url),
+            width: image.width,
+            height: image.height,
+            title: item.title || '全景查看',
+            filename: image.filename,
+          }),
+        }]
+      : [];
+
     openModal({
       title: item.title || '素材详情',
       subtitle: KIND_LABELS[item.kind] || '素材',
@@ -588,6 +605,7 @@ export function createMaterialsPage(host) {
       dialogClass: 'modal-library',
       content,
       actions: [
+        ...panoAction,
         {
           label: '高清预览',
           kind: 'ghost',

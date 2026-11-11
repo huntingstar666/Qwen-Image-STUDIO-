@@ -12,6 +12,8 @@ import { api } from '../api.js';
 import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { confirmDialog, openModal } from './modal.js';
 import { openLightbox } from './lightbox.js';
+import { openPanoramaViewer } from './panoramaViewer.js';
+import { isPanoramaAspect } from './panoramaMath.js';
 import { favoriteImage } from './favorites.js';
 import { clearProject, leaseHeldByOther, listProjects } from './studio/persistence.js';
 import { imageUrlToDataUrl } from './studio/chain.js';
@@ -484,6 +486,7 @@ export function createHistoryPage(host) {
                 <span class="mono">${fmtNum(image.width)}×${fmtNum(image.height)}</span>
                 <span class="spacer"></span>
                 <button class="btn ghost sm" type="button" data-favorite-index="${index}">收藏</button>
+                ${isPanoramaAspect(image.width, image.height) ? `<button class="btn ghost sm" type="button" data-pano-index="${index}">全景</button>` : ''}
                 <button class="btn ghost sm" type="button" data-download-index="${index}">下载</button>
               </div>
             </div>`,
@@ -536,6 +539,20 @@ export function createHistoryPage(host) {
       button.addEventListener('click', () => {
         const image = item.images[Number(button.dataset.downloadIndex)];
         if (image) downloadUrl(imageUrl(image.url), image.filename);
+      });
+    });
+
+    content.querySelectorAll('[data-pano-index]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const image = item.images[Number(button.dataset.panoIndex)];
+        if (!image) return;
+        openPanoramaViewer({
+          url: imageUrl(image.url),
+          width: image.width,
+          height: image.height,
+          title: '历史全景查看',
+          filename: image.filename,
+        });
       });
     });
 

@@ -4,8 +4,10 @@
 一个独立服务、一个网页界面，**不需要启动 ComfyUI**，可直接复用你 ComfyUI 目录里的权重与 LoRA。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\port_engine.ps1   # 一次性：把引擎移植进项目
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 启动
+git clone https://github.com/huntingstar666/Qwen-Image-STUDIO-.git
+pip install -r requirements.txt          # torch 需 cu130 版本，见「快速开始」
+copy config.example.json config.json     # 改 model_root 与模型路径
+# 双击 启动工作台.bat，或 powershell -File scripts\run.ps1
 # 浏览器打开 http://127.0.0.1:8700
 ```
 
@@ -87,18 +89,67 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1           # 
 
 ## 快速开始
 
+> 启动脚本只提供 Windows 版本（`.bat` / `.ps1`），需要 NVIDIA 显卡。
+
+**1. 装依赖**
+
 | 项 | 要求 |
 |---|---|
-| Python | 3.10+，装有 fastapi、uvicorn、Pillow、numpy、torch、transformers、safetensors、scipy、einops |
-| GPU | 显存 ≥ 20GB（int8 组合约 16GB） |
-| 权重 | Qwen-Image 2.1 的 DiT / 文本编码器 / VAE，可放在任意目录 |
+| Python | 3.10+ |
+| 依赖 | `pip install -r requirements.txt` |
+| GPU | 显存 ≥ 16GB（int8 权重）；挂 18GB Turbo LoRA 或跑 2K 建议 ≥ 26GB |
+| torch | 必须是 **CUDA 13.x（cu130）**：`pip install torch --index-url https://download.pytorch.org/whl/cu130`。低版本会让 int8 原生算子失效，采样约慢 3 倍 |
+| ffmpeg | 可选：视频工作台导出成片、动图 GIF 需要，装好并加入 `PATH` |
 
-1. 移植引擎：`scripts\port_engine.ps1`（一次性，复制 `engine/`）
-2. 配置权重：复制 `config.example.json` 为 `config.json`，改 `model_root` 与模型相对路径
-3. 启动：双击 `启动工作台.bat`，或 `scripts\run.ps1`
-4. 可选验收：`scripts\verify_engine_port.py`、`scripts\smoke_api.py`、`python -m pytest tests -q`
+**2. 准备权重（不进仓库）**
 
-独立服务：`python -m video_studio.serve`（8730）、`python -m still_loop`（8720）。
+把 Qwen-Image 2.1 的 DiT / 文本编码器 / VAE 放到任意目录（可以和 ComfyUI 共用 `models/`），文件名不强求：
+
+- DiT：`qwen_image_2.1_*.safetensors`（int8 更省显存，bf16 画质略好）
+- 文本编码器：`qwen3vl_8b_*.safetensors`
+- VAE：`qwen_image_2.1_vae_*.safetensors`
+- 可选：Turbo / 一致性 LoRA、MOSS-Image、SAM 3.1 / BiRefNet、SeedVR2 / FlashVSR / VOSR2
+
+**3. 配置**
+
+```powershell
+copy config.example.json config.json
+```
+
+启动后在「设置 → 模型目录」里指定权重根目录、选好默认模型；也可以直接改 `config.json` 的
+`model_root` 与各模型相对路径（`config.example.json` 里的是示例路径，换成你本地的实际文件名）。
+
+**4. 启动**
+
+```powershell
+双击 启动工作台.bat
+# 或
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1
+# 打开 http://127.0.0.1:8700
+```
+
+`engine/`（ComfyUI 的模型库代码）已随仓库提供，**不用装 ComfyUI**；
+只有想跟进新版 ComfyUI 时才需要 `scripts\port_engine.ps1 -Source "<ComfyUI 根目录>"`。
+
+**5. 可选：独立服务与自检**
+
+```powershell
+python -m video_studio.serve           # 视频工作台 8730（需主服务已启动）
+python -m still_loop                   # 定格工坊 8720
+python scripts\verify_engine_port.py   # 引擎独立性 + 出图（需权重，会真出图）
+python scripts\smoke_api.py            # API 冒烟
+python -m pytest tests -q              # 单元测试（纯 CPU）
+```
+
+**可选资源（体积大，未入库）**
+
+`web/creative-presets`、`web/mj-styles`（风格 / MJ 预览图，约 107MB）与
+`web/vendor/pose3d/vnccs/assets`（人体数据，约 82MB）不在仓库里：
+
+- 缺预览图时风格库照常可用，卡片显示首字占位；
+- 缺人体数据时 3D 姿态编辑器不可用。
+
+需要完整资源时把文件放进对应目录即可；`scripts\sync_*.ps1` 的 `-Source` 指向你自己的原项目或插件目录。
 
 ---
 

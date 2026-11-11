@@ -503,16 +503,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_style_assets.ps
 
 ## 九、许可与致谢
 
-本项目的**服务端、前端、算法移植、文档**为原创实现。
+本项目的**服务端、前端、算法移植、文档**为原创实现，以 [Apache License 2.0](LICENSE) 发布。
+
+完整的授权范围（哪些目录不在 Apache-2.0 覆盖内）、第三方组件清单与使用条款，见
+[NOTICE.md](NOTICE.md)。
 
 第三方代码与素材：
 
 | 来源 | 用途 | 许可 |
 |---|---|---|
 | [ComfyUI](https://github.com/comfyanonymous/ComfyUI) | `engine/` 内的模型实现（DiT/VAE/文本编码器/采样器/LoRA），**未修改** | GPL-3.0 |
-| [ComfyUI-Precise-Align](https://github.com/)（本机安装的节点包） | 零偏移几何算法参考，已重写为纯 numpy | Apache-2.0 |
+| ComfyUI-Precise-Align（本机安装的节点包） | 零偏移几何算法参考，已重写为纯 numpy | Apache-2.0 |
 | [ComfyUI-BlueBox](https://github.com/zhoutingxi/ComfyUI-BlueBox) | 32 不动点 + 图像 I/O 参考，已重写 | MIT |
-| [image-style-kit](..)（本机 `AIFISHER` 项目） | 风格库数据与纯逻辑模块，整体 vendor 进 `web/vendor/` | 见其 README |
+| [ComfyUI_VNCCS_Utils](https://github.com/AHEKOT/ComfyUI_VNCCS_Utils) | 3D 姿态编辑器内核（vendor） | MIT（MakeHuman 人体数据 CC0） |
+| [ComfyUI-VOSR2](https://github.com/ylchen333/ComfyUI-VOSR2) / SeedVR2 / FlashVSR | 高清放大引擎（vendor） | Apache-2.0 / Apache-2.0 / 见上游 |
+| [three.js](https://github.com/mrdoob/three.js) | 3D 渲染与 360° 全景查看器 | MIT |
+| [image-style-kit / image-tools-kit](..)（本机 `AIFISHER` 项目） | 风格库、MJ 码图、裁切/宫格/扩图逻辑，整体 vendor 进 `web/vendor/` | 见其 README |
 | [Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1) | 模型权重与官方 PE 系统提示词 | Qwen Research License |
+| [AIFISHER 灵感画廊](https://gallery.work-fisher.com/) / [OpenZhenZhen](https://www.openzhenzhen.com/) | 作品画廊封面与提示词（版权归原作者） | 仅作示例，不随本许可授权 |
 
 > `engine/` 是 ComfyUI 的衍生副本，受 GPL-3.0 约束：本地自用无碍；**对外分发本项目时需遵守 GPL-3.0**。
+> 模型权重、第三方素材不在本仓库内，也不在本项目许可范围内，商用前请自行核对各自许可证。
+
+### 使用条款摘要
+
+1. 遵守所在地区法律法规，不得用于违法或侵害他人权益的用途。
+2. 生成内容与输入素材的责任由使用者承担；涉及肖像、作品的场景须确保已获授权，禁止深度伪造。
+3. 本项目按「现状」提供，不附带任何担保，作者不对使用后果负责。
+4. Qwen、ComfyUI、MOSS、SeedVR2、FlashVSR、VOSR2 等商标归各自所有者，本项目与其无隶属关系。
+
+完整条款见 [NOTICE.md](NOTICE.md) 第二部分。

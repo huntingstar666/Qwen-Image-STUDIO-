@@ -97,9 +97,23 @@ copy config.example.json config.json     # 改 model_root 与模型路径
 |---|---|
 | Python | 3.10+ |
 | 依赖 | `pip install -r requirements.txt` |
-| GPU | 显存 ≥ 16GB（int8 权重）；挂 18GB Turbo LoRA 或跑 2K 建议 ≥ 26GB |
+| GPU | 最低 **12GB** 可跑 1MP（int8 DiT + int8 文本编码器 + 编码后让位 + 小 LoRA）；2MP 建议 16GB；挂 18GB HiFi Turbo LoRA 需 26GB 以上 |
 | torch | 必须是 **CUDA 13.x（cu130）**：`pip install torch --index-url https://download.pytorch.org/whl/cu130`。低版本会让 int8 原生算子失效，采样约慢 3 倍 |
 | ffmpeg | 可选：视频工作台导出成片、动图 GIF 需要，装好并加入 `PATH` |
+
+**显存需求按搭配算**（权重为实测文件大小，峰值为单张 1MP / 2MP 出图的显存占用）：
+
+| 搭配 | 权重 | 1MP | 2MP | 结论 |
+|---|---|---|---|---|
+| int8 DiT 6.8G + int8 文本编码器 8.7G（编码后让位）+ 小 LoRA + 分块解码 | 分时驻留 | 10~11G | 12~13G | **12G 可跑 1MP**，2MP 建议 16G |
+| 同上，但文本编码器常驻显存 | — | 18~19G | 21~23G | 24G |
+| 再加 HiFi Turbo LoRA 18.2G | — | 25~27G | — | 32G |
+| DiT bf16 13.2G + 文本编码器 bf16 16.3G | 29.6G | ≈31G | OOM | 32G 以上 |
+| MOSS-Image（unet bf16 9.5G + 编码器 int8 9.1G，让位） | 分时驻留 | 11~12G | 14G | 16G |
+
+> 文本编码器不能换成更小的模型：Qwen-Image 2.1 的 DiT 只接 **Qwen3-VL 8B** 的特征维度，
+> 换 4B 会直接维度不匹配；能换的只是精度（int8 / bf16），int8 版比 bf16 省约 7.6G。
+> 显存在 8~10G 时只能靠动态换入换出跑，速度不具备可用性。
 
 **2. 准备权重（不进仓库）**
 

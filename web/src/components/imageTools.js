@@ -18,7 +18,12 @@ import { toast, toastError, toastSuccess, toastWarn } from './toast.js';
 import { openModal } from './modal.js';
 import { setHandoff, goToEditPage, setT2IHandoff, goToT2IPage } from '../handoff.js';
 import { openCompareDialog } from './compare.js';
-import { OUTPAINT_DIRECTIONS, OUTPAINT_DIRECTION_LABELS, planOutpaint } from '../outpaint.js';
+import {
+  OUTPAINT_DIRECTIONS,
+  OUTPAINT_DIRECTION_LABELS,
+  buildOutpaintPrompt,
+  planOutpaint,
+} from '../outpaint.js';
 import {
   copyText,
   downloadUrl,
@@ -455,7 +460,17 @@ export function createImageToolsPage(host) {
     resize: { width: 0, height: 0, lock: true, fit: 'contain' },
     format: 'png',
     quality: 92,
-    outpaint: { direction: 'right', amount: 0.5, panoramaAspect: '', active: false, result: null, busy: false },
+    outpaint: {
+      direction: 'right',
+      amount: 0.5,
+      panoramaAspect: '',
+      active: false,
+      result: null,
+      busy: false,
+      base: null,
+      pads: { left: 0, right: 0, top: 0, bottom: 0 },
+      pendingPads: null,
+    },
     upscale: { models: null, engine: '', scale: 2, jobId: '', polling: false, touchedScale: false },
     results: [],
     tool: 'adjust',
@@ -801,11 +816,11 @@ export function createImageToolsPage(host) {
                     <input class="range" type="range" min="10" max="200" step="5" value="50" data-ref="outpaintAmount" />
                   </label>
                   <div class="row">
-                    <button class="btn ghost sm" type="button" data-ref="outpaintPlan">规划扩图</button>
+                    <button class="btn ghost sm" type="button" data-ref="outpaintPlan">应用预设范围</button>
                     <button class="btn primary sm" type="button" data-ref="outpaintGo" disabled>去局部重绘</button>
-                    <button class="btn ghost sm hidden" type="button" data-ref="outpaintCancel">取消预览</button>
+                    <button class="btn ghost sm hidden" type="button" data-ref="outpaintCancel">重置范围</button>
                   </div>
-                  <div class="field-hint" data-ref="outpaintSummary">规划后显示新画布尺寸与新增区域；「去局部重绘」会跳到图像编辑并自动带好画布与遮罩。</div>
+                  <div class="field-hint" data-ref="outpaintSummary">选择方向或直接在画布上拖动 8 个手柄调整扩图范围；「去局部重绘」会跳到图像编辑并自动带好画布与遮罩。</div>
                 </div>
               </details>
 
@@ -1037,6 +1052,7 @@ export function createImageToolsPage(host) {
               <div class="tool-stage-inner" data-ref="stageInner">
                 <canvas class="tool-canvas" data-ref="imageCanvas"></canvas>
                 <canvas class="tool-canvas tool-overlay" data-ref="overlayCanvas" tabindex="0"></canvas>
+                <div class="tool-stage-ghost hidden" data-ref="stageGhost" aria-hidden="true"></div>
               </div>
               <div class="tool-stage-empty" data-ref="stageEmpty">
                 <div class="glyph">◫</div>
@@ -1250,6 +1266,7 @@ export function createImageToolsPage(host) {
     resetAll: ref('resetAll'),
     stage: ref('stage'),
     stageInner: ref('stageInner'),
+    stageGhost: ref('stageGhost'),
     imageCanvas: ref('imageCanvas'),
     overlayCanvas: ref('overlayCanvas'),
     stageEmpty: ref('stageEmpty'),
@@ -1425,13 +1442,15 @@ export function createImageToolsPage(host) {
             primary: refs.outpaintGo,
             secondary: refs.outpaintCancel,
             label: '去局部重绘',
-            secondaryLabel: '取消预览',
-            hint: '把画布与遮罩送入图像编辑',
+            secondaryLabel: '重置范围',
+            hint: '拖动边框调整扩图范围，确认后送入图像编辑',
           }
         : {
             primary: refs.outpaintPlan,
-            label: '规划扩图',
-            hint: '先规划新画布与新增区域',
+            label: state.outpaint.panoramaAspect ? '规划全景' : '显示扩图框',
+            hint: state.outpaint.panoramaAspect
+              ? '规划全景画布与新增区域'
+              : '在画布上拖动边框选择扩图范围',
           },
     tagger: {
       primary: refs.taggerGo,
@@ -1545,12 +1564,25 @@ export function createImageToolsPage(host) {
     });
   });
 
+  /** 切换工具：离开扩图时退出预览，进入扩图时直接显示操作框。 */
+  function switchTool(tool) {
+    if (!tool || tool === state.tool) return;
+    if (state.tool === 'outpaint' && state.outpaint.active) {
+      resetOutpaintFrame({ hideCancel: true });
+    }
+    state.tool = tool;
+    syncToolGroups();
+    if (tool === 'outpaint' && state.source && !state.outpaint.panoramaAspect) {
+      startOutpaintFrame();
+      return;
+    }
+    if (state.source) render();
+  }
+
   refs.toolRail.addEventListener('click', (event) => {
     const chip = event.target.closest('[data-tool-group]');
     if (!chip) return;
-    state.tool = chip.dataset.toolGroup;
-    syncToolGroups();
-    if (state.source) render();
+    switchTool(chip.dataset.toolGroup);
   });
 
   refs.toolRail.addEventListener('keydown', (event) => {
@@ -1572,9 +1604,7 @@ export function createImageToolsPage(host) {
     if (event.key === 'End') next = tabs.length - 1;
     const tab = tabs[next];
     if (!tab) return;
-    state.tool = tab.dataset.toolGroup;
-    syncToolGroups();
-    if (state.source) render();
+    switchTool(tab.dataset.toolGroup);
     tab.focus();
   });
   syncToolGroups();
@@ -1641,7 +1671,10 @@ export function createImageToolsPage(host) {
     state.adjust = { ...NEUTRAL_ADJUST };
     state.outpaint.active = false;
     state.outpaint.result = null;
+    state.outpaint.base = null;
+    state.outpaint.pendingPads = null;
     state.outpaint.panoramaAspect = '';
+    hideOutpaintGhost();
     state.crop.ratioLabel = 'Free';
     state.crop.rect = null;
     state.crop.suppressed = false;
@@ -1671,6 +1704,7 @@ export function createImageToolsPage(host) {
     renderSourceMeta();
     renderOps();
     updateOutpaintSummary();
+    if (state.tool === 'outpaint') startOutpaintFrame();
     syncUpscaleButton();
     syncTaggerButton();
     syncCompareButton();
@@ -2642,6 +2676,43 @@ export function createImageToolsPage(host) {
     ctx.restore();
   }
 
+  /** 扩图操作框的 8 个手柄（显示坐标，贴边时内缩避免画布裁掉一半）。 */
+  function outpaintHandlePoints(result, display) {
+    const source = result.sourceRect;
+    const scaleX = display.width / result.width;
+    const scaleY = display.height / result.height;
+    const left = source.x * scaleX;
+    const top = source.y * scaleY;
+    const right = (source.x + source.width) * scaleX;
+    const bottom = (source.y + source.height) * scaleY;
+    const midX = (left + right) / 2;
+    const midY = (top + bottom) / 2;
+    const clampX = (value) => Math.min(Math.max(value, 6), Math.max(6, display.width - 6));
+    const clampY = (value) => Math.min(Math.max(value, 6), Math.max(6, display.height - 6));
+    const point = (x, y) => [clampX(x), clampY(y)];
+    return {
+      nw: point(left, top),
+      n: point(midX, top),
+      ne: point(right, top),
+      w: point(left, midY),
+      e: point(right, midY),
+      sw: point(left, bottom),
+      s: point(midX, bottom),
+      se: point(right, bottom),
+    };
+  }
+
+  function hitOutpaintHandle(point) {
+    const result = state.outpaint.result;
+    if (!result || state.outpaint.panoramaAspect) return null;
+    const display = currentDisplaySize();
+    const points = outpaintHandlePoints(result, display);
+    for (const [name, [x, y]] of Object.entries(points)) {
+      if (Math.hypot(point.x - x, point.y - y) <= 10) return name;
+    }
+    return null;
+  }
+
   function drawOutpaintOverlay(ctx, display) {
     const result = state.outpaint.result;
     const sourceRect = result.sourceRect || result.plan?.offset || {};
@@ -2652,21 +2723,102 @@ export function createImageToolsPage(host) {
     const sw = (Number(sourceRect.width) || result.plan?.source?.w || result.width) * scaleX;
     const sh = (Number(sourceRect.height) || result.plan?.source?.h || result.height) * scaleY;
     ctx.save();
-    // 新增区域用半透明墨绿斜线标识
-    ctx.fillStyle = 'rgba(47, 107, 98, 0.22)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    // 新增区域：淡墨绿 + 斜线阴影，明确区分「要补画的部分」
     ctx.beginPath();
     ctx.rect(0, 0, display.width, display.height);
     ctx.rect(sx, sy, sw, sh);
+    ctx.fillStyle = 'rgba(47, 107, 98, 0.10)';
     ctx.fill('evenodd');
+    ctx.save();
+    ctx.clip('evenodd');
+    ctx.strokeStyle = 'rgba(47, 107, 98, 0.18)';
+    ctx.lineWidth = 1;
+    for (let x = -display.height; x < display.width; x += 9) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + display.height, display.height);
+      ctx.stroke();
+    }
+    ctx.restore();
     ctx.strokeStyle = 'rgba(47,107,98,0.95)';
     ctx.lineWidth = 2;
     ctx.strokeRect(sx + 0.5, sy + 0.5, sw, sh);
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.lineWidth = 1;
     ctx.strokeRect(sx + 1.5, sy + 1.5, sw - 2, sh - 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = '12px -apple-system, sans-serif';
-    ctx.fillText('原图区域', sx + 8, sy + 20);
+    // 新增区域标注：放在最宽的空白带里，避免压到原图
+    const pad = result.plan?.pad || {};
+    const hasPads = Boolean(pad.left || pad.right || pad.top || pad.bottom);
+    if (hasPads) {
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = '12px -apple-system, sans-serif';
+      ctx.fillText('原图区域', sx + 8, sy + 20);
+    }
+    const bands = [
+      { size: sx, x: 0, y: sy + sh / 2, w: sx, h: sh, text: `向左扩 ${Math.round(pad.left || 0)}px` },
+      {
+        size: display.width - sx - sw,
+        x: sx + sw,
+        y: sy + sh / 2,
+        w: display.width - sx - sw,
+        h: sh,
+        text: `向右扩 ${Math.round(pad.right || 0)}px`,
+      },
+      { size: sy, x: sx + sw / 2, y: 0, w: sw, h: sy, text: `向上扩 ${Math.round(pad.top || 0)}px` },
+      {
+        size: display.height - sy - sh,
+        x: sx + sw / 2,
+        y: sy + sh,
+        w: sw,
+        h: display.height - sy - sh,
+        text: `向下扩 ${Math.round(pad.bottom || 0)}px`,
+      },
+    ].filter((band) => band.size >= 46);
+    if (bands.length) {
+      const band = bands.reduce((best, item) => (item.size > best.size ? item : best));
+      ctx.font = '11px -apple-system, sans-serif';
+      const textW = ctx.measureText(band.text).width;
+      const boxW = textW + 12;
+      const boxH = 18;
+      const cx = band.w > band.h ? band.x + band.w / 2 : band.x;
+      const cy = band.w > band.h ? band.y : band.y + band.h / 2;
+      const boxX = cx - boxW / 2;
+      const boxY = cy - boxH / 2;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(boxX, boxY, boxW, boxH, 5);
+      else ctx.rect(boxX, boxY, boxW, boxH);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fill();
+      ctx.fillStyle = 'rgba(47, 107, 98, 1)';
+      ctx.fillText(band.text, boxX + 6, boxY + 13);
+    }
+    // 操作框：8 个可拖动手柄
+    if (!state.outpaint.panoramaAspect) {
+      const points = outpaintHandlePoints(result, display);
+      for (const [hx, hy] of Object.values(points)) {
+        ctx.beginPath();
+        ctx.rect(hx - 4.5, hy - 4.5, 9, 9);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(47, 107, 98, 0.95)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.font = '12px -apple-system, sans-serif';
+      const hint = hasPads ? '拖动边框继续调整扩图范围' : '向外拖动边框，确定扩图范围';
+      const hintW = ctx.measureText(hint).width + 16;
+      const hintX = sx + 8;
+      const hintY = sy + (hasPads ? 26 : 8);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(hintX, hintY, hintW, 22, 6);
+      else ctx.rect(hintX, hintY, hintW, 22);
+      ctx.fillStyle = 'rgba(28, 31, 36, 0.62)';
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(hint, hintX + 8, hintY + 15);
+    }
     ctx.restore();
   }
 
@@ -2850,8 +3002,40 @@ export function createImageToolsPage(host) {
   }
 
   refs.overlayCanvas.addEventListener('pointerdown', (event) => {
-    if (!state.source || state.outpaint.active || event.button !== 0) return;
+    if (!state.source || event.button !== 0) return;
     const point = pointerPoint(event);
+    if (state.outpaint.active) {
+      if (state.tool !== 'outpaint' || state.outpaint.panoramaAspect) return;
+      const handle = hitOutpaintHandle(point);
+      if (!handle) return;
+      const result = state.outpaint.result;
+      const display = currentDisplaySize();
+      event.preventDefault();
+      try {
+        refs.overlayCanvas.setPointerCapture?.(event.pointerId);
+      } catch {
+        /* 合成事件可能没有可捕获的指针 */
+      }
+      const innerRect = refs.stageInner.getBoundingClientRect();
+      const canvasRect = refs.overlayCanvas.getBoundingClientRect();
+      const scale = {
+        x: display.width / Math.max(1, result.width),
+        y: display.height / Math.max(1, result.height),
+      };
+      drag = {
+        type: 'outpaint',
+        handle,
+        startClient: { x: event.clientX, y: event.clientY },
+        pads: { ...state.outpaint.pads },
+        scale,
+        // 原图在舞台内的屏幕位置：拖动期间冻结，保证手柄跟手
+        sourceRect: {
+          left: canvasRect.left - innerRect.left + state.outpaint.pads.left * scale.x,
+          top: canvasRect.top - innerRect.top + state.outpaint.pads.top * scale.y,
+        },
+      };
+      return;
+    }
     if (state.tool === 'watermark') {
       if (refs.wmPosition.value !== 'custom' || refs.wmTile.checked) return;
       const display = currentDisplaySize();
@@ -2973,8 +3157,42 @@ export function createImageToolsPage(host) {
   });
 
   refs.overlayCanvas.addEventListener('pointermove', (event) => {
-    if (!state.source || state.outpaint.active) return;
+    if (!state.source) return;
     const point = pointerPoint(event);
+    if (state.outpaint.active) {
+      if (state.tool !== 'outpaint' || state.outpaint.panoramaAspect) return;
+      if (drag?.type === 'outpaint') {
+        const dx = (event.clientX - drag.startClient.x) / Math.max(0.0001, drag.scale.x);
+        const dy = (event.clientY - drag.startClient.y) / Math.max(0.0001, drag.scale.y);
+        const pads = { ...drag.pads };
+        if (drag.handle.includes('w')) pads.left -= dx;
+        if (drag.handle.includes('e')) pads.right += dx;
+        if (drag.handle.includes('n')) pads.top -= dy;
+        if (drag.handle.includes('s')) pads.bottom += dy;
+        const base = state.outpaint.base;
+        if (!base) return;
+        // 拖动期间不重建画布：只画「待确认的新画布」虚线框，松手再落定，
+        // 避免缩放重排导致手柄从光标下面跑掉。
+        state.outpaint.pendingPads = clampOutpaintPads(pads, base.width, base.height);
+        syncOutpaintGhost(state.outpaint.pendingPads);
+        updateOutpaintSummary();
+        return;
+      }
+      const handle = hitOutpaintHandle(point);
+      refs.overlayCanvas.style.cursor = handle
+        ? {
+            n: 'ns-resize',
+            s: 'ns-resize',
+            e: 'ew-resize',
+            w: 'ew-resize',
+            ne: 'nesw-resize',
+            sw: 'nesw-resize',
+            nw: 'nwse-resize',
+            se: 'nwse-resize',
+          }[handle]
+        : 'default';
+      return;
+    }
     if (drag?.type === 'watermark') {
       const display = drag.size;
       const nx = snapWatermark(point.x / display.width, display.width);
@@ -3125,6 +3343,14 @@ export function createImageToolsPage(host) {
         drawOverlay();
       }
     }
+    if (drag?.type === 'outpaint') {
+      const pads = state.outpaint.pendingPads;
+      state.outpaint.pendingPads = null;
+      hideOutpaintGhost();
+      if (pads) buildOutpaintResult(pads);
+      updateOutpaintSummary();
+      render();
+    }
     drag = null;
     if (event?.currentTarget?.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -3267,8 +3493,8 @@ export function createImageToolsPage(host) {
   refs.resetAll.addEventListener('click', () => {
     state.stagedOps = [];
     state.adjust = { ...NEUTRAL_ADJUST };
-    state.outpaint.active = false;
-    state.outpaint.result = null;
+    resetOutpaintFrame({ hideCancel: true });
+    state.outpaint.base = null;
     state.outpaint.panoramaAspect = '';
     state.crop.rect = null;
     state.crop.ratioLabel = 'Free';
@@ -3289,6 +3515,8 @@ export function createImageToolsPage(host) {
     updateOutpaintSummary();
     render();
     syncActionBar();
+    // 扩图工具下重置后仍然给回「贴着原图」的操作框
+    if (state.tool === 'outpaint' && state.source) startOutpaintFrame();
     toast('已重置所有处理步骤', 'info', { timeout: 1800 });
   });
 
@@ -4905,11 +5133,18 @@ export function createImageToolsPage(host) {
     refs.outpaintAmount.disabled = active;
     for (const chip of refs.outpaintDirs.querySelectorAll('[data-dir]')) chip.disabled = active;
     refs.outpaintGo.textContent = active ? '带到编辑 · 全景' : '去局部重绘';
+    refs.outpaintPlan.textContent = active ? '规划全景' : '应用预设范围';
   }
 
   refs.outpaintPano.querySelectorAll('[data-pano]').forEach((button) => {
     button.addEventListener('click', () => {
       state.outpaint.panoramaAspect = button.dataset.pano || '';
+      if (state.outpaint.panoramaAspect) {
+        resetOutpaintFrame({ hideCancel: true });
+        if (state.source) render();
+      } else if (state.source) {
+        startOutpaintFrame();
+      }
       syncPanoramaUi();
       updateOutpaintSummary();
     });
@@ -4921,13 +5156,218 @@ export function createImageToolsPage(host) {
       for (const chip of refs.outpaintDirs.querySelectorAll('[data-dir]')) {
         chip.classList.toggle('active', chip === button);
       }
+      if (state.source && !state.outpaint.panoramaAspect) {
+        if (state.outpaint.active) applyOutpaintPreset();
+        else startOutpaintFrame();
+      }
       updateOutpaintSummary();
     });
   });
   refs.outpaintAmount.addEventListener('input', () => {
     state.outpaint.amount = Number(refs.outpaintAmount.value) / 100;
     refs.outpaintAmountVal.textContent = `${Math.round(state.outpaint.amount * 100)}%`;
+    if (state.outpaint.active) applyOutpaintPreset();
   });
+
+  /* ---------------- 扩图操作框 ---------------- */
+  const OUTPAINT_MAX_SIDE = 8192;
+
+  function outpaintDirectionPads(direction, amount, width, height) {
+    const pads = { left: 0, right: 0, top: 0, bottom: 0 };
+    const ax = Math.round(width * amount);
+    const ay = Math.round(height * amount);
+    if (direction === 'left') pads.left = ax;
+    else if (direction === 'right') pads.right = ax;
+    else if (direction === 'up') pads.top = ay;
+    else if (direction === 'down') pads.bottom = ay;
+    else if (direction === 'horizontal') {
+      pads.left = ax;
+      pads.right = ax;
+    } else if (direction === 'vertical') {
+      pads.top = ay;
+      pads.bottom = ay;
+    } else if (direction === 'all') {
+      pads.left = ax;
+      pads.right = ax;
+      pads.top = ay;
+      pads.bottom = ay;
+    }
+    return pads;
+  }
+
+  /** 按面板里的方向/幅度重置操作框。 */
+  function applyOutpaintPreset() {
+    const base = state.outpaint.base;
+    if (!base || state.outpaint.panoramaAspect) return;
+    buildOutpaintResult(
+      outpaintDirectionPads(state.outpaint.direction, state.outpaint.amount, base.width, base.height),
+    );
+    updateOutpaintSummary();
+    render();
+  }
+
+  function inferOutpaintDirection(pads) {
+    const lr = pads.left > 0 || pads.right > 0;
+    const tb = pads.top > 0 || pads.bottom > 0;
+    if (lr && tb) return 'all';
+    if (lr) return pads.left > 0 && pads.right > 0 ? 'horizontal' : pads.left > 0 ? 'left' : 'right';
+    if (tb) return pads.top > 0 && pads.bottom > 0 ? 'vertical' : pads.top > 0 ? 'up' : 'down';
+    return 'all';
+  }
+
+  /** 约束手柄结果：非负、扩图方向吸附 32 的倍数、总尺寸不超上限。 */
+  function clampOutpaintPads(pads, baseW, baseH) {
+    const next = {
+      left: Math.max(0, Math.round(pads.left)),
+      right: Math.max(0, Math.round(pads.right)),
+      top: Math.max(0, Math.round(pads.top)),
+      bottom: Math.max(0, Math.round(pads.bottom)),
+    };
+    // 只在真正外扩的方向上补齐到 32，避免「没扩也凭空多出一条白边」
+    if (next.left + next.right > 0) {
+      const width = baseW + next.left + next.right;
+      const extra = snapUp(width, 32) - width;
+      if (extra > 0) {
+        if (next.right > 0) next.right += extra;
+        else next.left += extra;
+      }
+    }
+    if (next.top + next.bottom > 0) {
+      const height = baseH + next.top + next.bottom;
+      const extra = snapUp(height, 32) - height;
+      if (extra > 0) {
+        if (next.bottom > 0) next.bottom += extra;
+        else next.top += extra;
+      }
+    }
+    const overW = baseW + next.left + next.right - OUTPAINT_MAX_SIDE;
+    if (overW > 0) next.right = Math.max(0, next.right - overW);
+    const overH = baseH + next.top + next.bottom - OUTPAINT_MAX_SIDE;
+    if (overH > 0) next.bottom = Math.max(0, next.bottom - overH);
+    return next;
+  }
+
+  /** 拖动中的待确认画布：用舞台内的虚线框 + 压暗外部表示，松手才真正落定。 */
+  function syncOutpaintGhost(pads) {
+    const node = refs.stageGhost;
+    const base = state.outpaint.base;
+    if (!node || !base || !drag || drag.type !== 'outpaint') return;
+    const width = base.width + pads.left + pads.right;
+    const height = base.height + pads.top + pads.bottom;
+    node.style.left = `${drag.sourceRect.left - pads.left * drag.scale.x}px`;
+    node.style.top = `${drag.sourceRect.top - pads.top * drag.scale.y}px`;
+    node.style.width = `${width * drag.scale.x}px`;
+    node.style.height = `${height * drag.scale.y}px`;
+    node.dataset.label = `新画布 ${width} × ${height}`;
+    node.classList.remove('hidden');
+  }
+
+  function hideOutpaintGhost() {
+    refs.stageGhost?.classList.add('hidden');
+  }
+
+  function buildOutpaintResult(pads) {
+    const base = state.outpaint.base;
+    if (!base) return null;
+    const next = clampOutpaintPads(pads, base.width, base.height);
+    const width = base.width + next.left + next.right;
+    const height = base.height + next.top + next.bottom;
+    if (width > OUTPAINT_MAX_SIDE || height > OUTPAINT_MAX_SIDE) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(base, next.left, next.top);
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = width;
+    maskCanvas.height = height;
+    const mctx = maskCanvas.getContext('2d');
+    mctx.fillStyle = '#ffffff';
+    mctx.fillRect(0, 0, width, height);
+    mctx.fillStyle = '#000000';
+    mctx.fillRect(next.left, next.top, base.width, base.height);
+    state.outpaint.pads = next;
+    refs.outpaintGo.disabled = next.left + next.right + next.top + next.bottom === 0;
+    state.outpaint.result = {
+      plan: {
+        direction: inferOutpaintDirection(next),
+        pad: next,
+        source: { w: base.width, h: base.height },
+        canvas: { w: width, h: height },
+        offset: { x: next.left, y: next.top },
+      },
+      prompt: '',
+      canvas,
+      maskCanvas,
+      dataUrl: '',
+      maskDataUrl: '',
+      width,
+      height,
+      sourceRect: { x: next.left, y: next.top, width: base.width, height: base.height },
+    };
+    return state.outpaint.result;
+  }
+
+  async function ensureOutpaintBase() {
+    const key = JSON.stringify(state.stagedOps);
+    if (state.outpaint.base && state.outpaint.base.key === key) return state.outpaint.base;
+    const image = await loadSourceImage();
+    if (!image) return null;
+    const canvas = applyOpsToCanvas(image, state.stagedOps);
+    canvas.key = key;
+    state.outpaint.base = canvas;
+    return canvas;
+  }
+
+  async function startOutpaintFrame() {
+    if (!state.source || state.outpaint.panoramaAspect || state.outpaint.busy) return;
+    state.outpaint.busy = true;
+    try {
+      const base = await ensureOutpaintBase();
+      if (!base) return;
+      // 进入扩图先给一个「贴着原图」的操作框，用户向外拖多少就扩多少；
+      // 预设的方向/幅度通过「应用预设范围」一键套用。
+      buildOutpaintResult({ left: 0, right: 0, top: 0, bottom: 0 });
+      state.outpaint.active = true;
+      state.crop.rect = null;
+      refs.outpaintCancel.classList.remove('hidden');
+      refs.stageEmpty.classList.add('hidden');
+      updateOutpaintSummary();
+      await render();
+    } catch (err) {
+      toastError(err, '扩图预览失败');
+    } finally {
+      state.outpaint.busy = false;
+    }
+  }
+
+  /** 退出扩图预览（切换工具/全景/取消时调用）。 */
+  function resetOutpaintFrame({ hideCancel = false } = {}) {
+    state.outpaint.active = false;
+    state.outpaint.result = null;
+    state.outpaint.pendingPads = null;
+    hideOutpaintGhost();
+    state.outpaint.pads = { left: 0, right: 0, top: 0, bottom: 0 };
+    state.crop.rect = null;
+    refs.outpaintGo.disabled = true;
+    if (hideCancel) refs.outpaintCancel.classList.add('hidden');
+    updateOutpaintSummary();
+  }
+
+  /** 送入编辑前再生成 dataURL 与提示词，避免拖动时反复编码。 */
+  async function ensureOutpaintAssets(result) {
+    if (!result) return null;
+    if (!result.dataUrl && result.canvas) result.dataUrl = result.canvas.toDataURL('image/png');
+    if (!result.maskDataUrl && result.maskCanvas) {
+      result.maskDataUrl = result.maskCanvas.toDataURL('image/png');
+    }
+    if (!result.prompt) {
+      result.prompt = await buildOutpaintPrompt(result.plan?.direction || 'all');
+    }
+    return result;
+  }
 
   function updateOutpaintSummary() {
     if (!state.source) {
@@ -4937,11 +5377,29 @@ export function createImageToolsPage(host) {
     const aspect = state.outpaint.panoramaAspect;
     if (state.outpaint.active && state.outpaint.result) {
       const result = state.outpaint.result;
-      refs.outpaintSummary.textContent = `${aspect ? `全景 ${aspect} · ` : ''}已规划：新画布 ${fmtNum(
-        result.width,
-      )} × ${fmtNum(result.height)}，原图位于 (${Math.round(result.sourceRect.x)}, ${Math.round(
-        result.sourceRect.y,
-      )})，新增区域已生成遮罩。`;
+      if (aspect) {
+        refs.outpaintSummary.textContent = `全景 ${aspect} · 已规划：新画布 ${fmtNum(
+          result.width,
+        )} × ${fmtNum(result.height)}，原图位于 (${Math.round(result.sourceRect.x)}, ${Math.round(
+          result.sourceRect.y,
+        )})，新增区域已生成遮罩。`;
+        return;
+      }
+      const pending = state.outpaint.pendingPads;
+      const pads = pending || result.plan?.pad || state.outpaint.pads;
+      const base = state.outpaint.base;
+      const width = base ? base.width + pads.left + pads.right : result.width;
+      const height = base ? base.height + pads.top + pads.bottom : result.height;
+      const sides = [];
+      if (pads.left) sides.push(`左 ${Math.round(pads.left)}`);
+      if (pads.right) sides.push(`右 ${Math.round(pads.right)}`);
+      if (pads.top) sides.push(`上 ${Math.round(pads.top)}`);
+      if (pads.bottom) sides.push(`下 ${Math.round(pads.bottom)}`);
+      refs.outpaintSummary.textContent = `新画布 ${fmtNum(width)} × ${fmtNum(height)} · 原图 ${fmtNum(
+        result.sourceRect.width,
+      )} × ${fmtNum(result.sourceRect.height)}（${
+        sides.length ? `外扩 ${sides.join(' / ')}` : '尚未外扩'
+      }）${pending ? ' · 松开鼠标应用' : '；向外拖动边框即可扩图。'}`;
       return;
     }
     if (aspect) {
@@ -4956,17 +5414,27 @@ export function createImageToolsPage(host) {
       }
       refs.outpaintSummary.textContent = `全景 ${aspect}：自动${
         resolved.direction === 'horizontal' ? '向左右' : '向上下'
-      }外扩（左右/上下各约 ${Math.round(resolved.amount * 100)}%），点击「规划扩图」预览；确认后带到图像编辑页生成。`;
+      }外扩（左右/上下各约 ${Math.round(resolved.amount * 100)}%），点击「规划全景」预览；确认后带到图像编辑页生成。`;
       return;
     }
     refs.outpaintSummary.textContent = `方向「${OUTPAINT_DIRECTION_LABELS[state.outpaint.direction]}」· 幅度 ${Math.round(
       state.outpaint.amount * 100,
-    )}%：点击「规划扩图」查看新画布与新增区域。`;
+    )}%：在画布上拖动边框调整范围，或点击「应用预设范围」。`;
   }
 
   refs.outpaintPlan.addEventListener('click', async () => {
     if (!state.source) {
       toastWarn('请先上传图片');
+      return;
+    }
+    // 非全景：无需后端，直接把操作框按当前方向/幅度重置
+    if (!state.outpaint.panoramaAspect) {
+      if (!state.outpaint.active) {
+        await startOutpaintFrame();
+      } else {
+        applyOutpaintPreset();
+      }
+      toastSuccess('已按当前方向更新扩图范围');
       return;
     }
     if (state.outpaint.busy) return;
@@ -5009,10 +5477,9 @@ export function createImageToolsPage(host) {
   });
 
   refs.outpaintCancel.addEventListener('click', () => {
-    state.outpaint.active = false;
-    state.outpaint.result = null;
-    refs.outpaintGo.disabled = true;
-    refs.outpaintCancel.classList.add('hidden');
+    if (!state.outpaint.active) return;
+    // 重置为「贴着原图」的操作框，而不是退出扩图工具
+    buildOutpaintResult({ left: 0, right: 0, top: 0, bottom: 0 });
     updateOutpaintSummary();
     render();
   });
@@ -5043,7 +5510,7 @@ export function createImageToolsPage(host) {
   async function goOutpaintEdit() {
     const result = state.outpaint.result;
     if (!result) {
-      toastWarn('请先点击「规划扩图」');
+      toastWarn('请先在画布上拖出扩图范围');
       return;
     }
     // 全景：把当前处理图交给编辑页的「全景」任务重新规划，
@@ -5062,6 +5529,7 @@ export function createImageToolsPage(host) {
       goToEditPage();
       return;
     }
+    await ensureOutpaintAssets(result);
     setHandoff({
       images: [{ dataUrl: result.dataUrl, name: 'outpaint.png' }],
       mask: result.maskDataUrl,
@@ -5088,7 +5556,10 @@ export function createImageToolsPage(host) {
     button.disabled = true;
     button.innerHTML = '<span class="spin"></span>准备中…';
     try {
-      if (state.outpaint.active && state.outpaint.result) {
+      const outPad = state.outpaint.result?.plan?.pad;
+      const hasOutPad =
+        Boolean(outPad) && outPad.left + outPad.right + outPad.top + outPad.bottom > 0;
+      if (state.outpaint.active && state.outpaint.result && hasOutPad) {
         await goOutpaintEdit();
         return;
       }
